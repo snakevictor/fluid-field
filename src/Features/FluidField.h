@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FluidField/WindSolver.h"
+#include "OverlayFeature.h"
 
 /**
  * @brief Player-centred fluid simulation shared by water, fog, smoke and buoyancy outputs.
@@ -10,7 +11,7 @@
  * freed here, and the field is cleared after every loading screen. While disabled it creates
  * nothing and dispatches nothing.
  */
-struct FluidField : Feature
+struct FluidField : OverlayFeature
 {
 	virtual inline std::string GetName() override { return "Fluid Field"; }
 	virtual std::string GetDisplayName() override { return T("feature.fluid_field.name", "Fluid Field"); }
@@ -63,6 +64,11 @@ struct FluidField : Feature
 
 	virtual void ClearShaderCache() override;
 
+	/** @brief Draws the per-layer debug overlay when it is turned on from the menu. */
+	virtual void DrawOverlay() override;
+	/** @brief True while the debug overlay is turned on and has layer images to show. */
+	virtual bool IsOverlayVisible() const override;
+
 	/** @brief Clamps loaded settings to the ranges the solver supports. */
 	static Settings Sanitize(Settings a_settings);
 
@@ -82,6 +88,19 @@ private:
 	std::atomic<bool> queuedReset = true;
 	/** @brief A test puff was requested from the menu; consumed by the next step. */
 	bool queuedTestPuff = false;
+
+	// Last step's grid placement, for the overlay's player marker
+	int32_t lastGridMin[2]{};
+	float lastPlayerTexel[2]{};
+	float lastHeading = 0.0f;
+
+	// Debug overlay, not saved
+	bool showDebugOverlay = false;
+	bool hasDebugViews = false;
+	float debugOverlayScale = 1.0f;
+	float debugVelocityRange = 500.0f;   ///< Wind speed shown at full brightness
+	float debugDivergenceRange = 1.0f;   ///< Divergence shown at full colour
+	float debugPressureRange = 1000.0f;  ///< Pressure shown at full colour
 
 	/** @brief Cell size the field was last stepped with; a change invalidates its contents. */
 	float lastCellSize = 0.0f;

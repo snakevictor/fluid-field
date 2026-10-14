@@ -77,6 +77,82 @@ void FluidField::DrawSettings()
 
 	ImGui::SliderFloat(T(TKEY("test_puff_strength"), "Puff Strength"), &settings.TestPuffStrength, 0.0f, 5000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 	ImGui::SliderFloat(T(TKEY("test_puff_radius"), "Puff Radius"), &settings.TestPuffRadius, 16.0f, 2048.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+
+	ImGui::SeparatorText(T(TKEY("debug"), "Debug"));
+
+	ImGui::Checkbox(T(TKEY("show_layer_overlay"), "Show Layer Overlay"), &showDebugOverlay);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("show_layer_overlay_tooltip"), "Draws every simulation layer on screen, north up, centred on the player. Not saved."));
+	}
+	ImGui::SliderFloat(T(TKEY("overlay_scale"), "Overlay Scale"), &debugOverlayScale, 0.5f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("overlay_velocity_range"), "Velocity Range"), &debugVelocityRange, 10.0f, 5000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+	ImGui::SliderFloat(T(TKEY("overlay_divergence_range"), "Divergence Range"), &debugDivergenceRange, 0.01f, 20.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+	ImGui::SliderFloat(T(TKEY("overlay_pressure_range"), "Pressure Range"), &debugPressureRange, 1.0f, 50000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("overlay_range_tooltip"), "The value drawn at full colour in the overlay."));
+	}
+}
+
+void FluidField::DrawOverlay()
+{
+	if (!IsOverlayVisible())
+		return;
+
+	const float uiScale = Util::GetUIScale();
+	const float padding = ThemeManager::Constants::OVERLAY_WINDOW_POSITION * uiScale;
+	const auto* viewport = ImGui::GetMainViewport();
+	ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - padding, viewport->WorkPos.y + padding), ImGuiCond_FirstUseEver, ImVec2(1.0f, 0.0f));
+
+	// Click-through during play; movable while the menu is open
+	ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoCollapse;
+	if (!Menu::GetSingleton()->IsEnabled)
+		flags |= ImGuiWindowFlags_NoInputs;
+
+	if (!ImGui::Begin(T(TKEY("overlay_title"), "Fluid Field Layers###FluidFieldLayers"), nullptr, flags)) {
+		ImGui::End();
+		return;
+	}
+
+	ImGui::Text(T(TKEY("overlay_grid_info"), "%u x %u texels, %.1f units each, south-west cell (%d, %d)"),
+		settings.GridResolution, settings.GridResolution, GetCellSize(), lastGridMin[0], lastGridMin[1]);
+
+	const float imageSize = 192.0f * uiScale * debugOverlayScale;
+	const float res = static_cast<float>(settings.GridResolution);
+	const ImU32 markerColor = ImGui::GetColorU32(ImGuiCol_Text);
+	const std::array<const char*, 3> layerNames = {
+		T(TKEY("layer_velocity"), "Velocity"),
+		T(TKEY("layer_divergence"), "Divergence"),
+		T(TKEY("layer_pressure"), "Pressure")
+	};
+
+	for (std::size_t i = 0; i < layerNames.size(); i++) {
+		if (i > 0)
+			ImGui::SameLine();
+
+		ImGui::BeginGroup();
+		ImGui::TextUnformatted(layerNames[i]);
+		ImGui::Image(reinterpret_cast<ImTextureID>(solver.GetDebugViewSRV(i)), ImVec2(imageSize, imageSize));
+
+		// Player marker and facing; images are north up, so texel y is flipped
+		const ImVec2 imageMin = ImGui::GetItemRectMin();
+		const ImVec2 marker(imageMin.x + lastPlayerTexel[0] / res * imageSize, imageMin.y + (1.0f - lastPlayerTexel[1] / res) * imageSize);
+		const float markerRadius = 3.0f * uiScale;
+		const float facingLength = 10.0f * uiScale;
+		auto* drawList = ImGui::GetWindowDrawList();
+		drawList->AddCircle(marker, markerRadius, markerColor);
+		drawList->AddLine(marker, ImVec2(marker.x + std::sin(lastHeading) * facingLength, marker.y - std::cos(lastHeading) * facingLength), markerColor);
+		ImGui::EndGroup();
+	}
+
+	ImGui::TextUnformatted(T(TKEY("overlay_legend_velocity"), "Velocity: hue is direction (east red, north green, west cyan, south violet), brightness is speed."));
+	ImGui::TextUnformatted(T(TKEY("overlay_legend_scalar"), "Divergence and pressure: red is positive, blue is negative."));
+
+	ImGui::End();
+}
+
+bool FluidField::IsOverlayVisible() const
+{
+	return showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews;
 }
 
 #undef I18N_KEY_PREFIX
@@ -148,6 +224,7 @@ bool FluidField::EnsureSolver()
 		}
 		// New textures hold undefined data
 		queuedReset = true;
+		hasDebugViews = false;
 	}
 
 	if (!solver.HasShaders()) {
@@ -171,6 +248,7 @@ void FluidField::ReleaseSolver()
 	solver.ReleaseResources();
 	solver.ReleaseShaders();
 	lastCellSize = 0.0f;
+	hasDebugViews = false;
 }
 
 void FluidField::Prepass()
@@ -244,16 +322,32 @@ void FluidField::Prepass()
 		.emitters = testPuff ? std::span<const FluidFieldSim::Emitter>(&*testPuff, 1) : std::span<const FluidFieldSim::Emitter>()
 	};
 
-	TracyD3D11Zone(state->tracyCtx, "FluidField - Wind Step");
-	solver.Step(context, params, [&](const char* passName, auto&& runPass) {
+	{
+		ZoneScopedN("FluidField - Wind Step");
+		TracyD3D11Zone(state->tracyCtx, "FluidField - Wind Step");
+		solver.Step(context, params, [&](const char* passName, auto&& runPass) {
 #ifdef TRACY_ENABLE
-		ZoneTransientN(fluidFieldPassZone, passName, true);
-		TracyD3D11ZoneTransientS(state->tracyCtx, fluidFieldPassGpuZone, passName, 0, state->tracyCtx != nullptr);
+			ZoneTransientN(fluidFieldPassZone, passName, true);
+			TracyD3D11ZoneTransientS(state->tracyCtx, fluidFieldPassGpuZone, passName, 0, state->tracyCtx != nullptr);
 #else
-		(void)passName;
+			(void)passName;
 #endif
-		runPass();
-	});
+			runPass();
+		});
+	}
+
+	lastGridMin[0] = gridMin[0];
+	lastGridMin[1] = gridMin[1];
+	lastPlayerTexel[0] = playerPos.x / cellSize - static_cast<float>(gridMin[0]);
+	lastPlayerTexel[1] = playerPos.y / cellSize - static_cast<float>(gridMin[1]);
+	lastHeading = player->GetAngleZ();
+
+	if (showDebugOverlay) {
+		ZoneScopedN("FluidField - Debug View");
+		TracyD3D11Zone(state->tracyCtx, "FluidField - Debug View");
+		solver.RenderDebugViews(context, { .velocity = 1.0f / debugVelocityRange, .divergence = 1.0f / debugDivergenceRange, .pressure = 1.0f / debugPressureRange });
+		hasDebugViews = true;
+	}
 }
 
 RE::BSEventNotifyControl FluidField::MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
