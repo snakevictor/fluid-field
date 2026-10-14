@@ -190,3 +190,29 @@ Entry format:
 -   Decided by: @Victor
 -   References: `ROADMAP.md` "License obligations",
     `reports/procedural-grass.md`
+
+## D10: Phase 5 becomes simulated fire and smoke
+
+-   Date: 2026-10-13
+-   Phase / spike: Phase 5 / R5
+-   Decision: Phase 5 is widened from "volumetric smoke" to fire and smoke
+    simulated as fluids, in the spirit of FluidNinja LIVE. Near the player,
+    the most visible emitters (campfires, forges, chimneys, torches, fire
+    spells) get small local fluid grids with velocity, density and
+    temperature, driven by the field's wind and shouts. These replace the
+    vanilla sprites, which fade back in beyond a distance band and an
+    emitter cap.
+    -   Vanilla data stays the source: emitter positions, sizes and colours.
+    -   Community Shaders' lights do the lighting.
+    -   Particles (sparks, embers) are an optional extra, not the core.
+    -   R5 is rescoped to compare the techniques (camera-facing 2D cards,
+        extruded volumes, small 3D grids) and to measure a fire budget.
+    -   The 1.5 ms fog-and-smoke budget is unchanged until R5 reports.
+-   Alternatives rejected:
+    -   Smoke-only volumes with vanilla fire left untouched.
+    -   Only distorting or bending the vanilla sprites with the field
+        (`research/smoke-and-fire.md` options a and b). These may still ship
+        as cheap fallbacks for emitters beyond the cap.
+-   Decided by: @Victor
+-   References: `research/smoke-and-fire.md`,
+    `research/fluidninja-live2.md`, `ROADMAP.md` Phase 5 and R5
