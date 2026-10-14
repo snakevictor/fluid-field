@@ -3,6 +3,7 @@
 #include "FluidField/BedRaycasts.h"
 #include "FluidField/DepthMapView.h"
 #include "FluidField/LandscapeCache.h"
+#include "FluidField/MeshCut.h"
 #include "FluidField/ShallowWaterSolver.h"
 #include "FluidField/WaterMapBuilder.h"
 #include "FluidField/WaterSurfaces.h"
@@ -62,6 +63,7 @@ struct FluidField : OverlayFeature
 		uint RaysPerFrame = 32;           ///< Most bed rays cast in one frame
 		float RaySpacing = 64.0f;         ///< World units between bed rays
 		bool LogDepthMap = false;         ///< Debug: log what bed rays hit and periodic depth map statistics
+		bool MeshCutObstacles = true;     ///< Water-line obstacles from cutting placed meshes at the water height (D15)
 		bool WaterEnabled = false;        ///< Experimental: simulate shallow water on the grid (needs the depth map)
 		float WakeStrength = 1.0f;        ///< How strongly the player drags the water along
 		float TestCurrentSpeed = 0.0f;    ///< Test current until vanilla flow is read, world units per second
@@ -115,6 +117,7 @@ private:
 	FluidFieldSim::LandscapeCache landscape;
 	FluidFieldSim::WaterSurfaces water;
 	FluidFieldSim::BedRaycasts bedRays;
+	FluidFieldSim::MeshCut meshCut;
 	FluidFieldSim::DepthMapView depthView;
 
 	/** @brief Drops the depth map's data and debug images. */
@@ -134,6 +137,17 @@ private:
 	void ReleaseWater();
 	/** @brief Rebuilds the water map, then steps and writes out the water layer for this frame. */
 	void StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos, const int32_t a_gridMin[2], float a_cellSize, float a_deltaTime);
+	/**
+	 * @brief Uploads changed obstacle blocks: refined ray detail with mesh-cut solids on top.
+	 * Mesh-cut blocks are kept resident only inside the obstacle texture's window around the player,
+	 * since blocks further away would alias in the wrapped texture.
+	 */
+	void UploadObstacles(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos);
+	/** @brief One obstacle block at fine coordinates: ray detail where refined, mesh-cut solids over it. */
+	std::array<float, FluidFieldSim::MeshCut::BLOCK * FluidFieldSim::MeshCut::BLOCK * 4> ComposeObstacleBlock(int32_t a_originX, int32_t a_originY) const;
+	/** @brief Mesh-cut blocks currently uploaded, keyed by block coordinates. */
+	std::unordered_set<uint64_t> residentMeshBlocks;
+	int32_t meshWindowCentre[2]{ INT32_MIN, INT32_MIN };
 	bool shaderCompileFailed = false;
 	bool resourceCreateFailed = false;
 

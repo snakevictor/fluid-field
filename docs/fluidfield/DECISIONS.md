@@ -323,3 +323,32 @@ Entry format:
         render hooks, and the mesh cut gives the same answer without them.
 -   Decided by: @Victor
 -   References: `research/mesh-cut.md`, `reports/water-slice-1-round-3.md`
+
+## D15: Mesh-cut obstacles replace the raycast solid test
+
+-   Date: 2026-10-14
+-   Phase / spike: Phase 1, water slice 1 (D14 stages 0 to 3)
+-   Decision: Water-line obstacles come from `MeshCut`, from the meshes'
+    CPU vertex and index copies. For each loaded static, movable static,
+    activator, furniture, door or container that has collision and whose
+    bound spans the local water height, each triangle is cut at that
+    height. Every segment is drawn as a line of solid fine points, and the
+    inside of each closed loop is filled, on the bed rays' fine lattice
+    (RaySpacing / 4). Each reference is cut once while it stays loaded.
+    Solid points go into the existing obstacle blocks, over the rays' detail.
+    Rays now only measure the bed: with Mesh Cut on, a mesh above the water
+    is always looked under, and no point is judged solid from a probe.
+    Setting `MeshCutObstacles`, on by default.
+-   Evidence (from the RE workspace, `skyrim-engine-re/kb/evidence/2026-10-14-live-bridge-mesh-cut.md`):
+    the Riverwood stone bridge cut gives one closed loop per pillar and
+    nothing across the arches. 160 references at the Riften canal and 602
+    at the lake docks were surveyed: every dock, pier, wall, bridge and boat
+    keeps CPU data, and only tree shapes do not. Cutting takes 1 to 14 ms
+    per reference in Python.
+-   Alternatives rejected:
+    -   Keeping the normal-based probe rule. It got the arches right, but
+        missed every pillar (bridge test, 2026-10-14).
+    -   Havok collision as the source. It needs a shape-type walk and the
+        visual mesh is already available.
+-   Decided by: @Victor ("yep, quit and deploy", after the survey)
+-   References: D14, `research/mesh-cut.md`

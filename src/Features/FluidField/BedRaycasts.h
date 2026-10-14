@@ -107,6 +107,16 @@ namespace FluidFieldSim
 		float GetFineSpacing() const { return spacing / static_cast<float>(REFINE); }
 		/** @brief True after a clear until the next TakeDirtyBlocks, so consumers can drop stale detail. */
 		bool WasCleared() const { return cleared; }
+		/**
+		 * @brief Refined result at a fine lattice point as an obstacle texel (height, kind code: 1 landscape, 2 mesh).
+		 * @return False when that point has not been refined.
+		 */
+		bool FindFine(int32_t a_fineX, int32_t a_fineY, float& a_height, float& a_kind) const;
+		/**
+		 * @brief With mesh-cut obstacles, rays only measure the bed: every mesh above the water is looked
+		 * under, and none is judged solid from a probe. Changing it clears the results.
+		 */
+		void SetOverheadsAlwaysOpen(bool a_open);
 
 		const Stats& GetStats() const { return stats; }
 		/** @brief Counts the cached results; walks every sample, so call it for display only. */
@@ -165,6 +175,7 @@ namespace FluidFieldSim
 		std::vector<std::pair<int32_t, int32_t>> deferredSquares;
 		std::vector<std::pair<int32_t, int32_t>> dirtySquares;
 		bool cleared = true;
+		bool overheadsAlwaysOpen = false;
 		float spacing = 0.0f;
 		uint32_t sweepCursor = 0;
 		Stats stats;

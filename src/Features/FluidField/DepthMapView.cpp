@@ -3,6 +3,7 @@
 #include "BedRaycasts.h"
 #include "Buffer.h"
 #include "LandscapeCache.h"
+#include "MeshCut.h"
 #include "WaterSurfaces.h"
 
 namespace FluidFieldSim
@@ -103,7 +104,7 @@ namespace FluidFieldSim
 		}
 	}
 
-	void DepthMapView::Update(ID3D11DeviceContext* a_context, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays,
+	void DepthMapView::Update(ID3D11DeviceContext* a_context, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays, const MeshCut* a_meshCut,
 		float a_centreX, float a_centreY, float a_referenceHeight, float a_size)
 	{
 		constexpr uint32_t n = RESOLUTION;
@@ -193,10 +194,12 @@ namespace FluidFieldSim
 					pixels[2][out] = Pack(0.55f, 0.45f, 0.30f);
 				}
 
-				// Raycasts: green terrain, purple looked under a deck, orange mesh above the water (obstacle),
-				// brown mesh below it (riverbed), dark blue nothing in reach, grey dry (not cast)
+				// Raycasts: red a mesh-cut obstacle, green terrain, purple looked under a deck, orange mesh above
+				// the water (obstacle), brown mesh below it (riverbed), dark blue nothing in reach, grey dry (not cast)
 				const auto* ray = a_rays ? a_rays->FindDetail(wx, wy) : nullptr;
-				if (!ray) {
+				if (a_meshCut && a_meshCut->IsSolidAt(wx, wy)) {
+					pixels[3][out] = Pack(0.95f, 0.15f, 0.20f);
+				} else if (!ray) {
 					pixels[3][out] = NO_WATER;
 				} else if (ray->overhead) {
 					pixels[3][out] = Pack(0.65f, 0.35f, 0.95f);

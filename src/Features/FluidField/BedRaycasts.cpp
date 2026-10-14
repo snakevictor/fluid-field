@@ -198,6 +198,25 @@ namespace FluidFieldSim
 		return blocks;
 	}
 
+	bool BedRaycasts::FindFine(int32_t a_fineX, int32_t a_fineY, float& a_height, float& a_kind) const
+	{
+		const auto it = fine.find(MakeKey(a_fineX, a_fineY));
+		if (it == fine.end())
+			return false;
+		a_height = it->second.height;
+		a_kind = it->second.kind == HitKind::Terrain ? 1.0f : it->second.kind == HitKind::Static ? 2.0f :
+		                                                                                           0.0f;
+		return true;
+	}
+
+	void BedRaycasts::SetOverheadsAlwaysOpen(bool a_open)
+	{
+		if (a_open == overheadsAlwaysOpen)
+			return;
+		overheadsAlwaysOpen = a_open;
+		Clear();
+	}
+
 	void BedRaycasts::MarkAllRefinedDirty()
 	{
 		dirtySquares.clear();
@@ -278,11 +297,13 @@ namespace FluidFieldSim
 			// Something above the water: look up from just under the surface. An underside below the
 			// top means air over the water (a deck, an arch); nothing, or only the top itself, means a
 			// solid rising out of the water (a rock, a pier), which stays an obstacle.
-			const RayHit up = CastVertical(world, a_worldX, a_worldY, a_surface - PROBE_OFFSET, hit.z + 1.0f, a_aborted);
+			// With mesh-cut obstacles the mesh cut decides what is solid, so skip the probe and look under
+			const RayHit up = overheadsAlwaysOpen ? RayHit{ .hit = true, .z = a_surface + PROBE_OFFSET, .normalZ = -1.0f } :
+			                                        CastVertical(world, a_worldX, a_worldY, a_surface - PROBE_OFFSET, hit.z + 1.0f, a_aborted);
 			// A downward-facing underside clear of the water is open (a deck, an arch, a thin plank whose
 			// underside is at its top's height). An underside touching the water is solid (a pillar, a post);
 			// so is no underside, or an upward-facing hit from inside a solid.
-			const bool open = up.hit && up.normalZ < -0.3f && up.z > a_surface + UNDERSIDE_CLEARANCE;
+			const bool open = overheadsAlwaysOpen || (up.hit && up.normalZ < -0.3f && up.z > a_surface + UNDERSIDE_CLEARANCE);
 			if (a_log && !a_aborted && !open) {
 				const auto what = !up.hit ? std::string("solid, probe found no underside") :
 				                            std::format("solid, underside at {:.0f} above the water, normal z {:.2f}", up.z - a_surface, up.normalZ);

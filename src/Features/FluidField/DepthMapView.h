@@ -9,6 +9,7 @@ class Texture2D;
 namespace FluidFieldSim
 {
 	class BedRaycasts;
+	class MeshCut;
 	class LandscapeCache;
 	class WaterSurfaces;
 
@@ -47,7 +48,7 @@ namespace FluidFieldSim
 		 * @param a_size World units per image side.
 		 * @param a_rays Raycast bed results, or null when raycasting is off.
 		 */
-		void Update(ID3D11DeviceContext* a_context, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays,
+		void Update(ID3D11DeviceContext* a_context, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays, const MeshCut* a_meshCut,
 			float a_centreX, float a_centreY, float a_referenceHeight, float a_size);
 
 		void Release();

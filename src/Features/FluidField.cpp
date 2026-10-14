@@ -27,6 +27,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	RaysPerFrame,
 	RaySpacing,
 	LogDepthMap,
+	MeshCutObstacles,
 	WaterEnabled,
 	WakeStrength,
 	TestCurrentSpeed,
@@ -126,6 +127,15 @@ void FluidField::DrawSettings()
 	ImGui::Checkbox(T(TKEY("log_depth_map"), "Log Depth Map Details"), &settings.LogDepthMap);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("log_depth_map_tooltip"), "Debug: logs what bed rays hit (object, form ID, collision layer) and a summary every few seconds."));
+	}
+	ImGui::Checkbox(T(TKEY("mesh_cut"), "Cut Meshes at the Water Line"), &settings.MeshCutObstacles);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("mesh_cut_tooltip"), "Finds pillars, posts, walls and boats by cutting their meshes at the water height. Rays then only measure the bed."));
+	}
+	if (settings.MeshCutObstacles) {
+		const auto& cutStats = meshCut.GetStats();
+		ImGui::Text(T(TKEY("mesh_cut_stats"), "Mesh cut: %u references, %u shapes (%u skipped), %u closed loops, %u solid points, %u waiting; %.2f ms last frame"),
+			cutStats.references, cutStats.shapes, cutStats.shapesWithoutData, cutStats.closedLoops, cutStats.solidPoints, cutStats.pending, cutStats.lastUpdateMs);
 	}
 	if (settings.RaycastBed && bedRays.GetSampleCount() > 0) {
 		const auto counts = bedRays.CountSamples();
@@ -253,7 +263,7 @@ void FluidField::DrawOverlay()
 		ImGui::TextUnformatted(T(TKEY("overlay_legend_bed"), "Bed: green below the player, brown above, magenta where no landscape is loaded."));
 		ImGui::TextUnformatted(T(TKEY("overlay_legend_water"), "Water: bright blue is wet under a water object, bright cyan wet under cell water only; dim is a water plane under the ground."));
 		ImGui::TextUnformatted(T(TKEY("overlay_legend_depth"), "Depth: lighter is shallow, darker is deep; tan is water plane under the ground."));
-		ImGui::TextUnformatted(T(TKEY("overlay_legend_raycasts"), "Raycasts: green terrain, purple under a deck or arch, orange solid above the water, yellow above the water but not checked (ignored), brown a mesh below the water, dark blue nothing in reach, grey no ray."));
+		ImGui::TextUnformatted(T(TKEY("overlay_legend_raycasts"), "Raycasts: red a mesh-cut obstacle, green terrain, purple under a deck or arch, orange solid above the water, yellow above the water but not checked (ignored), brown a mesh below the water, dark blue nothing in reach, grey no ray."));
 		ImGui::Text(T(TKEY("overlay_depth_stats"), "Wet %u texels (%u water object, %u cell water), deepest %.0f units; %u plane under ground; %u without a bed"),
 			depthStats.submerged, depthStats.waterObject, depthStats.cellWater, depthStats.maxDepth, depthStats.buried, depthStats.bedMissing);
 	} else if (settings.DepthMapEnabled || settings.WaterEnabled) {
@@ -395,6 +405,8 @@ void FluidField::ClearDepthMap()
 		water.Clear();
 	if (bedRays.GetSampleCount() > 0)
 		bedRays.Clear();
+	if (meshCut.GetFineSpacing() > 0.0f)
+		meshCut.Clear();
 	if (depthView.HasImages())
 		depthView.Release();
 }
@@ -431,6 +443,7 @@ void FluidField::Prepass()
 			landscape.Clear();
 			water.Clear();
 			bedRays.Clear();
+			meshCut.Clear();
 		}
 		{
 			ZoneScopedN("FluidField - Landscape Cache");
@@ -445,6 +458,18 @@ void FluidField::Prepass()
 			globals::profiler->EndPass();
 		}
 		const auto playerPos = player->GetPosition();
+		bedRays.SetOverheadsAlwaysOpen(settings.MeshCutObstacles);
+		if (settings.MeshCutObstacles) {
+			ZoneScopedN("FluidField - Mesh Cut");
+			globals::profiler->BeginPass("FluidField::Mesh Cut");
+			meshCut.Update(water, settings.RaySpacing / static_cast<float>(FluidFieldSim::BedRaycasts::REFINE), settings.LogDepthMap);
+			globals::profiler->EndPass();
+			// Nobody else consumes the changed blocks while the water is off
+			if (!settings.WaterEnabled)
+				meshCut.TakeDirtyBlocks();
+		} else if (meshCut.GetFineSpacing() > 0.0f) {
+			meshCut.Clear();
+		}
 		if (settings.RaycastBed) {
 			ZoneScopedN("FluidField - Bed Raycasts");
 			globals::profiler->BeginPass("FluidField::Bed Raycasts");
@@ -459,7 +484,8 @@ void FluidField::Prepass()
 		if (showDebugOverlay) {
 			ZoneScopedN("FluidField - Depth Map View");
 			globals::profiler->BeginPass("FluidField::Depth Map View");
-			depthView.Update(globals::d3d::context, landscape, water, settings.RaycastBed ? &bedRays : nullptr, playerPos.x, playerPos.y, playerPos.z, settings.GridSize);
+			depthView.Update(globals::d3d::context, landscape, water, settings.RaycastBed ? &bedRays : nullptr, settings.MeshCutObstacles ? &meshCut : nullptr,
+				playerPos.x, playerPos.y, playerPos.z, settings.GridSize);
 			globals::profiler->EndPass();
 		} else if (depthView.HasImages()) {
 			depthView.Release();
@@ -617,6 +643,100 @@ void FluidField::ReleaseWater()
 	hasLastPlayerPos = false;
 }
 
+std::array<float, FluidFieldSim::MeshCut::BLOCK * FluidFieldSim::MeshCut::BLOCK * 4> FluidField::ComposeObstacleBlock(int32_t a_originX, int32_t a_originY) const
+{
+	constexpr int32_t n = FluidFieldSim::MeshCut::BLOCK;
+	std::array<float, n * n * 4> texels{};
+	for (int32_t j = 0; j < n; j++) {
+		for (int32_t i = 0; i < n; i++) {
+			const int32_t fx = a_originX + i;
+			const int32_t fy = a_originY + j;
+			float* texel = &texels[static_cast<std::size_t>(j * n + i) * 4];
+			texel[1] = static_cast<float>(fx);
+			texel[2] = static_cast<float>(fy);
+			float top = 0.0f;
+			if (settings.MeshCutObstacles && meshCut.IsSolid(fx, fy, top)) {
+				texel[0] = top;
+				texel[3] = 2.0f;
+			} else if (settings.RaycastBed) {
+				bedRays.FindFine(fx, fy, texel[0], texel[3]);
+			}
+		}
+	}
+	return texels;
+}
+
+void FluidField::UploadObstacles(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos)
+{
+	static_assert(FluidFieldSim::MeshCut::BLOCK == FluidFieldSim::BedRaycasts::REFINE, "mesh-cut and ray blocks share one grid");
+	constexpr int32_t n = FluidFieldSim::MeshCut::BLOCK;
+	const float fineSpacing = settings.RaySpacing / static_cast<float>(n);
+	const auto blockKey = [](int32_t a_originX, int32_t a_originY) {
+		return (static_cast<uint64_t>(static_cast<uint32_t>(a_originX)) << 32) | static_cast<uint32_t>(a_originY);
+	};
+
+	if (waterSolver.ObstaclesNeedClear() || bedRays.WasCleared() || meshCut.WasCleared()) {
+		waterSolver.ClearObstacles(a_context);
+		bedRays.MarkAllRefinedDirty();
+		residentMeshBlocks.clear();
+		meshWindowCentre[0] = meshWindowCentre[1] = INT32_MIN;
+	}
+
+	for (const auto& block : bedRays.TakeDirtyBlocks()) {
+		const auto texels = ComposeObstacleBlock(block.originX, block.originY);
+		waterSolver.UploadObstacleBlock(a_context, block.originX, block.originY, n, texels.data(), fineSpacing);
+	}
+	if (!settings.MeshCutObstacles)
+		return;
+
+	// Mesh-cut blocks live only inside the texture's window around the player, less a block,
+	// so that no two resident blocks share a texel of the wrapped texture
+	const int32_t windowHalf = static_cast<int32_t>(waterSolver.GetObstacleResolution() / 2) - n;
+	const int32_t centreX = static_cast<int32_t>(std::floor(a_playerPos.x / fineSpacing / n)) * n;
+	const int32_t centreY = static_cast<int32_t>(std::floor(a_playerPos.y / fineSpacing / n)) * n;
+	const auto inWindow = [&](int32_t a_x, int32_t a_y) {
+		return std::abs(a_x - centreX) <= windowHalf && std::abs(a_y - centreY) <= windowHalf;
+	};
+	constexpr std::size_t MAX_UPLOADS = 512;
+	std::size_t uploads = 0;
+	const auto upload = [&](int32_t a_x, int32_t a_y) {
+		const auto texels = ComposeObstacleBlock(a_x, a_y);
+		waterSolver.UploadObstacleBlock(a_context, a_x, a_y, n, texels.data(), fineSpacing);
+		residentMeshBlocks.insert(blockKey(a_x, a_y));
+		uploads++;
+	};
+
+	for (const auto& [x, y] : meshCut.TakeDirtyBlocks()) {
+		if (inWindow(x, y))
+			upload(x, y);
+		else
+			residentMeshBlocks.erase(blockKey(x, y));
+	}
+
+	// The window moved far enough: upload the blocks that came into it, a capped number per frame.
+	// Walking every block is not free, so small moves wait; the window's edge is far from the player.
+	const int32_t rescanDistance = std::max(windowHalf / 8, n);
+	if (meshWindowCentre[0] == INT32_MIN || std::abs(centreX - meshWindowCentre[0]) >= rescanDistance || std::abs(centreY - meshWindowCentre[1]) >= rescanDistance) {
+		bool finished = true;
+		for (const auto& [x, y] : meshCut.GetAllBlocks()) {
+			const uint64_t key = blockKey(x, y);
+			if (!inWindow(x, y)) {
+				residentMeshBlocks.erase(key);
+			} else if (!residentMeshBlocks.contains(key)) {
+				if (uploads >= MAX_UPLOADS) {
+					finished = false;
+					continue;
+				}
+				upload(x, y);
+			}
+		}
+		if (finished) {
+			meshWindowCentre[0] = centreX;
+			meshWindowCentre[1] = centreY;
+		}
+	}
+}
+
 void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos, const int32_t a_gridMin[2], float a_cellSize, float a_deltaTime)
 {
 	if (!EnsureWater())
@@ -645,12 +765,7 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a
 	{
 		// Fine bed detail around structures, as the refined rays complete it
 		ZoneScopedN("FluidField - Water Obstacles");
-		if (waterSolver.ObstaclesNeedClear() || bedRays.WasCleared()) {
-			waterSolver.ClearObstacles(a_context);
-			bedRays.MarkAllRefinedDirty();
-		}
-		for (const auto& block : bedRays.TakeDirtyBlocks())
-			waterSolver.UploadObstacleBlock(a_context, block.originX, block.originY, FluidFieldSim::BedRaycasts::REFINE, block.texels.data(), bedRays.GetFineSpacing());
+		UploadObstacles(a_context, a_playerPos);
 	}
 
 	// The player's velocity from their movement since the last step, ignoring teleports
