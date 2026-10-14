@@ -74,8 +74,8 @@ struct FluidField : OverlayFeature
 		float SplashStrength = 1.0f;         ///< How hard actors entering or leaving the water push it
 		float RiverSpeed = 100.0f;           ///< River current at full flowmap strength, world units per second (0: test current only)
 		float CurrentPull = 0.15f;           ///< Per-second pull of the water toward the river current; lower lets obstacles shape the flow
-		float Turbulence = 2.0f;             ///< Vorticity confinement: keeps eddies behind obstacles alive (0: off)
-		float FlowDetail = 0.5f;             ///< Strength of the surface detail carried by the simulated flow
+		float Turbulence = 0.6f;             ///< Vorticity confinement: keeps eddies behind obstacles alive (0: off)
+		float FlowDetail = 0.25f;            ///< Strength of the surface detail carried by the simulated flow
 	};
 
 	Settings settings;

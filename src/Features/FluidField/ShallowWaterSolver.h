@@ -37,8 +37,8 @@ namespace FluidFieldSim
 		float current[2]{};         ///< Background current, world units per second
 		float currentRelax = 0.5f;  ///< Per-second relaxation toward the current
 		float levelRelax = 1.0f;    ///< Per-second relaxation toward the vanilla depth
-		float edgeWidth = 16.0f;    ///< Texels over which the grid edge blends back to vanilla
-		float edgeRelax = 0.2f;     ///< Per-step blend toward vanilla at the very edge
+		float edgeWidth = 16.0f;    ///< Texels of the absorbing border; set from the grid size each step
+		float edgeRelax = 4.0f;     ///< Per-second pull toward calm vanilla water at the very edge (quadratic ramp inward)
 		float damping = 0.2f;       ///< Fraction of velocity lost per second
 		/// River currents from Unified Water's world flowmap (64 texels per cell, rows from the north);
 		/// when set, they replace `current` as the velocity the water relaxes toward

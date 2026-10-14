@@ -13,7 +13,7 @@ namespace FluidField
 	/** World units one tile of the flow-carried detail normals covers. */
 	static const float FLOW_DETAIL_TILE = 384.0;
 	/** Seconds between restarts of each of the two detail phases. */
-	static const float FLOW_DETAIL_PERIOD = 1.6;
+	static const float FLOW_DETAIL_PERIOD = 1.0;
 	/** Flow speed (world units per second) at which the detail reaches full strength. */
 	static const float FLOW_DETAIL_FULL_SPEED = 160.0;
 
@@ -30,13 +30,23 @@ namespace FluidField
 	}
 
 	/** The simulated flow at an absolute world position, world units per second (bilinear). */
-	float2 SampleFlow(float3 a_worldPosition)
+	float2 SampleFlowAt(float2 a_cellPosition)
 	{
-		const float2 cellPosition = a_worldPosition.xy / SharedData::fluidFieldSettings.CellSize - 0.5;
-		const int2 cell = int2(floor(cellPosition));
-		const float2 t = cellPosition - float2(cell);
+		const int2 cell = int2(floor(a_cellPosition));
+		const float2 t = a_cellPosition - float2(cell);
 		return lerp(lerp(LoadFlow(cell), LoadFlow(cell + int2(1, 0)), t.x),
 			lerp(LoadFlow(cell + int2(0, 1)), LoadFlow(cell + int2(1, 1)), t.x), t.y);
+	}
+
+	/**
+	 * The simulated flow, smoothed over about five cells, for dragging detail along: the raw flow
+	 * twists the texture in tight eddies, which reads as an oil film rather than water.
+	 */
+	float2 SampleFlow(float3 a_worldPosition)
+	{
+		const float2 p = a_worldPosition.xy / SharedData::fluidFieldSettings.CellSize - 0.5;
+		return 0.2 * (SampleFlowAt(p) + SampleFlowAt(p + float2(2.5, 0)) + SampleFlowAt(p - float2(2.5, 0)) +
+						 SampleFlowAt(p + float2(0, 2.5)) + SampleFlowAt(p - float2(0, 2.5)));
 	}
 
 	/**

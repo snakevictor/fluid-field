@@ -9,6 +9,11 @@ Texture2D<float2> Velocity : register(t1);
 Texture2D<float2> CellMap : register(t2);
 
 RWTexture2D<float4> SurfaceOut : register(u0);
+
+/** @brief Surface dip, world units, per unit of swirl (1/s) at an eddy's centre. */
+static const float EDDY_DIP_PER_SWIRL = 6.0;
+/** @brief Steepest surface slope passed to the water shader (rise over run). */
+static const float MAX_SLOPE = 0.35;
 RWTexture2D<float2> FlowOut : register(u1);
 
 float Eta(int2 logical, float fallback)
@@ -31,6 +36,22 @@ float2 SlopeAt(int2 logical)
 	return float2(Eta(logical + int2(1, 0), eta) - Eta(logical + int2(-1, 0), eta),
 			   Eta(logical + int2(0, 1), eta) - Eta(logical + int2(0, -1), eta)) /
 	       (2.0 * CellSize);
+}
+
+float2 CentredVelocity(int2 logical)
+{
+	float2 here = LoadClamped(Velocity, logical);
+	return 0.5 * float2(here.x + LoadClamped(Velocity, logical + int2(1, 0)).x, here.y + LoadClamped(Velocity, logical + int2(0, 1)).y);
+}
+
+/** @brief Swirl strength |curl v| at a cell centre, per second; zero on dry cells. */
+float Swirl(int2 logical)
+{
+	if (!IsWet(logical))
+		return 0.0;
+	float dvdx = CentredVelocity(logical + int2(1, 0)).y - CentredVelocity(logical + int2(-1, 0)).y;
+	float dudy = CentredVelocity(logical + int2(0, 1)).x - CentredVelocity(logical + int2(0, -1)).x;
+	return abs(dvdx - dudy) / (2.0 * CellSize);
 }
 
 [numthreads(FLUIDFIELD_GROUP_SIZE, FLUIDFIELD_GROUP_SIZE, 1)] void main(uint2 id : SV_DispatchThreadID) {
@@ -79,6 +100,19 @@ float2 SlopeAt(int2 logical)
 	}
 	if (meanWeight > 0.0)
 		slope -= meanSlope / meanWeight;
+
+	// Eddies dent the surface: a dip where the water swirls, sloping out to its rim
+	float dipEast = -EDDY_DIP_PER_SWIRL * Swirl(logical + int2(1, 0));
+	float dipWest = -EDDY_DIP_PER_SWIRL * Swirl(logical + int2(-1, 0));
+	float dipNorth = -EDDY_DIP_PER_SWIRL * Swirl(logical + int2(0, 1));
+	float dipSouth = -EDDY_DIP_PER_SWIRL * Swirl(logical + int2(0, -1));
+	slope += float2(dipEast - dipWest, dipNorth - dipSouth) / (2.0 * CellSize);
+
+	// Cap the steepness, so one-step spikes at jagged edges cannot flash. (The output is not read
+	// back for temporal smoothing: typed loads of RGBA16F UAVs are optional in D3D11.)
+	float slopeLength = length(slope);
+	if (slopeLength > MAX_SLOPE)
+		slope *= MAX_SLOPE / slopeLength;
 	float slopeX = slope.x;
 	float slopeY = slope.y;
 

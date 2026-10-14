@@ -866,6 +866,7 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a
 
 	FluidFieldSim::WaterParams params;
 	params.damping = settings.WaveDamping;
+	params.edgeWidth = std::max(16.0f, 0.12f * static_cast<float>(settings.GridResolution));
 	params.currentRelax = settings.CurrentPull;
 	params.vorticity = settings.Turbulence;
 	// River currents from Unified Water's flowmap; the test current when there is none

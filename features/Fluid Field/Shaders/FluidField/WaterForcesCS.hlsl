@@ -69,7 +69,7 @@ float CellNoise(int2 cell, float step)
 
 /** @brief Fast water next to a dry cell or obstacle starts to shed eddies from small sideways nudges. */
 static const float SHEDDING_MIN_SPEED = 30.0;
-static const float SHEDDING_STRENGTH = 0.6;
+static const float SHEDDING_STRENGTH = 0.25;
 static const float SHEDDING_RATE = 3.0;  // Nudge changes per second
 
 [numthreads(FLUIDFIELD_GROUP_SIZE, FLUIDFIELD_GROUP_SIZE, 1)] void main(uint2 id : SV_DispatchThreadID) {
@@ -122,13 +122,14 @@ static const float SHEDDING_RATE = 3.0;  // Nudge changes per second
 	}
 
 	if (Vorticity > 0.0 && depth > WetThreshold && kept) {
-		velocity += ConfinementForce(logical) * DeltaTime;
-
 		// Symmetric flow past an obstacle does not shed vortices on its own; real rivers always carry
 		// small disturbances. Nudge fast water beside dry cells sideways, varying in time and space.
 		float speed = length(velocity);
 		bool besideObstacle = LoadDepth(DepthIn, logical + int2(1, 0)) <= WetThreshold || LoadDepth(DepthIn, logical + int2(-1, 0)) <= WetThreshold ||
 		                      LoadDepth(DepthIn, logical + int2(0, 1)) <= WetThreshold || LoadDepth(DepthIn, logical + int2(0, -1)) <= WetThreshold;
+		// Swirl reinforcement only in open water: beside jagged edges it made the flow flicker
+		if (!besideObstacle)
+			velocity += ConfinementForce(logical) * DeltaTime;
 		if (besideObstacle && speed > SHEDDING_MIN_SPEED) {
 			float2 side = float2(-velocity.y, velocity.x) / speed;
 			velocity += side * CellNoise(cell, floor(SimTime * SHEDDING_RATE)) * speed * SHEDDING_STRENGTH * Vorticity * DeltaTime;
@@ -138,7 +139,10 @@ static const float SHEDDING_RATE = 3.0;  // Nudge changes per second
 	velocity = lerp(velocity, restVelocity, saturate(CurrentRelax * DeltaTime));
 	depth = lerp(depth, vanillaDepth, saturate(LevelRelax * DeltaTime));
 
-	float edge = EdgeWeight(logical) * EdgeRelax;
+	// Absorbing border: the pull toward calm vanilla water grows quadratically toward the edge and is
+	// a per-second rate, so waves fade into it instead of bouncing off an abrupt change
+	float edgeWeight = EdgeWeight(logical);
+	float edge = saturate(edgeWeight * edgeWeight * EdgeRelax * DeltaTime);
 	velocity = lerp(velocity, restVelocity, edge);
 	depth = lerp(depth, vanillaDepth, edge);
 
