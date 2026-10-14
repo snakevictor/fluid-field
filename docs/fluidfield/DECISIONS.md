@@ -171,3 +171,19 @@ Entry format:
 -   Decided by: @Victor
 -   References: `reports/unified-water.md` sections 5.1, 5.2 and 6;
     `research/R1.md`; D7
+
+## D9: Community Shaders Discord builds are reusable with credit
+
+-   Date: 2026-10-13
+-   Phase / spike: all
+-   Decision: Code shared on the Community Shaders Discord, starting with
+    Dwemer Engineer's Procedural Grass test build, is treated as Community
+    Shaders code under GPL-3.0-or-later. Fluid Field may study it and reuse
+    it. Reused code keeps a credit to its author in the file header and the
+    commit message. Shipped shader source is the material to work from;
+    compiled DLLs are not disassembled or decompiled.
+-   Alternatives rejected: study only, copying only after the author
+    publishes the source or gives permission.
+-   Decided by: @Victor
+-   References: `ROADMAP.md` "License obligations",
+    `reports/procedural-grass.md`
