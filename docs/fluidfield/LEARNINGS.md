@@ -52,6 +52,9 @@ about it.
 -   **A standalone test can use the Windows SDK's C++/WinRT** (2026-10-13, Phase 1). With the Visual Studio generator the SDK `cppwinrt` headers are on the include path, and `winrt::check_hresult` only needs `windowsapp.lib`. `cmake -S tests/FluidField -B build/FluidFieldTest` then builds without vcpkg in a few seconds.
 -   **A failed pre-commit hook can merge the next commit** (2026-10-13, Phase 1). If clang-format rejects a commit, its files stay staged and are swept into the next `git commit`. Run `pre-commit run --files <files>` before staging.
 
+-   **Include-only shader changes are not recompiled** (2026-10-14). The shader disk cache is fresh while it is newer than the shader's own source file (`src/ShaderCache.cpp`, around line 1640); included files are not checked. The deploy copies only files whose contents changed, so `Water.hlsl` keeps its old time when only `FluidField/WaterNormal.hlsli` changes. After such a change, touch the **deployed** `Data/Shaders/Water.hlsl` (touching the repository copy is not enough), or bump the feature version.
+-   **Offline HLSL checks with fxc** (2026-10-14). `fxc.exe` from the Windows SDK compiles a shader permutation in seconds: `fxc /T ps_5_0 /E main /I package/Shaders /I "features/<Name>/Shaders" ... /D PSHADER /D SPECULAR ... package/Shaders/Water.hlsl`. In Git Bash, set `MSYS_NO_PATHCONV=1` first, or `/T` is rewritten as a path. Water pixel shaders need `SPECULAR` (or `UNDERWATER`) for `HPosition` to exist.
+
 ## Repository conventions
 
 -   **There is no `AI-INSTRUCTIONS.md`** (2026-10-13, Phase 0). `AGENTS.md` fills that role and points to `.claude/CLAUDE.md`. `.github/copilot-instructions.md` still mentions `AI-INSTRUCTIONS.md`; that is upstream text and we left it alone.

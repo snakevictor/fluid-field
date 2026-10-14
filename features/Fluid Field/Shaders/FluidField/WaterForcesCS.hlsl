@@ -67,6 +67,46 @@ float CellNoise(int2 cell, float step)
 	return float(h & 0xFFFFu) / 32767.5 - 1.0;
 }
 
+/** @brief Smooth value noise in 3D (space and time), in [-1, 1]. */
+float Hash3(int3 p)
+{
+	uint h = uint(p.x) * 73856093u ^ uint(p.y) * 19349663u ^ uint(p.z) * 83492791u;
+	h = (h ^ (h >> 13)) * 1274126177u;
+	return float(h & 0xFFFFu) / 32767.5 - 1.0;
+}
+
+float ValueNoise(float3 p)
+{
+	int3 i = int3(floor(p));
+	float3 f = p - float3(i);
+	float3 u = f * f * (3.0 - 2.0 * f);
+	return lerp(lerp(lerp(Hash3(i), Hash3(i + int3(1, 0, 0)), u.x), lerp(Hash3(i + int3(0, 1, 0)), Hash3(i + int3(1, 1, 0)), u.x), u.y),
+		lerp(lerp(Hash3(i + int3(0, 0, 1)), Hash3(i + int3(1, 0, 1)), u.x), lerp(Hash3(i + int3(0, 1, 1)), Hash3(i + int3(1, 1, 1)), u.x), u.y), u.z);
+}
+
+/** @brief World units across one stirring swirl, and how fast the stirring pattern changes. */
+static const float STIR_SCALE = 160.0;
+static const float STIR_RATE = 0.35;
+/** @brief Stirring acceleration per unit of river speed (1/s), before Turbulence scales it. */
+static const float STIR_STRENGTH = 0.9;
+
+/**
+ * @brief Curl noise: the curl of a smooth, slowly changing stream function, so it swirls water
+ * without piling it up anywhere. Real rivers never settle into one flow; this keeps ours moving.
+ */
+float2 StirVelocity(float2 worldPos)
+{
+	float3 p = float3(worldPos / STIR_SCALE, SimTime * STIR_RATE);
+	const float e = 0.5;
+	float dPsiDx = ValueNoise(p + float3(e, 0, 0)) - ValueNoise(p - float3(e, 0, 0));
+	float dPsiDy = ValueNoise(p + float3(0, e, 0)) - ValueNoise(p - float3(0, e, 0));
+	// A second, finer octave
+	float3 q = p * float3(2.3, 2.3, 1.7) + 17.0;
+	dPsiDx += 0.5 * (ValueNoise(q + float3(e, 0, 0)) - ValueNoise(q - float3(e, 0, 0)));
+	dPsiDy += 0.5 * (ValueNoise(q + float3(0, e, 0)) - ValueNoise(q - float3(0, e, 0)));
+	return float2(dPsiDy, -dPsiDx) / (2.0 * e);
+}
+
 /** @brief Fast water next to a dry cell or obstacle starts to shed eddies from small sideways nudges. */
 static const float SHEDDING_MIN_SPEED = 30.0;
 static const float SHEDDING_STRENGTH = 0.25;
@@ -130,6 +170,10 @@ static const float SHEDDING_RATE = 3.0;  // Nudge changes per second
 		// Swirl reinforcement only in open water: beside jagged edges it made the flow flicker
 		if (!besideObstacle)
 			velocity += ConfinementForce(logical) * DeltaTime;
+		// Stir moving water, in proportion to the river's speed here
+		float riverSpeed = length(restVelocity);
+		if (riverSpeed > 1.0)
+			velocity += StirVelocity(worldPos) * riverSpeed * STIR_STRENGTH * Vorticity * DeltaTime;
 		if (besideObstacle && speed > SHEDDING_MIN_SPEED) {
 			float2 side = float2(-velocity.y, velocity.x) / speed;
 			velocity += side * CellNoise(cell, floor(SimTime * SHEDDING_RATE)) * speed * SHEDDING_STRENGTH * Vorticity * DeltaTime;

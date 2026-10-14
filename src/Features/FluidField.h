@@ -51,7 +51,7 @@ struct FluidField : OverlayFeature
 	struct Settings
 	{
 		bool Enabled = false;
-		uint GridResolution = 256;           ///< Texels per side
+		uint GridResolution = 512;           ///< Texels per side
 		float GridSize = 4096.0f;            ///< World units per side
 		uint JacobiIterations = 30;          ///< Pressure solve iterations per step
 		float WindDamping = 0.3f;            ///< Fraction of wind speed lost per second, as an exponential rate
@@ -72,10 +72,10 @@ struct FluidField : OverlayFeature
 		float SurfaceNormalStrength = 1.0f;  ///< How strongly the simulated waves tilt the water's surface normal
 		float WaveDamping = 0.3f;            ///< Fraction of the water's speed lost per second, as an exponential rate
 		float SplashStrength = 1.0f;         ///< How hard actors entering or leaving the water push it
-		float RiverSpeed = 100.0f;           ///< River current at full flowmap strength, world units per second (0: test current only)
-		float CurrentPull = 0.15f;           ///< Per-second pull of the water toward the river current; lower lets obstacles shape the flow
-		float Turbulence = 0.6f;             ///< Vorticity confinement: keeps eddies behind obstacles alive (0: off)
-		float FlowDetail = 0.25f;            ///< Strength of the surface detail carried by the simulated flow
+		float RiverSpeed = 150.0f;           ///< River current at full flowmap strength, world units per second (0: test current only)
+		float CurrentPull = 0.1f;            ///< Per-second pull of the water toward the river current; lower lets obstacles shape the flow
+		float Turbulence = 0.8f;             ///< Vorticity confinement: keeps eddies behind obstacles alive (0: off)
+		float FlowDetail = 1.2f;             ///< Strength of the surface detail carried by the simulated flow
 	};
 
 	Settings settings;

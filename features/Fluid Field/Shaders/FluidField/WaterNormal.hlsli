@@ -39,14 +39,34 @@ namespace FluidField
 	}
 
 	/**
-	 * The simulated flow, smoothed over about five cells, for dragging detail along: the raw flow
+	 * The simulated flow, smoothed over about nine cells, for dragging detail along: the raw flow
 	 * twists the texture in tight eddies, which reads as an oil film rather than water.
 	 */
 	float2 SampleFlow(float3 a_worldPosition)
 	{
 		const float2 p = a_worldPosition.xy / SharedData::fluidFieldSettings.CellSize - 0.5;
-		return 0.2 * (SampleFlowAt(p) + SampleFlowAt(p + float2(2.5, 0)) + SampleFlowAt(p - float2(2.5, 0)) +
-						 SampleFlowAt(p + float2(0, 2.5)) + SampleFlowAt(p - float2(0, 2.5)));
+		float2 sum = SampleFlowAt(p);
+		[unroll] for (int i = 0; i < 8; i++)
+		{
+			float angle = i * 0.785398;
+			sum += SampleFlowAt(p + 4.0 * float2(cos(angle), sin(angle)));
+		}
+		return sum / 9.0;
+	}
+
+	/** Extra vanilla ripple amplitude per unit of shear (1/s) in the simulated flow. */
+	static const float ROUGHNESS_PER_SHEAR = 0.6;
+
+	/**
+	 * How fast the simulated flow changes across a cell (1/s): high where water is forced around
+	 * a pillar or rock, which is where real water breaks up instead of flowing smoothly.
+	 */
+	float FlowShear(float3 a_worldPosition)
+	{
+		const float2 p = a_worldPosition.xy / SharedData::fluidFieldSettings.CellSize - 0.5;
+		const float2 dx = SampleFlowAt(p + float2(1, 0)) - SampleFlowAt(p - float2(1, 0));
+		const float2 dy = SampleFlowAt(p + float2(0, 1)) - SampleFlowAt(p - float2(0, 1));
+		return (length(dx) + length(dy)) / (2.0 * SharedData::fluidFieldSettings.CellSize);
 	}
 
 	/**
@@ -118,7 +138,8 @@ namespace FluidField
 			return;
 		const float coverage = saturate(surface.w);
 		a_warp = -surface.xy * WARP_PER_SLOPE * coverage;
-		a_roughness = saturate(length(surface.xy) * ROUGHNESS_PER_SLOPE) * coverage;
+		// Rougher where the surface is steep, and where the flow shears around obstacles (up to x2.5)
+		a_roughness = min(saturate(length(surface.xy) * ROUGHNESS_PER_SLOPE) + saturate(FlowShear(a_worldPosition) * ROUGHNESS_PER_SHEAR), 1.5) * coverage;
 	}
 
 	/**
@@ -142,7 +163,8 @@ namespace FluidField
 		const float flowDetail = SharedData::fluidFieldSettings.FlowDetail;
 		if (flowDetail > 0.0) {
 			const float2 flow = SampleFlow(a_worldPosition);
-			const float amount = flowDetail * saturate(length(flow) / FLOW_DETAIL_FULL_SPEED);
+			// Slow water keeps some detail, and the ramp to full is wide, so flow rates blend
+			const float amount = flowDetail * lerp(0.4, 1.0, smoothstep(0.0, FLOW_DETAIL_FULL_SPEED * 1.5, length(flow)));
 			if (amount > 0.0) {
 				const float3 detail = FlowDetailNormal(a_worldPosition, flow);
 				const float3 detailNormal = normalize(float3(detail.xy * amount, 1.0));
