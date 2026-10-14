@@ -35,7 +35,7 @@ Build Fluid Field as a feature inside the Community Shaders repository, not as a
 | Wetness Effects                                                                                                    | Sky occlusion, so sheltered areas get no rain ripples or wind                                              |
 | Feature framework, Tracy profiler, RenderDoc workflow                                                              | Settings UI, per-feature packaging, GPU timing and frame capture                                           |
 
-Prior art outside Community Shaders has its own licenses, so study it rather than copy it: [Splashes of Skyrim](https://www.nexusmods.com/skyrimspecialedition/mods/47710) detects projectile impacts on water, [Loki's Wade In Water](https://www.nexusmods.com/skyrimspecialedition/mods/42854) hooks the per-actor submerged-level check, and [Realistic Functional Boats](https://www.nexusmods.com/skyrim/mods/56410) shows vanilla Havok can already float objects.
+Prior art outside Community Shaders has its own licenses, so study it rather than copy it: [Splashes of Skyrim](https://www.nexusmods.com/skyrimspecialedition/mods/47710) detects projectile impacts on water, [Loki's Wade In Water](https://www.nexusmods.com/skyrimspecialedition/mods/42854) and its open-source remake [Wade In Water Redone](https://github.com/doodlum/skyrim-wade-in-water) read the engine's per-actor submerged level (`Actor::GetSubmergedLevel`, already in CommonLib) and slow actors by it (`reports/wade-in-water.md`), and [Realistic Functional Boats](https://www.nexusmods.com/skyrim/mods/56410) shows vanilla Havok can already float objects.
 
 ### License obligations
 

@@ -263,3 +263,24 @@ Entry format:
     drags unrelated reformatting into the commit).
 -   Decided by: @Victor (chose the WARP exe), layout by agent
 -   References: `tests/FluidField/CMakeLists.txt`
+
+## D13: Third-party mods, and the fire, smoke and fog target
+
+-   Date: 2026-10-14
+-   Phase / spike: Phases 2–5
+-   Decision:
+    -   SurfaceTides is not relevant to Fluid Field.
+    -   Particle Wind is set aside for now; Fluid Field uses its own wind.
+        Detecting it to avoid pushing particles twice is revisited later.
+    -   Wade In Water Redone is studied for actor submersion and inputs
+        (`reports/wade-in-water.md`).
+    -   Embers XD and similar fire mods are card and particle effects, not
+        simulations. Phase 5 replaces such effects near the player rather
+        than integrating with them; they remain test targets.
+    -   Target for the later phases: realistic, simulated-looking fire, smoke
+        and fog within a set distance of the player, with the distance to be
+        decided. Beyond it, vanilla (or replacer) effects stay.
+-   Alternatives rejected: depending on Particle Wind for wind on particles;
+    detecting fire replacers by file path.
+-   Decided by: @Victor
+-   References: `research/existing-mods.md`, D10
