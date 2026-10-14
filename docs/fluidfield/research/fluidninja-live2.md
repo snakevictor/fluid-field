@@ -52,15 +52,25 @@ realistic, and the risk is on the output side (fog and smoke rendering).
 **Stated limitations (M§14):**
 
 -   no deep water: only a layer about 1 m thick
--   no buoyancy
+-   buoyancy listed as a limitation (M§14.8; see the note below)
 -   no dynamic underwater effect
 -   no physics-engine collision
 -   an experimental wave generator
 -   prototype-quality particle rendering
 
-Three of these are Fluid Field goals: true shallow water, buoyancy, and
-obstacles taken from Havok. **Fluid Field is not behind LIVE on its two main
-goals; it aims past it.**
+Two of these are Fluid Field goals: true shallow water and obstacles taken
+from Havok.
+
+**Buoyancy, a correction.** The manual lists "Buoyancy" under limitations
+(M§14.8). A re-read of the page did not return that section's body, so the
+workarounds our first pass recorded are UNVERIFIED: surface-aligned
+particles, Z-constrained bodies, and snapping a hull to the surface. LIVE 2
+demo videos reportedly show floating objects, which could not be checked
+here. The likely reading is that LIVE shows visual bobbing (objects moved to
+the simulated surface) rather than physics forces. That still matters: a
+visual-only bob is the roadmap's own fallback if R7 finds no safe way to push
+Havok bodies. Re-check against the videos before claiming anything either
+way.
 
 ## 2. Feature-by-feature feasibility in Skyrim
 
@@ -107,22 +117,22 @@ Verdicts:
 
 ### 2.3 Outputs
 
-| LIVE 2 capability                                                   | Skyrim / CS equivalent to extend                                                                                                       | Verdict                                                                                                                                                |
-| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Water surface as LOD'd tiles displaced by height (M§2.8)            | Unified Water's water mesh is too sparse to move vertices (`reports/unified-water.md`)                                                 | **Normals: Have (D8).** **Real displacement: Research.** It would need our own tessellated or projected-grid surface; not before Phase 3 is stable.    |
-| Caustics advected by the flow (M§2.8, M§12.5)                       | Water Effects already owns caustics (PS t65, `reports/unified-water.md`)                                                               | **Realistic.** Distort Water Effects' caustics lookup with our flow. Small, visible win.                                                               |
-| Flow-mapped normal detail (M§4.10)                                  | `Water.hlsl` flowmap helpers (`GetFlowmapNormal`)                                                                                      | **Have** (vanilla). Our flow can later steer it where the grid covers.                                                                                 |
-| Parallax on density and height (M§4.10)                             | Water Parallax (`WaterParallax.hlsli`)                                                                                                 | **Extend.** Sample at the parallax-shifted position (D8).                                                                                              |
-| Fog volumes (heterogeneous or fog-volume renderers) (M§2.9, M§11.1) | Exponential Height Fog's froxel fog. Injection point at `VolumetricFogMaterialCS.hlsl:12-16` (`reports/volumetric-lighting.md`).       | **Later** (R4). Extend Exponential Height Fog rather than writing a new renderer. It is still Unreleased and turns off under ENB.                      |
-| Unlit fast smoke volume for low-end GPUs (M§4.7)                    | A cheap quality preset for Phase 5 smoke                                                                                               | **Later** (R5)                                                                                                                                         |
-| Volumetric clouds (M§2.9)                                           | Skyrim clouds are sky textures                                                                                                         | **No.** Out of scope.                                                                                                                                  |
-| Particle advection by simulation velocity (experimental, M§2.10)    | Rain and snow are drawn by the precipitation cube emitter. Pushing them with our wind or shouts in their shader could make snow swirl. | **Research.** Whether precipitation positions are shader-side is UNVERIFIED. High visual value if it works.                                            |
-| Foliage bending from velocity (M§4.9, M§12.6)                       | Grass Collision's texture plus vanilla grass wind                                                                                      | **Later** (optional side track). Feed our velocity into the grass shader alongside Grass Collision. Trees use vanilla tree animation, which is harder. |
-| Landscape footprints and tracks (Simple Painter, M§2.7)             | Snow Deformation (PR #2751 and fork)                                                                                                   | **No duplicate.** Offer our field as an input to Snow Deformation later, if its authors want it.                                                       |
-| Wet map in the velocity/density buffer (M§4.9)                      | Wetness Effects' wetness and puddles                                                                                                   | **Realistic later.** Shores stay wet where waves ran up and splashes landed. A clear "extend CS" win after Phase 3.                                    |
-| Drive any tagged material from the buffers (M§4.8)                  | Bind the field's layers in one shared slot for any CS shader                                                                           | **Realistic** design rule for Phase 3+. Pick slots with `hlslkit-buffer-scan` to avoid register conflicts.                                             |
-| Dynamic underwater effects (missing in LIVE, M§14.9)                | Vanilla underwater is fine                                                                                                             | **No**                                                                                                                                                 |
-| Buoyancy (missing in LIVE, M§14.8)                                  | Phase 6 (R6, R7)                                                                                                                       | **Planned, beyond LIVE**                                                                                                                               |
+| LIVE 2 capability                                                                              | Skyrim / CS equivalent to extend                                                                                                       | Verdict                                                                                                                                                |
+| ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Water surface as LOD'd tiles displaced by height (M§2.8)                                       | Unified Water's water mesh is too sparse to move vertices (`reports/unified-water.md`)                                                 | **Normals: Have (D8).** **Real displacement: Research.** It would need our own tessellated or projected-grid surface; not before Phase 3 is stable.    |
+| Caustics advected by the flow (M§2.8, M§12.5)                                                  | Water Effects already owns caustics (PS t65, `reports/unified-water.md`)                                                               | **Realistic.** Distort Water Effects' caustics lookup with our flow. Small, visible win.                                                               |
+| Flow-mapped normal detail (M§4.10)                                                             | `Water.hlsl` flowmap helpers (`GetFlowmapNormal`)                                                                                      | **Have** (vanilla). Our flow can later steer it where the grid covers.                                                                                 |
+| Parallax on density and height (M§4.10)                                                        | Water Parallax (`WaterParallax.hlsli`)                                                                                                 | **Extend.** Sample at the parallax-shifted position (D8).                                                                                              |
+| Fog volumes (heterogeneous or fog-volume renderers) (M§2.9, M§11.1)                            | Exponential Height Fog's froxel fog. Injection point at `VolumetricFogMaterialCS.hlsl:12-16` (`reports/volumetric-lighting.md`).       | **Later** (R4). Extend Exponential Height Fog rather than writing a new renderer. It is still Unreleased and turns off under ENB.                      |
+| Unlit fast smoke volume for low-end GPUs (M§4.7)                                               | A cheap quality preset for Phase 5 smoke                                                                                               | **Later** (R5)                                                                                                                                         |
+| Volumetric clouds (M§2.9)                                                                      | Skyrim clouds are sky textures                                                                                                         | **No.** Out of scope.                                                                                                                                  |
+| Particle advection by simulation velocity (experimental, M§2.10)                               | Rain and snow are drawn by the precipitation cube emitter. Pushing them with our wind or shouts in their shader could make snow swirl. | **Research.** Whether precipitation positions are shader-side is UNVERIFIED. High visual value if it works.                                            |
+| Foliage bending from velocity (M§4.9, M§12.6)                                                  | Grass Collision's texture plus vanilla grass wind                                                                                      | **Later** (optional side track). Feed our velocity into the grass shader alongside Grass Collision. Trees use vanilla tree animation, which is harder. |
+| Landscape footprints and tracks (Simple Painter, M§2.7)                                        | Snow Deformation (PR #2751 and fork)                                                                                                   | **No duplicate.** Offer our field as an input to Snow Deformation later, if its authors want it.                                                       |
+| Wet map in the velocity/density buffer (M§4.9)                                                 | Wetness Effects' wetness and puddles                                                                                                   | **Realistic later.** Shores stay wet where waves ran up and splashes landed. A clear "extend CS" win after Phase 3.                                    |
+| Drive any tagged material from the buffers (M§4.8)                                             | Bind the field's layers in one shared slot for any CS shader                                                                           | **Realistic** design rule for Phase 3+. Pick slots with `hlslkit-buffer-scan` to avoid register conflicts.                                             |
+| Dynamic underwater effects (missing in LIVE, M§14.9)                                           | Vanilla underwater is fine                                                                                                             | **No**                                                                                                                                                 |
+| Buoyancy (listed as a limitation, M§14.8; videos reportedly show floating objects, UNVERIFIED) | Phase 6 (R6, R7)                                                                                                                       | **Planned** (Phase 6). Visual bobbing as the fallback, as in the roadmap.                                                                              |
 
 ### 2.4 Tools and production
 
@@ -171,13 +181,61 @@ roadmap.
     -   Grass, precipitation, caustics and Wetness then need no new plumbing
         each.
 
-## 4. Where Fluid Field already goes beyond LIVE
+## 3a. Thick liquids: blood and mud
+
+LIVE 2 shows viscous liquids. Its manual has a "Viscous Fluids" section
+(M§8.3), and 80.lv covered its realistic mud
+([2026-09-28](https://80.lv/articles/fluidninja-live-2-for-ue5-showcases-realistic-mud-effects)).
+Our first pass recorded viscosity as a parameter trick (lower divergence and
+velocity feedback, more accumulation). The re-read did not return that text,
+so the exact method is UNVERIFIED. It does not matter for us: we would derive
+viscosity from public fluid literature, not from LIVE.
+
+**What it would take in Skyrim.** Each part extends something that exists.
+
+-   **Simulation.**
+    -   A second liquid layer on the same grid: a thin film that flows
+        downhill on R1's bed, with high friction and viscosity.
+    -   It is the shallow-water solver with different constants, plus a
+        per-texel "liquid type" (water, mud, blood).
+    -   It covers dry ground, unlike the water layer, which follows vanilla
+        water planes.
+-   **Sources.**
+    -   **Blood:** hit events on actors (Phase 2 inputs), plus vanilla blood
+        impact data for colour and amount.
+    -   **Mud:** wet, soft ground types (landscape textures from
+        `TESObjectLAND`, as Terrain Helper reads them) churned by footsteps
+        and hooves while it rains.
+-   **Rendering.**
+    -   Not the water shader: these liquids sit on terrain and statics.
+    -   Wetness Effects already darkens surfaces and draws puddles in the
+        lighting shader.
+    -   Extend that path with colour, roughness and a thin-film height read
+        from our layer. That gives blood pools that run downhill and mud
+        smears around footsteps.
+-   **Overlap with Snow Deformation.** Mud trails as deformation belong
+    there. Fluid Field would only supply the flowing film on top.
+-   **Cost.** Same order as the water layer, but it runs only near active
+    sources: it sleeps when no blood or mud exists in the grid.
+-   **Risks.**
+    -   Vanilla blood decals already exist, so pools must complement them,
+        not double them.
+    -   Mod-heavy load orders change landscape textures, which affects mud
+        classification.
+    -   Lighting-shader edits need care, since every lit object uses that
+        shader.
+
+**Verdict: Later.** It fits after Phase 3, once the shallow-water solver and
+the R1 bed are proven. It would be a new roadmap goal, so it needs a
+decision before it is scheduled.
+
+## 4. Where Fluid Field aims beyond LIVE
 
 -   **Water depth:** a real shallow-water model on a real riverbed (R1, R2),
     against LIVE's 1 m "dense" layer.
 -   **Obstacles from the physics engine:** Havok raycasts (D7 stage d), where
     LIVE ignores physics collision.
--   **Buoyancy:** Phase 6, which LIVE does not offer.
+-   **Buoyancy with physics forces:** Phase 6 applies real forces through Havok. Whether LIVE does more than visual bobbing is UNVERIFIED (see section 1).
 -   **Authored river flow:** Unified Water's flowmap for every river, instead
     of hand-placed splines.
 
