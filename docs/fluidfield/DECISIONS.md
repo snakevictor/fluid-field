@@ -123,3 +123,29 @@ Entry format:
     section 4.
 -   Decided by: @Victor
 -   References: `research/R1.md`
+
+## D8: First visible milestone is a "flowing water slice"
+
+-   Date: 2026-10-13
+-   Phase / spike: Phase 1–3 bridge, ahead of R2
+-   Decision: Build a "flowing water slice" as the first visible result. Goal:
+    in Riverwood's river, water visibly flows, the player's wake drifts
+    downstream, and waves reflect off the banks. Scope:
+    -   Bed and surface from R1's CPU map (D7), landscape only; raycasts
+        come later.
+    -   A basic virtual-pipe shallow-water solver on the grid core, not the
+        full R2 spike. River currents are seeded from vanilla water flow if
+        it is readable, otherwise a constant test current.
+    -   The player is the only input.
+    -   Output normals, plus flow if the water shader can take it, into the
+        water shader, fading to vanilla near the grid edge.
+    -   A menu toggle, Tracy zones and a reset after loading screens.
+    -   A clean interface (map and inputs in; height, flow and normals out)
+        so the R2 solver can replace the basic one later.
+-   Alternatives rejected: a "ripple slice" (normals-only ripples). It
+    cannot show flow, wakes carried downstream or reflections, which vanilla
+    displacement cannot do either. No ripple-slice plan had been written
+    down in this log before this entry.
+-   Decided by: @Victor
+-   References: `reports/unified-water.md` sections 5.1, 5.2 and 6;
+    `research/R1.md`; D7
