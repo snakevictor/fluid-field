@@ -649,7 +649,7 @@ bool FluidField::EnsureWater()
 		return false;
 
 	const uint mapResolution = FluidFieldSim::WaterMapBuilder::ResolutionFor(settings.GridSize);
-	const uint obstacleResolution = std::clamp(std::bit_ceil(static_cast<uint>(std::ceil(settings.GridSize / GetObstacleSpacing()))), 16u, 1024u);
+	const uint obstacleResolution = std::clamp(std::bit_ceil(static_cast<uint>(std::ceil(settings.GridSize / GetObstacleSpacing()))), 16u, 2048u);
 	if (waterSolver.GetResolution() != settings.GridResolution || waterSolver.GetMapResolution() != mapResolution || waterSolver.GetObstacleResolution() != obstacleResolution) {
 		try {
 			waterSolver.CreateResources(globals::d3d::device, settings.GridResolution, mapResolution, obstacleResolution, [](ID3D11DeviceChild* object, const char* name) {

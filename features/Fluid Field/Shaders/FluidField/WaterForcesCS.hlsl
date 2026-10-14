@@ -59,6 +59,19 @@ float2 ConfinementForce(int2 logical)
 	return Vorticity * CellSize * float2(n.y * omega, -n.x * omega);
 }
 
+/** @brief Hash of a cell and a time step to [-1, 1]. */
+float CellNoise(int2 cell, float step)
+{
+	uint h = uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u ^ uint(step) * 83492791u;
+	h = (h ^ (h >> 13)) * 1274126177u;
+	return float(h & 0xFFFFu) / 32767.5 - 1.0;
+}
+
+/** @brief Fast water next to a dry cell or obstacle starts to shed eddies from small sideways nudges. */
+static const float SHEDDING_MIN_SPEED = 30.0;
+static const float SHEDDING_STRENGTH = 0.6;
+static const float SHEDDING_RATE = 3.0;  // Nudge changes per second
+
 [numthreads(FLUIDFIELD_GROUP_SIZE, FLUIDFIELD_GROUP_SIZE, 1)] void main(uint2 id : SV_DispatchThreadID) {
 	if (any(id >= GridRes))
 		return;
@@ -108,8 +121,19 @@ float2 ConfinementForce(int2 logical)
 		}
 	}
 
-	if (Vorticity > 0.0 && depth > WetThreshold && kept)
+	if (Vorticity > 0.0 && depth > WetThreshold && kept) {
 		velocity += ConfinementForce(logical) * DeltaTime;
+
+		// Symmetric flow past an obstacle does not shed vortices on its own; real rivers always carry
+		// small disturbances. Nudge fast water beside dry cells sideways, varying in time and space.
+		float speed = length(velocity);
+		bool besideObstacle = LoadDepth(DepthIn, logical + int2(1, 0)) <= WetThreshold || LoadDepth(DepthIn, logical + int2(-1, 0)) <= WetThreshold ||
+		                      LoadDepth(DepthIn, logical + int2(0, 1)) <= WetThreshold || LoadDepth(DepthIn, logical + int2(0, -1)) <= WetThreshold;
+		if (besideObstacle && speed > SHEDDING_MIN_SPEED) {
+			float2 side = float2(-velocity.y, velocity.x) / speed;
+			velocity += side * CellNoise(cell, floor(SimTime * SHEDDING_RATE)) * speed * SHEDDING_STRENGTH * Vorticity * DeltaTime;
+		}
+	}
 
 	velocity = lerp(velocity, restVelocity, saturate(CurrentRelax * DeltaTime));
 	depth = lerp(depth, vanillaDepth, saturate(LevelRelax * DeltaTime));
@@ -119,5 +143,6 @@ float2 ConfinementForce(int2 logical)
 	depth = lerp(depth, vanillaDepth, edge);
 
 	DepthOut[id] = max(depth, 0.0);
-	VelocityOut[id] = velocity * VelocityDecay;
+	// Damping calms waves and stray motion, not the river itself: only the deviation decays
+	VelocityOut[id] = restVelocity + (velocity - restVelocity) * VelocityDecay;
 }

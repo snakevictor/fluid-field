@@ -35,7 +35,8 @@ cbuffer WaterCB : register(b1)
 	float2 FlowmapCells;    // Flowmap size in cells
 	int2 FlowmapOffset;     // Added to a cell's coordinates to get its flowmap tile
 	float Vorticity;        // Vorticity confinement strength: keeps eddies behind obstacles alive
-	float3 WaterPad1;
+	float SimTime;          // Seconds simulated since the last reset
+	float2 WaterPad1;
 };
 
 static const float NO_WATER = -1.0e8;
@@ -132,31 +133,55 @@ float LoadDepth(Texture2D<float> tex, int2 logical)
 }
 
 /** @brief Staggered u (west faces) sampled at a logical position in texel units. u of texel i sits at (i, j + 0.5). */
-float SampleU(Texture2D<float2> velocity, float2 position)
+/** @brief Catmull-Rom weights for the four samples around fractional position t. */
+float4 CatmullRomWeights(float t)
 {
-	float2 f = position - float2(0.0, 0.5);
+	float t2 = t * t;
+	float t3 = t2 * t;
+	return 0.5 * float4(-t3 + 2.0 * t2 - t, 3.0 * t3 - 5.0 * t2 + 2.0, -3.0 * t3 + 4.0 * t2 + t, t3 - t2);
+}
+
+/**
+ * @brief One staggered velocity component sampled bicubically (Catmull-Rom), clamped to the range of
+ * the four nearest samples so it never overshoots. Keeps small eddies far longer than bilinear.
+ */
+float SampleFace(Texture2D<float2> velocity, float2 f, uint component)
+{
 	float2 b = floor(f);
 	float2 t = f - b;
 	int2 i = int2(b);
-	float u00 = LoadClamped(velocity, i).x;
-	float u10 = LoadClamped(velocity, i + int2(1, 0)).x;
-	float u01 = LoadClamped(velocity, i + int2(0, 1)).x;
-	float u11 = LoadClamped(velocity, i + int2(1, 1)).x;
-	return lerp(lerp(u00, u10, t.x), lerp(u01, u11, t.x), t.y);
+	float4 wx = CatmullRomWeights(t.x);
+	float4 wy = CatmullRomWeights(t.y);
+	float result = 0.0;
+	float lo = 1.0e30;
+	float hi = -1.0e30;
+	[unroll] for (int y = 0; y < 4; y++)
+	{
+		float row = 0.0;
+		[unroll] for (int x = 0; x < 4; x++)
+		{
+			float value = LoadClamped(velocity, i + int2(x - 1, y - 1))[component];
+			row += value * wx[x];
+			if ((x == 1 || x == 2) && (y == 1 || y == 2)) {
+				lo = min(lo, value);
+				hi = max(hi, value);
+			}
+		}
+		result += row * wy[y];
+	}
+	return clamp(result, lo, hi);
+}
+
+/** @brief Staggered u (west faces) sampled at a logical position in texel units. u of texel i sits at (i, j + 0.5). */
+float SampleU(Texture2D<float2> velocity, float2 position)
+{
+	return SampleFace(velocity, position - float2(0.0, 0.5), 0);
 }
 
 /** @brief Staggered v (south faces) sampled at a logical position in texel units. v of texel j sits at (i + 0.5, j). */
 float SampleV(Texture2D<float2> velocity, float2 position)
 {
-	float2 f = position - float2(0.5, 0.0);
-	float2 b = floor(f);
-	float2 t = f - b;
-	int2 i = int2(b);
-	float v00 = LoadClamped(velocity, i).y;
-	float v10 = LoadClamped(velocity, i + int2(1, 0)).y;
-	float v01 = LoadClamped(velocity, i + int2(0, 1)).y;
-	float v11 = LoadClamped(velocity, i + int2(1, 1)).y;
-	return lerp(lerp(v00, v10, t.x), lerp(v01, v11, t.x), t.y);
+	return SampleFace(velocity, position - float2(0.5, 0.0), 1);
 }
 
 #endif  // FLUIDFIELD_WATERCOMMON_HLSLI

@@ -36,7 +36,7 @@ struct FluidField : OverlayFeature
 	}
 
 	/** @brief Allowed grid resolutions. The shaders wrap with a bitmask, so each must be a power of two. */
-	static constexpr std::array<uint, 4> GRID_RESOLUTIONS = { 64, 128, 256, 512 };
+	static constexpr std::array<uint, 5> GRID_RESOLUTIONS = { 64, 128, 256, 512, 1024 };
 	static constexpr float MIN_GRID_SIZE = 1024.0f;
 	static constexpr float MAX_GRID_SIZE = 16384.0f;
 	static constexpr uint MIN_JACOBI_ITERATIONS = 1;
@@ -70,11 +70,11 @@ struct FluidField : OverlayFeature
 		float TestCurrentSpeed = 0.0f;       ///< Test current until vanilla flow is read, world units per second
 		float TestCurrentAngle = 0.0f;       ///< Test current heading in degrees, 0 = north, clockwise
 		float SurfaceNormalStrength = 1.0f;  ///< How strongly the simulated waves tilt the water's surface normal
-		float WaveDamping = 0.8f;            ///< Fraction of the water's speed lost per second, as an exponential rate
+		float WaveDamping = 0.3f;            ///< Fraction of the water's speed lost per second, as an exponential rate
 		float SplashStrength = 1.0f;         ///< How hard actors entering or leaving the water push it
 		float RiverSpeed = 100.0f;           ///< River current at full flowmap strength, world units per second (0: test current only)
 		float CurrentPull = 0.15f;           ///< Per-second pull of the water toward the river current; lower lets obstacles shape the flow
-		float Turbulence = 1.0f;             ///< Vorticity confinement: keeps eddies behind obstacles alive (0: off)
+		float Turbulence = 2.0f;             ///< Vorticity confinement: keeps eddies behind obstacles alive (0: off)
 		float FlowDetail = 0.5f;             ///< Strength of the surface detail carried by the simulated flow
 	};
 

@@ -36,7 +36,7 @@ namespace FluidFieldSim
 		float wetThreshold = 1.0f;  ///< Depth below which a cell is dry
 		float current[2]{};         ///< Background current, world units per second
 		float currentRelax = 0.5f;  ///< Per-second relaxation toward the current
-		float levelRelax = 0.25f;   ///< Per-second relaxation toward the vanilla depth
+		float levelRelax = 1.0f;    ///< Per-second relaxation toward the vanilla depth
 		float edgeWidth = 16.0f;    ///< Texels over which the grid edge blends back to vanilla
 		float edgeRelax = 0.2f;     ///< Per-step blend toward vanilla at the very edge
 		float damping = 0.2f;       ///< Fraction of velocity lost per second
@@ -181,7 +181,8 @@ namespace FluidFieldSim
 			float flowmapCells[2];
 			std::int32_t flowmapOffset[2];
 			float vorticity;
-			float pad1[3];
+			float simTime;
+			float pad1[2];
 		};
 		static_assert(sizeof(WaterConstants) == 96);
 
@@ -242,6 +243,7 @@ namespace FluidFieldSim
 		winrt::com_ptr<ID3D11ComputeShader> debugViewCS;
 
 		std::int32_t prevGridMin[2]{};
+		float simTime = 0.0f;  ///< Seconds simulated since the last reset
 		bool historyValid = false;
 		bool stepped = false;  ///< A step ran since the last reset, so b0/b1 hold a valid placement
 	};

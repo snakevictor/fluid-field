@@ -248,6 +248,7 @@ namespace FluidFieldSim
 			.flowmapCells = { params.flowmapCells[0], params.flowmapCells[1] },
 			.flowmapOffset = { params.flowmapOffset[0], params.flowmapOffset[1] },
 			.vorticity = params.vorticity,
+			.simTime = simTime,
 			.pad1 = {}
 		};
 		UpdateBuffer(context, waterConstants.get(), &waterData, sizeof(waterData));
@@ -257,6 +258,7 @@ namespace FluidFieldSim
 
 		prevGridMin[0] = grid.gridMin[0];
 		prevGridMin[1] = grid.gridMin[1];
+		simTime += dt;
 		historyValid = true;
 		stepped = true;
 

@@ -61,6 +61,24 @@ float2 SlopeAt(int2 logical)
 		}
 	}
 	slope = slopeWeight > 0.0 ? slope / slopeWeight : 0.0;
+
+	// Only waves, wakes and eddies should tilt the surface, not the river's overall gradient: subtract
+	// the mean slope of the wet water around (a sparse 9 x 9 window, every other cell)
+	float2 meanSlope = 0.0;
+	float meanWeight = 0.0;
+	[unroll] for (int my = -4; my <= 4; my += 2)
+	{
+		[unroll] for (int mx = -4; mx <= 4; mx += 2)
+		{
+			int2 n = logical + int2(mx, my);
+			if (IsWet(n)) {
+				meanSlope += SlopeAt(n);
+				meanWeight += 1.0;
+			}
+		}
+	}
+	if (meanWeight > 0.0)
+		slope -= meanSlope / meanWeight;
 	float slopeX = slope.x;
 	float slopeY = slope.y;
 
@@ -77,7 +95,10 @@ float2 SlopeAt(int2 logical)
 	float vanillaSurface = cellMap.x + cellMap.y;
 	float heightOffset = wet && cellMap.y > WetThreshold ? eta - vanillaSurface : 0.0;
 
-	float coverage = wet ? (1.0 - EdgeWeight(logical)) * shoreFade : 0.0;
+	// A wide, smooth fade toward the grid edge (15% of the grid), so the hand-over to vanilla has no line
+	int2 fromEdge = min(logical, int(GridRes) - 1 - logical);
+	float edgeFade = smoothstep(0.0, 1.0, float(min(fromEdge.x, fromEdge.y)) / (0.15 * float(GridRes)));
+	float coverage = wet ? edgeFade * shoreFade : 0.0;
 
 	float2 here = Velocity[id];
 	float uE = LoadClamped(Velocity, logical + int2(1, 0)).x;
