@@ -94,3 +94,32 @@ Entry format:
 -   Alternatives rejected: none.
 -   Decided by: @Victor (in-game test)
 -   References: build `ca4a6a665`, deployed to the Steam install
+
+## D7: R1 — adopt the CPU data map (Prototype B)
+
+-   Date: 2026-10-13
+-   Phase / spike: Phase 1 / R1
+-   Decision: Build the depth and obstacle map from CPU data, as described
+    for Prototype B in `research/R1.md`: landscape heights from
+    `TESObjectLAND`, water surfaces from `TESWaterSystem::waterObjects` with
+    the cell-water fallback, and downward raycasts for statics. Build it as
+    real Phase 1 code behind a debug setting, not as a throwaway prototype.
+    The section 8 measurements and success criteria are its gate. Stages,
+    each with a commit and an in-game checklist:
+    1. Cell cache of landscape heights, including the absolute-Z check
+       against `TES::GetLandHeight`.
+    2. Water surfaces from `waterObjects`, with the cell-water fallback.
+    3. Debug overlay of bed, surface and depth. Stop here so a human can
+       judge how much riverbed on the test routes is landscape versus
+       placed meshes (R1 open question 3).
+    4. Downward raycasts on the main thread under `bhkWorld::worldLock`,
+       with a per-frame ray cap. Only after stage 3 is reviewed.
+       The map reuses the toroidal grid and addressing from `ff/grid-core`
+       instead of a second implementation.
+-   Alternatives rejected: Prototype A (top-down depth capture through the
+    precipitation-occlusion path) is deferred, not rejected. It is the
+    documented fallback, built only if B fails the success criteria on the
+    test routes. The other rejected options are listed in `research/R1.md`
+    section 4.
+-   Decided by: @Victor
+-   References: `research/R1.md`
