@@ -38,12 +38,12 @@ The core design matches Fluid Field's roadmap almost exactly:
 
 **Published costs** (RTX 3080, M§12):
 
-| Case                           | Cost   |
-| ------------------------------ | ------ |
-| 512² smoke simulation          | 0.2 ms |
-| 2048² water simulation         | 1.2 ms |
-| Water rendering                | 2–3 ms |
-| Self-shadowed volume rendering | 2–3 ms |
+| Case                                                | Cost   |
+| --------------------------------------------------- | ------ |
+| 512² smoke simulation                               | 0.2 ms |
+| 2048² water simulation                              | 1.2 ms |
+| Water rendering (tessellated, caustics, whitewater) | 3 ms   |
+| Self-shadowed volume rendering (512×512×128)        | 2 ms   |
 
 The author's rule of thumb is that visualization, not simulation, sets the
 cost (M§12, M§12.5). That supports our budgets: the 0.5 ms grid budget is
