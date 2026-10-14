@@ -8,6 +8,7 @@
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
 #include "Features/ExtendedTranslucency.h"
+#include "Features/FluidField.h"
 #include "Features/GrassCollision.h"
 #include "Features/GrassLighting.h"
 #include "Features/GrassOptimizations.h"
@@ -62,6 +63,7 @@ namespace globals
 		DynamicCubemaps dynamicCubemaps{};
 		VolumetricShadows volumetricShadows{};
 		ExtendedMaterials extendedMaterials{};
+		FluidField fluidField{};
 		GrassCollision grassCollision{};
 		GrassLighting grassLighting{};
 		GrassOptimizations grassOptimizations{};
