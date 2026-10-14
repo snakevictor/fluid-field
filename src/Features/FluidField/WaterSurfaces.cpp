@@ -63,7 +63,15 @@ namespace FluidFieldSim
 					continue;
 				const auto& plane = waterObject->plane;
 				const float planeHeight = std::abs(plane.normal.z) > 1e-4f ? plane.constant / plane.normal.z : std::numeric_limits<float>::quiet_NaN();
-				const uint32_t formID = waterObject->waterType ? waterObject->waterType->GetFormID() : 0;
+				const auto* waterType = waterObject->waterType;
+				const uint32_t formID = waterType ? waterType->GetFormID() : 0;
+				const float flowScale = waterType && waterType->flags.any(RE::TESWaterForm::Flag::kEnableFlowmap) ? 1.0f : 0.0f;
+				// With the check on, describe each water type once: how the game tells rivers from lakes and sea
+				if (a_verify && waterType && loggedWaterTypes.insert(formID).second) {
+					const auto& v = waterType->linearVelocity;
+					logger::info("[Fluid Field] Water type {:08X}: flowmap {}, flowmap scale {:.2f}, linear velocity ({:.1f}, {:.1f}, {:.1f}), wave amplitude {:.2f}",
+						formID, flowScale > 0.0f ? "on" : "off", waterType->data.flowmapScale, v.x, v.y, v.z, waterType->amplitude);
+				}
 				for (const auto& bound : waterObject->multiBounds) {
 					if (!bound)
 						continue;
@@ -78,7 +86,8 @@ namespace FluidFieldSim
 						.maxY = bound->center.y + bound->size.y,
 						.height = bound->center.z,
 						.planeHeight = planeHeight,
-						.waterFormID = formID });
+						.waterFormID = formID,
+						.flowScale = flowScale });
 				}
 			}
 		}
@@ -117,13 +126,22 @@ namespace FluidFieldSim
 
 	WaterSurfaces::Source WaterSurfaces::SampleHeight(float a_worldX, float a_worldY, float& a_height) const
 	{
+		float flowScale = 0.0f;
+		return SampleHeight(a_worldX, a_worldY, a_height, flowScale);
+	}
+
+	WaterSurfaces::Source WaterSurfaces::SampleHeight(float a_worldX, float a_worldY, float& a_height, float& a_flowScale) const
+	{
 		// Highest water object covering the point wins; which overlap rule is right is R3's question
 		bool found = false;
+		a_flowScale = 0.0f;
 		for (const auto& surface : surfaces) {
 			if (a_worldX < surface.minX || a_worldX > surface.maxX || a_worldY < surface.minY || a_worldY > surface.maxY)
 				continue;
-			if (!found || surface.height > a_height)
+			if (!found || surface.height > a_height) {
 				a_height = surface.height;
+				a_flowScale = surface.flowScale;
+			}
 			found = true;
 		}
 		if (found)

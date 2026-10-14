@@ -41,7 +41,7 @@ cbuffer WaterCB : register(b1)
 
 static const float NO_WATER = -1.0e8;
 
-Texture2D<float2> WaterMap : register(t4);
+Texture2D<float4> WaterMap : register(t4);
 Texture2D<float4> ObstacleMap : register(t5);
 // Unified Water's world flowmap: 64 texels per cell, tiles stacked with the southern row last.
 // RG * 2 - 1 is the flow in world axes (east, north), with its length as the strength, and A an
@@ -83,7 +83,21 @@ bool LoadObstacle(float2 worldPos, out float bed)
 
 float2 LoadMapLattice(int2 lattice)
 {
-	return WaterMap[uint2(lattice & int(MapRes - 1))];
+	return WaterMap[uint2(lattice & int(MapRes - 1))].xy;
+}
+
+/** @brief How much the water at a world position flows with the river current (its water type), bilinear. */
+float SampleRiverFlowScale(float2 worldPos)
+{
+	float2 f = worldPos / MapSpacing;
+	int2 i = int2(floor(f));
+	float2 t = f - float2(i);
+	int mask = int(MapRes - 1);
+	float s00 = WaterMap[uint2(i & mask)].z;
+	float s10 = WaterMap[uint2((i + int2(1, 0)) & mask)].z;
+	float s01 = WaterMap[uint2((i + int2(0, 1)) & mask)].z;
+	float s11 = WaterMap[uint2((i + int2(1, 1)) & mask)].z;
+	return lerp(lerp(s00, s10, t.x), lerp(s01, s11, t.x), t.y);
 }
 
 bool HasWater(float surface)

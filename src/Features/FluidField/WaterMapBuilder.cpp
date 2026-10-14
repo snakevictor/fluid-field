@@ -46,7 +46,7 @@ namespace FluidFieldSim
 			// Nothing changed since the last map: no work
 			if (!data.empty() && a_inputVersion == builtVersion && originX == builtOrigin[0] && originY == builtOrigin[1])
 				return false;
-			build.assign(static_cast<std::size_t>(n) * n * 2, 0.0f);
+			build.assign(static_cast<std::size_t>(n) * n * MAP_CHANNELS, 0.0f);
 			originLattice[0] = originX;
 			originLattice[1] = originY;
 			buildingVersion = a_inputVersion;
@@ -61,7 +61,8 @@ namespace FluidFieldSim
 				const float wy = static_cast<float>(ly) * MAP_SPACING;
 
 				float surface = 0.0f;
-				const bool hasWater = a_water.SampleHeight(wx, wy, surface) != WaterSurfaces::Source::None;
+				float flowScale = 0.0f;
+				const bool hasWater = a_water.SampleHeight(wx, wy, surface, flowScale) != WaterSurfaces::Source::None;
 
 				float bed = std::numeric_limits<float>::quiet_NaN();
 				if (!a_landscape.SampleHeight(wx, wy, bed))
@@ -82,9 +83,10 @@ namespace FluidFieldSim
 				// Toroidal storage: the texel of lattice point (lx, ly) is (lx mod n, ly mod n)
 				const auto tx = static_cast<uint32_t>(lx) & (n - 1);
 				const auto ty = static_cast<uint32_t>(ly) & (n - 1);
-				const std::size_t index = (static_cast<std::size_t>(ty) * n + tx) * 2;
+				const std::size_t index = (static_cast<std::size_t>(ty) * n + tx) * MAP_CHANNELS;
 				build[index] = bed;
 				build[index + 1] = surface;
+				build[index + 2] = hasWater ? flowScale : 0.0f;
 			}
 		}
 		nextRow = endRow;

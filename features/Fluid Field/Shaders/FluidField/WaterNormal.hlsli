@@ -222,7 +222,10 @@ namespace FluidField
 		if (flowDetail > 0.0) {
 			const float2 flow = SampleFlow(a_worldPosition);
 			// Slow water keeps some detail, and the ramp to full is wide, so flow rates blend
-			const float amount = flowDetail * lerp(0.4, 1.0, smoothstep(0.0, FLOW_DETAIL_FULL_SPEED * 1.5, length(flow)));
+			// None on still water (it would freeze a pattern onto lakes and the sea), a base level once
+			// the water moves, and a wide ramp to full so flow rates blend
+			const float speed = length(flow);
+			const float amount = flowDetail * smoothstep(5.0, 40.0, speed) * lerp(0.4, 1.0, smoothstep(0.0, FLOW_DETAIL_FULL_SPEED * 1.5, speed));
 			if (amount > 0.0) {
 				const float3 detail = FlowDetailNormal(a_worldPosition, flow);
 				const float3 detailNormal = normalize(float3(detail.xy * amount, 1.0));

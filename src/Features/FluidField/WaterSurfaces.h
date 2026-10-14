@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace FluidFieldSim
@@ -27,6 +28,7 @@ namespace FluidFieldSim
 			float height = 0.0f;       ///< Bound centre height, as Skin's water lookup uses
 			float planeHeight = 0.0f;  ///< Height implied by the water object's plane, for the check
 			uint32_t waterFormID = 0;  ///< The water object's water type, for the check's log
+			float flowScale = 0.0f;    ///< 1 when the water type uses the flowmap (rivers); 0 for lakes and the sea
 		};
 
 		enum class Source : uint8_t
@@ -61,6 +63,12 @@ namespace FluidFieldSim
 		 * @return Where the height came from; `Source::None` when there is no water there.
 		 */
 		Source SampleHeight(float a_worldX, float a_worldY, float& a_height) const;
+		/**
+		 * @brief As SampleHeight, also giving how much the water there flows with the river current:
+		 * 1 for water types with the flowmap enabled (rivers), 0 for lakes, the sea and cell water.
+		 * Vanilla renders those still even where the world flowmap has data under them.
+		 */
+		Source SampleHeight(float a_worldX, float a_worldY, float& a_height, float& a_flowScale) const;
 
 		std::size_t GetSurfaceCount() const { return surfaces.size(); }
 		uint32_t GetSlopedCount() const { return slopedCount; }
@@ -86,6 +94,7 @@ namespace FluidFieldSim
 
 		uint32_t updatesUntilRebuild = 0;
 		uint64_t lastSignature = 0;
+		std::unordered_set<uint32_t> loggedWaterTypes;  ///< Water types already described in the log (with the check on)
 		VerifyStats verifyStats;
 	};
 }

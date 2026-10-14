@@ -1,5 +1,7 @@
 #include "ShallowWaterSolver.h"
 
+#include "WaterMapBuilder.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -60,7 +62,7 @@ namespace FluidFieldSim
 		cellMap[1] = CreateLayer(device, a_resolution, DXGI_FORMAT_R32G32_FLOAT, name, "WaterCellMap1");
 		surface = CreateLayer(device, a_resolution, DXGI_FORMAT_R16G16B16A16_FLOAT, name, "WaterSurface");
 		flow = CreateLayer(device, a_resolution, DXGI_FORMAT_R16G16_FLOAT, name, "WaterFlow");
-		map = CreateLayer(device, a_mapResolution, DXGI_FORMAT_R32G32_FLOAT, name, "WaterMap", false);
+		map = CreateLayer(device, a_mapResolution, DXGI_FORMAT_R32G32B32A32_FLOAT, name, "WaterMap", false);
 		obstacles = CreateLayer(device, a_obstacleResolution, DXGI_FORMAT_R32G32B32A32_FLOAT, name, "WaterObstacles");
 		for (std::size_t i = 0; i < debugViews.size(); i++)
 			debugViews[i] = CreateLayer(device, a_resolution, DXGI_FORMAT_R8G8B8A8_UNORM, name, (std::string("DebugView") + DEBUG_VIEW_NAMES[i]).c_str());
@@ -194,9 +196,9 @@ namespace FluidFieldSim
 
 	void ShallowWaterSolver::UploadMap(ID3D11DeviceContext* context, std::span<const float> bedAndSurface, float a_mapSpacing)
 	{
-		if (!map.texture || bedAndSurface.size() < static_cast<std::size_t>(mapResolution) * mapResolution * 2)
+		if (!map.texture || bedAndSurface.size() < static_cast<std::size_t>(mapResolution) * mapResolution * WaterMapBuilder::MAP_CHANNELS)
 			return;
-		context->UpdateSubresource(map.texture.get(), 0, nullptr, bedAndSurface.data(), mapResolution * sizeof(float) * 2, 0);
+		context->UpdateSubresource(map.texture.get(), 0, nullptr, bedAndSurface.data(), mapResolution * sizeof(float) * WaterMapBuilder::MAP_CHANNELS, 0);
 		mapSpacing = a_mapSpacing;
 		mapUploaded = true;
 	}

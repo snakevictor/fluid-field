@@ -107,11 +107,6 @@ float2 StirVelocity(float2 worldPos)
 	return float2(dPsiDy, -dPsiDx) / (2.0 * e);
 }
 
-/** @brief Fast water next to a dry cell or obstacle starts to shed eddies from small sideways nudges. */
-static const float SHEDDING_MIN_SPEED = 30.0;
-static const float SHEDDING_STRENGTH = 0.25;
-static const float SHEDDING_RATE = 3.0;  // Nudge changes per second
-
 [numthreads(FLUIDFIELD_GROUP_SIZE, FLUIDFIELD_GROUP_SIZE, 1)] void main(uint2 id : SV_DispatchThreadID) {
 	if (any(id >= GridRes))
 		return;
@@ -129,7 +124,8 @@ static const float SHEDDING_RATE = 3.0;  // Nudge changes per second
 	CellMapOut[id] = float2(bed, vanillaDepth);
 
 	bool vanillaWet = vanillaDepth > WetThreshold;
-	float2 restVelocity = vanillaWet ? (FlowmapEnabled != 0 ? SampleRiverFlow(worldPos) : Current) : 0.0;
+	// Rivers follow the flowmap; lakes and the sea (water types without the flowmap) stay still
+	float2 restVelocity = vanillaWet ? (FlowmapEnabled != 0 ? SampleRiverFlow(worldPos) * SampleRiverFlowScale(worldPos) : Current) : 0.0;
 
 	// Cells that scrolled in, and every cell after a reset, start as calm vanilla water
 	bool kept = HistoryValid != 0 && all(cell >= PrevGridMin) && all(cell < PrevGridMin + int(GridRes));
@@ -174,10 +170,8 @@ static const float SHEDDING_RATE = 3.0;  // Nudge changes per second
 		float riverSpeed = length(restVelocity);
 		if (riverSpeed > 1.0)
 			velocity += StirVelocity(worldPos) * riverSpeed * STIR_STRENGTH * Vorticity * DeltaTime;
-		if (besideObstacle && speed > SHEDDING_MIN_SPEED) {
-			float2 side = float2(-velocity.y, velocity.x) / speed;
-			velocity += side * CellNoise(cell, floor(SimTime * SHEDDING_RATE)) * speed * SHEDDING_STRENGTH * Vorticity * DeltaTime;
-		}
+		// (No per-cell shedding nudge: random per cell, it rang shores at the grid's own frequency.
+		// The smooth stirring above keeps the flow shedding behind obstacles.)
 	}
 
 	velocity = lerp(velocity, restVelocity, saturate(CurrentRelax * DeltaTime));
