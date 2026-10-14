@@ -7,6 +7,7 @@
 Texture2D<float> Depth : register(t0);
 Texture2D<float2> Velocity : register(t1);
 Texture2D<float2> CellMap : register(t2);
+Texture2D<float> Foam : register(t3);
 
 RWTexture2D<float4> SurfaceOut : register(u0);
 
@@ -14,7 +15,7 @@ RWTexture2D<float4> SurfaceOut : register(u0);
 static const float EDDY_DIP_PER_SWIRL = 6.0;
 /** @brief Steepest surface slope passed to the water shader (rise over run). */
 static const float MAX_SLOPE = 0.35;
-RWTexture2D<float2> FlowOut : register(u1);
+RWTexture2D<float4> FlowOut : register(u1);
 
 float Eta(int2 logical, float fallback)
 {
@@ -140,5 +141,14 @@ float Swirl(int2 logical)
 	float2 flow = wet ? 0.5 * float2(here.x + uE, here.y + vN) : 0.0;
 
 	SurfaceOut[id] = float4(slopeX, slopeY, heightOffset, coverage);
-	FlowOut[id] = flow;
+	// Foam, softened over its four neighbours so single cells do not sparkle; none on dry cells
+	float foam = 0.0;
+	if (wet) {
+		foam = 0.5 * Foam[id];
+		foam += 0.125 * Foam[LogicalToStorage(clamp(logical + int2(1, 0), 0, int(GridRes) - 1))];
+		foam += 0.125 * Foam[LogicalToStorage(clamp(logical + int2(-1, 0), 0, int(GridRes) - 1))];
+		foam += 0.125 * Foam[LogicalToStorage(clamp(logical + int2(0, 1), 0, int(GridRes) - 1))];
+		foam += 0.125 * Foam[LogicalToStorage(clamp(logical + int2(0, -1), 0, int(GridRes) - 1))];
+	}
+	FlowOut[id] = float4(flow, foam * edgeFade, 0.0);
 }

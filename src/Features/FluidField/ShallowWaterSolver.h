@@ -47,6 +47,7 @@ namespace FluidFieldSim
 		std::int32_t flowmapOffset[2]{};  ///< Added to a cell's coordinates to get its flowmap tile
 		float riverSpeed = 0.0f;          ///< World units per second at full flowmap strength
 		float vorticity = 0.0f;           ///< Vorticity confinement strength (0: off)
+		float foamStrength = 1.0f;        ///< Scales how much foam the flow makes (0: none)
 	};
 
 	/** @brief Colour scales for the water debug view: a value of 1/scale maps to full intensity. */
@@ -119,6 +120,7 @@ namespace FluidFieldSim
 			wrap("Water Advect", [&] { Advect(context); });
 			wrap("Water Height", [&] { Height(context); });
 			wrap("Water Velocity", [&] { Velocity(context); });
+			wrap("Water Foam", [&] { Foam(context); });
 			EndStep(context);
 		}
 
@@ -130,7 +132,7 @@ namespace FluidFieldSim
 
 		/** @brief (slope x, slope y, height above vanilla, coverage) per texel, in storage order. */
 		ID3D11ShaderResourceView* GetSurfaceSRV() const { return surface.srv.get(); }
-		/** @brief Cell-centred velocity per texel, in storage order. */
+		/** @brief Cell-centred velocity (xy) and foam (z, 0 to about 1.5) per texel, in storage order. */
 		ID3D11ShaderResourceView* GetFlowSRV() const { return flow.srv.get(); }
 
 		static constexpr std::array<const char*, 3> DEBUG_VIEW_NAMES = { "Water Depth", "Water Flow", "Waves" };
@@ -182,7 +184,8 @@ namespace FluidFieldSim
 			std::int32_t flowmapOffset[2];
 			float vorticity;
 			float simTime;
-			float pad1[2];
+			float foamStrength;
+			float pad1;
 		};
 		static_assert(sizeof(WaterConstants) == 96);
 
@@ -204,6 +207,7 @@ namespace FluidFieldSim
 		void Advect(ID3D11DeviceContext* context);
 		void Height(ID3D11DeviceContext* context);
 		void Velocity(ID3D11DeviceContext* context);
+		void Foam(ID3D11DeviceContext* context);
 
 		/** @brief Binds SRVs t0..t3 (plus the map at t4) and up to three UAVs, then dispatches over the whole grid. */
 		void Dispatch(ID3D11DeviceContext* context, ID3D11ComputeShader* shader, std::span<ID3D11ShaderResourceView* const> srvs, std::span<ID3D11UnorderedAccessView* const> uavs);
@@ -219,6 +223,7 @@ namespace FluidFieldSim
 		std::array<Layer, 2> depth;     // Ping-pong, `current` holds the latest
 		std::array<Layer, 2> velocity;  // Ping-pong, `current` holds the latest
 		std::array<Layer, 2> cellMap;   // Ping-pong: the forces pass compares the new bed with the previous one
+		std::array<Layer, 2> foam;      // Ping-pong, `currentFoam` holds the latest
 		Layer surface;
 		Layer flow;
 		Layer map;
@@ -227,6 +232,7 @@ namespace FluidFieldSim
 		std::uint32_t currentDepth = 0;
 		std::uint32_t currentVelocity = 0;
 		std::uint32_t currentCellMap = 0;
+		std::uint32_t currentFoam = 0;
 		bool hasDebugViews = false;
 
 		winrt::com_ptr<ID3D11Buffer> gridConstants;
@@ -240,6 +246,7 @@ namespace FluidFieldSim
 		winrt::com_ptr<ID3D11ComputeShader> heightCS;
 		winrt::com_ptr<ID3D11ComputeShader> velocityCS;
 		winrt::com_ptr<ID3D11ComputeShader> outputCS;
+		winrt::com_ptr<ID3D11ComputeShader> foamCS;
 		winrt::com_ptr<ID3D11ComputeShader> debugViewCS;
 
 		std::int32_t prevGridMin[2]{};

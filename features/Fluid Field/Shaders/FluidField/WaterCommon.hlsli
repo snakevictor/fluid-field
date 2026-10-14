@@ -36,7 +36,8 @@ cbuffer WaterCB : register(b1)
 	int2 FlowmapOffset;     // Added to a cell's coordinates to get its flowmap tile
 	float Vorticity;        // Vorticity confinement strength: keeps eddies behind obstacles alive
 	float SimTime;          // Seconds simulated since the last reset
-	float2 WaterPad1;
+	float FoamStrength;     // Scales how much foam the foam pass makes (0: none)
+	float WaterPad1;
 };
 
 static const float NO_WATER = -1.0e8;

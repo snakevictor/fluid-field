@@ -9,9 +9,9 @@
 namespace FluidField
 {
 	Texture2D<float4> WaterSurfaceTex : register(t66);
-	Texture2D<float2> WaterFlowTex : register(t67);
+	Texture2D<float4> WaterFlowTex : register(t67);
 	Texture2D<float4> FarSurfaceTex : register(t68);
-	Texture2D<float2> FarFlowTex : register(t69);
+	Texture2D<float4> FarFlowTex : register(t69);
 
 	/** World units one tile of the flow-carried detail normals covers. */
 	static const float FLOW_DETAIL_TILE = 384.0;
@@ -68,7 +68,7 @@ namespace FluidField
 			lerp(a_tex.Load(int3((c + int2(0, 1)) & mask, 0)), a_tex.Load(int3((c + int2(1, 1)) & mask, 0)), t.x), t.y);
 	}
 
-	float2 BilinearFlow(Texture2D<float2> a_tex, Level a_level, float2 a_cellPosition)
+	float4 BilinearFlow(Texture2D<float4> a_tex, Level a_level, float2 a_cellPosition)
 	{
 		const int mask = a_level.GridRes - 1;
 		const int2 c = int2(floor(a_cellPosition));
@@ -106,18 +106,24 @@ namespace FluidField
 		return true;
 	}
 
-	/** The simulated flow at a world position, world units per second, blended between levels like the surface. */
-	float2 FlowAtWorld(float2 a_worldXY)
+	/** Flow (xy, world units per second) and foam (z) at a world position, blended between levels like the surface. */
+	float4 FlowFoamAtWorld(float2 a_worldXY)
 	{
 		const Level nearLevel = NearLevel();
 		const Level farLevel = FarLevel();
 		float2 nearCell, farCell;
 		const bool inNear = ToCell(nearLevel, a_worldXY, nearCell);
 		const bool inFar = ToCell(farLevel, a_worldXY, farCell);
-		const float2 nearFlow = inNear ? BilinearFlow(WaterFlowTex, nearLevel, nearCell) : 0;
-		const float2 farFlow = inFar ? BilinearFlow(FarFlowTex, farLevel, farCell) : 0;
+		const float4 nearFlow = inNear ? BilinearFlow(WaterFlowTex, nearLevel, nearCell) : 0;
+		const float4 farFlow = inFar ? BilinearFlow(FarFlowTex, farLevel, farCell) : 0;
 		const float weight = inNear ? (inFar ? NearWeight(nearLevel, a_worldXY) : 1.0) : 0.0;
 		return lerp(farFlow, nearFlow, weight);
+	}
+
+	/** The simulated flow at a world position, world units per second. */
+	float2 FlowAtWorld(float2 a_worldXY)
+	{
+		return FlowFoamAtWorld(a_worldXY).xy;
 	}
 
 	/**
@@ -198,6 +204,45 @@ namespace FluidField
 		a_warp = -surface.xy * WARP_PER_SLOPE * coverage;
 		// Rougher where the surface is steep, and where the flow shears around obstacles (up to x2.5)
 		a_roughness = min(saturate(length(surface.xy) * ROUGHNESS_PER_SLOPE) + saturate(FlowShear(a_worldPosition) * ROUGHNESS_PER_SHEAR), 1.5) * coverage;
+	}
+
+	/** World units one tile of the foam's bubbly breakup pattern covers. */
+	static const float FOAM_TILE = 160.0;
+
+	/**
+	 * How white the water is at a world position (0 to 1): the simulated foam, broken into bubbles and
+	 * streaks by vanilla's normal texture dragged along the simulated flow (two-phase, like the flow
+	 * detail), so foam streams and churns with the water instead of sitting on it.
+	 */
+	float GetFoamCover(float3 a_worldPosition)
+	{
+		const float4 flowFoam = FlowFoamAtWorld(a_worldPosition.xy);
+		const float foam = flowFoam.z;
+		if (foam <= 0.02)
+			return 0.0;
+		const float time = SharedData::Timer / FLOW_DETAIL_PERIOD;
+		const float phase0 = frac(time);
+		const float phase1 = frac(time + 0.5);
+		const float2 uv = a_worldPosition.xy / FOAM_TILE;
+		const float2 drift = flowFoam.xy * FLOW_DETAIL_PERIOD / FOAM_TILE;
+		const float p0 = length(Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase0, SharedData::MipBias).xy * 2.0 - 1.0);
+		const float p1 = length(Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase1 + 0.37, SharedData::MipBias).xy * 2.0 - 1.0);
+		const float pattern = saturate(lerp(p0, p1, abs(phase0 * 2.0 - 1.0)) * 1.4);
+		// Dense foam covers solidly; thin foam only shows in the pattern's bubbles and streaks
+		const float threshold = pattern * 0.75;
+		return smoothstep(threshold, threshold + 0.35, foam) * 0.92;
+	}
+
+	/**
+	 * Draws foam over a water colour: lit white (direct and ambient light at the surface), covering the
+	 * reflection and refraction where the foam is. Returns how much foam covers this pixel.
+	 */
+	float ApplyFoam(inout float3 a_color, float3 a_worldPosition, float3 a_light)
+	{
+		const float cover = GetFoamCover(a_worldPosition);
+		if (cover > 0.0)
+			a_color = lerp(a_color, a_light * 0.85, cover);
+		return cover;
 	}
 
 	/**

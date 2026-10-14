@@ -14,7 +14,8 @@ namespace FluidFieldSim
 		constexpr std::uint32_t GROUP_SIZE = 8;  // FLUIDFIELD_GROUP_SIZE in Common.hlsli
 		constexpr std::uint32_t MAX_SRVS = 4;    // t0..t3; the map sits at t4, fine detail at t5, the flowmap at t6
 		constexpr std::uint32_t MAP_SLOT = 4;
-		constexpr std::uint32_t BOUND_SRVS = 7;
+		constexpr std::uint32_t BOUND_SRVS = 8;
+		constexpr std::uint32_t FOAM_SLOT = 7;  // The foam pass reads last step's foam here
 		constexpr std::uint32_t MAX_UAVS = 3;
 
 		ID3D11ShaderResourceView* const NULL_SRVS[BOUND_SRVS] = {};
@@ -61,7 +62,9 @@ namespace FluidFieldSim
 		cellMap[0] = CreateLayer(device, a_resolution, DXGI_FORMAT_R32G32_FLOAT, name, "WaterCellMap0");
 		cellMap[1] = CreateLayer(device, a_resolution, DXGI_FORMAT_R32G32_FLOAT, name, "WaterCellMap1");
 		surface = CreateLayer(device, a_resolution, DXGI_FORMAT_R16G16B16A16_FLOAT, name, "WaterSurface");
-		flow = CreateLayer(device, a_resolution, DXGI_FORMAT_R16G16_FLOAT, name, "WaterFlow");
+		flow = CreateLayer(device, a_resolution, DXGI_FORMAT_R16G16B16A16_FLOAT, name, "WaterFlow");
+		foam[0] = CreateLayer(device, a_resolution, DXGI_FORMAT_R16_FLOAT, name, "WaterFoam0");
+		foam[1] = CreateLayer(device, a_resolution, DXGI_FORMAT_R16_FLOAT, name, "WaterFoam1");
 		map = CreateLayer(device, a_mapResolution, DXGI_FORMAT_R32G32B32A32_FLOAT, name, "WaterMap", false);
 		obstacles = CreateLayer(device, a_obstacleResolution, DXGI_FORMAT_R32G32B32A32_FLOAT, name, "WaterObstacles");
 		for (std::size_t i = 0; i < debugViews.size(); i++)
@@ -117,6 +120,7 @@ namespace FluidFieldSim
 			{ &heightCS, L"WaterHeightCS.hlsl" },
 			{ &velocityCS, L"WaterVelocityCS.hlsl" },
 			{ &outputCS, L"WaterOutputCS.hlsl" },
+			{ &foamCS, L"WaterFoamCS.hlsl" },
 			{ &debugViewCS, L"WaterDebugViewCS.hlsl" },
 		};
 		for (auto& [program, fileName] : shaders) {
@@ -128,7 +132,7 @@ namespace FluidFieldSim
 
 	bool ShallowWaterSolver::HasShaders() const
 	{
-		return forcesCS && advectCS && heightCS && velocityCS && outputCS && debugViewCS;
+		return forcesCS && advectCS && heightCS && velocityCS && outputCS && foamCS && debugViewCS;
 	}
 
 	void ShallowWaterSolver::ReleaseShaders()
@@ -138,6 +142,7 @@ namespace FluidFieldSim
 		heightCS = nullptr;
 		velocityCS = nullptr;
 		outputCS = nullptr;
+		foamCS = nullptr;
 		debugViewCS = nullptr;
 	}
 
@@ -148,6 +153,7 @@ namespace FluidFieldSim
 		cellMap = {};
 		surface = {};
 		flow = {};
+		foam = {};
 		map = {};
 		obstacles = {};
 		debugViews = {};
@@ -251,7 +257,8 @@ namespace FluidFieldSim
 			.flowmapOffset = { params.flowmapOffset[0], params.flowmapOffset[1] },
 			.vorticity = params.vorticity,
 			.simTime = simTime,
-			.pad1 = {}
+			.foamStrength = params.foamStrength,
+			.pad1 = 0.0f
 		};
 		UpdateBuffer(context, waterConstants.get(), &waterData, sizeof(waterData));
 
@@ -333,6 +340,19 @@ namespace FluidFieldSim
 		currentVelocity ^= 1;
 	}
 
+	void ShallowWaterSolver::Foam(ID3D11DeviceContext* context)
+	{
+		// Last step's foam goes in its own slot, beside the state at t0..t3
+		ID3D11ShaderResourceView* previous = foam[currentFoam].srv.get();
+		context->CSSetShaderResources(FOAM_SLOT, 1, &previous);
+		ID3D11ShaderResourceView* srvs[] = { depth[currentDepth].srv.get(), velocity[currentVelocity].srv.get(), cellMap[currentCellMap].srv.get(), emitterSRV.get() };
+		ID3D11UnorderedAccessView* uavs[] = { foam[currentFoam ^ 1].uav.get() };
+		Dispatch(context, foamCS.get(), srvs, uavs);
+		ID3D11ShaderResourceView* nullSRV = nullptr;
+		context->CSSetShaderResources(FOAM_SLOT, 1, &nullSRV);
+		currentFoam ^= 1;
+	}
+
 	void ShallowWaterSolver::WriteOutputs(ID3D11DeviceContext* context)
 	{
 		if (!HasResources() || !outputCS || !stepped)
@@ -340,7 +360,7 @@ namespace FluidFieldSim
 
 		ID3D11Buffer* cbs[] = { gridConstants.get(), waterConstants.get() };
 		context->CSSetConstantBuffers(0, 2, cbs);
-		ID3D11ShaderResourceView* srvs[] = { depth[currentDepth].srv.get(), velocity[currentVelocity].srv.get(), cellMap[currentCellMap].srv.get() };
+		ID3D11ShaderResourceView* srvs[] = { depth[currentDepth].srv.get(), velocity[currentVelocity].srv.get(), cellMap[currentCellMap].srv.get(), foam[currentFoam].srv.get() };
 		ID3D11UnorderedAccessView* uavs[] = { surface.uav.get(), flow.uav.get() };
 		Dispatch(context, outputCS.get(), srvs, uavs);
 		EndStep(context);

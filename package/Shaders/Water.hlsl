@@ -1193,6 +1193,10 @@ PS_OUTPUT main(PS_INPUT input)
 #				endif
 
 	diffuseOutput.refractionDiffuseColor = dirColor + ambientColor;
+#				if defined(FLUID_FIELD)
+	// Light reaching the surface, for Fluid Field's foam (lit like any white surface)
+	float3 fluidFoamLight = dirColor + ambientColor;
+#				endif
 
 #				if !defined(UNDERWATER)
 	if (SharedData::enbSettings.EnableWater) {
@@ -1280,6 +1284,9 @@ PS_OUTPUT main(PS_INPUT input)
 #					if defined(VC)
 	float specularFraction = lerp(1, fresnel * surfaceMul, distanceBlendFactor);
 	float3 finalColorPreFog = lerp(diffuseColor, specularColor, specularFraction) + sunColor * sunMul;
+#						if defined(FLUID_FIELD)
+	FluidField::ApplyFoam(finalColorPreFog, input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, fluidFoamLight);
+#						endif
 
 #						if !defined(UNIFIED_WATER)
 	float fogDistanceFactor = input.FogParam.w;
@@ -1343,6 +1350,13 @@ PS_OUTPUT main(PS_INPUT input)
 	} else {
 		finalColorPreFog = lerp(diffuseOutput.refractionDiffuseColor, specularColor, specularFraction) + sunColor * depthControl.w;
 	}
+#						if defined(FLUID_FIELD)
+	{
+		// Foam is opaque: it covers the see-through refraction as well
+		const float foamCover = FluidField::ApplyFoam(finalColorPreFog, input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, fluidFoamLight);
+		waterOpacity = lerp(waterOpacity, 1.0, foamCover);
+	}
+#						endif
 
 #						if !defined(UNIFIED_WATER)
 	float fogDistanceFactor = input.FogParam.w;

@@ -45,7 +45,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	RiverSpeed,
 	CurrentPull,
 	Turbulence,
-	FlowDetail)
+	FlowDetail,
+	FoamStrength,
+	ReplaceVanillaFoam)
 
 void FluidField::DrawSettings()
 {
@@ -223,6 +225,15 @@ void FluidField::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("flow_detail_tooltip"), "Surface detail that moves with the simulated flow, so currents and eddies show on the water."));
 	}
+	ImGui::SliderFloat(T(TKEY("foam_strength"), "Foam"), &settings.FoamStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("foam_strength_tooltip"), "Foam made by the simulated water where it hits obstacles, breaks over rapids, and around wakes and splashes. It drifts with the flow and fades."));
+	}
+	ImGui::Checkbox(T(TKEY("replace_vanilla_foam"), "Replace Vanilla Foam"), &settings.ReplaceVanillaFoam);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("replace_vanilla_foam_tooltip"), "Hides vanilla's placed rapids foam, splash and spray effects where the water is simulated. Waterfalls and low mist stay."));
+	}
+	ImGui::Text(T(TKEY("vanilla_foam_hidden"), "Vanilla foam effects hidden: %u"), vanillaFoam.GetHiddenCount());
 	if (waterShaderFailed)
 		ImGui::TextColored(Menu::GetSingleton()->GetTheme().StatusPalette.Error, "%s", T(TKEY("water_shader_failed"), "Water shaders failed to compile, so the water layer is off. Check CommunityShaders.log."));
 	if (waterResourceFailed)
@@ -364,7 +375,7 @@ void FluidField::DrawOverlay()
 			drawList->AddLine(marker, ImVec2(marker.x + std::sin(lastHeading) * 10.0f * uiScale, marker.y - std::cos(lastHeading) * 10.0f * uiScale), markerColor);
 			ImGui::EndGroup();
 		}
-		ImGui::TextUnformatted(T(TKEY("overlay_legend_water_sim"), "Water depth: light is shallow, dark is deep. Flow: hue is direction, brightness speed. Waves: red above vanilla water, blue below."));
+		ImGui::TextUnformatted(T(TKEY("overlay_legend_water_sim"), "Water depth: light is shallow, dark is deep. Flow: hue is direction, brightness speed. Waves: red above vanilla water, blue below, foam white."));
 	}
 
 	ImGui::End();
@@ -406,6 +417,7 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.CurrentPull = std::isfinite(a_settings.CurrentPull) ? std::clamp(a_settings.CurrentPull, 0.0f, 2.0f) : defaults.CurrentPull;
 	a_settings.Turbulence = std::isfinite(a_settings.Turbulence) ? std::clamp(a_settings.Turbulence, 0.0f, 5.0f) : defaults.Turbulence;
 	a_settings.FlowDetail = std::isfinite(a_settings.FlowDetail) ? std::clamp(a_settings.FlowDetail, 0.0f, 2.0f) : defaults.FlowDetail;
+	a_settings.FoamStrength = std::isfinite(a_settings.FoamStrength) ? std::clamp(a_settings.FoamStrength, 0.0f, 3.0f) : defaults.FoamStrength;
 	return a_settings;
 }
 
@@ -680,6 +692,13 @@ void FluidField::Prepass()
 			waterShaderData.FarEnabled = 0;
 		}
 		BindWaterOutputs(context);
+		if (settings.ReplaceVanillaFoam) {
+			// The simulated area, less the fade toward vanilla at its edge
+			const float simulated = 0.5f * (settings.FarWater ? settings.WaterSize * settings.FarWaterScale : settings.WaterSize) * 0.85f;
+			vanillaFoam.Update(water, playerPos.x, playerPos.y, simulated);
+		} else if (vanillaFoam.GetHiddenCount() > 0) {
+			vanillaFoam.RestoreAll();
+		}
 	} else {
 		ReleaseWater();
 	}
@@ -748,6 +767,7 @@ void FluidField::ReleaseWater()
 		level->resourceFailed = false;
 	}
 	wakeSources.Clear();
+	vanillaFoam.RestoreAll();
 	waterShaderData = {};
 }
 
@@ -946,6 +966,7 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 	params.edgeWidth = std::max(16.0f, 0.12f * static_cast<float>(a_resolution));
 	params.currentRelax = settings.CurrentPull;
 	params.vorticity = settings.Turbulence;
+	params.foamStrength = settings.FoamStrength;
 	// River currents from Unified Water's flowmap; the test current when there is none
 	RE::NiPointer<RE::NiSourceTexture> flowmapTexture;
 	const auto& unifiedWater = globals::features::unifiedWater;

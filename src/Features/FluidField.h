@@ -5,6 +5,7 @@
 #include "FluidField/LandscapeCache.h"
 #include "FluidField/MeshCut.h"
 #include "FluidField/ShallowWaterSolver.h"
+#include "FluidField/VanillaFoam.h"
 #include "FluidField/WakeSources.h"
 #include "FluidField/WaterMapBuilder.h"
 #include "FluidField/WaterSurfaces.h"
@@ -79,7 +80,9 @@ struct FluidField : OverlayFeature
 		float RiverSpeed = 150.0f;           ///< River current at full flowmap strength, world units per second (0: test current only)
 		float CurrentPull = 0.25f;           ///< Per-second pull of the water toward the river current; lower lets obstacles shape the flow
 		float Turbulence = 0.4f;             ///< Vorticity confinement: keeps eddies behind obstacles alive (0: off)
-		float FlowDetail = 1.2f;             ///< Strength of the surface detail carried by the simulated flow
+		float FlowDetail = 1.2f;
+		float FoamStrength = 1.0f;       ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
+		bool ReplaceVanillaFoam = true;  ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated             ///< Strength of the surface detail carried by the simulated flow
 	};
 
 	Settings settings;
@@ -174,6 +177,7 @@ private:
 	/** @brief Near water world units per texel. */
 	float GetWaterCellSize() const { return settings.WaterSize / static_cast<float>(settings.WaterResolution); }
 	FluidFieldSim::WakeSources wakeSources;
+	FluidFieldSim::VanillaFoam vanillaFoam;
 
 	/** @brief Creates the water layer's GPU resources and shaders as needed. Returns false if it cannot run. */
 	bool EnsureWater(WaterLevel& a_level, uint32_t a_resolution, float a_size, bool a_obstacles);

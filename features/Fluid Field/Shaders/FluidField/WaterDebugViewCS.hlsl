@@ -12,7 +12,7 @@ cbuffer WaterDebugCB : register(b2)
 
 Texture2D<float> Depth : register(t0);
 Texture2D<float4> Surface : register(t1);
-Texture2D<float2> Flow : register(t2);
+Texture2D<float4> Flow : register(t2);
 
 RWTexture2D<float4> DepthView : register(u0);
 RWTexture2D<float4> FlowView : register(u1);
@@ -40,11 +40,15 @@ float3 HueToRgb(float hue)
 	DepthView[id] = wet ? float4(lerp(float3(0.55, 0.85, 1.0), float3(0.05, 0.15, 0.55), t), 1.0) : float4(0.08, 0.08, 0.08, 1.0);
 
 	// Flow: hue is direction (east red, north green, west cyan, south violet), brightness speed
-	float2 flow = Flow[storage];
+	float4 flowFoam = Flow[storage];
+	float2 flow = flowFoam.xy;
 	float hue = atan2(flow.y, flow.x) / 6.28318530718;
 	FlowView[id] = float4(HueToRgb(hue) * saturate(length(flow) * FlowScale), 1.0);
 
-	// Waves: red above the vanilla surface, blue below, grey where dry
+	// Waves: red above the vanilla surface, blue below, grey where dry; foam white
 	float wave = surface.z * WaveScale;
-	WaveView[id] = wet ? float4(0.15 + saturate(wave), 0.15, 0.15 + saturate(-wave), 1.0) : float4(0.08, 0.08, 0.08, 1.0);
+	// Foam (from the foam pass) shows white over the waves
+	float3 waveColor = float3(0.15 + saturate(wave), 0.15, 0.15 + saturate(-wave));
+	waveColor = lerp(waveColor, float3(1.0, 1.0, 1.0), saturate(flowFoam.z));
+	WaveView[id] = wet ? float4(waveColor, 1.0) : float4(0.08, 0.08, 0.08, 1.0);
 }

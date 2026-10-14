@@ -416,3 +416,26 @@ Entry format:
     and blend"; "bigger draw distance for the simulation and a smoother
     blending")
 -   References: D17, `plans/water-slice-step-3.md`
+
+## D19: Procedural foam replaces vanilla's placed foam and spray
+
+-   Date: 2026-10-14
+-   Phase / spike: water slice (D8, D17, D18)
+-   Decision: Inside the simulated area, vanilla's placed foam, splash and
+    spray effects are hidden at runtime (`SetAppCulled` on their 3D;
+    nothing is saved): models under `Effects\` whose path contains rapids,
+    splash, churn, foam, spray, mistblast, skirt, waterfallmist or ripple,
+    sitting on water. Waterfall bodies and ambient low mist stay. They show
+    again outside the area or with "Replace Vanilla Foam" off.
+    Fluid Field makes its own foam: a foam pass per water level advects foam
+    along the simulated flow, fades it over about 3 s, and adds foam from
+    shear, flow into obstacles and banks, breaking flow (Froude number), and
+    wakes and splashes. The water shader draws it lit by the surface's direct
+    and ambient light, broken up by vanilla's normal texture dragged along the
+    flow, before fog; foam is opaque. Setting: Foam.
+-   Alternatives rejected: keeping vanilla's spray meshes until particles
+    exist (@Victor wants them gone now); particles for spray (later, with
+    Phase 5).
+-   Decided by: @Victor ("Objective A) remove vanilla foam and splashes;
+    objective B) add procedural foam derived from our simulation")
+-   References: D17, D18
