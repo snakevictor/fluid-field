@@ -24,14 +24,14 @@ Each step is built, deployed and checked at the Riverwood stone bridge (`coc Riv
 -   Check: wade along the river at default settings; @Victor tunes the sliders live and the
     chosen values become the defaults.
 
-## Step 2: no wake with the head underwater (feedback 2)
+## Step 2: no waves from fully submerged entities (feedback 2)
 
--   An actor makes surface waves only while its head is above the water. The head is the
-    skeleton's head node (`NPC Head [Head]`; fall back to the reference's position plus its
-    bound height when there is no such node), compared with the water surface height at the
-    head's x, y.
--   A diving actor stops making waves as soon as its head goes under, and starts again on
-    surfacing.
+-   An entity makes surface waves only while part of it is above the water: the top of its
+    bounding box (the reference's position plus its bound's top, scaled) must be above the water
+    surface at its x, y. This works the same for people, horses, fish, mudcrabs and loose
+    objects, with no skeleton needed (@Victor, 2026-10-14).
+-   A diving actor stops making waves once it is fully under, and starts again when any part of
+    it breaks the surface.
 -   Also check the camera underwater: the water's underside should not show the simulated
     surface normals strangely. If it does, the shader fades the effect when the camera is below
     the surface.
@@ -59,7 +59,7 @@ Each step is built, deployed and checked at the Riverwood stone bridge (`coc Riv
     within the grid, nearest first, up to the solver's 16 emitters.
 -   Each actor's velocity comes from its position between steps, keyed by handle; teleports and
     newly seen actors are ignored for a frame.
--   The same head-above-water rule (step 2) and the water-level band apply to every actor.
+-   The same "not fully submerged" rule (step 2) and the water-level band apply to every actor.
 -   Size scales with the actor's bound: a horse makes a wider wake than a fox.
 
 ### 4b. Jumps and falls into water

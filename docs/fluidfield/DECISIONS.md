@@ -378,7 +378,8 @@ Entry format:
     displacement trail: the shader scales vanilla's displacement by
     (1 - Fluid Field coverage), and every nearby actor (player, NPCs, horses,
     creatures; nearest first, up to 16) feeds the simulation. Waves come only
-    from actors whose head is above the water. Falls and jumps into water
+    from entities that are not fully submerged (the top of the bounding box
+    is above the water), which also covers animals and objects. Falls and jumps into water
     push the water down at the entry point. Currents come from Unified
     Water's flowmap (D8 accessor), pulling the water's velocity toward it.
     Plan: `plans/water-slice-step-3.md`.
