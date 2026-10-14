@@ -216,3 +216,41 @@ Entry format:
 -   Decided by: @Victor
 -   References: `research/smoke-and-fire.md`,
     `research/fluidninja-live2.md`, `ROADMAP.md` Phase 5 and R5
+
+## D11: Phase 1 grid and wind solver shape
+
+-   Date: 2026-10-13
+-   Phase / spike: Phase 1 (grid core; R1 still open)
+-   Decision: The grid is centred on the player's position, snapped to whole
+    cells, and addressed toroidally: world cell `c` always lives in storage
+    texel `c mod GridRes`, so scrolling only changes `GridMin`. Resolutions are
+    powers of two (64 to 512) so the shaders wrap with a bitmask. Defaults:
+    256 x 256 over 4096 units (16 units per cell), 30 Jacobi iterations. Wind is
+    a 2D stable-fluids step (add forces, semi-Lagrangian advection, divergence,
+    Jacobi pressure from zero each step, projection) on `R32G32_FLOAT` velocity
+    and `R32_FLOAT` pressure and divergence. The edge is open: zero-gradient
+    velocity, zero pressure. There are no obstacles until R1 lands. The solver
+    lives in `src/Features/FluidField/WindSolver.{h,cpp}`, which depends only on
+    D3D11 and C++/WinRT.
+-   Alternatives rejected: centring on the camera eye like Grass Collision (the
+    roadmap says player-centred; third-person offset is small next to the grid);
+    warm-starting pressure from the previous step (would need its own scroll
+    invalidation and makes the CPU reference harder); 16-bit formats (revisit if
+    the 0.5 ms budget is tight).
+-   Decided by: agent, pending review by @Victor
+-   References: `features/Fluid Field/Shaders/FluidField/Common.hlsli`
+
+## D12: Solver referee is a standalone WARP test
+
+-   Date: 2026-10-13
+-   Phase / spike: Phase 1
+-   Decision: `tests/FluidField` is its own CMake project, not part of the root
+    build. It compiles the real `WindSolver.cpp` and HLSL, runs them on a WARP
+    device and compares every layer with a CPU implementation (one step from
+    rest, then a scrolled second step). It needs no GPU, no game and no vcpkg.
+-   Alternatives rejected: Catch2 (an extra framework for one test); an in-game
+    self-test button (agents cannot run it); an option in the root
+    `CMakeLists.txt` (that file is not gersemi-clean on `dev`, so touching it
+    drags unrelated reformatting into the commit).
+-   Decided by: @Victor (chose the WARP exe), layout by agent
+-   References: `tests/FluidField/CMakeLists.txt`

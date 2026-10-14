@@ -19,11 +19,12 @@
 #include "Globals.h"
 #include "I18n/I18n.h"
 #include "Menu.h"
+#include "Menu/CursorLoader.h"
 #include "ShaderCache.h"
 #include "State.h"
-#include "Menu/CursorLoader.h"
 #include "Util.h"
 
+#include "Features/FluidField.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/PerformanceOverlay/ABTesting/ABTesting.h"
 namespace
@@ -237,6 +238,7 @@ bool OverlayRenderer::ShouldSkipRendering()
 			 (failed && !hide) ||
 			 effectFailed ||
 			 globals::features::performanceOverlay.settings.ShowInOverlay ||
+			 (globals::features::fluidField.loaded && globals::features::fluidField.IsOverlayVisible()) ||
 			 renderDoc->IsAvailable());
 }
 
@@ -425,7 +427,6 @@ void OverlayRenderer::FinalizeImGuiFrame()
 	BackgroundBlur::RenderBackgroundBlur();
 
 	ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-
 }
 
 void OverlayRenderer::RenderFirstTimeSetupOverlay()
