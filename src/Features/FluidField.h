@@ -1,10 +1,14 @@
 #pragma once
 
+#include "FluidField/WindSolver.h"
+
 /**
  * @brief Player-centred fluid simulation shared by water, fog, smoke and buoyancy outputs.
  *
- * Phase 0 scaffold: registers the feature, its menu entry and its saved settings. It installs
- * no hooks and creates no GPU resources, so it costs nothing whether enabled or not.
+ * Phase 1: a wind layer solved with stable fluids on a grid that follows the player with
+ * toroidal addressing. The grid has no obstacles yet. Every GPU resource is created and
+ * freed here, and the field is cleared after every loading screen. While disabled it creates
+ * nothing and dispatches nothing.
  */
 struct FluidField : Feature
 {
@@ -21,9 +25,22 @@ struct FluidField : Feature
 				T("feature.fluid_field.key_feature_2", "Fog and smoke pushed by actors, shouts and spells") } };
 	}
 
+	/** @brief Allowed grid resolutions. The shaders wrap with a bitmask, so each must be a power of two. */
+	static constexpr std::array<uint, 4> GRID_RESOLUTIONS = { 64, 128, 256, 512 };
+	static constexpr float MIN_GRID_SIZE = 1024.0f;
+	static constexpr float MAX_GRID_SIZE = 16384.0f;
+	static constexpr uint MIN_JACOBI_ITERATIONS = 1;
+	static constexpr uint MAX_JACOBI_ITERATIONS = 100;
+	/** @brief Longest step simulated in one frame, so a hitch does not fling the wind across the grid. */
+	static constexpr float MAX_STEP_SECONDS = 1.0f / 20.0f;
+
 	struct Settings
 	{
 		bool Enabled = false;
+		uint GridResolution = 256;   ///< Texels per side
+		float GridSize = 4096.0f;    ///< World units per side
+		uint JacobiIterations = 30;  ///< Pressure solve iterations per step
+		float WindDamping = 0.3f;    ///< Fraction of wind speed lost per second, as an exponential rate
 	};
 
 	Settings settings;
@@ -35,4 +52,39 @@ struct FluidField : Feature
 	virtual void SaveSettings(json& o_json) override;
 
 	virtual void RestoreDefaultSettings() override;
+
+	/** @brief Registers the loading-screen listener that resets the field. */
+	virtual void PostPostLoad() override;
+
+	/** @brief Steps the simulation once per frame. */
+	virtual void Prepass() override;
+
+	virtual void ClearShaderCache() override;
+
+	/** @brief Clamps loaded settings to the ranges the solver supports. */
+	static Settings Sanitize(Settings a_settings);
+
+private:
+	/** @brief Creates GPU resources and shaders as needed. Returns false if the solver cannot run. */
+	bool EnsureSolver();
+	void ReleaseSolver();
+
+	/** @brief World units per texel. */
+	float GetCellSize() const { return settings.GridSize / static_cast<float>(settings.GridResolution); }
+
+	FluidFieldSim::WindSolver solver;
+	bool shaderCompileFailed = false;
+	bool resourceCreateFailed = false;
+
+	/** @brief Set by the loading-screen listener on the UI thread, consumed on the render thread. */
+	std::atomic<bool> queuedReset = true;
+	/** @brief Cell size the field was last stepped with; a change invalidates its contents. */
+	float lastCellSize = 0.0f;
+
+	class MenuOpenCloseEventHandler : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
+	{
+	public:
+		virtual RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override;
+		static bool Register();
+	};
 };
