@@ -206,6 +206,35 @@ namespace FluidField
 		a_roughness = min(saturate(length(surface.xy) * ROUGHNESS_PER_SLOPE) + saturate(FlowShear(a_worldPosition) * ROUGHNESS_PER_SHEAR), 1.5) * coverage;
 	}
 
+	/** Surface roughness at the pixel being shaded (0 calm to 1.5), set while its normal is built, for the sun glint. */
+	static float PixelRoughness = 0.0;
+
+	/**
+	 * Widens the sun's glint on rough water and narrows it on calm water: the specular exponent is
+	 * lowered with roughness (to a third at most), and the lobe rescaled so its total energy stays
+	 * about the same, as a normalised Phong lobe would.
+	 */
+	float SunGlint(float a_cosine, float a_exponent)
+	{
+		const float exponent = a_exponent * lerp(1.0, 0.33, saturate(PixelRoughness / 1.5));
+		const float energy = (exponent + 2.0) / max(a_exponent + 2.0, 1e-3);
+		return exp2(exponent * log2(a_cosine)) * energy;
+	}
+
+	/** Strongest whitening of the water body by bubbles, as a fraction of the lit foam colour. */
+	static const float MAX_AERATION = 0.3;
+
+	/**
+	 * Fast, foamy water is full of bubbles that scatter light, so rapids look lighter and milkier than
+	 * calm pools: blends a water colour toward the lit foam colour by foam and flow speed.
+	 */
+	void ApplyAeration(inout float3 a_color, float3 a_worldPosition, float3 a_light, float a_amount)
+	{
+		const float4 flowFoam = FlowFoamAtWorld(a_worldPosition.xy);
+		const float aeration = saturate(flowFoam.z * 0.6 + length(flowFoam.xy) / 400.0) * MAX_AERATION * a_amount;
+		a_color = lerp(a_color, a_light * 0.6, aeration);
+	}
+
 	/** World units one tile of the foam's bubbly breakup pattern covers. */
 	static const float FOAM_TILE = 160.0;
 

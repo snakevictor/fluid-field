@@ -653,6 +653,7 @@ WaterNormalData GetWaterNormal(PS_INPUT input, float distanceFactor, float norma
 		float2 fluidWarp;
 		float fluidRoughness;
 		FluidField::GetVanillaWarp(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, fluidWarp, fluidRoughness);
+		FluidField::PixelRoughness = fluidRoughness;
 		input.TexCoord1.xy += fluidWarp * normalScalesRcp.x;
 		input.TexCoord1.zw += fluidWarp * normalScalesRcp.y;
 		input.TexCoord2.xy += fluidWarp * normalScalesRcp.z;
@@ -1031,7 +1032,12 @@ float3 GetSunColor(float3 normal, float3 viewDirection, float3 worldPosition)
 		return 0.0.xxx;
 
 	float3 reflectionDirection = reflect(viewDirection, normal);
+#				if defined(FLUID_FIELD)
+	// The glint spreads on rough simulated water and stays tight on calm water
+	float reflectionMul = FluidField::SunGlint(saturate(dot(reflectionDirection, SunDir.xyz)), VarAmounts.x);
+#				else
 	float reflectionMul = exp2(VarAmounts.x * log2(saturate(dot(reflectionDirection, SunDir.xyz))));
+#				endif
 
 	float llDirLightMult = (SharedData::linearLightingSettings.enableLinearLighting && !SharedData::linearLightingSettings.isDirLightLinear) ? SharedData::linearLightingSettings.dirLightMult : 1.0f;
 	float3 sunColor = Color::DirectionalLight((SunColor.xyz * SunDir.w) / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * (1.0 - exp(-DeepColor.w)) * llDirLightMult;
@@ -1196,6 +1202,12 @@ PS_OUTPUT main(PS_INPUT input)
 #				if defined(FLUID_FIELD)
 	// Light reaching the surface, for Fluid Field's foam (lit like any white surface)
 	float3 fluidFoamLight = dirColor + ambientColor;
+	{
+		// Bubbles in fast, foamy water make the water body lighter and milkier
+		const float3 fluidPosition = input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz;
+		FluidField::ApplyAeration(diffuseOutput.refractionDiffuseColor, fluidPosition, fluidFoamLight, 1.0);
+		FluidField::ApplyAeration(diffuseOutput.refractionColor, fluidPosition, fluidFoamLight, 0.5);
+	}
 #				endif
 
 #				if !defined(UNDERWATER)
