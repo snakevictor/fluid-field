@@ -237,7 +237,11 @@ Entry format:
     warm-starting pressure from the previous step (would need its own scroll
     invalidation and makes the CPU reference harder); 16-bit formats (revisit if
     the 0.5 ms budget is tight).
--   Decided by: agent, pending review by @Victor
+-   Decided by: agent; approved by @Victor on 2026-10-14
+-   Follow-up: starting the pressure solve from zero leaves the wind
+    "soft" (30 iterations remove only about half the divergence). Revisit
+    reusing last frame's pressure, with scroll-aware clearing of new
+    strips, once devbench timings and the in-game look are in.
 -   References: `features/Fluid Field/Shaders/FluidField/Common.hlsli`
 
 ## D12: Solver referee is a standalone WARP test
