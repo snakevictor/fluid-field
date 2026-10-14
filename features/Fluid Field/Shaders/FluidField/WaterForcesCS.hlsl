@@ -28,6 +28,37 @@ RWTexture2D<float> DepthOut : register(u0);
 RWTexture2D<float2> VelocityOut : register(u1);
 RWTexture2D<float2> CellMapOut : register(u2);
 
+/** @brief Cell-centred velocity from the staggered faces (u on the west face, v on the south face). */
+float2 CentredVelocity(int2 logical)
+{
+	float2 here = LoadClamped(VelocityIn, logical);
+	return 0.5 * float2(here.x + LoadClamped(VelocityIn, logical + int2(1, 0)).x, here.y + LoadClamped(VelocityIn, logical + int2(0, 1)).y);
+}
+
+/** @brief Vorticity (curl of the velocity) at a cell centre, per second. */
+float Curl(int2 logical)
+{
+	float dvdx = CentredVelocity(logical + int2(1, 0)).y - CentredVelocity(logical + int2(-1, 0)).y;
+	float dudy = CentredVelocity(logical + int2(0, 1)).x - CentredVelocity(logical + int2(0, -1)).x;
+	return (dvdx - dudy) / (2.0 * CellSize);
+}
+
+/**
+ * @brief Vorticity confinement: a push along N x omega, where N points up the gradient of |omega|.
+ * It puts back the swirl that advection smears out, so eddies behind obstacles stay alive.
+ */
+float2 ConfinementForce(int2 logical)
+{
+	float omega = Curl(logical);
+	float2 gradient = float2(abs(Curl(logical + int2(1, 0))) - abs(Curl(logical + int2(-1, 0))),
+		abs(Curl(logical + int2(0, 1))) - abs(Curl(logical + int2(0, -1))));
+	float len = length(gradient);
+	if (len < 1.0e-5)
+		return 0.0;
+	float2 n = gradient / len;
+	return Vorticity * CellSize * float2(n.y * omega, -n.x * omega);
+}
+
 [numthreads(FLUIDFIELD_GROUP_SIZE, FLUIDFIELD_GROUP_SIZE, 1)] void main(uint2 id : SV_DispatchThreadID) {
 	if (any(id >= GridRes))
 		return;
@@ -76,6 +107,9 @@ RWTexture2D<float2> CellMapOut : register(u2);
 			depth += e.DepthRate * w * DeltaTime;
 		}
 	}
+
+	if (Vorticity > 0.0 && depth > WetThreshold && kept)
+		velocity += ConfinementForce(logical) * DeltaTime;
 
 	velocity = lerp(velocity, restVelocity, saturate(CurrentRelax * DeltaTime));
 	depth = lerp(depth, vanillaDepth, saturate(LevelRelax * DeltaTime));

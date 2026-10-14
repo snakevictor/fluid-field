@@ -458,8 +458,9 @@ namespace SharedData
 		uint GridRes;  // Cells per side, a power of two
 		float CellSize;
 		float NormalStrength;
-		uint Enabled;  // Water outputs are valid this frame
-		float2 pad;
+		uint Enabled;      // Water outputs are valid this frame
+		float FlowDetail;  // Strength of the surface detail carried by the simulated flow
+		float pad;
 	};
 
 	cbuffer FeatureData : register(b6)

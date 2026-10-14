@@ -46,6 +46,7 @@ namespace FluidFieldSim
 		float flowmapCells[2]{};          ///< Flowmap size in cells
 		std::int32_t flowmapOffset[2]{};  ///< Added to a cell's coordinates to get its flowmap tile
 		float riverSpeed = 0.0f;          ///< World units per second at full flowmap strength
+		float vorticity = 0.0f;           ///< Vorticity confinement strength (0: off)
 	};
 
 	/** @brief Colour scales for the water debug view: a value of 1/scale maps to full intensity. */
@@ -179,8 +180,10 @@ namespace FluidFieldSim
 			std::uint32_t flowmapEnabled;
 			float flowmapCells[2];
 			std::int32_t flowmapOffset[2];
+			float vorticity;
+			float pad1[3];
 		};
-		static_assert(sizeof(WaterConstants) == 80);
+		static_assert(sizeof(WaterConstants) == 96);
 
 		// Matches WaterDebugCB in WaterDebugViewCS.hlsl
 		struct alignas(16) DebugConstants

@@ -38,7 +38,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SurfaceNormalStrength,
 	WaveDamping,
 	SplashStrength,
-	RiverSpeed)
+	RiverSpeed,
+	CurrentPull,
+	Turbulence,
+	FlowDetail)
 
 void FluidField::DrawSettings()
 {
@@ -176,6 +179,18 @@ void FluidField::DrawSettings()
 	ImGui::SliderFloat(T(TKEY("river_speed"), "River Speed"), &settings.RiverSpeed, 0.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("river_speed_tooltip"), "How fast rivers flow, from Unified Water's flowmap, in game units per second. 0 uses the test current instead."));
+	}
+	ImGui::SliderFloat(T(TKEY("current_pull"), "Current Pull"), &settings.CurrentPull, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("current_pull_tooltip"), "How firmly the water is held to the river's course. Lower lets rocks and pillars shape the flow more."));
+	}
+	ImGui::SliderFloat(T(TKEY("turbulence"), "Turbulence"), &settings.Turbulence, 0.0f, 5.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("turbulence_tooltip"), "Keeps eddies and swirls alive behind obstacles. 0 lets the flow smooth out."));
+	}
+	ImGui::SliderFloat(T(TKEY("flow_detail"), "Flow Detail"), &settings.FlowDetail, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("flow_detail_tooltip"), "Surface detail that moves with the simulated flow, so currents and eddies show on the water."));
 	}
 	if (waterShaderFailed)
 		ImGui::TextColored(Menu::GetSingleton()->GetTheme().StatusPalette.Error, "%s", T(TKEY("water_shader_failed"), "Water shaders failed to compile, so the water layer is off. Check CommunityShaders.log."));
@@ -349,6 +364,9 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.WaveDamping = std::isfinite(a_settings.WaveDamping) ? std::clamp(a_settings.WaveDamping, 0.0f, 5.0f) : defaults.WaveDamping;
 	a_settings.SplashStrength = std::isfinite(a_settings.SplashStrength) ? std::clamp(a_settings.SplashStrength, 0.0f, 3.0f) : defaults.SplashStrength;
 	a_settings.RiverSpeed = std::isfinite(a_settings.RiverSpeed) ? std::clamp(a_settings.RiverSpeed, 0.0f, 400.0f) : defaults.RiverSpeed;
+	a_settings.CurrentPull = std::isfinite(a_settings.CurrentPull) ? std::clamp(a_settings.CurrentPull, 0.0f, 2.0f) : defaults.CurrentPull;
+	a_settings.Turbulence = std::isfinite(a_settings.Turbulence) ? std::clamp(a_settings.Turbulence, 0.0f, 5.0f) : defaults.Turbulence;
+	a_settings.FlowDetail = std::isfinite(a_settings.FlowDetail) ? std::clamp(a_settings.FlowDetail, 0.0f, 2.0f) : defaults.FlowDetail;
 	return a_settings;
 }
 
@@ -806,8 +824,8 @@ void FluidField::BindWaterOutputs(ID3D11DeviceContext* a_context) const
 {
 	if (!waterShaderData.Enabled)
 		return;
-	ID3D11ShaderResourceView* srv = waterSolver.GetSurfaceSRV();
-	a_context->PSSetShaderResources(66, 1, &srv);
+	ID3D11ShaderResourceView* srvs[] = { waterSolver.GetSurfaceSRV(), waterSolver.GetFlowSRV() };
+	a_context->PSSetShaderResources(66, 2, srvs);
 }
 
 void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos, const int32_t a_gridMin[2], float a_cellSize, float a_deltaTime)
@@ -848,6 +866,8 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a
 
 	FluidFieldSim::WaterParams params;
 	params.damping = settings.WaveDamping;
+	params.currentRelax = settings.CurrentPull;
+	params.vorticity = settings.Turbulence;
 	// River currents from Unified Water's flowmap; the test current when there is none
 	RE::NiPointer<RE::NiSourceTexture> flowmapTexture;
 	const auto& unifiedWater = globals::features::unifiedWater;
@@ -893,7 +913,8 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a
 		.CellSize = a_cellSize,
 		.NormalStrength = settings.SurfaceNormalStrength,
 		.Enabled = waterSolver.HasMap() ? 1u : 0u,
-		.pad = {}
+		.FlowDetail = settings.FlowDetail,
+		.pad = 0.0f
 	};
 	BindWaterOutputs(a_context);
 	globals::profiler->EndPass();

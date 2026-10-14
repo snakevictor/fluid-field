@@ -73,6 +73,9 @@ struct FluidField : OverlayFeature
 		float WaveDamping = 0.8f;            ///< Fraction of the water's speed lost per second, as an exponential rate
 		float SplashStrength = 1.0f;         ///< How hard actors entering or leaving the water push it
 		float RiverSpeed = 100.0f;           ///< River current at full flowmap strength, world units per second (0: test current only)
+		float CurrentPull = 0.15f;           ///< Per-second pull of the water toward the river current; lower lets obstacles shape the flow
+		float Turbulence = 1.0f;             ///< Vorticity confinement: keeps eddies behind obstacles alive (0: off)
+		float FlowDetail = 0.5f;             ///< Strength of the surface detail carried by the simulated flow
 	};
 
 	Settings settings;
@@ -105,7 +108,8 @@ struct FluidField : OverlayFeature
 		float CellSize = 0.0f;
 		float NormalStrength = 0.0f;
 		uint32_t Enabled = 0;
-		float pad[2]{};
+		float FlowDetail = 0.0f;
+		float pad = 0.0f;
 	};
 	static_assert(sizeof(WaterShaderData) % 16 == 0);
 	/** @brief This frame's water grid placement, or Enabled = 0 when the water outputs are not valid. */

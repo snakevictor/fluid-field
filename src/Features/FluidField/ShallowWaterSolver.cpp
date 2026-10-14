@@ -246,7 +246,9 @@ namespace FluidFieldSim
 			.riverSpeed = params.riverSpeed,
 			.flowmapEnabled = params.flowmap ? 1u : 0u,
 			.flowmapCells = { params.flowmapCells[0], params.flowmapCells[1] },
-			.flowmapOffset = { params.flowmapOffset[0], params.flowmapOffset[1] }
+			.flowmapOffset = { params.flowmapOffset[0], params.flowmapOffset[1] },
+			.vorticity = params.vorticity,
+			.pad1 = {}
 		};
 		UpdateBuffer(context, waterConstants.get(), &waterData, sizeof(waterData));
 

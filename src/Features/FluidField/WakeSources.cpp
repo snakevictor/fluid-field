@@ -22,9 +22,11 @@ namespace FluidFieldSim
 		/** @brief Vertical speed (world units per second) below which crossing the surface is not a splash. */
 		constexpr float MIN_SPLASH_SPEED = 150.0f;
 		/** @brief Depth pushed down at the entry point per unit of downward speed. */
-		constexpr float SPLASH_DEPTH_PER_SPEED = 0.04f;
+		constexpr float SPLASH_DEPTH_PER_SPEED = 0.1f;
 		/** @brief Most depth one splash pushes down, world units. */
-		constexpr float MAX_SPLASH_DEPTH = 48.0f;
+		constexpr float MAX_SPLASH_DEPTH = 120.0f;
+		/** @brief A splash covers this many times the actor's wake radius. */
+		constexpr float SPLASH_RADIUS_SCALE = 2.5f;
 		/** @brief Leaving the water pushes less than entering it. */
 		constexpr float EXIT_SPLASH_SCALE = 0.4f;
 
@@ -105,7 +107,7 @@ namespace FluidFieldSim
 			if (a_settings.splashStrength > 0.0f && wasAbove != isAbove && std::abs(velocity.z) > MIN_SPLASH_SPEED) {
 				const float push = std::min(std::abs(velocity.z) * SPLASH_DEPTH_PER_SPEED, MAX_SPLASH_DEPTH) * a_settings.splashStrength * (isAbove ? EXIT_SPLASH_SCALE : 1.0f);
 				emitters.push_back({ .position = { texel[0], texel[1] },
-					.radius = radius * 1.5f,
+					.radius = radius * SPLASH_RADIUS_SCALE,
 					.depthRate = -push / a_deltaTime,  // Spread over this frame's sub-steps
 					.velocity = { velocity.x, velocity.y },
 					.pad1 = {} });

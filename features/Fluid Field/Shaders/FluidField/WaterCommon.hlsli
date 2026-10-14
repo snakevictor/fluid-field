@@ -34,6 +34,8 @@ cbuffer WaterCB : register(b1)
 	uint FlowmapEnabled;    // RiverFlowmap is bound and replaces Current
 	float2 FlowmapCells;    // Flowmap size in cells
 	int2 FlowmapOffset;     // Added to a cell's coordinates to get its flowmap tile
+	float Vorticity;        // Vorticity confinement strength: keeps eddies behind obstacles alive
+	float3 WaterPad1;
 };
 
 static const float NO_WATER = -1.0e8;
@@ -41,7 +43,9 @@ static const float NO_WATER = -1.0e8;
 Texture2D<float2> WaterMap : register(t4);
 Texture2D<float4> ObstacleMap : register(t5);
 // Unified Water's world flowmap: 64 texels per cell, tiles stacked with the southern row last.
-// RG is the flow direction ((RG * 2 - 1), turned 180 degrees as Water.hlsl does), B its weakness.
+// RG * 2 - 1 is the flow in world axes (east, north), with its length as the strength, and A an
+// intensity mask. B is 255 along the rivers checked, so it is not used (checked against the
+// White River at Riverwood, which flows north-east toward Whiterun, 2026-10-14).
 Texture2D<float4> RiverFlowmap : register(t6);
 
 static const float FLOWMAP_TEXELS_PER_CELL = 64.0;
@@ -51,7 +55,7 @@ float2 LoadRiverFlow(int2 texel)
 {
 	int2 size = int2(FlowmapCells * FLOWMAP_TEXELS_PER_CELL);
 	float4 c = RiverFlowmap[uint2(clamp(texel, 0, size - 1))];
-	return -(c.xy * 2.0 - 1.0) * sqrt(saturate(1.01 - c.z));
+	return (c.xy * 2.0 - 1.0) * c.w;
 }
 
 /** @brief The river's flow at a world position, world units per second, bilinear between flowmap texels. */
