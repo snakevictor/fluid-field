@@ -142,6 +142,28 @@ Entry format:
     -   A menu toggle, Tracy zones and a reset after loading screens.
     -   A clean interface (map and inputs in; height, flow and normals out)
         so the R2 solver can replace the basic one later.
+-   Refinements (2026-10-13, same day):
+    -   Principle: extend what Community Shaders and Skyrim already do; do
+        not reimplement it.
+    -   Order: build the slice right after D7 stage b, once `ff/grid-core`
+        has merged. The slice's debug overlay doubles as the stage c review
+        (how much riverbed is landscape). Raycasts (stage d) come after the
+        slice.
+    -   Currents: seed from Unified Water's world flowmap through a one-line
+        read-only accessor in `UnifiedWater.h` (approved). Use a constant
+        current when Unified Water is off.
+    -   Blending in `GetWaterNormal` (`package/Shaders/Water.hlsl`):
+        -   Add Fluid Field's large-scale wave normals on top of the base and
+            flow normals with `ReorientNormal`.
+        -   Keep vanilla wading ripples. Tune the player input so Fluid Field
+            does not draw rings at the same scale.
+        -   Keep Wetness Effects raindrops, but drift them with Fluid
+            Field's flow where it covers the water.
+        -   Sample at the Water Parallax-shifted position.
+        -   Fade everything to vanilla near the grid edge.
+        -   Limit the `FLUID_FIELD` define to the water shader.
+    -   Vanilla `ISWaterFlow` actor wakes only exist with Unified Water off.
+        Check in game whether they double Fluid Field's wake.
 -   Alternatives rejected: a "ripple slice" (normals-only ripples). It
     cannot show flow, wakes carried downstream or reflections, which vanilla
     displacement cannot do either. No ripple-slice plan had been written
