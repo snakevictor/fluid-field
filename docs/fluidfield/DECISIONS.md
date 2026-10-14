@@ -352,3 +352,20 @@ Entry format:
         visual mesh is already available.
 -   Decided by: @Victor ("yep, quit and deploy", after the survey)
 -   References: D14, `research/mesh-cut.md`
+
+## D16: Phase 1 soak deferred; water slice step 2 next
+
+-   Date: 2026-10-14
+-   Phase / spike: Phase 1 gate, water slice (D8)
+-   Decision: The Phase 1 gate's hour-long soak (stability, cell transitions,
+    loading screens) is deferred. It must run before the v0.1 beta gate.
+    Work moves to water slice step 2: Fluid Field's water drives the vanilla
+    water shader's normals (D8 refinements), so the simulation is visible in
+    the world.
+-   Status of the rest of the gate: the GPU budget is met so far (wind about
+    0.20 ms, water passes about 0.05 ms, RTX 5060 Ti at 1440p, 2026-10-14
+    profiler); cell transitions and loading screens worked through the day's
+    testing but were not soaked.
+-   Decided by: @Victor ("I'd rather move on to actually making visible
+    changes to the water")
+-   References: ROADMAP Phase 1 gate, D8, `reports/mesh-cut-1-test.md`
