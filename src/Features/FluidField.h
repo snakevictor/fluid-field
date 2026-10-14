@@ -112,6 +112,13 @@ private:
 
 	/** @brief World units per texel. */
 	float GetCellSize() const { return settings.GridSize / static_cast<float>(settings.GridResolution); }
+	/**
+	 * @brief Obstacle points per bed-ray fine point along each axis: as many as it takes to match the
+	 * simulation's cell size, so mesh-cut obstacles are as sharp as the grid can show (at most 4).
+	 */
+	int32_t GetObstacleRatio() const;
+	/** @brief World units between obstacle (mesh-cut) points: the bed rays' fine spacing over GetObstacleRatio. */
+	float GetObstacleSpacing() const;
 
 	FluidFieldSim::WindSolver solver;
 	FluidFieldSim::LandscapeCache landscape;

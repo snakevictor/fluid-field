@@ -37,7 +37,7 @@ namespace FluidFieldSim
 			double lastUpdateMs = 0.0;
 		};
 
-		/** @brief Fine points per block side; matches BedRaycasts::REFINE so blocks share one grid. */
+		/** @brief Points per obstacle block side, matching the obstacle texture upload block. */
 		static constexpr int32_t BLOCK = 4;
 		/** @brief A solid point's height above the cut, so the water solver reads it as a wall. */
 		static constexpr float SOLID_RISE = 64.0f;

@@ -462,7 +462,7 @@ void FluidField::Prepass()
 		if (settings.MeshCutObstacles) {
 			ZoneScopedN("FluidField - Mesh Cut");
 			globals::profiler->BeginPass("FluidField::Mesh Cut");
-			meshCut.Update(water, settings.RaySpacing / static_cast<float>(FluidFieldSim::BedRaycasts::REFINE), settings.LogDepthMap);
+			meshCut.Update(water, GetObstacleSpacing(), settings.LogDepthMap);
 			globals::profiler->EndPass();
 			// Nobody else consumes the changed blocks while the water is off
 			if (!settings.WaterEnabled)
@@ -601,8 +601,7 @@ bool FluidField::EnsureWater()
 		return false;
 
 	const uint mapResolution = FluidFieldSim::WaterMapBuilder::ResolutionFor(settings.GridSize);
-	const float fineSpacing = settings.RaySpacing / static_cast<float>(FluidFieldSim::BedRaycasts::REFINE);
-	const uint obstacleResolution = std::clamp(std::bit_ceil(static_cast<uint>(std::ceil(settings.GridSize / fineSpacing))), 16u, 1024u);
+	const uint obstacleResolution = std::clamp(std::bit_ceil(static_cast<uint>(std::ceil(settings.GridSize / GetObstacleSpacing()))), 16u, 1024u);
 	if (waterSolver.GetResolution() != settings.GridResolution || waterSolver.GetMapResolution() != mapResolution || waterSolver.GetObstacleResolution() != obstacleResolution) {
 		try {
 			waterSolver.CreateResources(globals::d3d::device, settings.GridResolution, mapResolution, obstacleResolution, [](ID3D11DeviceChild* object, const char* name) {
@@ -643,9 +642,21 @@ void FluidField::ReleaseWater()
 	hasLastPlayerPos = false;
 }
 
+int32_t FluidField::GetObstacleRatio() const
+{
+	const float rayFine = settings.RaySpacing / static_cast<float>(FluidFieldSim::BedRaycasts::REFINE);
+	return std::clamp(static_cast<int32_t>(std::lround(rayFine / GetCellSize())), 1, 4);
+}
+
+float FluidField::GetObstacleSpacing() const
+{
+	return settings.RaySpacing / static_cast<float>(FluidFieldSim::BedRaycasts::REFINE * GetObstacleRatio());
+}
+
 std::array<float, FluidFieldSim::MeshCut::BLOCK * FluidFieldSim::MeshCut::BLOCK * 4> FluidField::ComposeObstacleBlock(int32_t a_originX, int32_t a_originY) const
 {
 	constexpr int32_t n = FluidFieldSim::MeshCut::BLOCK;
+	const int32_t ratio = GetObstacleRatio();
 	std::array<float, n * n * 4> texels{};
 	for (int32_t j = 0; j < n; j++) {
 		for (int32_t i = 0; i < n; i++) {
@@ -659,7 +670,10 @@ std::array<float, FluidFieldSim::MeshCut::BLOCK * FluidFieldSim::MeshCut::BLOCK 
 				texel[0] = top;
 				texel[3] = 2.0f;
 			} else if (settings.RaycastBed) {
-				bedRays.FindFine(fx, fy, texel[0], texel[3]);
+				// The nearest bed-ray fine point; obstacle points are `ratio` times finer
+				const auto rx = static_cast<int32_t>(std::lround(static_cast<double>(fx) / ratio));
+				const auto ry = static_cast<int32_t>(std::lround(static_cast<double>(fy) / ratio));
+				bedRays.FindFine(rx, ry, texel[0], texel[3]);
 			}
 		}
 	}
@@ -668,9 +682,9 @@ std::array<float, FluidFieldSim::MeshCut::BLOCK * FluidFieldSim::MeshCut::BLOCK 
 
 void FluidField::UploadObstacles(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos)
 {
-	static_assert(FluidFieldSim::MeshCut::BLOCK == FluidFieldSim::BedRaycasts::REFINE, "mesh-cut and ray blocks share one grid");
 	constexpr int32_t n = FluidFieldSim::MeshCut::BLOCK;
-	const float fineSpacing = settings.RaySpacing / static_cast<float>(n);
+	const float fineSpacing = GetObstacleSpacing();
+	const int32_t ratio = GetObstacleRatio();
 	const auto blockKey = [](int32_t a_originX, int32_t a_originY) {
 		return (static_cast<uint64_t>(static_cast<uint32_t>(a_originX)) << 32) | static_cast<uint32_t>(a_originY);
 	};
@@ -682,9 +696,22 @@ void FluidField::UploadObstacles(ID3D11DeviceContext* a_context, const RE::NiPoi
 		meshWindowCentre[0] = meshWindowCentre[1] = INT32_MIN;
 	}
 
+	// A refined ray square covers ratio x ratio obstacle blocks (plus the half-point rounding at its edges)
 	for (const auto& block : bedRays.TakeDirtyBlocks()) {
-		const auto texels = ComposeObstacleBlock(block.originX, block.originY);
-		waterSolver.UploadObstacleBlock(a_context, block.originX, block.originY, n, texels.data(), fineSpacing);
+		const auto floorDiv = [](int32_t a_value, int32_t a_divisor) {
+			return a_value >= 0 ? a_value / a_divisor : -((-a_value + a_divisor - 1) / a_divisor);
+		};
+		const int32_t half = ratio / 2;
+		const int32_t minX = floorDiv(block.originX * ratio - half, n) * n;
+		const int32_t minY = floorDiv(block.originY * ratio - half, n) * n;
+		const int32_t maxX = floorDiv((block.originX + FluidFieldSim::BedRaycasts::REFINE) * ratio + half, n) * n;
+		const int32_t maxY = floorDiv((block.originY + FluidFieldSim::BedRaycasts::REFINE) * ratio + half, n) * n;
+		for (int32_t y = minY; y <= maxY; y += n) {
+			for (int32_t x = minX; x <= maxX; x += n) {
+				const auto texels = ComposeObstacleBlock(x, y);
+				waterSolver.UploadObstacleBlock(a_context, x, y, n, texels.data(), fineSpacing);
+			}
+		}
 	}
 	if (!settings.MeshCutObstacles)
 		return;
