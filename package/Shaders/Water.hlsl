@@ -755,6 +755,10 @@ WaterNormalData GetWaterNormal(PS_INPUT input, float distanceFactor, float norma
 #				endif
 	float3 displacement = normalize(float3(normalsAmplitude.w * (-0.5 + DisplacementTex.Sample(DisplacementSampler, displacementUv).zw),
 		0.04));
+#				if defined(FLUID_FIELD)
+	// Fluid Field's wakes replace vanilla's displacement trail where it simulates the water (D17)
+	displacement = normalize(lerp(displacement, float3(0, 0, 1), FluidField::GetCoverage(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz)));
+#				endif
 	finalNormal = lerp(displacement, finalNormal, displacement.z);
 #			endif
 

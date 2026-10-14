@@ -5,6 +5,7 @@
 #include "FluidField/LandscapeCache.h"
 #include "FluidField/MeshCut.h"
 #include "FluidField/ShallowWaterSolver.h"
+#include "FluidField/WakeSources.h"
 #include "FluidField/WaterMapBuilder.h"
 #include "FluidField/WaterSurfaces.h"
 #include "FluidField/WindSolver.h"
@@ -68,7 +69,9 @@ struct FluidField : OverlayFeature
 		float WakeStrength = 1.0f;           ///< How strongly the player drags the water along
 		float TestCurrentSpeed = 0.0f;       ///< Test current until vanilla flow is read, world units per second
 		float TestCurrentAngle = 0.0f;       ///< Test current heading in degrees, 0 = north, clockwise
-		float SurfaceNormalStrength = 2.0f;  ///< How strongly the simulated waves tilt the water's surface normal
+		float SurfaceNormalStrength = 1.0f;  ///< How strongly the simulated waves tilt the water's surface normal
+		float WaveDamping = 0.8f;            ///< Fraction of the water's speed lost per second, as an exponential rate
+		float SplashStrength = 1.0f;         ///< How hard actors entering or leaving the water push it
 	};
 
 	Settings settings;
@@ -94,7 +97,7 @@ struct FluidField : OverlayFeature
 	virtual bool HasShaderDefine(RE::BSShader::Type a_type) override { return a_type == RE::BSShader::Type::Water; }
 
 	/** @brief Water grid placement for the water shader (SharedData::fluidFieldSettings); 16-byte sized. */
-	struct alignas(16) WaterShaderData
+	struct WaterShaderData
 	{
 		int32_t GridMin[2]{};
 		uint32_t GridRes = 0;
@@ -144,8 +147,7 @@ private:
 	FluidFieldSim::WaterMapBuilder waterMap;
 	bool waterShaderFailed = false;
 	bool waterResourceFailed = false;
-	RE::NiPoint3 lastPlayerPos;
-	bool hasLastPlayerPos = false;
+	FluidFieldSim::WakeSources wakeSources;
 	/** @brief After a reset, the water waits for a map built from this location's settled inputs. */
 	bool waterAwaitingMap = true;
 

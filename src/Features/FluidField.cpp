@@ -32,7 +32,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	WakeStrength,
 	TestCurrentSpeed,
 	TestCurrentAngle,
-	SurfaceNormalStrength)
+	SurfaceNormalStrength,
+	WaveDamping,
+	SplashStrength)
 
 void FluidField::DrawSettings()
 {
@@ -158,6 +160,14 @@ void FluidField::DrawSettings()
 	ImGui::SliderFloat(T(TKEY("surface_normal_strength"), "Surface Strength"), &settings.SurfaceNormalStrength, 0.0f, 8.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("surface_normal_strength_tooltip"), "How strongly the simulated waves tilt the water's surface. 0 hides them; the simulation keeps running."));
+	}
+	ImGui::SliderFloat(T(TKEY("wave_damping"), "Wave Damping"), &settings.WaveDamping, 0.0f, 5.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("wave_damping_tooltip"), "How quickly waves and wakes die down. Higher values keep them close to whatever made them."));
+	}
+	ImGui::SliderFloat(T(TKEY("splash_strength"), "Splash Strength"), &settings.SplashStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("splash_strength_tooltip"), "How hard jumping or falling into the water, or climbing out of it, pushes the water."));
 	}
 	if (waterShaderFailed)
 		ImGui::TextColored(Menu::GetSingleton()->GetTheme().StatusPalette.Error, "%s", T(TKEY("water_shader_failed"), "Water shaders failed to compile, so the water layer is off. Check CommunityShaders.log."));
@@ -328,6 +338,8 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.TestCurrentAngle = std::isfinite(a_settings.TestCurrentAngle) ? std::clamp(a_settings.TestCurrentAngle, 0.0f, 360.0f) : defaults.TestCurrentAngle;
 
 	a_settings.SurfaceNormalStrength = std::isfinite(a_settings.SurfaceNormalStrength) ? std::clamp(a_settings.SurfaceNormalStrength, 0.0f, 8.0f) : defaults.SurfaceNormalStrength;
+	a_settings.WaveDamping = std::isfinite(a_settings.WaveDamping) ? std::clamp(a_settings.WaveDamping, 0.0f, 5.0f) : defaults.WaveDamping;
+	a_settings.SplashStrength = std::isfinite(a_settings.SplashStrength) ? std::clamp(a_settings.SplashStrength, 0.0f, 3.0f) : defaults.SplashStrength;
 	return a_settings;
 }
 
@@ -520,7 +532,7 @@ void FluidField::Prepass()
 		waterSolver.Reset();
 		waterMap.Clear();
 		waterAwaitingMap = true;
-		hasLastPlayerPos = false;
+		wakeSources.Clear();
 		globals::profiler->EndPass();
 	}
 
@@ -648,7 +660,7 @@ void FluidField::ReleaseWater()
 	}
 	waterMap.Clear();
 	waterAwaitingMap = true;
-	hasLastPlayerPos = false;
+	wakeSources.Clear();
 	waterShaderData = {};
 }
 
@@ -820,32 +832,13 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a
 		UploadObstacles(a_context, a_playerPos);
 	}
 
-	// The player's velocity from their movement since the last step, ignoring teleports
-	constexpr float MAX_WAKE_SPEED = 1500.0f;
-	RE::NiPoint3 playerVelocity{};
-	if (hasLastPlayerPos)
-		playerVelocity = (a_playerPos - lastPlayerPos) / a_deltaTime;
-	lastPlayerPos = a_playerPos;
-	hasLastPlayerPos = true;
-	const float speed = std::sqrt(playerVelocity.x * playerVelocity.x + playerVelocity.y * playerVelocity.y);
-
-	// A wake only where the player is in or at the water, not on a bridge above it
-	std::optional<FluidFieldSim::WaterEmitter> wake;
-	float surface = 0.0f;
-	if (settings.WakeStrength > 0.0f && speed > 20.0f && speed < MAX_WAKE_SPEED &&
-		water.SampleHeight(a_playerPos.x, a_playerPos.y, surface) != FluidFieldSim::WaterSurfaces::Source::None &&
-		a_playerPos.z < surface + 32.0f && a_playerPos.z > surface - 256.0f) {
-		wake = FluidFieldSim::WaterEmitter{
-			.position = { a_playerPos.x / a_cellSize - static_cast<float>(a_gridMin[0]), a_playerPos.y / a_cellSize - static_cast<float>(a_gridMin[1]) },
-			.radius = std::max(40.0f / a_cellSize, 1.5f),
-			.depthRate = 0.0f,
-			.velocity = { playerVelocity.x * settings.WakeStrength, playerVelocity.y * settings.WakeStrength },
-			.pad1 = {}
-		};
-	}
-	const auto emitters = wake ? std::span<const FluidFieldSim::WaterEmitter>(&*wake, 1) : std::span<const FluidFieldSim::WaterEmitter>();
+	// Wakes and splashes from the player and the actors around them (D17)
+	const auto& emitterList = wakeSources.Update(water, a_playerPos, a_gridMin, a_cellSize, settings.GridResolution, a_deltaTime,
+		{ .wakeStrength = settings.WakeStrength, .splashStrength = settings.SplashStrength });
+	const std::span<const FluidFieldSim::WaterEmitter> emitters(emitterList);
 
 	FluidFieldSim::WaterParams params;
+	params.damping = settings.WaveDamping;
 	const float currentHeading = settings.TestCurrentAngle * std::numbers::pi_v<float> / 180.0f;
 	params.current[0] = std::sin(currentHeading) * settings.TestCurrentSpeed;
 	params.current[1] = std::cos(currentHeading) * settings.TestCurrentSpeed;
