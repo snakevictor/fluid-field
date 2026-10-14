@@ -4,7 +4,7 @@ Oct 13, 2026 · read-only study of an experimental feature
 
 **Scope:** what the experimental Community Shaders **Procedural Grass** feature by Dwemer Engineer does, how it sits next to vanilla grass and the existing CS grass features, and where Fluid Field (FF) can connect to it in either direction. FF can drive the blades with wind, and grass can act as drag or as an obstacle in the field. Context: `ROADMAP.md` (grass bending is the optional side track, ROADMAP.md:16, 87), `reports/grass-collision.md`, `research/fluidninja-live2.md`, and FF's grid on `ff/grid-core` (`features/Fluid Field/Shaders/FluidField/Common.hlsli`, `src/Features/FluidField.h`).
 
-**Source:** no source repository exists. Everything here comes from the author's test build: a full CS AIO dated 2026-10-08, with shaders dated 2026-09-30. Paths are relative to that build and written as `pgrass:<path>:<lines>`. The HLSL ships as source. The C++ was studied only through printable strings in `SKSE/Plugins/CommunityShaders.dll`: setting keys, log messages, GPU resource debug names, profiler pass names and shader paths. The DLL was not disassembled or decompiled. A `CommunityShaders.pdb` ships beside it; it was not used. Anything taken from strings alone, or inferred from shader structure, is marked **UNVERIFIED**.
+**Source:** no source repository exists. Everything here comes from the author's test build: a full CS AIO dated 2026-10-08, with shaders dated 2026-09-30. Paths are relative to that build and written as `pgrass:<path>:<lines>`. The HLSL ships as source. The C++ was studied only through printable strings in `SKSE/Plugins/CommunityShaders.dll`: setting keys, log messages, GPU resource debug names, profiler pass names and shader paths. The DLL was not disassembled or decompiled. A `CommunityShaders.pdb` ships beside it. Anything taken from strings alone, or inferred from shader structure, is marked **UNVERIFIED**. **Update (Oct 14, 2026):** the DLL was later decompiled with Ghidra using that PDB (D9 as amended). Section 7 holds the C++ findings, and they take precedence over the string-based guesses in sections 2–4.
 
 **Licence:** Procedural Grass was shared on the Community Shaders Discord. It is Community Shaders code under GPL-3.0-or-later, so Fluid Field may study and reuse it with credit to Dwemer Engineer. Excerpts below are quoted where they help the explanation.
 
@@ -141,6 +141,8 @@ Inferred from resource dependencies and the profiler pass names in the DLL, whic
 -   IBL (ambient LUT)
 
 ### 3.3 Engine hooks (from DLL strings only)
+
+_Superseded by section 7.2, which lists the full hook set and the vanilla-grass mechanism, and by 7.3 for loading-screen behaviour._
 
 -   `[Procedural Grass] Installed hooks` is logged from `ProceduralGrass::PostPostLoad`.
 -   **One logged hook:** `stl::write_thunk_call<ProceduralGrass::Main_RenderShadowmasks_UpdateCamera, 0x05>`. This is a call-site thunk inside `Main::RenderShadowmasks`. Its role, probably a per-frame camera and main-thread point for steps 1–2, is UNVERIFIED. Hooks installed without a logged `__FUNCSIG__` would not show up as strings.
@@ -365,13 +367,327 @@ Two specific conflicts follow:
 
 ### 6.6 Open questions for the author
 
-1.  Where in the frame does generation run, relative to CS `EarlyPrepass` and `Prepass`? What does the `Main_RenderShadowmasks_UpdateCamera` hook do? Are there other hooks?
-2.  Is wind ever taken from the weather or sky wind, or only from `WindSpeed`/`WindAngle`? How is `grassHiZBounds.z` (wind reach) computed?
-3.  Would you accept a per-blade 2D wind offset? Either a new `Blade` field, or folding external wind into the collision cache. Which tiers should receive it (Low and Far facing only)?
-4.  Is a length-preserving bend wanted for strong gusts?
-5.  How does "Toggle Vanilla Grass Rendering" hide vanilla grass, and what is the default? Is Procedural Grass meant to replace vanilla grass eventually?
-6.  How does the feature behave on loading screens and worldspace changes: quadrant cache, top-down window, terrain lift map, collision history?
-7.  Could TopDownOcclusion become a shared service with a toroidal mode, configurable extent and object filter, so FF can use it for statics (D7 stage 4)? Which objects does it draw, and how often is it refreshed?
-8.  Could the LAND quadrant cache and `TerrainHeightMap` be shared with FF's D7 stage 1 map?
-9.  Would you expose `GrassDensity` and `GrassPresence` and their window parameters through a C++ accessor, for FF drag and fog?
-10. Is the source going to be published, for example as a PR or branch, so FF can build against it rather than a binary?
+Status after the decompile (section 7). **Answered** means the build itself answers the question; the author may still intend different behaviour, so the remaining part of each question is kept.
+
+1.  **Answered (7.1, 7.2).** Where in the frame does generation run, relative to CS `EarlyPrepass` and `Prepass`? What does the `Main_RenderShadowmasks_UpdateCamera` hook do? Are there other hooks?
+    -   Generation runs inside the `Main::RenderShadowmasks` call-site thunk. That is after the engine depth prepass and before CS `Prepass`.
+    -   There is one more patch: a 7-byte NOP in `Main::RenderDepth`.
+    -   _Still to ask:_ why this site was chosen, and whether the NOP should stay active when the feature is disabled.
+2.  **Answered (7.6).** Is wind ever taken from the weather or sky wind, or only from `WindSpeed`/`WindAngle`? How is `grassHiZBounds.z` (wind reach) computed?
+    -   Wind comes only from the settings.
+    -   The reach is `|WindSpeed| × nearHiZRadius × 0.8748`.
+    -   _Still to ask:_ is a weather link planned?
+3.  Open: would you accept a per-blade 2D wind offset? Either a new `Blade` field, or folding external wind into the collision cache. Which tiers should receive it (Low and Far facing only)?
+4.  Open: is a length-preserving bend wanted for strong gusts?
+5.  **Answered (7.2).** How does "Toggle Vanilla Grass Rendering" hide vanilla grass, and what is the default? Is Procedural Grass meant to replace vanilla grass eventually?
+    -   While the feature is enabled, it calls the engine's `ToggleGrass` console function whenever `BGSGrassManager::enableGrass` is true. Vanilla grass is therefore always off.
+    -   No code turns it back on.
+    -   _Still to ask:_ is the one-way behaviour intended, and where is the string used? No exported function references it.
+6.  **Mostly answered (7.3).** How does the feature behave on loading screens and worldspace changes: quadrant cache, top-down window, terrain lift map, collision history?
+    -   The top-down capture is dropped on a worldspace change, in interiors, on `GameLoaded` and when the loaded cells change.
+    -   The far LAND cache is flushed by a generation counter.
+    -   The near LAND cache is validated only by pointer equality.
+    -   _Still to ask:_ is pointer-only validation safe across a detach and reattach?
+7.  **Partly answered (7.5).** Could TopDownOcclusion become a shared service with a toroidal mode, configurable extent and object filter, so FF can use it for statics (D7 stage 4)? Which objects does it draw, and how often is it refreshed?
+    -   It draws every non-actor reference with loaded 3D within 1.5 × the half extent, after a few flag filters.
+    -   It fully redraws every time the snapped centre moves.
+    -   _Still open:_ the shared-service question, now with a Z band added.
+8.  **Partly answered (7.4).** Could the LAND quadrant cache and `TerrainHeightMap` be shared with FF's D7 stage 1 map?
+    -   The near cache is keyed by cell and copies `loadedData` heights with an anchor.
+    -   The far cache parses VHGT from the plugin files on a thread pool.
+    -   _Still open:_ would you split out a shared landscape-height service?
+9.  Open: would you expose `GrassDensity` and `GrassPresence` and their window parameters through a C++ accessor, for FF drag and fog?
+10. Open: is the source going to be published, for example as a PR or branch, so FF can build against it rather than a binary?
+
+## 7. C++ implementation (from the decompiled build)
+
+**Method.** The build's `CommunityShaders.dll` was decompiled with Ghidra using the shipped full PDB, so the function names are real. 719 functions from the Procedural Grass sources were exported (`ProceduralGrass.cpp` plus `ProceduralGrass/*.cpp`). This was done under D9 as amended: the output is reference only, and only short snippets are quoted here.
+
+**Citations** take the form `decomp:<File>.c` + function + address, because line numbers in the export are not stable.
+
+**Reading caveats:**
+
+-   Ghidra applied a `ProceduralGrass::Settings` layout that is **off by one field**. For example, `LoadSettings` stores `"WindSpeed"` into the field Ghidra calls `windAngle`, and `"OcclusionHalfExtent"` into `spatialFreq` (`decomp:ProceduralGrass.c` `LoadSettings` @ 1804ebd50). Settings fields below are named by their JSON key, not by Ghidra's label.
+-   Several small functions are inlined or tail-called: `PostDepthRendering` appears inlined into the hook thunk, and `GameLoaded` is a 16-byte stub. Call order is taken from the non-inlined copies.
+
+### 7.1 Feature lifecycle
+
+**Overrides seen in the export:**
+
+-   `GetName`, `GetShortName`, `GetDisplayName`, `GetFeatureSummary`
+-   `SetupResources`, `ClearShaderCache`
+-   `DrawSettings`, `SaveSettings`, `LoadSettings`, `RestoreDefaultSettings`
+-   `DataLoaded`, `GameLoaded`, `PostPostLoad`
+
+No `Reset`, `Prepass`, `EarlyPrepass`, `Load` or `ReflectionsPrepass` was found. A trivial override could have been folded away, so this is **UNVERIFIED**, but none of the per-frame work goes through these callbacks.
+
+**What each callback does:**
+
+-   **`PostPostLoad`** installs the two engine patches described in 7.2 and logs `[Procedural Grass] Installed hooks` (`decomp:ProceduralGrass.c` `PostPostLoad` @ 1804da900).
+-   **`DataLoaded`** calls the vanilla `ToggleGrass` function once, guarded by a one-shot flag (`decomp:ProceduralGrass.c` `DataLoaded` @ 1804da860). Ghidra names the flag `grassCellCache.ready.field_0x31`, which is probably a typing error. **UNVERIFIED.**
+-   **`GameLoaded`** (@ 1804da850) is a 16-byte stub. Ghidra shows `TopDownOcclusion::Invalidate`'s body for it, which releases captured geometry, clears grass-surface quadrants, bumps the revision and resets `capturedWorldspace`. It presumably tail-calls `Invalidate`. **UNVERIFIED.**
+-   **`SetupResources`** creates all the textures and buffers, compiles the support shaders, and runs `TopDownOcclusion`'s resource setup (7.3).
+
+**Where per-frame work runs.** Everything up to and including Low and Far generation runs in the `Main::RenderShadowmasks` call-site thunk. The order comes from `decomp:ProceduralGrass.c` `PostDepthRendering` @ 1804d7860, which is also inlined into `Main_RenderShadowmasks_UpdateCamera::thunk` @ 1804d7bd0:
+
+1.  Call the original function, then force vanilla grass off (7.2).
+2.  If the feature is disabled, the player is missing or the map menu is open, only copy `kMAIN` depth into `kPOST_ZPREPASS_COPY`, then return.
+3.  Save the render targets, viewports and shaders that it changes.
+4.  `TopDownOcclusion::Render`: gather if needed, redraw if needed, pad.
+5.  `GetVisibleQuadrants` (CPU): the grass-cell cache frame step, near and far quadrant lists, and the presence rebuild.
+6.  `HiZPyramid::Build` from live depth.
+7.  `PostDepthRenderPrep`: `GrassCollision::Update`, then fill and upload `GrassGlobals`, including wind (7.6).
+8.  `GenerateBlades(ctx, true)`: High and Mid generation.
+9.  `RenderDepth`: High and Mid depth prepass into the main depth buffer.
+10. Rebuild Hi-Z if it used live depth. If that fails, zero the Hi-Z params in `GrassGlobals`.
+11. `CopyDepthBuffer`: `CopyResource(depthStencils[7], depthStencils[0])`, so the post-Z-prepass copy now contains grass.
+12. `UpdateTerrainLift`.
+13. `GenerateBlades(ctx, false)`: Low and Far generation.
+14. If Terrain Blending is on, `TerrainBlending::MergeSceneDepthIntoBlend` and rebind t17.
+15. Restore state.
+
+**Drawing.** Drawing goes through three public non-virtual entry points:
+
+-   `DeferredRendering` @ 1804dab90: `DeferredRenderPrep` plus `RenderGrass` for High, Mid and Low into the G-buffer.
+-   `ForwardRenderFar` @ 1804dbb30: Far forward, the terrain canopy, and another depth copy.
+-   `DarkenTerrainUnderGrass` @ 1804dad00.
+
+None of them has a caller inside the exported Procedural Grass code. They are presumably called from the build's `Deferred.cpp`, which was not exported. **UNVERIFIED.**
+
+**Consequence for FF.** Procedural Grass generates **before** CS `Prepass`, where FF steps its solver (`Deferred.cpp:249`). A Procedural Grass generator that reads FF wind would see the previous frame's field. That is the one-frame lag section 4.3 already assumed, and it is acceptable.
+
+### 7.2 Engine hooks and patches
+
+Every relocation found in the five decompiled files:
+
+| Site (SE / AE ID, SE / AE offset)                                                                                         | Kind                                                       | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RelocationID(100422, 107140)` + `0x7B` / `0x69`. The ID is `Main::RenderShadowmasks` per `src/FrameAnnotations.cpp:342`. | `stl::write_thunk_call<…UpdateCamera, 0x05>` (5-byte call) | The whole per-frame pipeline in 7.1. The original callee runs first. The patched call is presumably the camera update the name refers to. **UNVERIFIED.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `RelocationID(100421, 107139)` + `0x523` / `0xA3F`. The ID is `Main::RenderDepth` per `src/FrameAnnotations.cpp:940`.     | `REL::safe_fill(…, 0x90, 7)`: 7-byte NOP                   | **Removes an instruction in the engine's depth prepass, permanently, even with the feature disabled.** The bytes were not disassembled. The likely target is the engine's own `kMAIN` → `kPOST_ZPREPASS_COPY` copy. **UNVERIFIED.** The evidence: both paths of the thunk do that copy themselves, the disabled path unconditionally and the enabled path after the grass depth prepass (`decomp:ProceduralGrass.c` `CopyDepthBuffer` @ 1804d77d0). If this reading is right, every CS consumer of `kPOST_ZPREPASS_COPY` now gets the copy at `RenderShadowmasks` time, and it includes High and Mid grass depth. That matches the "POST_ZPREPASS_COPY (stale fallback)" log in section 2.3. |
+| `RelocationID(22391, 22871)`                                                                                              | function call                                              | The vanilla `ToggleGrass` (TG) console handler (`decomp:ProceduralGrass.c` `ConsoleFunc_ToggleGrass` @ 1804d7b40).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `RelocationID(514783, 400936)`                                                                                            | data                                                       | Default `TESLandTexture*`, the same as `src/TruePBR.cpp:1225` (`GrassCellCache::ParseLandscape`, `GetCellCache`, `PGrassCommon::GetDefaultLandTexture`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `RelocationID(67819, 69161)`                                                                                              | function call                                              | The `BSFixedString` constructor, used for the `"BSX"` lookup in `TopDownOcclusion::CollectFrom`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+
+**Hooks and IDs that are absent:**
+
+-   No `write_vfunc`, no detour, no other `write_thunk_call`.
+-   None of the precipitation-occlusion chain: no `RelocationID(35560, 36559) + 0x3A1`, no `SetViewFrustum` `25643 + 0x5D9`.
+-   No `REL::ID(564236)`.
+
+**Hiding vanilla grass.** At the top of the thunk:
+
+```cpp
+if (settings.Enabled && grassManager && grassManager->enableGrass) ConsoleFunc_ToggleGrass();
+```
+
+-   This flips `BGSGrassManager::enableGrass` off through the engine's own console path, every frame it finds it on.
+-   No path calls it to turn grass back on. Disabling Procedural Grass at runtime leaves vanilla grass off until the user types `TG`. **UNVERIFIED** that nothing outside the export re-enables it.
+-   The `feature.procedural_grass.toggle_vanilla_grass` key is not referenced by any exported function.
+
+**Runtime targeting.** Offsets are chosen by `IsAE()` only. The VR ID equals the SE ID (`_vrID = _seID`), and VR uses the SE offsets. CS's own hooks at nearby sites use `VersionedRelocation::Select` with separate VR offsets (`src/Deferred.h:159`). VR correctness of both patches is therefore **UNVERIFIED**.
+
+The structure offsets are VR-aware through `REL::Relocate(se, ae, vr)`:
+
+-   `NiAVObject` flags: 0xF4 / 0x10C
+-   `NiNode` children: 0x110 / 0x138
+-   `BSShaderProperty` slot: 0x120 / 0x160
+-   `BSTriShape` triangle count: 0x158 / 0x198
+
+### 7.3 GPU resources, lifetime and loading screens
+
+**Created in `SetupResources`** (`decomp:ProceduralGrass.c` `SetupResources` @ 1804e6830, `CreateGrassTextures` @ 1804e8fb0, `CreateIndexBuffers` @ 1804e9cf0):
+
+| Resource                                                           | Size and format                                                                            |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `PGrass::MaterialDetail`                                           | 64×64 × 512 slices, `R8G8B8A8_UNORM`, SRV                                                  |
+| `PGrass::GrassDensity`                                             | 256², `R32_UINT`, UAV                                                                      |
+| `PGrass::DistantAmbientLUT`                                        | 32², `R16G16B16A16_FLOAT`                                                                  |
+| `PGrass::TerrainLift`, `TerrainLiftSurface`, `TerrainLiftMeasured` | 512² each, `R32_FLOAT`                                                                     |
+| `PGrass::GrassPresence`                                            | 177², `R8_UINT`, no UAV. 177 = 11 quadrants × 16 + 1, i.e. ±5 quadrants around the player. |
+| constant buffers                                                   | `GlobalsCB`, `TypesCB`, `GeneratorTypesCB`, `QuadrantsCB`, `WorkRange`                     |
+| index buffers                                                      | the eight fixed blade-index buffers                                                        |
+
+**Created lazily:**
+
+-   `PGrass::TerrainCanopyTypes`: 1024², `R32_UINT`, in `UpdateTerrainCanopy` @ 1804e1240.
+-   `PGrass::TerrainDarkeningSceneCopy`, in `DarkenTerrainUnderGrass`.
+-   `PGrass::ObjectSurfaces` and `ObjectSurfaceDepth`, in `TopDownOcclusion::CreateGrassSurfaceResources` @ 180501120.
+-   Per-tier `PGrass::Blades`, `IndirectArgs`, `BatchArgs`, `IndirectArgsStaging`, `QuadrantHeights`, `QuadrantGrassCells`, `VisibleWork`, `TileHeightBounds` and `OccupancyRows`, in `PGrassRenderer<N,M>`.
+
+`PGrassRenderer::EnsureBladeCapacity` grows the blade buffer on demand. `ResetBladeCapacity` exists but has no caller in the export, so the buffer only grows. **UNVERIFIED.**
+
+**TopDownOcclusion resources** (`decomp:TopDownOcclusion.c` `SetupResources` @ 180504800):
+
+-   `TopDownOcclusion::HeightMap` and `HeightMapLow`: `mapDim²`, `R32_FLOAT`, SRV + RTV + UAV.
+-   `HeightMapTmp` and `HeightMapLowTmp`: `R32_FLOAT`, SRV + UAV.
+-   `HeightCB` (dynamic, updated per draw) and `PadCB`.
+-   `snapDim` is forced to 256 in `SetupResources`.
+-   The default `mapDim` is not visible in the exported code. The debug UI prints it ("Occlusion map: %s %u x %u"). **UNVERIFIED.**
+
+Freeing happens only in the destructors and when shaders are recompiled (`ClearShaderCache` → `TopDownOcclusion::Invalidate`). No GPU resource is freed or recreated on loading screens.
+
+**Loading screens, cell changes and worldspace changes** (the CPU-side state that is reset):
+
+| State                              | Reset trigger                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| TopDownOcclusion captured geometry | Dropped and re-gathered on each of these: interiors (`TES::interiorCell`), a worldspace with flags `0x60` (`kNoSky \| kFixedDimensions`), a worldspace change, `GameLoaded`, a change in the loaded-cell stamp, the window centre moving at least `max(halfExtent/4, one snap texel)` from the last capture, and half-extent edits. The stamp is an FNV-1a hash of each `gridCells` cell pointer, its `loadedData` pointer and `IsAttached()` (`decomp:TopDownOcclusion.c` `Render` @ 1805059e0). |
+| Near LAND cache (`grassMapCache`)  | Entry rebuilt when its `TESObjectLAND*` or `loadedData*` differs. LRU-evicted above 256 entries, never evicting the current frame's (`EvictGrassMapCache` @ 1804fdd00). Fully cleared only from the settings UI and `RestoreDefaultSettings`. **Its key is cell (x, y) without the worldspace** (7.7).                                                                                                                                                                                            |
+| Far LAND cache (`GrassCellCache`)  | On a root-worldspace change: `generation` is bumped and the plugin file list is rebuilt, so in-flight jobs from the old worldspace are presumably discarded in `DrainCompleted`. **UNVERIFIED.** LRU above 2048 cells (`EvictUntouched`).                                                                                                                                                                                                                                                         |
+| Terrain lift                       | Self-validating per texel (section 2.2). No C++ reset was found.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Wind history (`previousWind*`)     | Reset when the shader timer jumps by less than 0 or more than 0.1 s (`PostDepthRenderPrep` @ 1804d5eb0).                                                                                                                                                                                                                                                                                                                                                                                          |
+
+**Engine-owned resources held across frames: yes, in TopDownOcclusion.** Each `CapturedGeometry` keeps:
+
+-   an `NiPointer<BSGeometry>` (`IncRefCount`)
+-   AddRef'd `com_ptr`s to the geometry's own engine vertex and index buffers, taken from `rendererData`
+-   a snapshot of the world transform
+
+These live until the next re-gather (`decomp:TopDownOcclusion.c` `CollectFrom` @ 180503080, `GatherGeometry` @ 180502f20). The refcounts keep this memory-safe, but it is exactly what FF's rule forbids. Any FF reuse of this code must re-fetch the geometry each time it draws, or hold only reference handles.
+
+### 7.4 Landscape data
+
+There are **two independent paths**.
+
+**Near path: loaded cells, render thread.** `ProceduralGrass::RebuildNearQuadrants` @ 1804fc830 runs whenever a visibility stamp changes.
+
+-   It walks `TES::gridCells` and keeps only cells with every element of the chain present: exterior data, LAND, `loadedData`, a quadrant mesh, and the mesh flag `0x1000` set on `NiAVObject` flags. These are the debug counters `cells → exterior → land → loadedData → mesh → preProcessed`. The flag check can be switched off from debug.
+-   For each quadrant it calls `GetCellCache(land, cellX, cellY, quadrant)` @ 1804fed70:
+
+    -   **Key:** `(cellX << 32) | cellY` in an `unordered_map`, with no worldspace in the key.
+    -   **Heights:** copies `loadedData->heights[4][289]` plus an anchor:
+
+        ```cpp
+        anchor = loadedData->heightExtents.x - min(heights[0..3][*]);   // stored height = raw + anchor
+        ```
+
+        Absolute Z is anchored to `heightExtents.x`. The debug panel shows "LAND anchor applied / mesh world Z" to compare against the mesh's world Z. This is the absolute-Z question in R1 (open question 1 there). The author's answer is an anchor to `heightExtents.x`. FF can reproduce it and still run the `TES::GetLandHeight` check from D7 stage 1.
+
+    -   **Per-vertex grass type:** read from `loadedData->quadTextures[q][0..4]` and `percents[q][vertex][layer]`, with `defQuadTextures[q]` as the base. A texture only "grows grass" above `fTexturePctThreshold:Grass × 255`; the INI value is read and defaults to 0.005. Types are resolved per LTEX via `ResolveGrassType`, then slope-limited.
+    -   **Also stored:** per-quadrant min and max height, a 16×16 occupancy bitmask, and a `cacheVersion`.
+
+-   **Tier membership** is decided by Chebyshev distance in 2048-unit quadrants from the **player** position:
+
+    | Tier | Distance | Cap |
+    | ---- | -------- | --- |
+    | High | < 3      | 25  |
+    | Mid  | 1–4      | 81  |
+    | Low  | 2–6      | 169 |
+
+    This confirms that the `PGrassRenderer<N,M>` template's N is the per-tier quadrant capacity.
+
+-   **No terrain-cell lock is taken.** `REL::ID(564236)` does not appear anywhere.
+
+**Far path: plugin files, worker threads.** `GrassCellCache` (`decomp:GrassCellCache.c`):
+
+-   **Thread pool.** A `BS::thread_pool` with `clamp(hardware_concurrency / 4, 1, 4)` threads, created in `BeginFrame` @ 1804e00f0.
+-   **Request.** `Request` @ 1804df100 FNV-hashes `(x, y)`, records the cell in `pending`, captures the current `generation`, and `detach_task`s a job.
+-   **ReadCell** (@ 1804de330):
+    -   It walks the loaded plugins **from last to first**, so the winning override is found first.
+    -   For each plugin it does `TESFile::Duplicate(file, 0x4000)`, then `SeekCell(worldspace, x, y)`, then `SeekLandscapeForCurrentCell`.
+    -   It then calls `ParseLandscape` @ 1804dcb90, which decodes `VHGT` itself: a 1096-byte record holding the offset and 33×33 int8 deltas, accumulated by rows, ×8. It also reads `BTXT`, `ATXT` and `VTXT`.
+    -   Each result is a 5976-byte `CellGrass`: 4 × 289 floats of heights, initialised to −3e38, plus 4 × 289 grass ids.
+-   **Completion.** Results queue under `completedMutex` and are moved into the map by `DrainCompleted` on the render thread. `EvictUntouched` keeps at most 2048 cells, about 12 MB.
+-   **What this gives.** Absolute heights for **any** cell in the worldspace, loaded or not. It is used for the Far tier out to `FarRadius`.
+
+**Compared with R1 and D7 stage 1.**
+
+-   The **near path** is almost exactly R1 Prototype B's "bed from landscape heights": same source, same 4 × 17² layout. It differs in three ways:
+    -   it is a Procedural Grass-owned singleton keyed by cell
+    -   it carries grass-type data
+    -   it is gated on the preprocessed-mesh flag, which FF does not want for a riverbed (a cell without the flag still has valid heights)
+-   **FF could share it** if it is split into a feature-neutral `LandscapeCellCache` that holds heights, min/max and the anchor, keyed by `(worldspace, x, y)`, with Procedural Grass's type data layered on top.
+-   **Calling into Procedural Grass directly is not advisable:**
+    -   `GetCellCache` is a member of the feature
+    -   it runs only while Procedural Grass is enabled
+    -   it is not locked
+    -   it uses pointer-only validity
+-   **The far path is not needed for FF's grid**, which is 4096 units and inside the loaded cells. Its `VHGT` decoder is a useful reference for a view-independent fallback (open question 1 in R1, and cells that load late), and for checking FF's anchored heights against file data.
+
+### 7.5 TopDownOcclusion in detail
+
+**It is its own mini renderer, not the precipitation-occlusion path.** No `Precipitation::SetupMask`/`RenderMask`, no `BSShaderAccumulator`, no `SetViewFrustum` hook, and no use of `RelocationID(35560, 36559) + 0x3A1`. It therefore never touches the Upscaling → Skylighting chain at that site. It does not need Skylighting's alpha-group pool growth. It does not depend on Upscaling's `dynamicResolutionLock`. No Upscaling symbol appears in the export. Skylighting is referenced only to bind its probe array in `DeferredRenderPrep`.
+
+**Gather** (`GatherGeometry` @ 180502f20, lambda `_Do_call` @ 1805028d0, `CollectFrom` @ 180503080). This runs on the render thread inside the thunk.
+
+1.  It calls `TES::ForEachReferenceInRange(player, 1.5 × halfExtent, …)`.
+2.  It skips references that are disabled, deleted (flag `0x20`), without 3D, or actors (form type `0x3E`). The base type `0x22` (`STAT`) only sets a flag used by grass-surface resolution, so **activators, furniture, trees, flora and clutter are all captured**.
+3.  `CollectFrom` recurses through `NiNode` children and skips `NiAVObject` objects flagged hidden.
+4.  It drops geometry when any of these holds:
+    -   world-bound radius ≤ 8
+    -   an ancestor's `BSX` flags match `0x3D75`: animated, ragdoll, add-on, editor marker, dynamic, needs-transform-update, magic particles, lights, breakable, searched-breakable
+    -   the shader-property flags include `kMultiTextureLandscape | kLODLandscape | kNoLODLandBlend`, so **landscape is excluded**
+    -   there is no position stream
+5.  The captured list is sorted by input layout.
+
+**Draw** (`Render` @ 1805059e0):
+
+-   **Clears.** `HeightMap` is cleared to −1e30 and `HeightMapLow` to +1e30.
+-   **Pipeline state:**
+    -   both bound as RTVs with **no depth buffer**
+    -   a MAX/MIN blend state (`maxBlend`), no culling
+    -   viewport `mapDim²`, triangle list, R16 indices
+-   **Per draw.** One `DrawIndexed` per captured geometry, with a per-draw `HeightCB` holding the world 3×4 matrix, `WindowCentre` and `HalfExtent`.
+-   **Projection.** The VS maps world XY linearly into the window, `(xy − centre) / halfExtent`, with a constant z of 0.5. There is **no near or far plane and no Z band**: every triangle in the window contributes to max and min Z (`pgrass:Shaders/TopDownOcclusion/ObjectCapture.hlsl`).
+-   **After drawing:** `RenderGrassSurfaces` writes the topmost grass-surface record with a real depth test, then `PadMaps` runs a separable max/min pass. Its radius is `mapDim × OcclusionPadding / (2 × halfExtent)` texels.
+-   State is saved and restored around all of this.
+
+**Window and update cadence:**
+
+-   **Snapping.** The centre is the camera position (`CameraPosAdjust`) snapped to `2 × halfExtent / snapDim`. At the defaults below, that is 80 units.
+-   **Reuse.** `CanReuseRenderedMaps` skips work only if the snapped centre, extent, padding, `mapDim`, `snapDim` and geometry revision all match.
+-   **Otherwise a full redraw of every captured draw.** That happens on every 80-unit step of camera movement. It is **not incremental and not toroidal**.
+-   **Settings defaults.** `OcclusionHalfExtent` 10240 (UI slider 1024–16384), `OcclusionPadding` 12, `OcclusionClearance` 100. These are read through the shifted field mapping, so **UNVERIFIED**.
+-   **Cost.** The only cost hint is the debug counter "Occluders drawn: %u" (`lastDrawCount`). The gather radius is 15360 units by default, so the draw count is likely to be in the thousands. **UNVERIFIED** because it was not measured.
+
+**Can FF use it for D7 stage 4?**
+
+**Consuming Procedural Grass's live output: no.**
+
+-   `HeightMap` is the top surface, so bridges, docks and canopies block flow. That fails R1's "bridges never block flow" criterion.
+-   `HeightMapLow` is the underside of the lowest geometry, not the riverbed.
+-   Landscape is excluded.
+-   The window is camera-centred, about 20k units wide at `mapDim` resolution, and exists only while Procedural Grass is enabled and the player is in an exterior.
+
+**Reusing the code with changes: plausible, and cheaper than R1 estimated for Prototype A**, because it avoids the precipitation path and all of R1's risks for that path. Changes needed:
+
+1.  **Z band.** Add a PS clip of `worldZ > waterSurfaceZ + clearance`, taking the surface from FF's water map (an SRV or a per-region constant). The MAX target then holds the **highest static below the water line**, so bridges are skipped by construction. The MIN target can be dropped.
+2.  **Combination.** Combine with FF's LAND bed as `max(LAND, capture)`, since landscape is excluded here.
+3.  **FF-sized toroidal grid.** Use 128² texels over 4096 units, render only the exposed strips (scissored viewports) into toroidally addressed texels, and drop the snap-and-full-redraw scheme.
+4.  **Object filter.** Use statics, movable statics and perhaps trees. Drop flora, activators and clutter, and keep the `BSX` and marker filters.
+5.  **No held engine objects.** Do not keep `NiPointer`/`com_ptr`s to engine geometry between updates: re-walk references for the strip being drawn, or keep reference handles only.
+6.  **Interiors.** It skips interiors entirely, so FF still needs Prototype B's rays or cell water there, as R1 already says.
+7.  **Threading.** Keep the reference walk on the thread that owns the scene graph. Procedural Grass does it on the render thread without locks; whether that is safe is **UNVERIFIED**.
+
+**Verdict.** This does not change D7. B (rays) stays the plan for stage 4. TopDownOcclusion is a better fallback A than the one R1 designed: a self-contained ortho capture with a known filter. If rays fail, fork it with the changes above rather than going through `Precipitation`.
+
+### 7.6 Wind
+
+**Where wind reaches the GPU.** `PostDepthRenderPrep` @ 1804d5eb0 fills `GrassGlobals` (uploaded to `PGrass::GlobalsCB`, b8) from the settings only:
+
+-   `windSpeed` = `WindSpeed`
+-   `previousWindSpeed`
+-   `windDir` = `(cos, sin)(WindAngle)`, computed with `sincosf` in `LoadSettings` and `RestoreDefaultSettings`
+-   `windAngle` = `atan2(windDir)` wrapped to [0, 2π)
+-   `previousWindDir`
+-   `windRotationScale` = `0.5 × WindSpeed³`. **UNVERIFIED**, from the CB offset 0xF8.
+-   `grassHiZBounds.z` (wind reach) = `|WindSpeed| × nearHiZRadius × 0.8748`. `nearHiZRadius` is derived from the grass-type heights when the types are rebuilt.
+
+**No weather link.** No Procedural Grass file references `RE::Sky`, `TESWeather` or any weather manager. Wind is a user constant, confirming section 4.1.
+
+**For plugging in FF's wind texture:**
+
+-   **Binding.** Generation happens inside the Procedural Grass thunk, so an FF SRV must be bound by Procedural Grass itself, for example in `GrassCollision::BindProceduralGrassGenerationResources` @ 180482440, which already binds Grass Collision for the generator. Use a free slot (section 6.5).
+-   **Wind reach.** It is CPU-computed from `WindSpeed`. An FF offset must be clamped to it, or FF's maximum speed must be added to it, or blades pop at Hi-Z tile edges.
+-   **Previous-frame values.** They are reset on timer jumps. An FF previous-velocity input should follow the same rule.
+-   **Frame lag.** FF's field will be one frame old (7.1).
+
+### 7.7 Other observations (neutral)
+
+-   **Permanent engine patch.** The 7-byte NOP in `Main::RenderDepth` is installed unconditionally. The disabled-feature path compensates by doing the depth copy itself.
+-   **One-way vanilla-grass toggle (7.2).** This also changes the state of the user's own `TG` console command.
+-   **Near LAND cache without worldspace in the key**, with validity by pointer equality on `TESObjectLAND*` and `loadedData*`. After a detach, the allocator could reuse the same addresses, so stale heights could in theory match. **UNVERIFIED.**
+-   **No terrain-cell lock.** `gridCells` and `loadedData` are read on the render thread without `REL::ID(564236)`, which `src/Features/UnifiedWater.cpp:598` uses for the 1.7.99+ terrain-cell map.
+-   **File reads on worker threads.** The far cache reads plugin files through `TESFile::Duplicate` on its own threads. This mirrors the engine's own thread-safe file handles, but concurrent use with engine loading is **UNVERIFIED**.
+-   **Engine geometry held across frames** by TopDownOcclusion (7.3), and the reference walk runs on the render thread (7.5).
+-   **Hardcoded offsets** selected by `IsAE()` only, with VR falling back to SE (7.2).
+-   **Player versus camera.** Quadrant selection uses the **player** position, while the occlusion window uses the **camera** position. In free-camera or long third-person views, the two can disagree.
