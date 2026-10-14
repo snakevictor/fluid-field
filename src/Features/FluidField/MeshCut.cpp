@@ -1,6 +1,7 @@
 #include "MeshCut.h"
 
 #include "EngineGrid.h"
+#include "Globals.h"
 #include "WaterSurfaces.h"
 
 #include <algorithm>
@@ -238,8 +239,8 @@ namespace FluidFieldSim
 			return;
 
 		std::unordered_set<uint32_t> present;
-		const auto visitCell = [&](RE::TESObjectCELL* a_cell) {
-			if (!a_cell || !a_cell->IsAttached())
+		const auto visitCell = [&](RE::TESObjectCELL* a_cell, bool a_requireAttached) {
+			if (!a_cell || (a_requireAttached && !a_cell->IsAttached()))
 				return;
 			a_cell->ForEachReference([&](RE::TESObjectREFR* a_ref) {
 				if (!a_ref || a_ref->IsDisabled() || a_ref->IsDeleted() || !IsCandidateBase(a_ref->GetBaseObject()))
@@ -276,12 +277,17 @@ namespace FluidFieldSim
 		};
 
 		if (tes->interiorCell) {
-			visitCell(tes->interiorCell);
+			visitCell(tes->interiorCell, true);
 		} else if (auto* grid = tes->gridCells) {
 			for (uint32_t gx = 0; gx < grid->length; gx++) {
 				for (uint32_t gy = 0; gy < grid->length; gy++)
-					visitCell(GetGridCell(grid, gx, gy));
+					visitCell(GetGridCell(grid, gx, gy), true);
 			}
+			// Persistent references (the Riverwood stone bridge among them) are listed in the
+			// worldspace's persistent cell, not in the grid cells; only the ones with loaded 3D pass
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (auto* worldspace = player ? player->GetWorldspace() : nullptr)
+				visitCell(worldspace->persistentCell, false);
 		}
 
 		// References that unloaded (or left the water) give their points back
@@ -307,7 +313,14 @@ namespace FluidFieldSim
 		RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
 			shapes++;
 			auto* triShape = a_geometry->AsTriShape();
-			auto* renderer = a_geometry->GetGeometryRuntimeData().rendererData;
+			const auto& runtime = a_geometry->GetGeometryRuntimeData();
+			auto* renderer = runtime.rendererData;
+			// Only lit surfaces are solid: water, effect and sky meshes use other shaders
+			const auto* shader = runtime.shaderProperty.get();
+			if (!shader || shader->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get()) {
+				skipped++;
+				return RE::BSVisit::BSVisitControl::kContinue;
+			}
 			if (!triShape || a_geometry->GetType().get() != RE::BSGeometry::Type::kTriShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData ||
 				renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_SKINNED)) {
 				skipped++;

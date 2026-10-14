@@ -62,7 +62,7 @@ namespace FluidFieldSim
 
 		bool EnsureTextures();
 		/** @brief Fills one row of the bed buffer (which has a one-texel border). */
-		void FillBedRow(uint32_t a_row, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays);
+		void FillBedRow(uint32_t a_row, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays, const MeshCut* a_meshCut);
 
 		std::array<std::unique_ptr<Texture2D>, IMAGE_COUNT> textures;
 		bool createFailed = false;

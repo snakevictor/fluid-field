@@ -81,7 +81,7 @@ namespace FluidFieldSim
 		return true;
 	}
 
-	void DepthMapView::FillBedRow(uint32_t a_row, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays)
+	void DepthMapView::FillBedRow(uint32_t a_row, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays, const MeshCut* a_meshCut)
 	{
 		constexpr uint32_t n = RESOLUTION;
 		for (uint32_t x = 0; x < n + 2; x++) {
@@ -99,6 +99,13 @@ namespace FluidFieldSim
 					height = ray->height;
 				else if (ray->kind == BedRaycasts::HitKind::Static && (ray->refined || !(hasWater && ray->height > surface)))
 					height = std::isfinite(height) ? std::max(height, ray->height) : ray->height;
+			}
+			// A mesh-cut obstacle stands above the water, as the water solver sees it
+			if (a_meshCut && a_meshCut->GetFineSpacing() > 0.0f) {
+				const float spacing = a_meshCut->GetFineSpacing();
+				float top = 0.0f;
+				if (a_meshCut->IsSolid(static_cast<int32_t>(std::round(wx / spacing)), static_cast<int32_t>(std::round(wy / spacing)), top))
+					height = std::isfinite(height) ? std::max(height, top) : top;
 			}
 			bed[a_row * (n + 2) + x] = height;
 		}
@@ -133,7 +140,7 @@ namespace FluidFieldSim
 		const uint32_t endRow = std::min(n, nextRow + n / SLICES);
 		// Output row y reads bed rows y .. y + 2 (the bed has a one-texel border)
 		while (bedRowsFilled < std::min(n + 2, endRow + 2))
-			FillBedRow(bedRowsFilled++, a_landscape, a_water, a_rays);
+			FillBedRow(bedRowsFilled++, a_landscape, a_water, a_rays, a_meshCut);
 
 		for (uint32_t y = nextRow; y < endRow; y++) {
 			for (uint32_t x = 0; x < n; x++) {
