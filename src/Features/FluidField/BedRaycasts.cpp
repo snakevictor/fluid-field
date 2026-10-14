@@ -17,6 +17,16 @@ namespace FluidFieldSim
 		constexpr float STEP_THROUGH_OFFSET = 2.0f;
 		/** @brief Lattice points examined per update while looking for work. */
 		constexpr uint32_t SWEEP_PER_UPDATE = 1024;
+		/** @brief A first hit this far above the surface may be overhead; closer is the water line itself. */
+		constexpr float ABOVE_SURFACE_MARGIN = 4.0f;
+		/** @brief Where the probes under and over the surface start, relative to it. */
+		constexpr float PROBE_OFFSET = 4.0f;
+
+		/** @brief Landscape collision: kGround in this game (with no reference), kTerrain in principle. */
+		bool IsLandscapeLayer(RE::COL_LAYER a_layer)
+		{
+			return a_layer == RE::COL_LAYER::kGround || a_layer == RE::COL_LAYER::kTerrain;
+		}
 
 		bool IsStaticLayer(RE::COL_LAYER a_layer)
 		{
@@ -47,6 +57,7 @@ namespace FluidFieldSim
 		prunedCentre[0] = prunedCentre[1] = INT32_MIN;
 		newThisPass = 0;
 		idle = false;
+		burstUpdates = BURST_UPDATES;
 	}
 
 	BedRaycasts::Counts BedRaycasts::CountSamples() const
@@ -84,6 +95,50 @@ namespace FluidFieldSim
 		return it != samples.end() ? &it->second : nullptr;
 	}
 
+	BedRaycasts::RayHit BedRaycasts::CastVertical(RE::hkpWorld* a_world, float a_worldX, float a_worldY, float a_fromZ, float a_toZ)
+	{
+		RayHit result;
+		const float scale = RE::bhkWorld::GetWorldScale();
+		const float direction = a_toZ < a_fromZ ? -1.0f : 1.0f;
+		float fromZ = a_fromZ;
+		for (uint32_t attempt = 0; attempt <= MAX_STEP_THROUGHS && (a_toZ - fromZ) * direction > 0.0f; attempt++) {
+			RE::hkpWorldRayCastInput input;
+			input.from = RE::hkVector4(a_worldX * scale, a_worldY * scale, fromZ * scale, 0.0f);
+			input.to = RE::hkVector4(a_worldX * scale, a_worldY * scale, a_toZ * scale, 0.0f);
+			RE::hkpWorldRayCastOutput output;
+			a_world->CastRay(input, output);
+			stats.raysCast++;
+			stats.raysLastFrame++;
+			if (!output.HasHit())
+				break;
+
+			const float hitZ = fromZ + (a_toZ - fromZ) * output.hitFraction;
+			const auto layer = output.rootCollidable->GetCollisionLayer();
+			if (IsStaticLayer(layer)) {
+				result = { .hit = true, .z = hitZ, .layer = layer, .collidable = output.rootCollidable };
+				return result;
+			}
+			// The water's own collision, an actor or clutter: continue past it
+			stats.stepThroughs++;
+			fromZ = hitZ + direction * STEP_THROUGH_OFFSET;
+		}
+		return result;
+	}
+
+	void BedRaycasts::LogHit(float a_worldX, float a_worldY, float a_surface, const RayHit& a_hit, const char* a_what)
+	{
+		if (hitLogsThisInterval >= MAX_HIT_LOGS_PER_INTERVAL)
+			return;
+		hitLogsThisInterval++;
+		const auto* refr = a_hit.collidable ? RE::TESHavokUtilities::FindCollidableRef(*a_hit.collidable) : nullptr;
+		const auto* base = refr ? refr->GetBaseObject() : nullptr;
+		const char* name = base ? base->GetName() : "";
+		const char* editorID = base ? base->GetFormEditorID() : "";
+		logger::info("[Fluid Field] Ray at ({:.0f}, {:.0f}) surface {:.0f}: {} layer {} at {:.0f} ({:.0f} below surface), ref {:08X} '{}' ({})",
+			a_worldX, a_worldY, a_surface, a_what, static_cast<uint32_t>(a_hit.layer), a_hit.z, a_surface - a_hit.z,
+			refr ? refr->GetFormID() : 0u, name ? name : "", editorID ? editorID : "");
+	}
+
 	BedRaycasts::Sample BedRaycasts::Cast(float a_worldX, float a_worldY, float a_surface, bool a_log)
 	{
 		Sample result{ .kind = HitKind::NoHit };
@@ -95,46 +150,33 @@ namespace FluidFieldSim
 		if (!world)
 			return result;
 
-		const float scale = RE::bhkWorld::GetWorldScale();
-		float fromZ = a_surface + RAY_START_ABOVE_SURFACE;
-		const float toZ = a_surface - RAY_END_BELOW_SURFACE;
-
+		const float bottom = a_surface - RAY_END_BELOW_SURFACE;
 		const RE::BSReadLockGuard lock(bhkWorld->worldLock);
-		for (uint32_t attempt = 0; attempt <= MAX_STEP_THROUGHS && fromZ > toZ; attempt++) {
-			RE::hkpWorldRayCastInput input;
-			input.from = RE::hkVector4(a_worldX * scale, a_worldY * scale, fromZ * scale, 0.0f);
-			input.to = RE::hkVector4(a_worldX * scale, a_worldY * scale, toZ * scale, 0.0f);
-			RE::hkpWorldRayCastOutput output;
-			world->CastRay(input, output);
-			stats.raysCast++;
-			stats.raysLastFrame++;
-			if (!output.HasHit())
-				break;
 
-			const float hitZ = fromZ + (toZ - fromZ) * output.hitFraction;
-			const auto layer = output.rootCollidable->GetCollisionLayer();
-			const bool isStatic = IsStaticLayer(layer);
+		RayHit hit = CastVertical(world, a_worldX, a_worldY, a_surface + RAY_START_ABOVE_SURFACE, bottom);
+		if (!hit.hit)
+			return result;
 
-			if (a_log && hitLogsThisInterval < MAX_HIT_LOGS_PER_INTERVAL && layer != RE::COL_LAYER::kTerrain) {
-				hitLogsThisInterval++;
-				const auto* refr = RE::TESHavokUtilities::FindCollidableRef(*output.rootCollidable);
-				const auto* base = refr ? refr->GetBaseObject() : nullptr;
-				const char* name = base ? base->GetName() : "";
-				const char* editorID = base ? base->GetFormEditorID() : "";
-				logger::info("[Fluid Field] Ray at ({:.0f}, {:.0f}) surface {:.0f}: {} layer {} at {:.0f} ({:.0f} below surface), ref {:08X} '{}' ({})",
-					a_worldX, a_worldY, a_surface, isStatic ? "static" : "stepped through", static_cast<uint32_t>(layer), hitZ, a_surface - hitZ,
-					refr ? refr->GetFormID() : 0u, name ? name : "", editorID ? editorID : "");
+		if (hit.z > a_surface + ABOVE_SURFACE_MARGIN) {
+			// Something above the water: look up from just under the surface. An underside below the
+			// top means air over the water (a deck, an arch); nothing, or only the top itself, means a
+			// solid rising out of the water (a rock, a pier), which stays an obstacle.
+			const RayHit up = CastVertical(world, a_worldX, a_worldY, a_surface - PROBE_OFFSET, hit.z + 1.0f);
+			if (up.hit && up.z < hit.z - ABOVE_SURFACE_MARGIN) {
+				stats.overheads++;
+				if (a_log)
+					LogHit(a_worldX, a_worldY, a_surface, hit, "overhead, looking under");
+				hit = CastVertical(world, a_worldX, a_worldY, std::min(up.z, a_surface + PROBE_OFFSET), bottom);
+				if (!hit.hit)
+					return result;
 			}
-
-			if (isStatic) {
-				result.height = hitZ;
-				result.kind = layer == RE::COL_LAYER::kTerrain ? HitKind::Terrain : HitKind::Static;
-				return result;
-			}
-			// The water's own collision, an actor or clutter: continue below it
-			stats.stepThroughs++;
-			fromZ = hitZ - STEP_THROUGH_OFFSET;
 		}
+
+		const bool landscape = IsLandscapeLayer(hit.layer);
+		if (a_log && !landscape)
+			LogHit(a_worldX, a_worldY, a_surface, hit, "static");
+		result.height = hit.z;
+		result.kind = landscape ? HitKind::Terrain : HitKind::Static;
 		return result;
 	}
 
@@ -161,10 +203,19 @@ namespace FluidFieldSim
 			idle = false;
 		}
 		if (centreX != lastCentre[0] || centreY != lastCentre[1]) {
+			// A jump of more than half the covered square is a teleport: refill quickly
+			if (lastCentre[0] != INT32_MIN && (std::abs(centreX - lastCentre[0]) > half || std::abs(centreY - lastCentre[1]) > half))
+				burstUpdates = BURST_UPDATES;
 			lastCentre[0] = centreX;
 			lastCentre[1] = centreY;
 			idle = false;
 		}
+
+		const bool burst = burstUpdates > 0;
+		if (burst)
+			burstUpdates--;
+		const double timeBudget = burst ? BURST_TIME_BUDGET_MS : RAY_TIME_BUDGET_MS;
+		const uint32_t maxRays = burst ? a_maxRays * 8 : a_maxRays;
 
 		double rayMs = 0.0;
 		if (!idle) {
@@ -181,7 +232,7 @@ namespace FluidFieldSim
 
 			uint32_t cast = 0;
 			uint32_t examined = 0;
-			while (examined < SWEEP_PER_UPDATE && examined < total && cast < a_maxRays && rayMs < RAY_TIME_BUDGET_MS) {
+			while (examined < SWEEP_PER_UPDATE && examined < total && cast < maxRays && rayMs < timeBudget) {
 				const uint32_t index = sweepCursor;
 				sweepCursor = (sweepCursor + 1) % total;
 				examined++;
@@ -231,8 +282,8 @@ namespace FluidFieldSim
 		}
 		updatesUntilSummary = LOG_SUMMARY_INTERVAL;
 		const auto counts = CountSamples();
-		logger::info("[Fluid Field] Bed rays: {} cast in the last {} updates ({:.3f} ms total), {} stepped through overall; cached {} terrain, {} mesh, {} out of reach, {} buried plane, {} no water; idle {}",
-			stats.raysCast - raysAtLastSummary, LOG_SUMMARY_INTERVAL, rayMsSinceSummary, stats.stepThroughs,
+		logger::info("[Fluid Field] Bed rays: {} cast in the last {} updates ({:.3f} ms total), {} stepped through and {} overheads overall; cached {} terrain, {} mesh, {} out of reach, {} buried plane, {} no water; idle {}",
+			stats.raysCast - raysAtLastSummary, LOG_SUMMARY_INTERVAL, rayMsSinceSummary, stats.stepThroughs, stats.overheads,
 			counts.terrain, counts.statics, counts.noHit, counts.skipped, counts.noWater, idle ? "yes" : "no");
 		raysAtLastSummary = stats.raysCast;
 		rayMsSinceSummary = 0.0;

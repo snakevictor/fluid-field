@@ -12,9 +12,11 @@ namespace FluidFieldSim
 	 * @brief Riverbed and obstacle heights from downward Havok raycasts where there is water (R1, D7 stage 4).
 	 *
 	 * Landscape heights miss placed meshes: rocks, banks, bridge piers and riverbed meshes. On a
-	 * lattice around the player, wherever a water plane lies above (or near) the landscape, one
-	 * ray is cast from just above the surface downwards, so bridges and canopy above the water are
-	 * never hit. Non-static hits (the water's own collision, actors, clutter) are stepped through.
+	 * lattice around the player, wherever a water plane lies above (or near) the landscape, a ray
+	 * is cast down from above the surface. If it first hits something above the water, a short ray
+	 * up from just under the surface tells an overhead structure (a deck or arch with air beneath,
+	 * which water flows under) from a solid rising out of the water (a rock or pier, an obstacle).
+	 * Non-static hits (the water's own collision, actors, clutter) are stepped through.
 	 * Results are cached per lattice point, since statics do not move, and a few rays are cast per
 	 * frame. Runs on the main thread under the physics world's read lock.
 	 */
@@ -24,7 +26,7 @@ namespace FluidFieldSim
 		enum class HitKind : uint8_t
 		{
 			Skipped,  ///< The water plane here lies under the landscape; no ray cast
-			Terrain,  ///< Landscape collision
+			Terrain,  ///< Landscape collision (kGround in this game, no reference)
 			Static,   ///< A placed static mesh (rock, bank, pier, riverbed mesh)
 			NoHit,    ///< Nothing static within reach below the surface
 			NoWater   ///< No water plane here at all; no ray cast
@@ -41,6 +43,7 @@ namespace FluidFieldSim
 			uint64_t raysCast = 0;
 			uint32_t raysLastFrame = 0;
 			uint64_t stepThroughs = 0;  ///< Non-static hits stepped through
+			uint64_t overheads = 0;     ///< Points where an overhead structure was looked under
 		};
 
 		/** @brief How the currently cached lattice points resolved. */
@@ -76,13 +79,27 @@ namespace FluidFieldSim
 	private:
 		/** @brief CPU time the rays of one update may take, so moving fast cannot blow the budget. */
 		static constexpr double RAY_TIME_BUDGET_MS = 0.07;
+		/** @brief Larger allowance for the first updates after a load or teleport, so the area refills quickly. */
+		static constexpr double BURST_TIME_BUDGET_MS = 0.5;
+		static constexpr uint32_t BURST_UPDATES = 90;
 		/** @brief Updates between summary log lines. */
 		static constexpr uint32_t LOG_SUMMARY_INTERVAL = 300;
 		/** @brief Most hit log lines per summary interval. */
 		static constexpr uint32_t MAX_HIT_LOGS_PER_INTERVAL = 40;
 
+		/** @brief First static hit along a vertical ray; non-static hits are stepped through. */
+		struct RayHit
+		{
+			bool hit = false;
+			float z = 0.0f;
+			RE::COL_LAYER layer = RE::COL_LAYER::kUnidentified;
+			const RE::hkpCollidable* collidable = nullptr;
+		};
+
 		static uint64_t MakeKey(int32_t a_x, int32_t a_y);
+		RayHit CastVertical(RE::hkpWorld* a_world, float a_worldX, float a_worldY, float a_fromZ, float a_toZ);
 		Sample Cast(float a_worldX, float a_worldY, float a_surface, bool a_log);
+		void LogHit(float a_worldX, float a_worldY, float a_surface, const RayHit& a_hit, const char* a_what);
 
 		std::unordered_map<uint64_t, Sample> samples;
 		float spacing = 0.0f;
@@ -95,6 +112,7 @@ namespace FluidFieldSim
 		uint64_t lastWaterSignature = 0;
 		uint32_t newThisPass = 0;
 		bool idle = false;
+		uint32_t burstUpdates = BURST_UPDATES;
 
 		// Logging
 		uint32_t updatesUntilSummary = LOG_SUMMARY_INTERVAL;

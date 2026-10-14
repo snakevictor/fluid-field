@@ -26,6 +26,7 @@ namespace FluidFieldSim
 			float maxY = 0.0f;
 			float height = 0.0f;       ///< Bound centre height, as Skin's water lookup uses
 			float planeHeight = 0.0f;  ///< Height implied by the water object's plane, for the check
+			uint32_t waterFormID = 0;  ///< The water object's water type, for the check's log
 		};
 
 		enum class Source : uint8_t
@@ -76,6 +77,7 @@ namespace FluidFieldSim
 
 		std::vector<Surface> surfaces;
 		uint32_t slopedCount = 0;
+		uint32_t slopedFormID = 0;  ///< Water type of the last sloped bound skipped, for the check's log
 		/** @brief Water height of each loaded exterior cell with water, keyed by packed cell coordinates. */
 		std::unordered_map<uint64_t, float> cellWater;
 		/** @brief Water height of the current interior, when it has water. */

@@ -48,6 +48,7 @@ namespace FluidFieldSim
 		surfaces.clear();
 		cellWater.clear();
 		slopedCount = 0;
+		slopedFormID = 0;
 		hasInteriorWater = false;
 
 		auto tes = RE::TES::GetSingleton();
@@ -62,11 +63,13 @@ namespace FluidFieldSim
 					continue;
 				const auto& plane = waterObject->plane;
 				const float planeHeight = std::abs(plane.normal.z) > 1e-4f ? plane.constant / plane.normal.z : std::numeric_limits<float>::quiet_NaN();
+				const uint32_t formID = waterObject->waterType ? waterObject->waterType->GetFormID() : 0;
 				for (const auto& bound : waterObject->multiBounds) {
 					if (!bound)
 						continue;
 					if (bound->size.z > MAX_FLAT_BOUND_HALF_HEIGHT) {
 						slopedCount++;
+						slopedFormID = formID;
 						continue;
 					}
 					surfaces.push_back({ .minX = bound->center.x - bound->size.x,
@@ -74,7 +77,8 @@ namespace FluidFieldSim
 						.maxX = bound->center.x + bound->size.x,
 						.maxY = bound->center.y + bound->size.y,
 						.height = bound->center.z,
-						.planeHeight = planeHeight });
+						.planeHeight = planeHeight,
+						.waterFormID = formID });
 				}
 			}
 		}
@@ -149,11 +153,18 @@ namespace FluidFieldSim
 		uint32_t missed = 0;
 		float maxError = 0.0f;
 		float maxPlaneDifference = 0.0f;
+		uint32_t maxPlaneFormID = 0;
+		float maxPlaneAtX = 0.0f;
+		float maxPlaneAtY = 0.0f;
 
 		for (const auto& surface : surfaces) {
 			const RE::NiPoint3 centre((surface.minX + surface.maxX) * 0.5f, (surface.minY + surface.maxY) * 0.5f, surface.height);
-			if (std::isfinite(surface.planeHeight))
-				maxPlaneDifference = std::max(maxPlaneDifference, std::abs(surface.planeHeight - surface.height));
+			if (std::isfinite(surface.planeHeight) && std::abs(surface.planeHeight - surface.height) > maxPlaneDifference) {
+				maxPlaneDifference = std::abs(surface.planeHeight - surface.height);
+				maxPlaneFormID = surface.waterFormID;
+				maxPlaneAtX = centre.x;
+				maxPlaneAtY = centre.y;
+			}
 
 			auto* cell = tes->interiorCell ? tes->interiorCell : tes->GetCell(centre);
 			float engine = 0.0f;
@@ -173,7 +184,7 @@ namespace FluidFieldSim
 		verifyStats.maxError = std::max(verifyStats.maxError, maxError);
 		verifyStats.maxPlaneDifference = std::max(verifyStats.maxPlaneDifference, maxPlaneDifference);
 
-		logger::info("[Fluid Field] Water check: {} surfaces, {} sloped skipped, {} cells with water, interior water {}; error {:.2f}, plane vs bound {:.2f}, missed {} of {}",
-			surfaces.size(), slopedCount, cellWater.size(), hasInteriorWater ? "yes" : "no", maxError, maxPlaneDifference, missed, checked);
+		logger::info("[Fluid Field] Water check: {} surfaces, {} sloped skipped (water {:08X}), {} cells with water, interior water {}; error {:.2f}, plane vs bound {:.2f} (water {:08X} at {:.0f}, {:.0f}), missed {} of {}",
+			surfaces.size(), slopedCount, slopedFormID, cellWater.size(), hasInteriorWater ? "yes" : "no", maxError, maxPlaneDifference, maxPlaneFormID, maxPlaneAtX, maxPlaneAtY, missed, checked);
 	}
 }
