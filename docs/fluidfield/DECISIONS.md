@@ -69,3 +69,28 @@ Entry format:
 -   Decided by: agent, pending review by @Victor
 -   References: `docs/new-feature-template/NewFeatureReadme.md`,
     `src/Features/LODBlending.{h,cpp}`
+
+## D5: Move Fluid Field to its own "Fluids" category (planned)
+
+-   Date: 2026-10-13
+-   Phase / spike: later phase, not yet scheduled
+-   Decision: Fluid Field will move from `FeatureCategories::kWater` to a new
+    "Fluids" category. That means adding `kFluids` to
+    `src/FeatureCategories.h`, plus any i18n key the category label needs,
+    and changing `FluidField::GetCategory()`.
+-   Alternatives rejected: staying under Water. Fluid Field also drives fog,
+    smoke and buoyancy.
+-   Decided by: @Victor
+-   References: `src/FeatureCategories.h`, `src/Features/FluidField.h`
+
+## D6: Phase 0 gate passed
+
+-   Date: 2026-10-13
+-   Phase / spike: Phase 0 gate
+-   Decision: Phase 0 is closed and Phase 1 can start with spike R1. The
+    in-game checklist passed with no issues. The empty Fluid Field feature
+    loads, appears in the menu, saves its setting, toggles cleanly and costs
+    nothing when off.
+-   Alternatives rejected: none.
+-   Decided by: @Victor (in-game test)
+-   References: build `ca4a6a665`, deployed to the Steam install
