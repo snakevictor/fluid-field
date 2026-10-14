@@ -169,6 +169,14 @@ Entry format:
         -   Limit the `FLUID_FIELD` define to the water shader.
     -   Vanilla `ISWaterFlow` actor wakes only exist with Unified Water off.
         Check in game whether they double Fluid Field's wake.
+-   Amended 2026-10-14 (@Victor): the slice's solver is height-and-velocity
+    shallow water on a staggered grid with semi-Lagrangian advection
+    (Bridson & Mueller-Fischer 2007; Mueller, GDC 2008), not a virtual-pipe
+    model. Pipes do not carry waves with the current, so a wake would not
+    drift downstream without an extra advection step. It is also an R2
+    candidate. Built in two steps: the simulation with an overlay view
+    (`ShallowWaterSolver`, `WaterMapBuilder`, test current), then the water
+    shader output and currents from Unified Water's flowmap.
 -   Alternatives rejected: a "ripple slice" (normals-only ripples). It
     cannot show flow, wakes carried downstream or reflections, which vanilla
     displacement cannot do either. No ripple-slice plan had been written
