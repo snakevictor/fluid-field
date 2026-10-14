@@ -28,8 +28,12 @@ RWTexture2D<float2> CellMapOut : register(u2);
 	int2 logical = StorageToLogical(id);
 	int2 cell = GridMin + logical;
 
-	float2 map = SampleWaterMap(CellWorldPos(logical));
+	float2 worldPos = CellWorldPos(logical);
+	float2 map = SampleWaterMap(worldPos);
 	float bed = map.x;
+	float detailBed;
+	if (ObstacleRes > 0 && LoadObstacle(worldPos, detailBed))
+		bed = detailBed;
 	float vanillaDepth = HasWater(map.y) ? max(map.y - bed, 0.0) : 0.0;
 	CellMapOut[id] = float2(bed, vanillaDepth);
 

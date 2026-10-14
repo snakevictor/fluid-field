@@ -1,7 +1,11 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <deque>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace FluidFieldSim
 {
@@ -18,7 +22,9 @@ namespace FluidFieldSim
 	 * which water flows under) from a solid rising out of the water (a rock or pier, an obstacle).
 	 * Non-static hits (the water's own collision, actors, clutter) are stepped through.
 	 * Results are cached per lattice point, since statics do not move, and a few rays are cast per
-	 * frame. Runs on the main thread under the physics world's read lock.
+	 * frame. Around meshes near the water and overhead structures, the surrounding lattice squares
+	 * are refined with REFINE x REFINE rays each, so pillars and the gaps between them are resolved.
+	 * Runs on the main thread under the physics world's read lock.
 	 */
 	class BedRaycasts
 	{
@@ -36,6 +42,22 @@ namespace FluidFieldSim
 		{
 			float height = 0.0f;  ///< Hit height; meaningful for Terrain and Static
 			HitKind kind = HitKind::Skipped;
+			bool overhead = false;  ///< An overhead structure was looked under to find this bed
+		};
+
+		/** @brief Fine points per lattice spacing, along each axis. */
+		static constexpr int32_t REFINE = 4;
+
+		/**
+		 * @brief One refined lattice square: REFINE x REFINE fine points, rows south to north.
+		 * Each texel is (height, fine x, fine y, kind code): kind 1 is landscape, 2 a mesh, 0 none.
+		 * The fine coordinates let a consumer reject stale texels in a wrapped texture.
+		 */
+		struct FineBlock
+		{
+			int32_t originX = 0;  ///< Fine lattice coordinates of the south-west point
+			int32_t originY = 0;
+			std::array<float, REFINE * REFINE * 4> texels{};
 		};
 
 		struct Stats
@@ -70,6 +92,17 @@ namespace FluidFieldSim
 
 		/** @brief Cached result at the lattice point nearest to a world position, or null when not cast yet. */
 		const Sample* Find(float a_worldX, float a_worldY) const;
+		/** @brief The refined result nearest to a world position where one exists, otherwise the coarse one. */
+		const Sample* FindDetail(float a_worldX, float a_worldY) const;
+
+		/** @brief Refined squares completed since the last call, for upload; the list is emptied. */
+		std::vector<FineBlock> TakeDirtyBlocks();
+		/** @brief Marks every refined square for upload again, after the consumer lost its copy. */
+		void MarkAllRefinedDirty();
+		/** @brief World units between fine points. */
+		float GetFineSpacing() const { return spacing / static_cast<float>(REFINE); }
+		/** @brief True after a clear until the next TakeDirtyBlocks, so consumers can drop stale detail. */
+		bool WasCleared() const { return cleared; }
 
 		const Stats& GetStats() const { return stats; }
 		/** @brief Counts the cached results; walks every sample, so call it for display only. */
@@ -101,9 +134,20 @@ namespace FluidFieldSim
 		static uint64_t MakeKey(int32_t a_x, int32_t a_y);
 		RayHit CastVertical(RE::hkpWorld* a_world, float a_worldX, float a_worldY, float a_fromZ, float a_toZ);
 		Sample Cast(float a_worldX, float a_worldY, float a_surface, bool a_log);
+		/** @brief Samples one point: no water, a buried plane, or a ray. Returns true if a ray was cast. */
+		bool Resolve(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, float a_worldX, float a_worldY, bool a_log, Sample& a_sample, float& a_surface);
+		/** @brief Queues the lattice squares around a coarse point for refinement. */
+		void QueueRefinement(int32_t a_x, int32_t a_y);
+		/** @brief Casts the fine points of one square. */
+		void RefineSquare(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, int32_t a_squareX, int32_t a_squareY, bool a_log);
 		void LogHit(float a_worldX, float a_worldY, float a_surface, const RayHit& a_hit, const char* a_what);
 
 		std::unordered_map<uint64_t, Sample> samples;
+		std::unordered_map<uint64_t, Sample> fine;    ///< Refined points, keyed by fine lattice coordinates
+		std::unordered_set<uint64_t> refinedSquares;  ///< Squares queued or done, keyed by coarse lattice coordinates
+		std::deque<std::pair<int32_t, int32_t>> refineQueue;
+		std::vector<std::pair<int32_t, int32_t>> dirtySquares;
+		bool cleared = true;
 		float spacing = 0.0f;
 		uint32_t sweepCursor = 0;
 		Stats stats;

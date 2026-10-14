@@ -9,28 +9,43 @@
 //   CellMap  RG32F: per-cell bed height and vanilla depth, refreshed every step from WaterMap
 // WaterMap is a coarse, world-aligned, toroidal map built on the CPU: R is the bed height,
 // G the vanilla water surface height (NO_WATER where there is none), at MapSpacing intervals.
+// ObstacleMap is finer detail around structures (pillars, piers, rocks), from refined bed rays:
+// R the bed height, GB the texel's own fine lattice coordinates (so stale wrapped texels are
+// rejected), A the kind (0 none, 1 landscape, 2 mesh), at ObstacleSpacing intervals.
 
 #include "FluidField/Common.hlsli"
 
 cbuffer WaterCB : register(b1)
 {
-	float Gravity;       // World units per second squared
-	float MaxDepth;      // Depth used for transport is capped here, keeping waves shallow and the step stable
-	float MaxSpeed;      // Face velocities are clamped to this, world units per second
-	float WetThreshold;  // Depth below which a cell counts as dry
-	float2 Current;      // Background current, world units per second
-	float CurrentRelax;  // Per-second rate at which velocity relaxes toward the current
-	float LevelRelax;    // Per-second rate at which depth relaxes toward the vanilla depth
-	uint MapRes;         // WaterMap texels per side, a power of two
-	float MapSpacing;    // World units between WaterMap texels
-	float EdgeWidth;     // Texels over which the grid edge blends back to vanilla
-	float EdgeRelax;     // Per-step blend toward vanilla at the very edge
-	float4 WaterPad0;
+	float Gravity;          // World units per second squared
+	float MaxDepth;         // Depth used for transport is capped here, keeping waves shallow and the step stable
+	float MaxSpeed;         // Face velocities are clamped to this, world units per second
+	float WetThreshold;     // Depth below which a cell counts as dry
+	float2 Current;         // Background current, world units per second
+	float CurrentRelax;     // Per-second rate at which velocity relaxes toward the current
+	float LevelRelax;       // Per-second rate at which depth relaxes toward the vanilla depth
+	uint MapRes;            // WaterMap texels per side, a power of two
+	float MapSpacing;       // World units between WaterMap texels
+	float EdgeWidth;        // Texels over which the grid edge blends back to vanilla
+	float EdgeRelax;        // Per-step blend toward vanilla at the very edge
+	uint ObstacleRes;       // ObstacleMap texels per side, a power of two (0: no detail)
+	float ObstacleSpacing;  // World units between ObstacleMap texels
+	float2 WaterPad0;
 };
 
 static const float NO_WATER = -1.0e8;
 
 Texture2D<float2> WaterMap : register(t4);
+Texture2D<float4> ObstacleMap : register(t5);
+
+/** @brief Fine bed detail at a world position, where the refined rays have it. */
+bool LoadObstacle(float2 worldPos, out float bed)
+{
+	int2 f = int2(round(worldPos / ObstacleSpacing));
+	float4 o = ObstacleMap[uint2(f & int(ObstacleRes - 1))];
+	bed = o.x;
+	return o.w > 0.5 && all(int2(o.yz) == f);
+}
 
 float2 LoadMapLattice(int2 lattice)
 {

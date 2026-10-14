@@ -67,8 +67,8 @@ namespace FluidFieldSim
 		using NameFn = WindSolver::NameFn;
 		using CompileFn = WindSolver::CompileFn;
 
-		/** @brief Creates the state, output and map textures. Releases any previous ones first. */
-		void CreateResources(ID3D11Device* device, std::uint32_t resolution, std::uint32_t mapResolution, const NameFn& name);
+		/** @brief Creates the state, output, map and obstacle textures. Releases any previous ones first. */
+		void CreateResources(ID3D11Device* device, std::uint32_t resolution, std::uint32_t mapResolution, std::uint32_t obstacleResolution, const NameFn& name);
 		bool CompileShaders(const CompileFn& compile);
 		void ReleaseShaders();
 		void ReleaseResources();
@@ -77,6 +77,7 @@ namespace FluidFieldSim
 		bool HasShaders() const;
 		std::uint32_t GetResolution() const { return resolution; }
 		std::uint32_t GetMapResolution() const { return mapResolution; }
+		std::uint32_t GetObstacleResolution() const { return obstacleResolution; }
 
 		/**
 		 * @brief Uploads the bed and vanilla surface map: mapResolution^2 pairs (bed, surface), stored
@@ -84,6 +85,16 @@ namespace FluidFieldSim
 		 */
 		void UploadMap(ID3D11DeviceContext* context, std::span<const float> bedAndSurface, float mapSpacing);
 		bool HasMap() const { return mapUploaded; }
+
+		/**
+		 * @brief Writes one square block of fine bed detail: size x size texels of (height, fine x, fine y, kind),
+		 * rows south to north, starting at fine lattice point (originX, originY). originX and originY must be
+		 * multiples of size, and size must divide the obstacle resolution, so a block never wraps.
+		 */
+		void UploadObstacleBlock(ID3D11DeviceContext* context, std::int32_t originX, std::int32_t originY, std::uint32_t size, const float* texels, float spacing);
+		/** @brief Erases all fine detail. Needed once after creation or a reset before blocks are uploaded. */
+		void ClearObstacles(ID3D11DeviceContext* context);
+		bool ObstaclesNeedClear() const { return obstaclesNeedClear; }
 
 		/** @brief Forgets all state and the map; after the next upload, the first step starts every cell from vanilla water. */
 		void Reset();
@@ -156,7 +167,9 @@ namespace FluidFieldSim
 			float mapSpacing;
 			float edgeWidth;
 			float edgeRelax;
-			float pad[4];
+			std::uint32_t obstacleRes;
+			float obstacleSpacing;
+			float pad[2];
 		};
 		static_assert(sizeof(WaterConstants) == 64);
 
@@ -186,6 +199,9 @@ namespace FluidFieldSim
 		std::uint32_t mapResolution = 0;
 		float mapSpacing = 64.0f;
 		bool mapUploaded = false;
+		std::uint32_t obstacleResolution = 0;
+		float obstacleSpacing = 16.0f;
+		bool obstaclesNeedClear = true;
 
 		std::array<Layer, 2> depth;     // Ping-pong, `current` holds the latest
 		std::array<Layer, 2> velocity;  // Ping-pong, `current` holds the latest
@@ -193,6 +209,7 @@ namespace FluidFieldSim
 		Layer surface;
 		Layer flow;
 		Layer map;
+		Layer obstacles;
 		std::array<Layer, 3> debugViews;
 		std::uint32_t currentDepth = 0;
 		std::uint32_t currentVelocity = 0;

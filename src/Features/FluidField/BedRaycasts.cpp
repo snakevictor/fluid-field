@@ -21,6 +21,10 @@ namespace FluidFieldSim
 		constexpr float ABOVE_SURFACE_MARGIN = 4.0f;
 		/** @brief Where the probes under and over the surface start, relative to it. */
 		constexpr float PROBE_OFFSET = 4.0f;
+		/** @brief An underside closer to the water than this touches it: solid (a pillar, a low deck edge), not open. */
+		constexpr float UNDERSIDE_CLEARANCE = 8.0f;
+		/** @brief Meshes whose top is above this depth under the surface shape the flow, so refine around them. */
+		constexpr float REFINE_DEPTH = 64.0f;
 
 		/** @brief Landscape collision: kGround in this game (with no reference), kTerrain in principle. */
 		bool IsLandscapeLayer(RE::COL_LAYER a_layer)
@@ -51,6 +55,11 @@ namespace FluidFieldSim
 	void BedRaycasts::Clear()
 	{
 		samples.clear();
+		fine.clear();
+		refinedSquares.clear();
+		refineQueue.clear();
+		dirtySquares.clear();
+		cleared = true;
 		sweepCursor = 0;
 		stats.raysLastFrame = 0;
 		lastCentre[0] = lastCentre[1] = INT32_MIN;
@@ -139,6 +148,94 @@ namespace FluidFieldSim
 			refr ? refr->GetFormID() : 0u, name ? name : "", editorID ? editorID : "");
 	}
 
+	const BedRaycasts::Sample* BedRaycasts::FindDetail(float a_worldX, float a_worldY) const
+	{
+		if (spacing <= 0.0f)
+			return nullptr;
+		const float fineSpacing = GetFineSpacing();
+		const auto fx = static_cast<int32_t>(std::round(a_worldX / fineSpacing));
+		const auto fy = static_cast<int32_t>(std::round(a_worldY / fineSpacing));
+		if (const auto it = fine.find(MakeKey(fx, fy)); it != fine.end())
+			return &it->second;
+		return Find(a_worldX, a_worldY);
+	}
+
+	std::vector<BedRaycasts::FineBlock> BedRaycasts::TakeDirtyBlocks()
+	{
+		std::vector<FineBlock> blocks;
+		blocks.reserve(dirtySquares.size());
+		for (const auto& [sx, sy] : dirtySquares) {
+			FineBlock block{ .originX = sx * REFINE, .originY = sy * REFINE };
+			for (int32_t j = 0; j < REFINE; j++) {
+				for (int32_t i = 0; i < REFINE; i++) {
+					const int32_t fx = block.originX + i;
+					const int32_t fy = block.originY + j;
+					float* texel = &block.texels[static_cast<std::size_t>(j * REFINE + i) * 4];
+					texel[1] = static_cast<float>(fx);
+					texel[2] = static_cast<float>(fy);
+					if (const auto it = fine.find(MakeKey(fx, fy)); it != fine.end()) {
+						texel[0] = it->second.height;
+						texel[3] = it->second.kind == HitKind::Terrain ? 1.0f : it->second.kind == HitKind::Static ? 2.0f :
+						                                                                                             0.0f;
+					}
+				}
+			}
+			blocks.push_back(block);
+		}
+		dirtySquares.clear();
+		cleared = false;
+		return blocks;
+	}
+
+	void BedRaycasts::MarkAllRefinedDirty()
+	{
+		dirtySquares.clear();
+		for (const uint64_t key : refinedSquares)
+			dirtySquares.emplace_back(static_cast<int32_t>(key >> 32), static_cast<int32_t>(static_cast<uint32_t>(key)));
+	}
+
+	void BedRaycasts::QueueRefinement(int32_t a_x, int32_t a_y)
+	{
+		// The four squares around the point, so an obstacle on either side of it is covered
+		for (int32_t sy = a_y - 1; sy <= a_y; sy++) {
+			for (int32_t sx = a_x - 1; sx <= a_x; sx++) {
+				if (refinedSquares.insert(MakeKey(sx, sy)).second)
+					refineQueue.emplace_back(sx, sy);
+			}
+		}
+	}
+
+	bool BedRaycasts::Resolve(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, float a_worldX, float a_worldY, bool a_log, Sample& a_sample, float& a_surface)
+	{
+		if (a_water.SampleHeight(a_worldX, a_worldY, a_surface) == WaterSurfaces::Source::None) {
+			a_sample = Sample{ .kind = HitKind::NoWater };
+			return false;
+		}
+		float landscape = 0.0f;
+		if (a_landscape.SampleHeight(a_worldX, a_worldY, landscape) && a_surface < landscape - BURIED_PLANE_MARGIN) {
+			a_sample = Sample{ .kind = HitKind::Skipped };
+			return false;
+		}
+		a_sample = Cast(a_worldX, a_worldY, a_surface, a_log);
+		return true;
+	}
+
+	void BedRaycasts::RefineSquare(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, int32_t a_squareX, int32_t a_squareY, bool a_log)
+	{
+		const float fineSpacing = GetFineSpacing();
+		for (int32_t j = 0; j < REFINE; j++) {
+			for (int32_t i = 0; i < REFINE; i++) {
+				const int32_t fx = a_squareX * REFINE + i;
+				const int32_t fy = a_squareY * REFINE + j;
+				Sample sample;
+				float surface = 0.0f;
+				Resolve(a_landscape, a_water, static_cast<float>(fx) * fineSpacing, static_cast<float>(fy) * fineSpacing, a_log, sample, surface);
+				fine[MakeKey(fx, fy)] = sample;
+			}
+		}
+		dirtySquares.emplace_back(a_squareX, a_squareY);
+	}
+
 	BedRaycasts::Sample BedRaycasts::Cast(float a_worldX, float a_worldY, float a_surface, bool a_log)
 	{
 		Sample result{ .kind = HitKind::NoHit };
@@ -163,8 +260,10 @@ namespace FluidFieldSim
 			// top means air over the water (a deck, an arch); nothing, or only the top itself, means a
 			// solid rising out of the water (a rock, a pier), which stays an obstacle.
 			const RayHit up = CastVertical(world, a_worldX, a_worldY, a_surface - PROBE_OFFSET, hit.z + 1.0f);
-			if (up.hit && up.z < hit.z - ABOVE_SURFACE_MARGIN) {
+			// An underside touching the water is solid (a pillar, a low deck edge); one clear of it is open
+			if (up.hit && up.z < hit.z - ABOVE_SURFACE_MARGIN && up.z > a_surface + UNDERSIDE_CLEARANCE) {
 				stats.overheads++;
+				result.overhead = true;
 				if (a_log)
 					LogHit(a_worldX, a_worldY, a_surface, hit, "overhead, looking under");
 				hit = CastVertical(world, a_worldX, a_worldY, std::min(up.z, a_surface + PROBE_OFFSET), bottom);
@@ -219,6 +318,8 @@ namespace FluidFieldSim
 		const uint32_t maxRays = burst ? a_maxRays * 8 : a_maxRays;
 
 		double rayMs = 0.0;
+		if (!refineQueue.empty())
+			idle = false;
 		if (!idle) {
 			// Drop points that have fallen well outside the covered square, once per lattice step moved
 			if (std::abs(centreX - prunedCentre[0]) > half / 4 || std::abs(centreY - prunedCentre[1]) > half / 4) {
@@ -229,6 +330,29 @@ namespace FluidFieldSim
 					const auto y = static_cast<int32_t>(static_cast<uint32_t>(entry.first));
 					return std::abs(x - centreX) > half * 2 || std::abs(y - centreY) > half * 2;
 				});
+				std::erase_if(fine, [&](const auto& entry) {
+					const auto x = static_cast<int32_t>(entry.first >> 32) / REFINE;
+					const auto y = static_cast<int32_t>(static_cast<uint32_t>(entry.first)) / REFINE;
+					return std::abs(x - centreX) > half * 2 || std::abs(y - centreY) > half * 2;
+				});
+				std::erase_if(refinedSquares, [&](uint64_t key) {
+					const auto x = static_cast<int32_t>(key >> 32);
+					const auto y = static_cast<int32_t>(static_cast<uint32_t>(key));
+					return std::abs(x - centreX) > half * 2 || std::abs(y - centreY) > half * 2;
+				});
+			}
+
+			// Refine around structures first: it is local detail where the flow is shaped
+			while (!refineQueue.empty() && rayMs < timeBudget) {
+				const auto [sx, sy] = refineQueue.front();
+				refineQueue.pop_front();
+				if (std::abs(sx - centreX) > half * 2 || std::abs(sy - centreY) > half * 2) {
+					refinedSquares.erase(MakeKey(sx, sy));
+					continue;
+				}
+				const auto begin = std::chrono::steady_clock::now();
+				RefineSquare(a_landscape, a_water, sx, sy, a_log);
+				rayMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
 			}
 
 			uint32_t cast = 0;
@@ -255,22 +379,17 @@ namespace FluidFieldSim
 
 				const float wx = static_cast<float>(lx) * spacing;
 				const float wy = static_cast<float>(ly) * spacing;
-				float surface = 0.0f;
-				if (a_water.SampleHeight(wx, wy, surface) == WaterSurfaces::Source::None) {
-					samples.emplace(key, Sample{ .kind = HitKind::NoWater });
-					continue;
-				}
-
-				float landscape = 0.0f;
-				if (a_landscape.SampleHeight(wx, wy, landscape) && surface < landscape - BURIED_PLANE_MARGIN) {
-					samples.emplace(key, Sample{ .kind = HitKind::Skipped });
-					continue;
-				}
-
 				const auto begin = std::chrono::steady_clock::now();
-				samples.emplace(key, Cast(wx, wy, surface, a_log));
+				Sample sample;
+				float surface = 0.0f;
+				const bool rayCast = Resolve(a_landscape, a_water, wx, wy, a_log, sample, surface);
+				samples.emplace(key, sample);
+				if (!rayCast)
+					continue;
 				rayMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
 				cast++;
+				if (sample.overhead || (sample.kind == HitKind::Static && sample.height > surface - REFINE_DEPTH))
+					QueueRefinement(lx, ly);
 			}
 		}
 

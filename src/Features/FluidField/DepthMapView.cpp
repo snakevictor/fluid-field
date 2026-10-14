@@ -90,7 +90,7 @@ namespace FluidFieldSim
 			if (!a_landscape.SampleHeight(wx, wy, height))
 				height = std::numeric_limits<float>::quiet_NaN();
 			// A terrain hit is the engine's own triangle height; a static hit raises the bed to the mesh
-			if (const auto* ray = a_rays ? a_rays->Find(wx, wy) : nullptr) {
+			if (const auto* ray = a_rays ? a_rays->FindDetail(wx, wy) : nullptr) {
 				if (ray->kind == BedRaycasts::HitKind::Terrain)
 					height = ray->height;
 				else if (ray->kind == BedRaycasts::HitKind::Static)
@@ -191,7 +191,7 @@ namespace FluidFieldSim
 				}
 
 				// Raycasts: green terrain, orange mesh, dark blue nothing in reach, grey dry (not cast)
-				const auto* ray = a_rays ? a_rays->Find(wx, wy) : nullptr;
+				const auto* ray = a_rays ? a_rays->FindDetail(wx, wy) : nullptr;
 				if (!ray) {
 					pixels[3][out] = NO_WATER;
 				} else {

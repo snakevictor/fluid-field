@@ -60,18 +60,20 @@ namespace FluidFieldSim
 				const float wx = static_cast<float>(lx) * MAP_SPACING;
 				const float wy = static_cast<float>(ly) * MAP_SPACING;
 
+				float surface = 0.0f;
+				const bool hasWater = a_water.SampleHeight(wx, wy, surface) != WaterSurfaces::Source::None;
+
 				float bed = std::numeric_limits<float>::quiet_NaN();
 				if (!a_landscape.SampleHeight(wx, wy, bed))
 					bed = std::numeric_limits<float>::quiet_NaN();
 				if (const auto* ray = a_rays ? a_rays->Find(wx, wy) : nullptr) {
 					if (ray->kind == BedRaycasts::HitKind::Terrain)
 						bed = ray->height;
-					else if (ray->kind == BedRaycasts::HitKind::Static)
+					// Meshes rising out of the water are left to the fine obstacle layer: blended at this
+					// spacing, a pillar would spread into a blob over its neighbours
+					else if (ray->kind == BedRaycasts::HitKind::Static && !(hasWater && ray->height > surface))
 						bed = std::isfinite(bed) ? std::max(bed, ray->height) : ray->height;
 				}
-
-				float surface = 0.0f;
-				const bool hasWater = a_water.SampleHeight(wx, wy, surface) != WaterSurfaces::Source::None;
 				if (!hasWater)
 					surface = ShallowWaterSolver::NO_WATER;
 				if (!std::isfinite(bed))

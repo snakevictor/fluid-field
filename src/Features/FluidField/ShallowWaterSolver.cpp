@@ -10,11 +10,12 @@ namespace FluidFieldSim
 	namespace
 	{
 		constexpr std::uint32_t GROUP_SIZE = 8;  // FLUIDFIELD_GROUP_SIZE in Common.hlsli
-		constexpr std::uint32_t MAX_SRVS = 4;    // t0..t3; the map sits at t4
+		constexpr std::uint32_t MAX_SRVS = 4;    // t0..t3; the map sits at t4, fine detail at t5
 		constexpr std::uint32_t MAP_SLOT = 4;
+		constexpr std::uint32_t BOUND_SRVS = 6;
 		constexpr std::uint32_t MAX_UAVS = 3;
 
-		ID3D11ShaderResourceView* const NULL_SRVS[MAX_SRVS + 1] = {};
+		ID3D11ShaderResourceView* const NULL_SRVS[BOUND_SRVS] = {};
 		ID3D11UnorderedAccessView* const NULL_UAVS[MAX_UAVS] = {};
 	}
 
@@ -47,7 +48,7 @@ namespace FluidFieldSim
 		return layer;
 	}
 
-	void ShallowWaterSolver::CreateResources(ID3D11Device* device, std::uint32_t a_resolution, std::uint32_t a_mapResolution, const NameFn& name)
+	void ShallowWaterSolver::CreateResources(ID3D11Device* device, std::uint32_t a_resolution, std::uint32_t a_mapResolution, std::uint32_t a_obstacleResolution, const NameFn& name)
 	{
 		ReleaseResources();
 
@@ -59,6 +60,7 @@ namespace FluidFieldSim
 		surface = CreateLayer(device, a_resolution, DXGI_FORMAT_R16G16B16A16_FLOAT, name, "WaterSurface");
 		flow = CreateLayer(device, a_resolution, DXGI_FORMAT_R16G16_FLOAT, name, "WaterFlow");
 		map = CreateLayer(device, a_mapResolution, DXGI_FORMAT_R32G32_FLOAT, name, "WaterMap", false);
+		obstacles = CreateLayer(device, a_obstacleResolution, DXGI_FORMAT_R32G32B32A32_FLOAT, name, "WaterObstacles");
 		for (std::size_t i = 0; i < debugViews.size(); i++)
 			debugViews[i] = CreateLayer(device, a_resolution, DXGI_FORMAT_R8G8B8A8_UNORM, name, (std::string("DebugView") + DEBUG_VIEW_NAMES[i]).c_str());
 
@@ -99,6 +101,7 @@ namespace FluidFieldSim
 
 		resolution = a_resolution;
 		mapResolution = a_mapResolution;
+		obstacleResolution = a_obstacleResolution;
 		Reset();
 	}
 
@@ -143,6 +146,7 @@ namespace FluidFieldSim
 		surface = {};
 		flow = {};
 		map = {};
+		obstacles = {};
 		debugViews = {};
 		gridConstants = nullptr;
 		waterConstants = nullptr;
@@ -151,6 +155,7 @@ namespace FluidFieldSim
 		emitterSRV = nullptr;
 		resolution = 0;
 		mapResolution = 0;
+		obstacleResolution = 0;
 		Reset();
 	}
 
@@ -163,6 +168,27 @@ namespace FluidFieldSim
 		stepped = false;
 		hasDebugViews = false;
 		mapUploaded = false;
+		obstaclesNeedClear = true;
+	}
+
+	void ShallowWaterSolver::ClearObstacles(ID3D11DeviceContext* context)
+	{
+		if (!obstacles.uav)
+			return;
+		const float zero[4] = {};
+		context->ClearUnorderedAccessViewFloat(obstacles.uav.get(), zero);
+		obstaclesNeedClear = false;
+	}
+
+	void ShallowWaterSolver::UploadObstacleBlock(ID3D11DeviceContext* context, std::int32_t originX, std::int32_t originY, std::uint32_t size, const float* texels, float a_spacing)
+	{
+		if (!obstacles.texture || obstacleResolution == 0 || size == 0 || obstacleResolution % size != 0)
+			return;
+		const auto x = static_cast<std::uint32_t>(originX) & (obstacleResolution - 1);
+		const auto y = static_cast<std::uint32_t>(originY) & (obstacleResolution - 1);
+		const D3D11_BOX box{ .left = x, .top = y, .front = 0, .right = x + size, .bottom = y + size, .back = 1 };
+		context->UpdateSubresource(obstacles.texture.get(), 0, &box, texels, size * sizeof(float) * 4, 0);
+		obstacleSpacing = a_spacing;
 	}
 
 	void ShallowWaterSolver::UploadMap(ID3D11DeviceContext* context, std::span<const float> bedAndSurface, float a_mapSpacing)
@@ -214,6 +240,8 @@ namespace FluidFieldSim
 			.mapSpacing = mapSpacing,
 			.edgeWidth = params.edgeWidth,
 			.edgeRelax = params.edgeRelax,
+			.obstacleRes = obstacleResolution,
+			.obstacleSpacing = obstacleSpacing,
 			.pad = {}
 		};
 		UpdateBuffer(context, waterConstants.get(), &waterData, sizeof(waterData));
@@ -228,14 +256,16 @@ namespace FluidFieldSim
 
 		ID3D11Buffer* cbs[] = { gridConstants.get(), waterConstants.get() };
 		context->CSSetConstantBuffers(0, 2, cbs);
-		ID3D11ShaderResourceView* mapSRV = map.srv.get();
-		context->CSSetShaderResources(MAP_SLOT, 1, &mapSRV);
+		if (obstaclesNeedClear)
+			ClearObstacles(context);
+		ID3D11ShaderResourceView* mapSRVs[] = { map.srv.get(), obstacles.srv.get() };
+		context->CSSetShaderResources(MAP_SLOT, 2, mapSRVs);
 	}
 
 	void ShallowWaterSolver::EndStep(ID3D11DeviceContext* context)
 	{
 		ID3D11Buffer* nullCBs[2] = {};
-		context->CSSetShaderResources(0, MAX_SRVS + 1, NULL_SRVS);
+		context->CSSetShaderResources(0, BOUND_SRVS, NULL_SRVS);
 		context->CSSetUnorderedAccessViews(0, MAX_UAVS, NULL_UAVS, nullptr);
 		context->CSSetConstantBuffers(0, 2, nullCBs);
 		context->CSSetShader(nullptr, nullptr, 0);

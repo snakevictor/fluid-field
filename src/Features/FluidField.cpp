@@ -6,6 +6,7 @@
 #include "State.h"
 #include "Utils/D3D.h"
 
+#include <bit>
 #include <numbers>
 
 #define I18N_KEY_PREFIX "feature.fluid_field."
@@ -449,6 +450,9 @@ void FluidField::Prepass()
 			globals::profiler->BeginPass("FluidField::Bed Raycasts");
 			bedRays.Update(landscape, water, playerPos.x, playerPos.y, settings.GridSize, settings.RaySpacing, settings.RaysPerFrame, settings.LogDepthMap);
 			globals::profiler->EndPass();
+			// Nobody else consumes the refined blocks while the water is off
+			if (!settings.WaterEnabled)
+				bedRays.TakeDirtyBlocks();
 		} else if (bedRays.GetSampleCount() > 0) {
 			bedRays.Clear();
 		}
@@ -571,9 +575,11 @@ bool FluidField::EnsureWater()
 		return false;
 
 	const uint mapResolution = FluidFieldSim::WaterMapBuilder::ResolutionFor(settings.GridSize);
-	if (waterSolver.GetResolution() != settings.GridResolution || waterSolver.GetMapResolution() != mapResolution) {
+	const float fineSpacing = settings.RaySpacing / static_cast<float>(FluidFieldSim::BedRaycasts::REFINE);
+	const uint obstacleResolution = std::clamp(std::bit_ceil(static_cast<uint>(std::ceil(settings.GridSize / fineSpacing))), 16u, 1024u);
+	if (waterSolver.GetResolution() != settings.GridResolution || waterSolver.GetMapResolution() != mapResolution || waterSolver.GetObstacleResolution() != obstacleResolution) {
 		try {
-			waterSolver.CreateResources(globals::d3d::device, settings.GridResolution, mapResolution, [](ID3D11DeviceChild* object, const char* name) {
+			waterSolver.CreateResources(globals::d3d::device, settings.GridResolution, mapResolution, obstacleResolution, [](ID3D11DeviceChild* object, const char* name) {
 				Util::SetResourceName(object, "%s", name);
 			});
 		} catch (const winrt::hresult_error& e) {
@@ -635,6 +641,17 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a
 	}
 	if (!waterSolver.HasMap())
 		return;
+
+	{
+		// Fine bed detail around structures, as the refined rays complete it
+		ZoneScopedN("FluidField - Water Obstacles");
+		if (waterSolver.ObstaclesNeedClear() || bedRays.WasCleared()) {
+			waterSolver.ClearObstacles(a_context);
+			bedRays.MarkAllRefinedDirty();
+		}
+		for (const auto& block : bedRays.TakeDirtyBlocks())
+			waterSolver.UploadObstacleBlock(a_context, block.originX, block.originY, FluidFieldSim::BedRaycasts::REFINE, block.texels.data(), bedRays.GetFineSpacing());
+	}
 
 	// The player's velocity from their movement since the last step, ignoring teleports
 	constexpr float MAX_WAKE_SPEED = 1500.0f;
