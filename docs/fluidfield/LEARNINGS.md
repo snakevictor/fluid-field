@@ -20,6 +20,7 @@ about it.
 -   **Wetness Effects has a dead binding** (2026-10-13, R1). It binds the engine rain-occlusion SRV at PS t70 every frame (`src/Features/WetnessEffects.cpp:947-954`), but no shader samples `TexPrecipOcclusion`.
 -   **ImGui frames are skipped unless something asks for them** (2026-10-13, Phase 1). `OverlayRenderer::ShouldSkipRendering` (`src/Menu/OverlayRenderer.cpp`) skips the whole ImGui frame unless the menu, the editor, the performance overlay or a few other things are active, so an `OverlayFeature::DrawOverlay` never runs during play. Fluid Field adds itself to that list; any new always-on overlay must do the same.
 -   **D3D11 silently nulls an SRV whose resource is still bound as a UAV** (2026-10-13, Phase 1). Ping-pong compute passes must unbind the previous pass's UAV before binding its texture as an SRV. `WindSolver::Dispatch` does this for every pass.
+-   **Water planes cover whole cells, and waterfalls are not water** (2026-10-14, R1 stage b). Water objects and cell water are flat planes over a whole bound or cell, regardless of terrain, so "a plane exists here" is not "it is wet here": compare with the landscape bed. Waterfalls never appear among `TESWaterSystem::waterObjects` (no sloped bounds met on the Riverwood–Whiterun route); they are effect meshes and particles, so treat them as flow sources found from references. `reports/r1-stage-b-play-session.md`.
 
 ## Resource lifetimes and loading screens
 
