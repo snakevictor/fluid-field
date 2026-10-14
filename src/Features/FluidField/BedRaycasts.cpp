@@ -43,6 +43,10 @@ namespace FluidFieldSim
 		samples.clear();
 		sweepCursor = 0;
 		stats.raysLastFrame = 0;
+		lastCentre[0] = lastCentre[1] = INT32_MIN;
+		prunedCentre[0] = prunedCentre[1] = INT32_MIN;
+		newThisPass = 0;
+		idle = false;
 	}
 
 	BedRaycasts::Counts BedRaycasts::CountSamples() const
@@ -62,6 +66,9 @@ namespace FluidFieldSim
 			case HitKind::Skipped:
 				counts.skipped++;
 				break;
+			case HitKind::NoWater:
+				counts.noWater++;
+				break;
 			}
 		}
 		return counts;
@@ -77,7 +84,7 @@ namespace FluidFieldSim
 		return it != samples.end() ? &it->second : nullptr;
 	}
 
-	BedRaycasts::Sample BedRaycasts::Cast(float a_worldX, float a_worldY, float a_surface)
+	BedRaycasts::Sample BedRaycasts::Cast(float a_worldX, float a_worldY, float a_surface, bool a_log)
 	{
 		Sample result{ .kind = HitKind::NoHit };
 
@@ -106,7 +113,20 @@ namespace FluidFieldSim
 
 			const float hitZ = fromZ + (toZ - fromZ) * output.hitFraction;
 			const auto layer = output.rootCollidable->GetCollisionLayer();
-			if (IsStaticLayer(layer)) {
+			const bool isStatic = IsStaticLayer(layer);
+
+			if (a_log && hitLogsThisInterval < MAX_HIT_LOGS_PER_INTERVAL && layer != RE::COL_LAYER::kTerrain) {
+				hitLogsThisInterval++;
+				const auto* refr = RE::TESHavokUtilities::FindCollidableRef(*output.rootCollidable);
+				const auto* base = refr ? refr->GetBaseObject() : nullptr;
+				const char* name = base ? base->GetName() : "";
+				const char* editorID = base ? base->GetFormEditorID() : "";
+				logger::info("[Fluid Field] Ray at ({:.0f}, {:.0f}) surface {:.0f}: {} layer {} at {:.0f} ({:.0f} below surface), ref {:08X} '{}' ({})",
+					a_worldX, a_worldY, a_surface, isStatic ? "static" : "stepped through", static_cast<uint32_t>(layer), hitZ, a_surface - hitZ,
+					refr ? refr->GetFormID() : 0u, name ? name : "", editorID ? editorID : "");
+			}
+
+			if (isStatic) {
 				result.height = hitZ;
 				result.kind = layer == RE::COL_LAYER::kTerrain ? HitKind::Terrain : HitKind::Static;
 				return result;
@@ -119,12 +139,11 @@ namespace FluidFieldSim
 	}
 
 	void BedRaycasts::Update(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, float a_centreX, float a_centreY,
-		float a_extent, float a_spacing, uint32_t a_maxRays)
+		float a_extent, float a_spacing, uint32_t a_maxRays, bool a_log)
 	{
 		stats.raysLastFrame = 0;
 		if (a_spacing != spacing) {
-			samples.clear();
-			sweepCursor = 0;
+			Clear();
 			spacing = a_spacing;
 		}
 
@@ -133,43 +152,90 @@ namespace FluidFieldSim
 		const int32_t centreX = static_cast<int32_t>(std::round(a_centreX / spacing));
 		const int32_t centreY = static_cast<int32_t>(std::round(a_centreY / spacing));
 		const auto total = static_cast<uint32_t>(side * side);
+		sweepCursor %= total;
 
-		// Drop points that have fallen well outside the covered square
-		if (sweepCursor == 0) {
-			std::erase_if(samples, [&](const auto& entry) {
-				const auto x = static_cast<int32_t>(entry.first >> 32);
-				const auto y = static_cast<int32_t>(static_cast<uint32_t>(entry.first));
-				return std::abs(x - centreX) > half * 2 || std::abs(y - centreY) > half * 2;
-			});
+		// New water surfaces can turn dry or waterless points into ones that need a ray
+		if (a_water.GetSignature() != lastWaterSignature) {
+			lastWaterSignature = a_water.GetSignature();
+			std::erase_if(samples, [](const auto& entry) { return entry.second.kind == HitKind::NoWater || entry.second.kind == HitKind::Skipped; });
+			idle = false;
+		}
+		if (centreX != lastCentre[0] || centreY != lastCentre[1]) {
+			lastCentre[0] = centreX;
+			lastCentre[1] = centreY;
+			idle = false;
 		}
 
-		uint32_t cast = 0;
-		uint32_t examined = 0;
-		while (examined < SWEEP_PER_UPDATE && examined < total && cast < a_maxRays) {
-			const uint32_t index = sweepCursor;
-			sweepCursor = (sweepCursor + 1) % total;
-			examined++;
-
-			const int32_t lx = centreX - half + static_cast<int32_t>(index % static_cast<uint32_t>(side));
-			const int32_t ly = centreY - half + static_cast<int32_t>(index / static_cast<uint32_t>(side));
-			const uint64_t key = MakeKey(lx, ly);
-			if (samples.contains(key))
-				continue;
-
-			const float wx = static_cast<float>(lx) * spacing;
-			const float wy = static_cast<float>(ly) * spacing;
-			float surface = 0.0f;
-			if (a_water.SampleHeight(wx, wy, surface) == WaterSurfaces::Source::None)
-				continue;  // No water plane yet; may appear once water objects load
-
-			float landscape = 0.0f;
-			if (a_landscape.SampleHeight(wx, wy, landscape) && surface < landscape - BURIED_PLANE_MARGIN) {
-				samples.emplace(key, Sample{ .kind = HitKind::Skipped });
-				continue;
+		double rayMs = 0.0;
+		if (!idle) {
+			// Drop points that have fallen well outside the covered square, once per lattice step moved
+			if (std::abs(centreX - prunedCentre[0]) > half / 4 || std::abs(centreY - prunedCentre[1]) > half / 4) {
+				prunedCentre[0] = centreX;
+				prunedCentre[1] = centreY;
+				std::erase_if(samples, [&](const auto& entry) {
+					const auto x = static_cast<int32_t>(entry.first >> 32);
+					const auto y = static_cast<int32_t>(static_cast<uint32_t>(entry.first));
+					return std::abs(x - centreX) > half * 2 || std::abs(y - centreY) > half * 2;
+				});
 			}
 
-			samples.emplace(key, Cast(wx, wy, surface));
-			cast++;
+			uint32_t cast = 0;
+			uint32_t examined = 0;
+			while (examined < SWEEP_PER_UPDATE && examined < total && cast < a_maxRays && rayMs < RAY_TIME_BUDGET_MS) {
+				const uint32_t index = sweepCursor;
+				sweepCursor = (sweepCursor + 1) % total;
+				examined++;
+				if (sweepCursor == 0) {
+					// A whole pass found nothing to add: everything around this centre is resolved
+					if (newThisPass == 0) {
+						idle = true;
+						break;
+					}
+					newThisPass = 0;
+				}
+
+				const int32_t lx = centreX - half + static_cast<int32_t>(index % static_cast<uint32_t>(side));
+				const int32_t ly = centreY - half + static_cast<int32_t>(index / static_cast<uint32_t>(side));
+				const uint64_t key = MakeKey(lx, ly);
+				if (samples.contains(key))
+					continue;
+				newThisPass++;
+
+				const float wx = static_cast<float>(lx) * spacing;
+				const float wy = static_cast<float>(ly) * spacing;
+				float surface = 0.0f;
+				if (a_water.SampleHeight(wx, wy, surface) == WaterSurfaces::Source::None) {
+					samples.emplace(key, Sample{ .kind = HitKind::NoWater });
+					continue;
+				}
+
+				float landscape = 0.0f;
+				if (a_landscape.SampleHeight(wx, wy, landscape) && surface < landscape - BURIED_PLANE_MARGIN) {
+					samples.emplace(key, Sample{ .kind = HitKind::Skipped });
+					continue;
+				}
+
+				const auto begin = std::chrono::steady_clock::now();
+				samples.emplace(key, Cast(wx, wy, surface, a_log));
+				rayMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+				cast++;
+			}
 		}
+
+		if (!a_log)
+			return;
+		rayMsSinceSummary += rayMs;
+		if (updatesUntilSummary > 0) {
+			updatesUntilSummary--;
+			return;
+		}
+		updatesUntilSummary = LOG_SUMMARY_INTERVAL;
+		const auto counts = CountSamples();
+		logger::info("[Fluid Field] Bed rays: {} cast in the last {} updates ({:.3f} ms total), {} stepped through overall; cached {} terrain, {} mesh, {} out of reach, {} buried plane, {} no water; idle {}",
+			stats.raysCast - raysAtLastSummary, LOG_SUMMARY_INTERVAL, rayMsSinceSummary, stats.stepThroughs,
+			counts.terrain, counts.statics, counts.noHit, counts.skipped, counts.noWater, idle ? "yes" : "no");
+		raysAtLastSummary = stats.raysCast;
+		rayMsSinceSummary = 0.0;
+		hitLogsThisInterval = 0;
 	}
 }

@@ -65,6 +65,8 @@ namespace FluidFieldSim
 		uint32_t GetSlopedCount() const { return slopedCount; }
 		std::size_t GetCellWaterCount() const { return cellWater.size(); }
 		const VerifyStats& GetVerifyStats() const { return verifyStats; }
+		/** @brief Changes whenever the set of surfaces changes. */
+		uint64_t GetSignature() const { return lastSignature; }
 
 	private:
 		static constexpr uint32_t REBUILD_INTERVAL = 30;  ///< Updates between rebuilds

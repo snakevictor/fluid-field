@@ -58,6 +58,7 @@ struct FluidField : OverlayFeature
 		bool RaycastBed = true;           ///< Find rocks, banks and riverbed meshes under water with Havok rays
 		uint RaysPerFrame = 32;           ///< Most bed rays cast in one frame
 		float RaySpacing = 64.0f;         ///< World units between bed rays
+		bool LogDepthMap = false;         ///< Debug: log what bed rays hit and periodic depth map statistics
 	};
 
 	Settings settings;
@@ -77,6 +78,15 @@ struct FluidField : OverlayFeature
 	virtual void Prepass() override;
 
 	virtual void ClearShaderCache() override;
+
+	/**
+	 * @brief Always valid: Fluid Field adds no defines to engine shaders, so its version and install
+	 * state cannot change them, and its own compute shaders compile at runtime. Without this, every
+	 * version bump discarded the engine shader cache index. Remove both overrides once Fluid Field
+	 * adds a define to an engine shader (the flowing water slice's FLUID_FIELD in Water.hlsl).
+	 */
+	virtual bool ValidateCache(CSimpleIniA&) override { return true; }
+	virtual void WriteDiskCacheInfo(CSimpleIniA&) override {}
 
 	/** @brief Draws the per-layer debug overlay when it is turned on from the menu. */
 	virtual void DrawOverlay() override;

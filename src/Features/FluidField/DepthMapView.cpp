@@ -34,6 +34,10 @@ namespace FluidFieldSim
 		hasImages = false;
 		createFailed = false;
 		callsUntilRefresh = 0;
+		rebuilding = false;
+		bed.clear();
+		for (auto& image : pixels)
+			image.clear();
 	}
 
 	ID3D11ShaderResourceView* DepthMapView::GetSRV(std::size_t a_index) const
@@ -76,49 +80,58 @@ namespace FluidFieldSim
 		return true;
 	}
 
+	void DepthMapView::FillBedRow(uint32_t a_row, const LandscapeCache& a_landscape, const BedRaycasts* a_rays)
+	{
+		constexpr uint32_t n = RESOLUTION;
+		for (uint32_t x = 0; x < n + 2; x++) {
+			const float wx = originX + (static_cast<float>(x) - 0.5f) * texel;
+			const float wy = originY + (static_cast<float>(a_row) - 0.5f) * texel;
+			float height = std::numeric_limits<float>::quiet_NaN();
+			if (!a_landscape.SampleHeight(wx, wy, height))
+				height = std::numeric_limits<float>::quiet_NaN();
+			// A terrain hit is the engine's own triangle height; a static hit raises the bed to the mesh
+			if (const auto* ray = a_rays ? a_rays->Find(wx, wy) : nullptr) {
+				if (ray->kind == BedRaycasts::HitKind::Terrain)
+					height = ray->height;
+				else if (ray->kind == BedRaycasts::HitKind::Static)
+					height = std::isfinite(height) ? std::max(height, ray->height) : ray->height;
+			}
+			bed[a_row * (n + 2) + x] = height;
+		}
+	}
+
 	void DepthMapView::Update(ID3D11DeviceContext* a_context, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays,
 		float a_centreX, float a_centreY, float a_referenceHeight, float a_size)
 	{
-		if (callsUntilRefresh > 0) {
-			callsUntilRefresh--;
-			return;
-		}
-		callsUntilRefresh = REFRESH_INTERVAL;
-
-		if (!EnsureTextures())
-			return;
-
 		constexpr uint32_t n = RESOLUTION;
-		const float texel = a_size / static_cast<float>(n);
-		const float originX = a_centreX - a_size * 0.5f;
-		const float originY = a_centreY - a_size * 0.5f;
 
-		// Bed heights first, with a one-texel border for shading
-		std::vector<float> bed((n + 2) * (n + 2), std::numeric_limits<float>::quiet_NaN());
-		for (uint32_t y = 0; y < n + 2; y++) {
-			for (uint32_t x = 0; x < n + 2; x++) {
-				const float wx = originX + (static_cast<float>(x) - 0.5f) * texel;
-				const float wy = originY + (static_cast<float>(y) - 0.5f) * texel;
-				float height = std::numeric_limits<float>::quiet_NaN();
-				if (!a_landscape.SampleHeight(wx, wy, height))
-					height = std::numeric_limits<float>::quiet_NaN();
-				// A terrain hit is the engine's own triangle height; a static hit raises the bed to the mesh
-				if (const auto* ray = a_rays ? a_rays->Find(wx, wy) : nullptr) {
-					if (ray->kind == BedRaycasts::HitKind::Terrain)
-						height = ray->height;
-					else if (ray->kind == BedRaycasts::HitKind::Static)
-						height = std::isfinite(height) ? std::max(height, ray->height) : ray->height;
-				}
-				bed[y * (n + 2) + x] = height;
+		if (!rebuilding) {
+			if (callsUntilRefresh > 0) {
+				callsUntilRefresh--;
+				return;
 			}
+			if (!EnsureTextures())
+				return;
+
+			rebuilding = true;
+			nextRow = 0;
+			bedRowsFilled = 0;
+			texel = a_size / static_cast<float>(n);
+			originX = a_centreX - a_size * 0.5f;
+			originY = a_centreY - a_size * 0.5f;
+			referenceHeight = a_referenceHeight;
+			bed.assign((n + 2) * (n + 2), std::numeric_limits<float>::quiet_NaN());
+			for (auto& image : pixels)
+				image.assign(n * n, 0);
+			pending = {};
 		}
 
-		std::array<std::vector<uint32_t>, IMAGE_COUNT> pixels;
-		for (auto& image : pixels)
-			image.assign(n * n, 0);
-		stats = {};
+		const uint32_t endRow = std::min(n, nextRow + n / SLICES);
+		// Output row y reads bed rows y .. y + 2 (the bed has a one-texel border)
+		while (bedRowsFilled < std::min(n + 2, endRow + 2))
+			FillBedRow(bedRowsFilled++, a_landscape, a_rays);
 
-		for (uint32_t y = 0; y < n; y++) {
+		for (uint32_t y = nextRow; y < endRow; y++) {
 			for (uint32_t x = 0; x < n; x++) {
 				// Row 0 is north, so the images read like a map
 				const uint32_t row = n - 1 - y;
@@ -132,7 +145,7 @@ namespace FluidFieldSim
 
 				// Bed: green below the player, brown above, lit from the north-west
 				if (hasBed) {
-					const float t = std::clamp((h - a_referenceHeight) / BED_RANGE, -1.0f, 1.0f);
+					const float t = std::clamp((h - referenceHeight) / BED_RANGE, -1.0f, 1.0f);
 					const float slopeX = std::isfinite(bedAt(1, 0)) && std::isfinite(bedAt(-1, 0)) ? bedAt(1, 0) - bedAt(-1, 0) : 0.0f;
 					const float slopeY = std::isfinite(bedAt(0, 1)) && std::isfinite(bedAt(0, -1)) ? bedAt(0, 1) - bedAt(0, -1) : 0.0f;
 					const float shade = std::clamp(0.75f + (-slopeX + slopeY) / (4.0f * texel), 0.35f, 1.15f);
@@ -142,20 +155,24 @@ namespace FluidFieldSim
 					pixels[0][out] = Pack(r * shade, g * shade, b * shade);
 				} else {
 					pixels[0][out] = MISSING;
-					stats.bedMissing++;
+					pending.bedMissing++;
 				}
 
-				// Water surface: blue for water objects, cyan for cell water only
+				// Water surface: bright where the water is above the bed, dim where its plane lies under the ground
 				float surface = 0.0f;
 				const auto source = a_water.SampleHeight(wx, wy, surface);
-				if (source == WaterSurfaces::Source::WaterObject) {
-					pixels[1][out] = Pack(0.15f, 0.35f, 1.0f);
-					stats.waterObject++;
-				} else if (source == WaterSurfaces::Source::CellWater) {
-					pixels[1][out] = Pack(0.2f, 0.85f, 0.9f);
-					stats.cellWater++;
-				} else {
+				const bool wet = source != WaterSurfaces::Source::None && (!hasBed || surface > h);
+				if (source == WaterSurfaces::Source::None) {
 					pixels[1][out] = NO_WATER;
+				} else if (!wet) {
+					pixels[1][out] = source == WaterSurfaces::Source::WaterObject ? Pack(0.10f, 0.13f, 0.28f) : Pack(0.10f, 0.22f, 0.24f);
+					pending.buried++;
+				} else if (source == WaterSurfaces::Source::WaterObject) {
+					pixels[1][out] = Pack(0.15f, 0.35f, 1.0f);
+					pending.waterObject++;
+				} else {
+					pixels[1][out] = Pack(0.2f, 0.85f, 0.9f);
+					pending.cellWater++;
 				}
 
 				// Depth: blue gets darker with depth; tan where the water's plane lies under the ground
@@ -163,12 +180,12 @@ namespace FluidFieldSim
 					pixels[2][out] = NO_WATER;
 				} else if (!hasBed) {
 					pixels[2][out] = MISSING;
-				} else if (surface > h) {
+				} else if (wet) {
 					const float depth = surface - h;
 					const float t = std::clamp(depth / DEPTH_RANGE, 0.0f, 1.0f);
 					pixels[2][out] = Pack(0.55f - 0.5f * t, 0.85f - 0.65f * t, 1.0f - 0.45f * t);
-					stats.submerged++;
-					stats.maxDepth = std::max(stats.maxDepth, depth);
+					pending.submerged++;
+					pending.maxDepth = std::max(pending.maxDepth, depth);
 				} else {
 					pixels[2][out] = Pack(0.55f, 0.45f, 0.30f);
 				}
@@ -188,16 +205,22 @@ namespace FluidFieldSim
 					case BedRaycasts::HitKind::NoHit:
 						pixels[3][out] = Pack(0.10f, 0.15f, 0.45f);
 						break;
-					case BedRaycasts::HitKind::Skipped:
+					default:
 						pixels[3][out] = Pack(0.40f, 0.40f, 0.40f);
 						break;
 					}
 				}
 			}
 		}
+		nextRow = endRow;
 
-		for (std::size_t i = 0; i < IMAGE_COUNT; i++)
-			a_context->UpdateSubresource(textures[i]->resource.get(), 0, nullptr, pixels[i].data(), n * sizeof(uint32_t), 0);
-		hasImages = true;
+		if (nextRow >= n) {
+			for (std::size_t i = 0; i < IMAGE_COUNT; i++)
+				a_context->UpdateSubresource(textures[i]->resource.get(), 0, nullptr, pixels[i].data(), n * sizeof(uint32_t), 0);
+			stats = pending;
+			hasImages = true;
+			rebuilding = false;
+			callsUntilRefresh = REFRESH_INTERVAL;
+		}
 	}
 }

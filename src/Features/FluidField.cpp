@@ -22,7 +22,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	VerifyWater,
 	RaycastBed,
 	RaysPerFrame,
-	RaySpacing)
+	RaySpacing,
+	LogDepthMap)
 
 void FluidField::DrawSettings()
 {
@@ -115,11 +116,15 @@ void FluidField::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("ray_spacing_tooltip"), "World units between rays. Smaller finds smaller rocks and casts more rays. Changing it clears the results."));
 	}
+	ImGui::Checkbox(T(TKEY("log_depth_map"), "Log Depth Map Details"), &settings.LogDepthMap);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("log_depth_map_tooltip"), "Debug: logs what bed rays hit (object, form ID, collision layer) and a summary every few seconds."));
+	}
 	if (settings.RaycastBed && bedRays.GetSampleCount() > 0) {
 		const auto counts = bedRays.CountSamples();
 		const auto& rayStats = bedRays.GetStats();
-		ImGui::Text(T(TKEY("raycast_counts"), "Bed rays: %u terrain, %u meshes, %u out of reach, %u dry; %u cast last frame"),
-			counts.terrain, counts.statics, counts.noHit, counts.skipped, rayStats.raysLastFrame);
+		ImGui::Text(T(TKEY("raycast_counts"), "Bed rays: %u terrain, %u meshes, %u out of reach, %u under ground, %u no water; %u cast last frame"),
+			counts.terrain, counts.statics, counts.noHit, counts.skipped, counts.noWater, rayStats.raysLastFrame);
 	}
 	if (const auto& stats = water.GetVerifyStats(); stats.runs > 0) {
 		ImGui::Text(T(TKEY("water_verify_result"), "Water checked %u times: error %.2f units, plane vs bound %.2f (%u of %u samples missed)"),
@@ -219,11 +224,11 @@ void FluidField::DrawOverlay()
 		}
 		const auto& depthStats = depthView.GetStats();
 		ImGui::TextUnformatted(T(TKEY("overlay_legend_bed"), "Bed: green below the player, brown above, magenta where no landscape is loaded."));
-		ImGui::TextUnformatted(T(TKEY("overlay_legend_water"), "Water: blue is a water object, cyan is the cell's water height only."));
+		ImGui::TextUnformatted(T(TKEY("overlay_legend_water"), "Water: bright blue is wet under a water object, bright cyan wet under cell water only; dim is a water plane under the ground."));
 		ImGui::TextUnformatted(T(TKEY("overlay_legend_depth"), "Depth: lighter is shallow, darker is deep; tan is water plane under the ground."));
-		ImGui::TextUnformatted(T(TKEY("overlay_legend_raycasts"), "Raycasts: green hit terrain, orange hit a mesh (rock, bank, pier), dark blue found nothing in reach, grey is dry."));
-		ImGui::Text(T(TKEY("overlay_depth_stats"), "Submerged %u texels, deepest %.0f units; %u water-object and %u cell-water texels; %u without landscape"),
-			depthStats.submerged, depthStats.maxDepth, depthStats.waterObject, depthStats.cellWater, depthStats.bedMissing);
+		ImGui::TextUnformatted(T(TKEY("overlay_legend_raycasts"), "Raycasts: green hit terrain, orange hit a mesh (rock, bank, pier), dark blue found nothing in reach, grey had no ray (dry)."));
+		ImGui::Text(T(TKEY("overlay_depth_stats"), "Wet %u texels (%u water object, %u cell water), deepest %.0f units; %u plane under ground; %u without a bed"),
+			depthStats.submerged, depthStats.waterObject, depthStats.cellWater, depthStats.maxDepth, depthStats.buried, depthStats.bedMissing);
 	} else if (settings.DepthMapEnabled) {
 		ImGui::TextUnformatted(T(TKEY("overlay_depth_waiting"), "Depth map: waiting for data."));
 	} else {
@@ -388,7 +393,7 @@ void FluidField::Prepass()
 		if (settings.RaycastBed) {
 			ZoneScopedN("FluidField - Bed Raycasts");
 			globals::profiler->BeginPass("FluidField::Bed Raycasts");
-			bedRays.Update(landscape, water, playerPos.x, playerPos.y, settings.GridSize, settings.RaySpacing, settings.RaysPerFrame);
+			bedRays.Update(landscape, water, playerPos.x, playerPos.y, settings.GridSize, settings.RaySpacing, settings.RaysPerFrame, settings.LogDepthMap);
 			globals::profiler->EndPass();
 		} else if (bedRays.GetSampleCount() > 0) {
 			bedRays.Clear();
