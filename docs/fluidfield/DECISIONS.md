@@ -299,3 +299,27 @@ Entry format:
     detecting fire replacers by file path.
 -   Decided by: @Victor
 -   References: `research/existing-mods.md`, D10
+
+## D14: Obstacles at the water line come from cutting meshes with the water plane
+
+-   Date: 2026-10-14
+-   Phase / spike: Phase 1 (R1 stage d follow-up), water slice 1
+-   Decision: Find where water can be at the water line by cutting the
+    vanilla water plane against the static meshes (and landscape) near the
+    player on the CPU: intersect each mesh's triangles with the plane, mark
+    the crossed cells and flood-fill open water inward. Cut each reference
+    once, since statics do not move. Data path, in order of preference:
+    -   the meshes' CPU vertex and index copy (`BSGraphics::TriShape`
+        `rawVertexData` and `rawIndexData`)
+    -   Havok collision queried with a thin box at the water line
+    -   GPU vertex buffer readback, as a last resort
+        Raycasts stay for riverbed depth. Staged as in `research/mesh-cut.md`:
+        stage 0 surveys which statics near water keep CPU vertex data.
+-   Alternatives rejected:
+    -   Deciding open versus solid with up and down raycasts. Thin decks,
+        collision that differs from visuals, and sampling limits kept it
+        wrong at bridges after four rounds.
+    -   A render-based water-line slice (Prototype A). It needs the contested
+        render hooks, and the mesh cut gives the same answer without them.
+-   Decided by: @Victor
+-   References: `research/mesh-cut.md`, `reports/water-slice-1-round-3.md`
