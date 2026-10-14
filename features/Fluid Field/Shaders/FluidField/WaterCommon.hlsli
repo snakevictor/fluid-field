@@ -30,13 +30,42 @@ cbuffer WaterCB : register(b1)
 	float EdgeRelax;        // Per-step blend toward vanilla at the very edge
 	uint ObstacleRes;       // ObstacleMap texels per side, a power of two (0: no detail)
 	float ObstacleSpacing;  // World units between ObstacleMap texels
-	float2 WaterPad0;
+	float RiverSpeed;       // World units per second at full flowmap strength
+	uint FlowmapEnabled;    // RiverFlowmap is bound and replaces Current
+	float2 FlowmapCells;    // Flowmap size in cells
+	int2 FlowmapOffset;     // Added to a cell's coordinates to get its flowmap tile
 };
 
 static const float NO_WATER = -1.0e8;
 
 Texture2D<float2> WaterMap : register(t4);
 Texture2D<float4> ObstacleMap : register(t5);
+// Unified Water's world flowmap: 64 texels per cell, tiles stacked with the southern row last.
+// RG is the flow direction ((RG * 2 - 1), turned 180 degrees as Water.hlsl does), B its weakness.
+Texture2D<float4> RiverFlowmap : register(t6);
+
+static const float FLOWMAP_TEXELS_PER_CELL = 64.0;
+static const float WORLD_UNITS_PER_CELL = 4096.0;
+
+float2 LoadRiverFlow(int2 texel)
+{
+	int2 size = int2(FlowmapCells * FLOWMAP_TEXELS_PER_CELL);
+	float4 c = RiverFlowmap[uint2(clamp(texel, 0, size - 1))];
+	return -(c.xy * 2.0 - 1.0) * sqrt(saturate(1.01 - c.z));
+}
+
+/** @brief The river's flow at a world position, world units per second, bilinear between flowmap texels. */
+float2 SampleRiverFlow(float2 worldPos)
+{
+	float2 cells = worldPos / WORLD_UNITS_PER_CELL + float2(FlowmapOffset);
+	// Columns run east from the west edge; rows run south from the north edge
+	float2 texel = float2(cells.x, FlowmapCells.y - cells.y) * FLOWMAP_TEXELS_PER_CELL - 0.5;
+	int2 t0 = int2(floor(texel));
+	float2 f = texel - float2(t0);
+	float2 flow = lerp(lerp(LoadRiverFlow(t0), LoadRiverFlow(t0 + int2(1, 0)), f.x),
+		lerp(LoadRiverFlow(t0 + int2(0, 1)), LoadRiverFlow(t0 + int2(1, 1)), f.x), f.y);
+	return flow * RiverSpeed;
+}
 
 /** @brief Fine bed detail at a world position, where the refined rays have it. */
 bool LoadObstacle(float2 worldPos, out float bed)

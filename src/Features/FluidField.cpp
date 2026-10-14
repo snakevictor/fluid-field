@@ -6,6 +6,9 @@
 #include "State.h"
 #include "Utils/D3D.h"
 
+#include "UnifiedWater.h"
+#include "UnifiedWater/Flowmap.h"
+
 #include <bit>
 #include <numbers>
 
@@ -34,7 +37,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	TestCurrentAngle,
 	SurfaceNormalStrength,
 	WaveDamping,
-	SplashStrength)
+	SplashStrength,
+	RiverSpeed)
 
 void FluidField::DrawSettings()
 {
@@ -168,6 +172,10 @@ void FluidField::DrawSettings()
 	ImGui::SliderFloat(T(TKEY("splash_strength"), "Splash Strength"), &settings.SplashStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("splash_strength_tooltip"), "How hard jumping or falling into the water, or climbing out of it, pushes the water."));
+	}
+	ImGui::SliderFloat(T(TKEY("river_speed"), "River Speed"), &settings.RiverSpeed, 0.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("river_speed_tooltip"), "How fast rivers flow, from Unified Water's flowmap, in game units per second. 0 uses the test current instead."));
 	}
 	if (waterShaderFailed)
 		ImGui::TextColored(Menu::GetSingleton()->GetTheme().StatusPalette.Error, "%s", T(TKEY("water_shader_failed"), "Water shaders failed to compile, so the water layer is off. Check CommunityShaders.log."));
@@ -340,6 +348,7 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.SurfaceNormalStrength = std::isfinite(a_settings.SurfaceNormalStrength) ? std::clamp(a_settings.SurfaceNormalStrength, 0.0f, 8.0f) : defaults.SurfaceNormalStrength;
 	a_settings.WaveDamping = std::isfinite(a_settings.WaveDamping) ? std::clamp(a_settings.WaveDamping, 0.0f, 5.0f) : defaults.WaveDamping;
 	a_settings.SplashStrength = std::isfinite(a_settings.SplashStrength) ? std::clamp(a_settings.SplashStrength, 0.0f, 3.0f) : defaults.SplashStrength;
+	a_settings.RiverSpeed = std::isfinite(a_settings.RiverSpeed) ? std::clamp(a_settings.RiverSpeed, 0.0f, 400.0f) : defaults.RiverSpeed;
 	return a_settings;
 }
 
@@ -839,6 +848,20 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a
 
 	FluidFieldSim::WaterParams params;
 	params.damping = settings.WaveDamping;
+	// River currents from Unified Water's flowmap; the test current when there is none
+	RE::NiPointer<RE::NiSourceTexture> flowmapTexture;
+	const auto& unifiedWater = globals::features::unifiedWater;
+	if (settings.RiverSpeed > 0.0f && unifiedWater.loaded) {
+		if (const auto* flowmap = unifiedWater.GetFlowmap(); flowmap && flowmap->TryGetFlowmap(flowmapTexture) && flowmapTexture && flowmapTexture->rendererTexture &&
+															 flowmapTexture->rendererTexture->resourceView) {
+			params.flowmap = flowmapTexture->rendererTexture->resourceView;
+			params.flowmapCells[0] = static_cast<float>(flowmap->GetWidth());
+			params.flowmapCells[1] = static_cast<float>(flowmap->GetHeight());
+			params.flowmapOffset[0] = flowmap->GetOffsetX();
+			params.flowmapOffset[1] = flowmap->GetOffsetY();
+			params.riverSpeed = settings.RiverSpeed;
+		}
+	}
 	const float currentHeading = settings.TestCurrentAngle * std::numbers::pi_v<float> / 180.0f;
 	params.current[0] = std::sin(currentHeading) * settings.TestCurrentSpeed;
 	params.current[1] = std::cos(currentHeading) * settings.TestCurrentSpeed;

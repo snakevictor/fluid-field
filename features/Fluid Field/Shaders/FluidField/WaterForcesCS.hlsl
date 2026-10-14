@@ -45,7 +45,7 @@ RWTexture2D<float2> CellMapOut : register(u2);
 	CellMapOut[id] = float2(bed, vanillaDepth);
 
 	bool vanillaWet = vanillaDepth > WetThreshold;
-	float2 restVelocity = vanillaWet ? Current : 0.0;
+	float2 restVelocity = vanillaWet ? (FlowmapEnabled != 0 ? SampleRiverFlow(worldPos) : Current) : 0.0;
 
 	// Cells that scrolled in, and every cell after a reset, start as calm vanilla water
 	bool kept = HistoryValid != 0 && all(cell >= PrevGridMin) && all(cell < PrevGridMin + int(GridRes));

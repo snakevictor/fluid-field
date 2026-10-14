@@ -10,9 +10,9 @@ namespace FluidFieldSim
 	namespace
 	{
 		constexpr std::uint32_t GROUP_SIZE = 8;  // FLUIDFIELD_GROUP_SIZE in Common.hlsli
-		constexpr std::uint32_t MAX_SRVS = 4;    // t0..t3; the map sits at t4, fine detail at t5
+		constexpr std::uint32_t MAX_SRVS = 4;    // t0..t3; the map sits at t4, fine detail at t5, the flowmap at t6
 		constexpr std::uint32_t MAP_SLOT = 4;
-		constexpr std::uint32_t BOUND_SRVS = 6;
+		constexpr std::uint32_t BOUND_SRVS = 7;
 		constexpr std::uint32_t MAX_UAVS = 3;
 
 		ID3D11ShaderResourceView* const NULL_SRVS[BOUND_SRVS] = {};
@@ -243,7 +243,10 @@ namespace FluidFieldSim
 			.edgeRelax = params.edgeRelax,
 			.obstacleRes = obstacleResolution,
 			.obstacleSpacing = obstacleSpacing,
-			.pad = {}
+			.riverSpeed = params.riverSpeed,
+			.flowmapEnabled = params.flowmap ? 1u : 0u,
+			.flowmapCells = { params.flowmapCells[0], params.flowmapCells[1] },
+			.flowmapOffset = { params.flowmapOffset[0], params.flowmapOffset[1] }
 		};
 		UpdateBuffer(context, waterConstants.get(), &waterData, sizeof(waterData));
 
@@ -259,8 +262,8 @@ namespace FluidFieldSim
 		context->CSSetConstantBuffers(0, 2, cbs);
 		if (obstaclesNeedClear)
 			ClearObstacles(context);
-		ID3D11ShaderResourceView* mapSRVs[] = { map.srv.get(), obstacles.srv.get() };
-		context->CSSetShaderResources(MAP_SLOT, 2, mapSRVs);
+		ID3D11ShaderResourceView* mapSRVs[] = { map.srv.get(), obstacles.srv.get(), params.flowmap };
+		context->CSSetShaderResources(MAP_SLOT, 3, mapSRVs);
 	}
 
 	void ShallowWaterSolver::EndStep(ID3D11DeviceContext* context)

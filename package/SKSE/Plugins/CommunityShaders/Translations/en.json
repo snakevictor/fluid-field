@@ -919,6 +919,8 @@
     "feature.fluid_field.rays_per_frame": "Rays Per Frame",
     "feature.fluid_field.reset_field": "Reset Field",
     "feature.fluid_field.resource_create_failed": "Fluid Field could not create its textures, so the simulation is off. Check CommunityShaders.log.",
+    "feature.fluid_field.river_speed": "River Speed",
+    "feature.fluid_field.river_speed_tooltip": "How fast rivers flow, from Unified Water's flowmap, in game units per second. 0 uses the test current instead.",
     "feature.fluid_field.shader_compile_failed": "Fluid Field shaders failed to compile, so the simulation is off. Check CommunityShaders.log.",
     "feature.fluid_field.show_layer_overlay": "Show Layer Overlay",
     "feature.fluid_field.show_layer_overlay_tooltip": "Draws every simulation layer on screen, north up, centred on the player. Not saved.",

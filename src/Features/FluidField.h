@@ -72,6 +72,7 @@ struct FluidField : OverlayFeature
 		float SurfaceNormalStrength = 1.0f;  ///< How strongly the simulated waves tilt the water's surface normal
 		float WaveDamping = 0.8f;            ///< Fraction of the water's speed lost per second, as an exponential rate
 		float SplashStrength = 1.0f;         ///< How hard actors entering or leaving the water push it
+		float RiverSpeed = 100.0f;           ///< River current at full flowmap strength, world units per second (0: test current only)
 	};
 
 	Settings settings;

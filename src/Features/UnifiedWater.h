@@ -116,6 +116,9 @@ struct UnifiedWater : OverlayFeature
 	/** @brief Installs engine hooks for water mesh replacement and worldspace handling. */
 	virtual void PostPostLoad() override;
 
+	/** @brief The world flowmap, or null; read-only, for Fluid Field's river currents (Fluid Field D8). */
+	const Flowmap* GetFlowmap() const { return flowmap; }
+
 private:
 	RE::NiPointer<RE::BSTriShape> waterMesh;
 	Flowmap* flowmap = nullptr;

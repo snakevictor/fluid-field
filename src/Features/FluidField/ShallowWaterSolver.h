@@ -40,6 +40,12 @@ namespace FluidFieldSim
 		float edgeWidth = 16.0f;    ///< Texels over which the grid edge blends back to vanilla
 		float edgeRelax = 0.2f;     ///< Per-step blend toward vanilla at the very edge
 		float damping = 0.2f;       ///< Fraction of velocity lost per second
+		/// River currents from Unified Water's world flowmap (64 texels per cell, rows from the north);
+		/// when set, they replace `current` as the velocity the water relaxes toward
+		ID3D11ShaderResourceView* flowmap = nullptr;
+		float flowmapCells[2]{};          ///< Flowmap size in cells
+		std::int32_t flowmapOffset[2]{};  ///< Added to a cell's coordinates to get its flowmap tile
+		float riverSpeed = 0.0f;          ///< World units per second at full flowmap strength
 	};
 
 	/** @brief Colour scales for the water debug view: a value of 1/scale maps to full intensity. */
@@ -169,9 +175,12 @@ namespace FluidFieldSim
 			float edgeRelax;
 			std::uint32_t obstacleRes;
 			float obstacleSpacing;
-			float pad[2];
+			float riverSpeed;
+			std::uint32_t flowmapEnabled;
+			float flowmapCells[2];
+			std::int32_t flowmapOffset[2];
 		};
-		static_assert(sizeof(WaterConstants) == 64);
+		static_assert(sizeof(WaterConstants) == 80);
 
 		// Matches WaterDebugCB in WaterDebugViewCS.hlsl
 		struct alignas(16) DebugConstants
