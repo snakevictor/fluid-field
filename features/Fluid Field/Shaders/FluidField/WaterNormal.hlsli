@@ -98,6 +98,29 @@ namespace FluidField
 		return SampleSurface(a_worldPosition, surface) ? saturate(surface.w) : 0.0;
 	}
 
+	/** World units vanilla's normal lookups shift per unit of simulated surface slope. */
+	static const float WARP_PER_SLOPE = 48.0;
+	/** Extra vanilla ripple amplitude per unit of simulated slope (capped at double). */
+	static const float ROUGHNESS_PER_SLOPE = 3.0;
+
+	/**
+	 * How the simulated surface reshapes vanilla's own normals at a world position (D17): a shift
+	 * of vanilla's normal-texture lookups (world units) toward the downslope, so its ripple pattern
+	 * bends and compresses around wakes, eddies and standing waves, and an extra roughness where
+	 * the surface is steep. Both fade with coverage, so vanilla is untouched outside the grid.
+	 */
+	void GetVanillaWarp(float3 a_worldPosition, out float2 a_warp, out float a_roughness)
+	{
+		a_warp = 0;
+		a_roughness = 0;
+		float4 surface;
+		if (!SampleSurface(a_worldPosition, surface))
+			return;
+		const float coverage = saturate(surface.w);
+		a_warp = -surface.xy * WARP_PER_SLOPE * coverage;
+		a_roughness = saturate(length(surface.xy) * ROUGHNESS_PER_SLOPE) * coverage;
+	}
+
 	/**
 	 * Adds Fluid Field's wave normal to a water normal at an absolute world position.
 	 * Returns a_normal unchanged outside the simulated area or where it has no water.

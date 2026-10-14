@@ -645,6 +645,26 @@ WaterNormalData GetWaterNormal(PS_INPUT input, float distanceFactor, float norma
 		normalsAmplitude *= SharedData::enbSettings.WaterWavesAmplitude;
 	}
 
+#			if defined(FLUID_FIELD)
+	{
+		// Fluid Field's surface deformation reshapes vanilla's own normals (D17): every normal
+		// texture lookup below, base and flowmap, shifts with the simulated slope, and the ripples
+		// get rougher where the surface is steep
+		float2 fluidWarp;
+		float fluidRoughness;
+		FluidField::GetVanillaWarp(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, fluidWarp, fluidRoughness);
+		input.TexCoord1.xy += fluidWarp * normalScalesRcp.x;
+		input.TexCoord1.zw += fluidWarp * normalScalesRcp.y;
+		input.TexCoord2.xy += fluidWarp * normalScalesRcp.z;
+#				if defined(FLOWMAP)
+		// Flowmap normals use their own coordinates; convert world units with the screen derivatives
+		float worldPerPixel = length(ddx(input.WPosition.xy)) + 1e-4;
+		input.TexCoord3.xy += fluidWarp * (length(ddx(input.TexCoord3.xy)) / worldPerPixel);
+#				endif
+		normalsAmplitude.xyz *= 1.0 + fluidRoughness;
+	}
+#			endif
+
 #			if defined(WATER_PARALLAX)
 	float2 parallaxOffset = WaterEffects::GetParallaxOffset(input, normalsAmplitude.xyz, normalScalesRcp);
 #			endif
