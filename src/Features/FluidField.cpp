@@ -2,6 +2,7 @@
 
 #include "../I18n/I18n.h"
 #include "Menu.h"
+#include "Profiler.h"
 #include "State.h"
 #include "Utils/D3D.h"
 
@@ -283,7 +284,9 @@ void FluidField::Prepass()
 	if (queuedReset.exchange(false)) {
 		ZoneScopedN("FluidField - Reset");
 		TracyD3D11Zone(state->tracyCtx, "FluidField - Reset");
+		globals::profiler->BeginPass("FluidField::Reset");
 		solver.Reset(context);
+		globals::profiler->EndPass();
 	}
 
 	const auto ui = globals::game::ui;
@@ -329,10 +332,11 @@ void FluidField::Prepass()
 #ifdef TRACY_ENABLE
 			ZoneTransientN(fluidFieldPassZone, passName, true);
 			TracyD3D11ZoneTransientS(state->tracyCtx, fluidFieldPassGpuZone, passName, 0, state->tracyCtx != nullptr);
-#else
-			(void)passName;
 #endif
+			// The built-in profiler cannot nest passes, so each solver pass is timed on its own
+			globals::profiler->BeginPass(std::format("FluidField::{}", passName));
 			runPass();
+			globals::profiler->EndPass();
 		});
 	}
 
@@ -345,7 +349,9 @@ void FluidField::Prepass()
 	if (showDebugOverlay) {
 		ZoneScopedN("FluidField - Debug View");
 		TracyD3D11Zone(state->tracyCtx, "FluidField - Debug View");
+		globals::profiler->BeginPass("FluidField::Debug View");
 		solver.RenderDebugViews(context, { .velocity = 1.0f / debugVelocityRange, .divergence = 1.0f / debugDivergenceRange, .pressure = 1.0f / debugPressureRange });
+		globals::profiler->EndPass();
 		hasDebugViews = true;
 	}
 }
