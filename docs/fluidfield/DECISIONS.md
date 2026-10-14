@@ -369,3 +369,24 @@ Entry format:
 -   Decided by: @Victor ("I'd rather move on to actually making visible
     changes to the water")
 -   References: ROADMAP Phase 1 gate, D8, `reports/mesh-cut-1-test.md`
+
+## D17: Wakes from every actor replace vanilla's displacement trail; currents from the flowmap
+
+-   Date: 2026-10-14
+-   Phase / spike: water slice (D8), step 3; pulls Phase 2's actor input forward
+-   Decision: Inside the grid, Fluid Field's waves replace vanilla's wading
+    displacement trail: the shader scales vanilla's displacement by
+    (1 - Fluid Field coverage), and every nearby actor (player, NPCs, horses,
+    creatures; nearest first, up to 16) feeds the simulation. Waves come only
+    from actors whose head is above the water. Falls and jumps into water
+    push the water down at the entry point. Currents come from Unified
+    Water's flowmap (D8 accessor), pulling the water's velocity toward it.
+    Plan: `plans/water-slice-step-3.md`.
+-   Alternatives rejected:
+    -   Patching the engine to stop the player's ripples only. NPCs would keep
+        vanilla's fake trails next to the player's real one, and it needs an
+        engine patch.
+    -   Turning vanilla's displacement off everywhere. Actors outside the
+        simulation would lose their trails.
+-   Decided by: @Victor (option A, "it also needs to account for jumps")
+-   References: D8, D16, `plans/water-slice-step-3.md`
