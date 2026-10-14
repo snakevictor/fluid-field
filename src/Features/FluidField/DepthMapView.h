@@ -7,11 +7,12 @@ class Texture2D;
 
 namespace FluidFieldSim
 {
+	class BedRaycasts;
 	class LandscapeCache;
 	class WaterSurfaces;
 
 	/**
-	 * @brief Debug images of the depth map (R1, D7 stage 3): landscape bed, water surface and depth.
+	 * @brief Debug images of the depth map (R1, D7 stage 3): bed, water surface, depth and raycast results.
 	 *
 	 * Built on the CPU from the landscape cache and water surfaces over a square centred on the
 	 * player, north up, and uploaded to small textures for the layer overlay. Debug only: it exists
@@ -21,12 +22,12 @@ namespace FluidFieldSim
 	{
 	public:
 		static constexpr uint32_t RESOLUTION = 128;
-		static constexpr std::size_t IMAGE_COUNT = 3;
+		static constexpr std::size_t IMAGE_COUNT = 4;
 
 		/** @brief Statistics of the last refresh, shown under the images. */
 		struct Stats
 		{
-			uint32_t bedMissing = 0;   ///< Texels outside the cached landscape
+			uint32_t bedMissing = 0;   ///< Texels with neither landscape nor a raycast bed
 			uint32_t waterObject = 0;  ///< Texels covered by a water object
 			uint32_t cellWater = 0;    ///< Texels covered only by cell water
 			uint32_t submerged = 0;    ///< Texels where the water surface is above the bed
@@ -41,8 +42,9 @@ namespace FluidFieldSim
 		 * @param a_centreX, a_centreY World position at the centre of the images.
 		 * @param a_referenceHeight Height shown as mid-grey in the bed image (the player's feet).
 		 * @param a_size World units per image side.
+		 * @param a_rays Raycast bed results, or null when raycasting is off.
 		 */
-		void Update(ID3D11DeviceContext* a_context, const LandscapeCache& a_landscape, const WaterSurfaces& a_water,
+		void Update(ID3D11DeviceContext* a_context, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays,
 			float a_centreX, float a_centreY, float a_referenceHeight, float a_size);
 
 		void Release();

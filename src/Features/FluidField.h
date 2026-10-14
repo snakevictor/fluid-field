@@ -1,5 +1,6 @@
 #pragma once
 
+#include "FluidField/BedRaycasts.h"
 #include "FluidField/DepthMapView.h"
 #include "FluidField/LandscapeCache.h"
 #include "FluidField/WaterSurfaces.h"
@@ -37,6 +38,10 @@ struct FluidField : OverlayFeature
 	static constexpr uint MAX_JACOBI_ITERATIONS = 100;
 	/** @brief Longest step simulated in one frame, so a hitch does not fling the wind across the grid. */
 	static constexpr float MAX_STEP_SECONDS = 1.0f / 20.0f;
+	static constexpr uint MIN_RAYS_PER_FRAME = 1;
+	static constexpr uint MAX_RAYS_PER_FRAME = 256;
+	static constexpr float MIN_RAY_SPACING = 32.0f;
+	static constexpr float MAX_RAY_SPACING = 256.0f;
 
 	struct Settings
 	{
@@ -50,6 +55,9 @@ struct FluidField : OverlayFeature
 		bool DepthMapEnabled = false;     ///< Experimental: build the riverbed and obstacle map (R1)
 		bool VerifyLandscape = false;     ///< Debug: compare cached landscape heights with the engine's
 		bool VerifyWater = false;         ///< Debug: compare water surface heights with the engine's
+		bool RaycastBed = true;           ///< Find rocks, banks and riverbed meshes under water with Havok rays
+		uint RaysPerFrame = 32;           ///< Most bed rays cast in one frame
+		float RaySpacing = 64.0f;         ///< World units between bed rays
 	};
 
 	Settings settings;
@@ -89,6 +97,7 @@ private:
 	FluidFieldSim::WindSolver solver;
 	FluidFieldSim::LandscapeCache landscape;
 	FluidFieldSim::WaterSurfaces water;
+	FluidFieldSim::BedRaycasts bedRays;
 	FluidFieldSim::DepthMapView depthView;
 
 	/** @brief Drops the depth map's data and debug images. */

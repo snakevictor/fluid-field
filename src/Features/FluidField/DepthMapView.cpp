@@ -1,5 +1,6 @@
 #include "DepthMapView.h"
 
+#include "BedRaycasts.h"
 #include "Buffer.h"
 #include "LandscapeCache.h"
 #include "WaterSurfaces.h"
@@ -60,7 +61,7 @@ namespace FluidFieldSim
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{ .Format = desc.Format, .ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D };
 		srvDesc.Texture2D.MipLevels = 1;
 
-		constexpr std::array<const char*, IMAGE_COUNT> names = { "FluidField::DepthMap Bed", "FluidField::DepthMap Water", "FluidField::DepthMap Depth" };
+		constexpr std::array<const char*, IMAGE_COUNT> names = { "FluidField::DepthMap Bed", "FluidField::DepthMap Water", "FluidField::DepthMap Depth", "FluidField::DepthMap Raycasts" };
 		try {
 			for (std::size_t i = 0; i < IMAGE_COUNT; i++) {
 				textures[i] = std::make_unique<Texture2D>(desc, names[i]);
@@ -75,7 +76,7 @@ namespace FluidFieldSim
 		return true;
 	}
 
-	void DepthMapView::Update(ID3D11DeviceContext* a_context, const LandscapeCache& a_landscape, const WaterSurfaces& a_water,
+	void DepthMapView::Update(ID3D11DeviceContext* a_context, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays,
 		float a_centreX, float a_centreY, float a_referenceHeight, float a_size)
 	{
 		if (callsUntilRefresh > 0) {
@@ -98,9 +99,17 @@ namespace FluidFieldSim
 			for (uint32_t x = 0; x < n + 2; x++) {
 				const float wx = originX + (static_cast<float>(x) - 0.5f) * texel;
 				const float wy = originY + (static_cast<float>(y) - 0.5f) * texel;
-				float height = 0.0f;
-				if (a_landscape.SampleHeight(wx, wy, height))
-					bed[y * (n + 2) + x] = height;
+				float height = std::numeric_limits<float>::quiet_NaN();
+				if (!a_landscape.SampleHeight(wx, wy, height))
+					height = std::numeric_limits<float>::quiet_NaN();
+				// A terrain hit is the engine's own triangle height; a static hit raises the bed to the mesh
+				if (const auto* ray = a_rays ? a_rays->Find(wx, wy) : nullptr) {
+					if (ray->kind == BedRaycasts::HitKind::Terrain)
+						height = ray->height;
+					else if (ray->kind == BedRaycasts::HitKind::Static)
+						height = std::isfinite(height) ? std::max(height, ray->height) : ray->height;
+				}
+				bed[y * (n + 2) + x] = height;
 			}
 		}
 
@@ -162,6 +171,27 @@ namespace FluidFieldSim
 					stats.maxDepth = std::max(stats.maxDepth, depth);
 				} else {
 					pixels[2][out] = Pack(0.55f, 0.45f, 0.30f);
+				}
+
+				// Raycasts: green terrain, orange mesh, dark blue nothing in reach, grey dry (not cast)
+				const auto* ray = a_rays ? a_rays->Find(wx, wy) : nullptr;
+				if (!ray) {
+					pixels[3][out] = NO_WATER;
+				} else {
+					switch (ray->kind) {
+					case BedRaycasts::HitKind::Terrain:
+						pixels[3][out] = Pack(0.30f, 0.75f, 0.30f);
+						break;
+					case BedRaycasts::HitKind::Static:
+						pixels[3][out] = Pack(1.0f, 0.55f, 0.10f);
+						break;
+					case BedRaycasts::HitKind::NoHit:
+						pixels[3][out] = Pack(0.10f, 0.15f, 0.45f);
+						break;
+					case BedRaycasts::HitKind::Skipped:
+						pixels[3][out] = Pack(0.40f, 0.40f, 0.40f);
+						break;
+					}
 				}
 			}
 		}

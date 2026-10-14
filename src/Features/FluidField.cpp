@@ -19,7 +19,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	TestPuffRadius,
 	DepthMapEnabled,
 	VerifyLandscape,
-	VerifyWater)
+	VerifyWater,
+	RaycastBed,
+	RaysPerFrame,
+	RaySpacing)
 
 void FluidField::DrawSettings()
 {
@@ -103,6 +106,21 @@ void FluidField::DrawSettings()
 		ImGui::Text(T(TKEY("landscape_verify_result"), "Checked %u cells: vertex error %.2f, interpolated %.2f units, largest anchor %.0f (%u of %u samples missed)"),
 			stats.cellsChecked, stats.maxVertexError, stats.maxInterpolatedError, stats.maxAbsAnchor, stats.samplesMissed, stats.samplesChecked);
 	}
+	ImGui::Checkbox(T(TKEY("raycast_bed"), "Raycast Bed"), &settings.RaycastBed);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("raycast_bed_tooltip"), "Casts rays down from the water surface to find rocks, banks and riverbed meshes that the landscape heights miss."));
+	}
+	ImGui::SliderScalar(T(TKEY("rays_per_frame"), "Rays Per Frame"), ImGuiDataType_U32, &settings.RaysPerFrame, &MIN_RAYS_PER_FRAME, &MAX_RAYS_PER_FRAME, "%u", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("ray_spacing"), "Ray Spacing"), &settings.RaySpacing, MIN_RAY_SPACING, MAX_RAY_SPACING, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("ray_spacing_tooltip"), "World units between rays. Smaller finds smaller rocks and casts more rays. Changing it clears the results."));
+	}
+	if (settings.RaycastBed && bedRays.GetSampleCount() > 0) {
+		const auto counts = bedRays.CountSamples();
+		const auto& rayStats = bedRays.GetStats();
+		ImGui::Text(T(TKEY("raycast_counts"), "Bed rays: %u terrain, %u meshes, %u out of reach, %u dry; %u cast last frame"),
+			counts.terrain, counts.statics, counts.noHit, counts.skipped, rayStats.raysLastFrame);
+	}
 	if (const auto& stats = water.GetVerifyStats(); stats.runs > 0) {
 		ImGui::Text(T(TKEY("water_verify_result"), "Water checked %u times: error %.2f units, plane vs bound %.2f (%u of %u samples missed)"),
 			stats.runs, stats.maxError, stats.maxPlaneDifference, stats.samplesMissed, stats.samplesChecked);
@@ -181,7 +199,8 @@ void FluidField::DrawOverlay()
 		const std::array<const char*, FluidFieldSim::DepthMapView::IMAGE_COUNT> depthNames = {
 			T(TKEY("layer_bed"), "Bed"),
 			T(TKEY("layer_water"), "Water Surface"),
-			T(TKEY("layer_depth"), "Depth")
+			T(TKEY("layer_depth"), "Depth"),
+			T(TKEY("layer_raycasts"), "Raycasts")
 		};
 		for (std::size_t i = 0; i < depthNames.size(); i++) {
 			if (i > 0)
@@ -202,6 +221,7 @@ void FluidField::DrawOverlay()
 		ImGui::TextUnformatted(T(TKEY("overlay_legend_bed"), "Bed: green below the player, brown above, magenta where no landscape is loaded."));
 		ImGui::TextUnformatted(T(TKEY("overlay_legend_water"), "Water: blue is a water object, cyan is the cell's water height only."));
 		ImGui::TextUnformatted(T(TKEY("overlay_legend_depth"), "Depth: lighter is shallow, darker is deep; tan is water plane under the ground."));
+		ImGui::TextUnformatted(T(TKEY("overlay_legend_raycasts"), "Raycasts: green hit terrain, orange hit a mesh (rock, bank, pier), dark blue found nothing in reach, grey is dry."));
 		ImGui::Text(T(TKEY("overlay_depth_stats"), "Submerged %u texels, deepest %.0f units; %u water-object and %u cell-water texels; %u without landscape"),
 			depthStats.submerged, depthStats.maxDepth, depthStats.waterObject, depthStats.cellWater, depthStats.bedMissing);
 	} else if (settings.DepthMapEnabled) {
@@ -232,6 +252,8 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.WindDamping = std::isfinite(a_settings.WindDamping) ? std::clamp(a_settings.WindDamping, 0.0f, 5.0f) : defaults.WindDamping;
 	a_settings.TestPuffStrength = std::isfinite(a_settings.TestPuffStrength) ? std::clamp(a_settings.TestPuffStrength, 0.0f, 5000.0f) : defaults.TestPuffStrength;
 	a_settings.TestPuffRadius = std::isfinite(a_settings.TestPuffRadius) ? std::clamp(a_settings.TestPuffRadius, 16.0f, 2048.0f) : defaults.TestPuffRadius;
+	a_settings.RaysPerFrame = std::clamp(a_settings.RaysPerFrame, MIN_RAYS_PER_FRAME, MAX_RAYS_PER_FRAME);
+	a_settings.RaySpacing = std::isfinite(a_settings.RaySpacing) ? std::clamp(a_settings.RaySpacing, MIN_RAY_SPACING, MAX_RAY_SPACING) : defaults.RaySpacing;
 
 	return a_settings;
 }
@@ -312,6 +334,8 @@ void FluidField::ClearDepthMap()
 		landscape.Clear();
 	if (water.GetSurfaceCount() > 0 || water.GetCellWaterCount() > 0)
 		water.Clear();
+	if (bedRays.GetSampleCount() > 0)
+		bedRays.Clear();
 	if (depthView.HasImages())
 		depthView.Release();
 }
@@ -346,6 +370,7 @@ void FluidField::Prepass()
 		if (queuedLandscapeClear.exchange(false)) {
 			landscape.Clear();
 			water.Clear();
+			bedRays.Clear();
 		}
 		{
 			ZoneScopedN("FluidField - Landscape Cache");
@@ -359,11 +384,19 @@ void FluidField::Prepass()
 			water.Update(settings.VerifyWater);
 			globals::profiler->EndPass();
 		}
+		const auto playerPos = player->GetPosition();
+		if (settings.RaycastBed) {
+			ZoneScopedN("FluidField - Bed Raycasts");
+			globals::profiler->BeginPass("FluidField::Bed Raycasts");
+			bedRays.Update(landscape, water, playerPos.x, playerPos.y, settings.GridSize, settings.RaySpacing, settings.RaysPerFrame);
+			globals::profiler->EndPass();
+		} else if (bedRays.GetSampleCount() > 0) {
+			bedRays.Clear();
+		}
 		if (showDebugOverlay) {
 			ZoneScopedN("FluidField - Depth Map View");
 			globals::profiler->BeginPass("FluidField::Depth Map View");
-			const auto playerPos = player->GetPosition();
-			depthView.Update(globals::d3d::context, landscape, water, playerPos.x, playerPos.y, playerPos.z, settings.GridSize);
+			depthView.Update(globals::d3d::context, landscape, water, settings.RaycastBed ? &bedRays : nullptr, playerPos.x, playerPos.y, playerPos.z, settings.GridSize);
 			globals::profiler->EndPass();
 		} else if (depthView.HasImages()) {
 			depthView.Release();
