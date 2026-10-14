@@ -1,14 +1,17 @@
-// Fluid Field's simulated water on top of the vanilla water normal (D8, water slice step 2).
+// Fluid Field's simulated water in the vanilla water shader (D8 step 2, D17).
 //
-// WaterSurfaceTex is the shallow-water solver's output in toroidal storage: world cell c lives
-// in texel c & (GridRes - 1). Each texel holds the surface slopes (world units per unit), the
-// height above the vanilla surface, and a coverage that is 0 on dry cells and fades to 0 at the
-// grid's edge, so the vanilla normal takes over there.
+// Two water levels: the near level (full detail around the player) at t66/t67 and the far level
+// (coarser, wider) at t68/t69. Each surface texture is the solver's output in toroidal storage:
+// world cell c lives in texel c & (GridRes - 1). A texel holds the surface slopes (world units per
+// unit), the height above the vanilla surface, and a coverage that is 0 on dry cells and fades to
+// 0 toward the level's edge. The near level fades into the far one, and the far one into vanilla.
 
 namespace FluidField
 {
 	Texture2D<float4> WaterSurfaceTex : register(t66);
 	Texture2D<float2> WaterFlowTex : register(t67);
+	Texture2D<float4> FarSurfaceTex : register(t68);
+	Texture2D<float2> FarFlowTex : register(t69);
 
 	/** World units one tile of the flow-carried detail normals covers. */
 	static const float FLOW_DETAIL_TILE = 384.0;
@@ -16,40 +19,119 @@ namespace FluidField
 	static const float FLOW_DETAIL_PERIOD = 1.0;
 	/** Flow speed (world units per second) at which the detail reaches full strength. */
 	static const float FLOW_DETAIL_FULL_SPEED = 160.0;
+	/** Fraction of the near level's width over which it hands over to the far level (as WaterOutputCS fades). */
+	static const float NEAR_FADE = 0.15;
 
-	float4 LoadSurface(int2 a_cell)
+	/** One water level's placement on the world. */
+	struct Level
 	{
-		const int mask = int(SharedData::fluidFieldSettings.GridRes) - 1;
-		return WaterSurfaceTex.Load(int3(a_cell & mask, 0));
+		int2 GridMin;
+		int GridRes;
+		float CellSize;
+		bool Enabled;
+	};
+
+	Level NearLevel()
+	{
+		Level level;
+		level.GridMin = SharedData::fluidFieldSettings.GridMin;
+		level.GridRes = int(SharedData::fluidFieldSettings.GridRes);
+		level.CellSize = SharedData::fluidFieldSettings.CellSize;
+		level.Enabled = SharedData::fluidFieldSettings.Enabled != 0;
+		return level;
 	}
 
-	float2 LoadFlow(int2 a_cell)
+	Level FarLevel()
 	{
-		const int mask = int(SharedData::fluidFieldSettings.GridRes) - 1;
-		return WaterFlowTex.Load(int3(a_cell & mask, 0));
+		Level level;
+		level.GridMin = SharedData::fluidFieldSettings.FarGridMin;
+		level.GridRes = int(SharedData::fluidFieldSettings.FarGridRes);
+		level.CellSize = SharedData::fluidFieldSettings.FarCellSize;
+		level.Enabled = SharedData::fluidFieldSettings.Enabled != 0 && SharedData::fluidFieldSettings.FarEnabled != 0;
+		return level;
 	}
 
-	/** The simulated flow at an absolute world position, world units per second (bilinear). */
-	float2 SampleFlowAt(float2 a_cellPosition)
+	/** A world position in a level's cell coordinates (texel centres at whole numbers); false outside it. */
+	bool ToCell(Level a_level, float2 a_worldXY, out float2 a_cellPosition)
 	{
-		const int2 cell = int2(floor(a_cellPosition));
-		const float2 t = a_cellPosition - float2(cell);
-		return lerp(lerp(LoadFlow(cell), LoadFlow(cell + int2(1, 0)), t.x),
-			lerp(LoadFlow(cell + int2(0, 1)), LoadFlow(cell + int2(1, 1)), t.x), t.y);
+		a_cellPosition = a_worldXY / max(a_level.CellSize, 1e-3) - 0.5;
+		const int2 logical = int2(floor(a_cellPosition)) - a_level.GridMin;
+		return a_level.Enabled && all(logical >= 0) && all(logical < a_level.GridRes - 1);
+	}
+
+	float4 BilinearSurface(Texture2D<float4> a_tex, Level a_level, float2 a_cellPosition)
+	{
+		const int mask = a_level.GridRes - 1;
+		const int2 c = int2(floor(a_cellPosition));
+		const float2 t = a_cellPosition - float2(c);
+		return lerp(lerp(a_tex.Load(int3(c & mask, 0)), a_tex.Load(int3((c + int2(1, 0)) & mask, 0)), t.x),
+			lerp(a_tex.Load(int3((c + int2(0, 1)) & mask, 0)), a_tex.Load(int3((c + int2(1, 1)) & mask, 0)), t.x), t.y);
+	}
+
+	float2 BilinearFlow(Texture2D<float2> a_tex, Level a_level, float2 a_cellPosition)
+	{
+		const int mask = a_level.GridRes - 1;
+		const int2 c = int2(floor(a_cellPosition));
+		const float2 t = a_cellPosition - float2(c);
+		return lerp(lerp(a_tex.Load(int3(c & mask, 0)), a_tex.Load(int3((c + int2(1, 0)) & mask, 0)), t.x),
+			lerp(a_tex.Load(int3((c + int2(0, 1)) & mask, 0)), a_tex.Load(int3((c + int2(1, 1)) & mask, 0)), t.x), t.y);
+	}
+
+	/** How much the near level (rather than the far one) decides the water here: 1 inside, 0 past its edge band. */
+	float NearWeight(Level a_near, float2 a_worldXY)
+	{
+		const float2 logical = a_worldXY / a_near.CellSize - float2(a_near.GridMin);
+		const float fromEdge = min(min(logical.x, logical.y), min(a_near.GridRes - logical.x, a_near.GridRes - logical.y));
+		return smoothstep(0.0, 1.0, fromEdge / (NEAR_FADE * a_near.GridRes));
 	}
 
 	/**
-	 * The simulated flow, smoothed over about nine cells, for dragging detail along: the raw flow
-	 * twists the texture in tight eddies, which reads as an oil film rather than water.
+	 * The simulated surface at an absolute world position: the near level where it is in charge, the
+	 * far one beyond, cross-faded over the near level's edge band. False outside both levels.
+	 */
+	bool SampleSurface(float3 a_worldPosition, out float4 a_surface)
+	{
+		a_surface = 0;
+		const Level nearLevel = NearLevel();
+		const Level farLevel = FarLevel();
+		float2 nearCell, farCell;
+		const bool inNear = ToCell(nearLevel, a_worldPosition.xy, nearCell);
+		const bool inFar = ToCell(farLevel, a_worldPosition.xy, farCell);
+		if (!inNear && !inFar)
+			return false;
+		const float4 nearSurface = inNear ? BilinearSurface(WaterSurfaceTex, nearLevel, nearCell) : 0;
+		const float4 farSurface = inFar ? BilinearSurface(FarSurfaceTex, farLevel, farCell) : 0;
+		const float weight = inNear ? (inFar ? NearWeight(nearLevel, a_worldPosition.xy) : 1.0) : 0.0;
+		a_surface = lerp(farSurface, nearSurface, weight);
+		return true;
+	}
+
+	/** The simulated flow at a world position, world units per second, blended between levels like the surface. */
+	float2 FlowAtWorld(float2 a_worldXY)
+	{
+		const Level nearLevel = NearLevel();
+		const Level farLevel = FarLevel();
+		float2 nearCell, farCell;
+		const bool inNear = ToCell(nearLevel, a_worldXY, nearCell);
+		const bool inFar = ToCell(farLevel, a_worldXY, farCell);
+		const float2 nearFlow = inNear ? BilinearFlow(WaterFlowTex, nearLevel, nearCell) : 0;
+		const float2 farFlow = inFar ? BilinearFlow(FarFlowTex, farLevel, farCell) : 0;
+		const float weight = inNear ? (inFar ? NearWeight(nearLevel, a_worldXY) : 1.0) : 0.0;
+		return lerp(farFlow, nearFlow, weight);
+	}
+
+	/**
+	 * The simulated flow smoothed over about nine near cells, for dragging detail along: the raw
+	 * flow twists the texture in tight eddies, which reads as an oil film rather than water.
 	 */
 	float2 SampleFlow(float3 a_worldPosition)
 	{
-		const float2 p = a_worldPosition.xy / SharedData::fluidFieldSettings.CellSize - 0.5;
-		float2 sum = SampleFlowAt(p);
+		const float radius = 4.0 * SharedData::fluidFieldSettings.CellSize;
+		float2 sum = FlowAtWorld(a_worldPosition.xy);
 		[unroll] for (int i = 0; i < 8; i++)
 		{
-			float angle = i * 0.785398;
-			sum += SampleFlowAt(p + 4.0 * float2(cos(angle), sin(angle)));
+			const float angle = i * 0.785398;
+			sum += FlowAtWorld(a_worldPosition.xy + radius * float2(cos(angle), sin(angle)));
 		}
 		return sum / 9.0;
 	}
@@ -58,22 +140,21 @@ namespace FluidField
 	static const float ROUGHNESS_PER_SHEAR = 0.6;
 
 	/**
-	 * How fast the simulated flow changes across a cell (1/s): high where water is forced around
+	 * How fast the simulated flow changes across a near cell (1/s): high where water is forced around
 	 * a pillar or rock, which is where real water breaks up instead of flowing smoothly.
 	 */
 	float FlowShear(float3 a_worldPosition)
 	{
-		const float2 p = a_worldPosition.xy / SharedData::fluidFieldSettings.CellSize - 0.5;
-		const float2 dx = SampleFlowAt(p + float2(1, 0)) - SampleFlowAt(p - float2(1, 0));
-		const float2 dy = SampleFlowAt(p + float2(0, 1)) - SampleFlowAt(p - float2(0, 1));
-		return (length(dx) + length(dy)) / (2.0 * SharedData::fluidFieldSettings.CellSize);
+		const float d = SharedData::fluidFieldSettings.CellSize;
+		const float2 dx = FlowAtWorld(a_worldPosition.xy + float2(d, 0)) - FlowAtWorld(a_worldPosition.xy - float2(d, 0));
+		const float2 dy = FlowAtWorld(a_worldPosition.xy + float2(0, d)) - FlowAtWorld(a_worldPosition.xy - float2(0, d));
+		return (length(dx) + length(dy)) / (2.0 * d);
 	}
 
 	/**
 	 * Detail normals carried along by the simulated flow (the classic two-phase flow map): two
 	 * samples of the vanilla normal texture, each dragged along the flow and restarted half a period
-	 * apart, cross-faded so neither restart shows. Turbulence, eddies and the speed-up between
-	 * obstacles become visible across the whole simulated surface.
+	 * apart, cross-faded so neither restart shows.
 	 */
 	float3 FlowDetailNormal(float3 a_worldPosition, float2 a_flow)
 	{
@@ -88,30 +169,7 @@ namespace FluidField
 		return normalize(lerp(n0, n1, w));
 	}
 
-	/**
-	 * The simulated surface at an absolute world position, bilinear between texel centres.
-	 * Returns false outside the simulated area; then a_surface is zero (no coverage).
-	 */
-	bool SampleSurface(float3 a_worldPosition, out float4 a_surface)
-	{
-		a_surface = 0;
-		if (SharedData::fluidFieldSettings.Enabled == 0)
-			return false;
-
-		const float2 cellPosition = a_worldPosition.xy / SharedData::fluidFieldSettings.CellSize - 0.5;
-		const int2 cell = int2(floor(cellPosition));
-		const int2 logical = cell - SharedData::fluidFieldSettings.GridMin;
-		const int lastCell = int(SharedData::fluidFieldSettings.GridRes) - 1;
-		if (any(logical < 0) || any(logical >= lastCell))
-			return false;
-
-		const float2 t = cellPosition - float2(cell);
-		a_surface = lerp(lerp(LoadSurface(cell), LoadSurface(cell + int2(1, 0)), t.x),
-			lerp(LoadSurface(cell + int2(0, 1)), LoadSurface(cell + int2(1, 1)), t.x), t.y);
-		return true;
-	}
-
-	/** How much Fluid Field simulates the water here: 0 outside its grid, on dry cells and at the grid edge. */
+	/** How much Fluid Field simulates the water here: 0 outside both levels, on dry cells and at the outer edge. */
 	float GetCoverage(float3 a_worldPosition)
 	{
 		float4 surface;
@@ -120,14 +178,14 @@ namespace FluidField
 
 	/** World units vanilla's normal lookups shift per unit of simulated surface slope. */
 	static const float WARP_PER_SLOPE = 48.0;
-	/** Extra vanilla ripple amplitude per unit of simulated slope (capped at double). */
+	/** Extra vanilla ripple amplitude per unit of simulated slope. */
 	static const float ROUGHNESS_PER_SLOPE = 3.0;
 
 	/**
 	 * How the simulated surface reshapes vanilla's own normals at a world position (D17): a shift
 	 * of vanilla's normal-texture lookups (world units) toward the downslope, so its ripple pattern
 	 * bends and compresses around wakes, eddies and standing waves, and an extra roughness where
-	 * the surface is steep. Both fade with coverage, so vanilla is untouched outside the grid.
+	 * the surface is steep or the flow shears. Both fade with coverage.
 	 */
 	void GetVanillaWarp(float3 a_worldPosition, out float2 a_warp, out float a_roughness)
 	{
@@ -159,7 +217,7 @@ namespace FluidField
 		const float3 waveNormal = normalize(float3(-surface.x * strength, -surface.y * strength, 1.0));
 		float3 combined = normalize(ReorientNormal(waveNormal, a_normal));
 
-		// Surface detail carried by the simulated flow, stronger where the water moves faster
+		// Surface detail carried by the simulated flow
 		const float flowDetail = SharedData::fluidFieldSettings.FlowDetail;
 		if (flowDetail > 0.0) {
 			const float2 flow = SampleFlow(a_worldPosition);

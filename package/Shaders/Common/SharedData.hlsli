@@ -461,6 +461,11 @@ namespace SharedData
 		uint Enabled;      // Water outputs are valid this frame
 		float FlowDetail;  // Strength of the surface detail carried by the simulated flow
 		float pad;
+		int2 FarGridMin;  // The far water level's placement (coarser, wider)
+		uint FarGridRes;
+		float FarCellSize;
+		uint FarEnabled;  // The far level has valid outputs this frame
+		float3 farPad;
 	};
 
 	cbuffer FeatureData : register(b6)

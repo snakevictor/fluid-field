@@ -391,3 +391,28 @@ Entry format:
         simulation would lose their trails.
 -   Decided by: @Victor (option A, "it also needs to account for jumps")
 -   References: D8, D16, `plans/water-slice-step-3.md`
+
+## D18: Water gets its own grid and a far level
+
+-   Date: 2026-10-14
+-   Phase / spike: water slice (D8, D17)
+-   Decision: The water no longer shares the wind's grid. It has its own
+    resolution and size (Water Resolution 512, Water Size 4096) and two
+    levels: the near level at full detail (mesh-cut obstacles, bed detail,
+    wakes) and a far level at the same resolution over Far Water Scale times
+    the width (4x by default: 16,384 units at 32-unit cells), driven by the
+    coarse water map and the river current. The water shader cross-fades
+    near into far over the near level's 15% edge band, and the far level
+    fades into vanilla at its own edge. The levels do not exchange water yet.
+    The wind grid returns to 256 by default.
+-   Why: the seam at the edge of the simulation (water slice reports of
+    2026-10-14). A single 1024 grid over 8,192 units cost 0.98 ms on the GPU,
+    two-thirds of it in the wind pressure solve, which the water does not use;
+    two 512 water levels cost about 0.2 ms and reach twice as far.
+-   Alternatives rejected: one large grid (cost); a far level fed back into
+    the near level's border (two-way coupling) - later, if the hand-over
+    still shows.
+-   Decided by: @Victor ("if feasible, we can drop the detail after X radius
+    and blend"; "bigger draw distance for the simulation and a smoother
+    blending")
+-   References: D17, `plans/water-slice-step-3.md`

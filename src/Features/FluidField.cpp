@@ -35,6 +35,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	WakeStrength,
 	TestCurrentSpeed,
 	TestCurrentAngle,
+	WaterResolution,
+	WaterSize,
+	FarWater,
+	FarWaterScale,
 	SurfaceNormalStrength,
 	WaveDamping,
 	SplashStrength,
@@ -163,6 +167,33 @@ void FluidField::DrawSettings()
 	ImGui::Checkbox(T(TKEY("water_enabled"), "Simulate Water"), &settings.WaterEnabled);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("water_enabled_tooltip"), "Simulates shallow water on the grid, on top of the depth map, and adds its waves to the water surface. Work in progress."));
+	}
+	const auto waterResolutionLabel = std::format("{0} x {0}", settings.WaterResolution);
+	if (ImGui::BeginCombo(T(TKEY("water_resolution"), "Water Resolution"), waterResolutionLabel.c_str())) {
+		for (const uint resolution : GRID_RESOLUTIONS) {
+			const auto label = std::format("{0} x {0}", resolution);
+			if (ImGui::Selectable(label.c_str(), resolution == settings.WaterResolution)) {
+				settings.WaterResolution = resolution;
+				waterResourceFailed = false;
+			}
+		}
+		ImGui::EndCombo();
+	}
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("water_resolution_tooltip"), "Texels per side of each water level, separate from the wind grid. Higher shows finer detail and costs more GPU time."));
+	}
+	ImGui::SliderFloat(T(TKEY("water_size"), "Water Size"), &settings.WaterSize, MIN_GRID_SIZE, MAX_GRID_SIZE, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("water_size_tooltip"), "Width of the detailed water around the player, in game units: obstacles, bed detail and wakes."));
+	}
+	ImGui::Text(T(TKEY("water_cell_size"), "Water cell size: %.1f units"), GetWaterCellSize());
+	ImGui::Checkbox(T(TKEY("far_water"), "Far Water"), &settings.FarWater);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("far_water_tooltip"), "A coarser water simulation around the detailed one, so rivers flow and churn further out before vanilla takes over."));
+	}
+	ImGui::SliderFloat(T(TKEY("far_water_scale"), "Far Water Scale"), &settings.FarWaterScale, 2.0f, 8.0f, "%.1fx", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("far_water_scale_tooltip"), "How much wider the far water is than the detailed water, at the same resolution."));
 	}
 	ImGui::SliderFloat(T(TKEY("surface_normal_strength"), "Surface Strength"), &settings.SurfaceNormalStrength, 0.0f, 8.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -310,7 +341,11 @@ void FluidField::DrawOverlay()
 		ImGui::TextUnformatted(T(TKEY("overlay_depth_off"), "Depth map: turn on Build Depth Map to see the bed, water surface and depth here."));
 	}
 
-	if (waterSolver.HasDebugViews()) {
+	if (nearWater.solver.HasDebugViews()) {
+		const float waterRes = static_cast<float>(settings.WaterResolution);
+		const float waterCell = GetWaterCellSize();
+		const float waterTexel[2] = { lastPlayerPos[0] / waterCell - static_cast<float>(nearWater.gridMin[0]),
+			lastPlayerPos[1] / waterCell - static_cast<float>(nearWater.gridMin[1]) };
 		const std::array<const char*, FluidFieldSim::ShallowWaterSolver::DEBUG_VIEW_NAMES.size()> waterNames = {
 			T(TKEY("layer_water_depth"), "Water Depth"),
 			T(TKEY("layer_water_flow"), "Flow"),
@@ -321,9 +356,9 @@ void FluidField::DrawOverlay()
 				ImGui::SameLine();
 			ImGui::BeginGroup();
 			ImGui::TextUnformatted(waterNames[i]);
-			ImGui::Image(reinterpret_cast<ImTextureID>(waterSolver.GetDebugViewSRV(i)), ImVec2(imageSize, imageSize));
+			ImGui::Image(reinterpret_cast<ImTextureID>(nearWater.solver.GetDebugViewSRV(i)), ImVec2(imageSize, imageSize));
 			const ImVec2 imageMin = ImGui::GetItemRectMin();
-			const ImVec2 marker(imageMin.x + lastPlayerTexel[0] / res * imageSize, imageMin.y + (1.0f - lastPlayerTexel[1] / res) * imageSize);
+			const ImVec2 marker(imageMin.x + waterTexel[0] / waterRes * imageSize, imageMin.y + (1.0f - waterTexel[1] / waterRes) * imageSize);
 			auto* drawList = ImGui::GetWindowDrawList();
 			drawList->AddCircle(marker, 3.0f * uiScale, markerColor);
 			drawList->AddLine(marker, ImVec2(marker.x + std::sin(lastHeading) * 10.0f * uiScale, marker.y - std::cos(lastHeading) * 10.0f * uiScale), markerColor);
@@ -360,6 +395,10 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.TestCurrentSpeed = std::isfinite(a_settings.TestCurrentSpeed) ? std::clamp(a_settings.TestCurrentSpeed, 0.0f, 400.0f) : defaults.TestCurrentSpeed;
 	a_settings.TestCurrentAngle = std::isfinite(a_settings.TestCurrentAngle) ? std::clamp(a_settings.TestCurrentAngle, 0.0f, 360.0f) : defaults.TestCurrentAngle;
 
+	if (std::ranges::find(GRID_RESOLUTIONS, a_settings.WaterResolution) == GRID_RESOLUTIONS.end())
+		a_settings.WaterResolution = defaults.WaterResolution;
+	a_settings.WaterSize = std::isfinite(a_settings.WaterSize) ? std::clamp(a_settings.WaterSize, MIN_GRID_SIZE, MAX_GRID_SIZE) : defaults.WaterSize;
+	a_settings.FarWaterScale = std::isfinite(a_settings.FarWaterScale) ? std::clamp(a_settings.FarWaterScale, 2.0f, 8.0f) : defaults.FarWaterScale;
 	a_settings.SurfaceNormalStrength = std::isfinite(a_settings.SurfaceNormalStrength) ? std::clamp(a_settings.SurfaceNormalStrength, 0.0f, 8.0f) : defaults.SurfaceNormalStrength;
 	a_settings.WaveDamping = std::isfinite(a_settings.WaveDamping) ? std::clamp(a_settings.WaveDamping, 0.0f, 5.0f) : defaults.WaveDamping;
 	a_settings.SplashStrength = std::isfinite(a_settings.SplashStrength) ? std::clamp(a_settings.SplashStrength, 0.0f, 3.0f) : defaults.SplashStrength;
@@ -401,7 +440,7 @@ void FluidField::ClearShaderCache()
 {
 	solver.ReleaseShaders();
 	shaderCompileFailed = false;
-	waterSolver.ReleaseShaders();
+	nearWater.solver.ReleaseShaders();
 	waterShaderFailed = false;
 }
 
@@ -518,7 +557,7 @@ void FluidField::Prepass()
 		if (settings.RaycastBed) {
 			ZoneScopedN("FluidField - Bed Raycasts");
 			globals::profiler->BeginPass("FluidField::Bed Raycasts");
-			bedRays.Update(landscape, water, playerPos.x, playerPos.y, settings.GridSize, settings.RaySpacing, settings.RaysPerFrame, settings.LogDepthMap);
+			bedRays.Update(landscape, water, playerPos.x, playerPos.y, settings.WaterSize, settings.RaySpacing, settings.RaysPerFrame, settings.LogDepthMap);
 			globals::profiler->EndPass();
 			// Nobody else consumes the refined blocks while the water is off
 			if (!settings.WaterEnabled)
@@ -530,7 +569,7 @@ void FluidField::Prepass()
 			ZoneScopedN("FluidField - Depth Map View");
 			globals::profiler->BeginPass("FluidField::Depth Map View");
 			depthView.Update(globals::d3d::context, landscape, water, settings.RaycastBed ? &bedRays : nullptr, settings.MeshCutObstacles ? &meshCut : nullptr,
-				playerPos.x, playerPos.y, playerPos.z, settings.GridSize);
+				playerPos.x, playerPos.y, playerPos.z, settings.WaterSize);
 			globals::profiler->EndPass();
 		} else if (depthView.HasImages()) {
 			depthView.Release();
@@ -556,9 +595,11 @@ void FluidField::Prepass()
 		TracyD3D11Zone(state->tracyCtx, "FluidField - Reset");
 		globals::profiler->BeginPass("FluidField::Reset");
 		solver.Reset(context);
-		waterSolver.Reset();
-		waterMap.Clear();
-		waterAwaitingMap = true;
+		for (auto* level : { &nearWater, &farWater }) {
+			level->solver.Reset();
+			level->map.Clear();
+			level->awaitingMap = true;
+		}
 		wakeSources.Clear();
 		globals::profiler->EndPass();
 	}
@@ -622,11 +663,23 @@ void FluidField::Prepass()
 	lastPlayerTexel[0] = playerPos.x / cellSize - static_cast<float>(gridMin[0]);
 	lastPlayerTexel[1] = playerPos.y / cellSize - static_cast<float>(gridMin[1]);
 	lastHeading = player->GetAngleZ();
+	lastPlayerPos[0] = playerPos.x;
+	lastPlayerPos[1] = playerPos.y;
 
 	if (settings.WaterEnabled) {
 		ZoneScopedN("FluidField - Water Step");
 		TracyD3D11Zone(state->tracyCtx, "FluidField - Water Step");
-		StepWater(context, playerPos, gridMin, cellSize, deltaTime);
+		StepWater(context, nearWater, true, settings.WaterResolution, settings.WaterSize, playerPos, deltaTime);
+		if (settings.FarWater) {
+			StepWater(context, farWater, false, settings.WaterResolution, settings.WaterSize * settings.FarWaterScale, playerPos, deltaTime);
+		} else if (farWater.solver.HasResources()) {
+			farWater.solver.ReleaseResources();
+			farWater.solver.ReleaseShaders();
+			farWater.map.Clear();
+			farWater.awaitingMap = true;
+			waterShaderData.FarEnabled = 0;
+		}
+		BindWaterOutputs(context);
 	} else {
 		ReleaseWater();
 	}
@@ -637,41 +690,45 @@ void FluidField::Prepass()
 		globals::profiler->BeginPass("FluidField::Debug View");
 		solver.RenderDebugViews(context, { .velocity = 1.0f / debugVelocityRange, .divergence = 1.0f / debugDivergenceRange, .pressure = 1.0f / debugPressureRange });
 		if (settings.WaterEnabled)
-			waterSolver.RenderDebugViews(context, {});
+			nearWater.solver.RenderDebugViews(context, {});
 		globals::profiler->EndPass();
 		hasDebugViews = true;
 	}
 }
 
-bool FluidField::EnsureWater()
+bool FluidField::EnsureWater(WaterLevel& a_level, uint32_t a_resolution, float a_size, bool a_obstacles)
 {
-	if (waterShaderFailed || waterResourceFailed)
+	if (waterShaderFailed || a_level.resourceFailed)
 		return false;
 
-	const uint mapResolution = FluidFieldSim::WaterMapBuilder::ResolutionFor(settings.GridSize);
-	const uint obstacleResolution = std::clamp(std::bit_ceil(static_cast<uint>(std::ceil(settings.GridSize / GetObstacleSpacing()))), 16u, 2048u);
-	if (waterSolver.GetResolution() != settings.GridResolution || waterSolver.GetMapResolution() != mapResolution || waterSolver.GetObstacleResolution() != obstacleResolution) {
+	const uint mapResolution = FluidFieldSim::WaterMapBuilder::ResolutionFor(a_size);
+	// Only the near level takes fine obstacles; the far one keeps a minimal, empty obstacle texture
+	const uint obstacleResolution = a_obstacles ? std::clamp(std::bit_ceil(static_cast<uint>(std::ceil(a_size / GetObstacleSpacing()))), 16u, 2048u) : 16u;
+	auto& levelSolver = a_level.solver;
+	if (levelSolver.GetResolution() != a_resolution || levelSolver.GetMapResolution() != mapResolution || levelSolver.GetObstacleResolution() != obstacleResolution) {
 		try {
-			waterSolver.CreateResources(globals::d3d::device, settings.GridResolution, mapResolution, obstacleResolution, [](ID3D11DeviceChild* object, const char* name) {
+			levelSolver.CreateResources(globals::d3d::device, a_resolution, mapResolution, obstacleResolution, [](ID3D11DeviceChild* object, const char* name) {
 				Util::SetResourceName(object, "%s", name);
 			});
 		} catch (const winrt::hresult_error& e) {
 			logger::error("[Fluid Field] Failed to create water GPU resources: {}", winrt::to_string(e.message()));
-			waterSolver.ReleaseResources();
+			levelSolver.ReleaseResources();
+			a_level.resourceFailed = true;
 			waterResourceFailed = true;
 			return false;
 		}
-		waterMap.Clear();
+		a_level.map.Clear();
+		a_level.awaitingMap = true;
 	}
 
-	if (!waterSolver.HasShaders()) {
-		const bool compiled = waterSolver.CompileShaders([](const wchar_t* fileName) {
+	if (!levelSolver.HasShaders()) {
+		const bool compiled = levelSolver.CompileShaders([](const wchar_t* fileName) {
 			const auto path = std::filesystem::path("Data\\Shaders\\FluidField") / fileName;
 			return reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), {}, "cs_5_0"));
 		});
 		if (!compiled) {
 			logger::error("[Fluid Field] Water compute shaders failed to compile; the water layer stays off");
-			waterSolver.ReleaseShaders();
+			levelSolver.ReleaseShaders();
 			waterShaderFailed = true;
 			return false;
 		}
@@ -681,12 +738,15 @@ bool FluidField::EnsureWater()
 
 void FluidField::ReleaseWater()
 {
-	if (waterSolver.HasResources() || waterSolver.HasShaders()) {
-		waterSolver.ReleaseResources();
-		waterSolver.ReleaseShaders();
+	for (auto* level : { &nearWater, &farWater }) {
+		if (level->solver.HasResources() || level->solver.HasShaders()) {
+			level->solver.ReleaseResources();
+			level->solver.ReleaseShaders();
+		}
+		level->map.Clear();
+		level->awaitingMap = true;
+		level->resourceFailed = false;
 	}
-	waterMap.Clear();
-	waterAwaitingMap = true;
 	wakeSources.Clear();
 	waterShaderData = {};
 }
@@ -694,7 +754,7 @@ void FluidField::ReleaseWater()
 int32_t FluidField::GetObstacleRatio() const
 {
 	const float rayFine = settings.RaySpacing / static_cast<float>(FluidFieldSim::BedRaycasts::REFINE);
-	return std::clamp(static_cast<int32_t>(std::lround(rayFine / GetCellSize())), 1, 4);
+	return std::clamp(static_cast<int32_t>(std::lround(rayFine / GetWaterCellSize())), 1, 4);
 }
 
 float FluidField::GetObstacleSpacing() const
@@ -738,8 +798,8 @@ void FluidField::UploadObstacles(ID3D11DeviceContext* a_context, const RE::NiPoi
 		return (static_cast<uint64_t>(static_cast<uint32_t>(a_originX)) << 32) | static_cast<uint32_t>(a_originY);
 	};
 
-	if (waterSolver.ObstaclesNeedClear() || bedRays.WasCleared() || meshCut.WasCleared()) {
-		waterSolver.ClearObstacles(a_context);
+	if (nearWater.solver.ObstaclesNeedClear() || bedRays.WasCleared() || meshCut.WasCleared()) {
+		nearWater.solver.ClearObstacles(a_context);
 		bedRays.MarkAllRefinedDirty();
 		residentMeshBlocks.clear();
 		meshWindowCentre[0] = meshWindowCentre[1] = INT32_MIN;
@@ -758,7 +818,7 @@ void FluidField::UploadObstacles(ID3D11DeviceContext* a_context, const RE::NiPoi
 		for (int32_t y = minY; y <= maxY; y += n) {
 			for (int32_t x = minX; x <= maxX; x += n) {
 				const auto texels = ComposeObstacleBlock(x, y);
-				waterSolver.UploadObstacleBlock(a_context, x, y, n, texels.data(), fineSpacing);
+				nearWater.solver.UploadObstacleBlock(a_context, x, y, n, texels.data(), fineSpacing);
 			}
 		}
 	}
@@ -767,7 +827,7 @@ void FluidField::UploadObstacles(ID3D11DeviceContext* a_context, const RE::NiPoi
 
 	// Mesh-cut blocks live only inside the texture's window around the player, less a block,
 	// so that no two resident blocks share a texel of the wrapped texture
-	const int32_t windowHalf = static_cast<int32_t>(waterSolver.GetObstacleResolution() / 2) - n;
+	const int32_t windowHalf = static_cast<int32_t>(nearWater.solver.GetObstacleResolution() / 2) - n;
 	const int32_t centreX = static_cast<int32_t>(std::floor(a_playerPos.x / fineSpacing / n)) * n;
 	const int32_t centreY = static_cast<int32_t>(std::floor(a_playerPos.y / fineSpacing / n)) * n;
 	const auto inWindow = [&](int32_t a_x, int32_t a_y) {
@@ -777,7 +837,7 @@ void FluidField::UploadObstacles(ID3D11DeviceContext* a_context, const RE::NiPoi
 	std::size_t uploads = 0;
 	const auto upload = [&](int32_t a_x, int32_t a_y) {
 		const auto texels = ComposeObstacleBlock(a_x, a_y);
-		waterSolver.UploadObstacleBlock(a_context, a_x, a_y, n, texels.data(), fineSpacing);
+		nearWater.solver.UploadObstacleBlock(a_context, a_x, a_y, n, texels.data(), fineSpacing);
 		residentMeshBlocks.insert(blockKey(a_x, a_y));
 		uploads++;
 	};
@@ -824,49 +884,66 @@ void FluidField::BindWaterOutputs(ID3D11DeviceContext* a_context) const
 {
 	if (!waterShaderData.Enabled)
 		return;
-	ID3D11ShaderResourceView* srvs[] = { waterSolver.GetSurfaceSRV(), waterSolver.GetFlowSRV() };
-	a_context->PSSetShaderResources(66, 2, srvs);
+	const bool hasFar = waterShaderData.FarEnabled != 0;
+	ID3D11ShaderResourceView* srvs[] = { nearWater.solver.GetSurfaceSRV(), nearWater.solver.GetFlowSRV(),
+		hasFar ? farWater.solver.GetSurfaceSRV() : nullptr, hasFar ? farWater.solver.GetFlowSRV() : nullptr };
+	a_context->PSSetShaderResources(66, 4, srvs);
 }
 
-void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos, const int32_t a_gridMin[2], float a_cellSize, float a_deltaTime)
+void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, bool a_near, uint32_t a_resolution, float a_size, const RE::NiPoint3& a_playerPos, float a_deltaTime)
 {
-	if (!EnsureWater())
+	if (!EnsureWater(a_level, a_resolution, a_size, a_near))
 		return;
+	auto& levelSolver = a_level.solver;
+	auto& map = a_level.map;
+
+	// The level's own placement: centred on the player, snapped to whole cells
+	const float a_cellSize = a_size / static_cast<float>(a_resolution);
+	if (a_cellSize != a_level.lastCellSize) {
+		levelSolver.Reset();
+		map.Clear();
+		a_level.awaitingMap = true;
+		a_level.lastCellSize = a_cellSize;
+		if (a_near)
+			wakeSources.Clear();
+	}
+	const int32_t halfRes = static_cast<int32_t>(a_resolution / 2);
+	a_level.gridMin[0] = static_cast<int32_t>(std::floor(a_playerPos.x / a_cellSize)) - halfRes;
+	a_level.gridMin[1] = static_cast<int32_t>(std::floor(a_playerPos.y / a_cellSize)) - halfRes;
+	const int32_t* a_gridMin = a_level.gridMin;
 
 	{
 		ZoneScopedN("FluidField - Water Map");
-		globals::profiler->BeginPass("FluidField::Water Map");
+		globals::profiler->BeginPass(a_near ? "FluidField::Water Map" : "FluidField::Far Water Map");
 		const uint64_t inputVersion = water.GetSignature() ^ (static_cast<uint64_t>(bedRays.GetSampleCount()) << 20) ^ (static_cast<uint64_t>(landscape.GetCellCount()) << 52);
-		if (waterMap.Update(landscape, water, settings.RaycastBed ? &bedRays : nullptr, a_playerPos.x, a_playerPos.y, waterSolver.GetMapResolution(), inputVersion)) {
+		if (map.Update(landscape, water, settings.RaycastBed ? &bedRays : nullptr, a_playerPos.x, a_playerPos.y, levelSolver.GetMapResolution(), inputVersion)) {
 			// After a reset, start only once this location's inputs have settled, so the water
 			// begins calm on the right bed instead of flooding or draining when they arrive
 			const bool settled = !(settings.RaycastBed && bedRays.IsRefilling());
-			if (!waterAwaitingMap || settled) {
-				waterSolver.UploadMap(a_context, waterMap.GetData(), FluidFieldSim::WaterMapBuilder::MAP_SPACING);
-				waterAwaitingMap = false;
+			if (!a_level.awaitingMap || settled) {
+				levelSolver.UploadMap(a_context, map.GetData(), FluidFieldSim::WaterMapBuilder::MAP_SPACING);
+				a_level.awaitingMap = false;
 			} else {
-				waterMap.Clear();  // Built too early; rebuild once the inputs settle
+				map.Clear();  // Built too early; rebuild once the inputs settle
 			}
 		}
 		globals::profiler->EndPass();
 	}
-	if (!waterSolver.HasMap())
+	if (!levelSolver.HasMap())
 		return;
 
-	{
-		// Fine bed detail around structures, as the refined rays complete it
+	// Fine bed detail, and wakes and splashes from the actors around the player (D17), near level only
+	std::span<const FluidFieldSim::WaterEmitter> emitters;
+	if (a_near) {
 		ZoneScopedN("FluidField - Water Obstacles");
 		UploadObstacles(a_context, a_playerPos);
+		emitters = wakeSources.Update(water, a_playerPos, a_gridMin, a_cellSize, a_resolution, a_deltaTime,
+			{ .wakeStrength = settings.WakeStrength, .splashStrength = settings.SplashStrength });
 	}
-
-	// Wakes and splashes from the player and the actors around them (D17)
-	const auto& emitterList = wakeSources.Update(water, a_playerPos, a_gridMin, a_cellSize, settings.GridResolution, a_deltaTime,
-		{ .wakeStrength = settings.WakeStrength, .splashStrength = settings.SplashStrength });
-	const std::span<const FluidFieldSim::WaterEmitter> emitters(emitterList);
 
 	FluidFieldSim::WaterParams params;
 	params.damping = settings.WaveDamping;
-	params.edgeWidth = std::max(16.0f, 0.12f * static_cast<float>(settings.GridResolution));
+	params.edgeWidth = std::max(16.0f, 0.12f * static_cast<float>(a_resolution));
 	params.currentRelax = settings.CurrentPull;
 	params.vorticity = settings.Turbulence;
 	// River currents from Unified Water's flowmap; the test current when there is none
@@ -899,25 +976,30 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a
 		.emitters = {}
 	};
 	const auto wrap = [&](const char* passName, auto&& runPass) {
-		globals::profiler->BeginPass(std::format("FluidField::{}", passName));
+		globals::profiler->BeginPass(std::format("FluidField::{}{}", a_near ? "" : "Far ", passName));
 		runPass();
 		globals::profiler->EndPass();
 	};
 	for (uint i = 0; i < substeps; i++)
-		waterSolver.Step(a_context, grid, params, emitters, wrap);
+		levelSolver.Step(a_context, grid, params, emitters, wrap);
 
-	globals::profiler->BeginPass("FluidField::Water Output");
-	waterSolver.WriteOutputs(a_context);
-	waterShaderData = {
-		.GridMin = { a_gridMin[0], a_gridMin[1] },
-		.GridRes = settings.GridResolution,
-		.CellSize = a_cellSize,
-		.NormalStrength = settings.SurfaceNormalStrength,
-		.Enabled = waterSolver.HasMap() ? 1u : 0u,
-		.FlowDetail = settings.FlowDetail,
-		.pad = 0.0f
-	};
-	BindWaterOutputs(a_context);
+	globals::profiler->BeginPass(a_near ? "FluidField::Water Output" : "FluidField::Far Water Output");
+	levelSolver.WriteOutputs(a_context);
+	if (a_near) {
+		waterShaderData.GridMin[0] = a_gridMin[0];
+		waterShaderData.GridMin[1] = a_gridMin[1];
+		waterShaderData.GridRes = a_resolution;
+		waterShaderData.CellSize = a_cellSize;
+		waterShaderData.NormalStrength = settings.SurfaceNormalStrength;
+		waterShaderData.Enabled = levelSolver.HasMap() ? 1u : 0u;
+		waterShaderData.FlowDetail = settings.FlowDetail;
+	} else {
+		waterShaderData.FarGridMin[0] = a_gridMin[0];
+		waterShaderData.FarGridMin[1] = a_gridMin[1];
+		waterShaderData.FarGridRes = a_resolution;
+		waterShaderData.FarCellSize = a_cellSize;
+		waterShaderData.FarEnabled = levelSolver.HasMap() ? 1u : 0u;
+	}
 	globals::profiler->EndPass();
 }
 

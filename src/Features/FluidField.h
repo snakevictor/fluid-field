@@ -51,7 +51,7 @@ struct FluidField : OverlayFeature
 	struct Settings
 	{
 		bool Enabled = false;
-		uint GridResolution = 512;           ///< Texels per side
+		uint GridResolution = 256;           ///< Texels per side
 		float GridSize = 4096.0f;            ///< World units per side
 		uint JacobiIterations = 30;          ///< Pressure solve iterations per step
 		float WindDamping = 0.3f;            ///< Fraction of wind speed lost per second, as an exponential rate
@@ -69,6 +69,10 @@ struct FluidField : OverlayFeature
 		float WakeStrength = 1.0f;           ///< How strongly the player drags the water along
 		float TestCurrentSpeed = 0.0f;       ///< Test current until vanilla flow is read, world units per second
 		float TestCurrentAngle = 0.0f;       ///< Test current heading in degrees, 0 = north, clockwise
+		uint WaterResolution = 512;          ///< Near water texels per side; its own grid, separate from the wind's
+		float WaterSize = 4096.0f;           ///< Near water width in world units (full detail: obstacles, wakes)
+		bool FarWater = true;                ///< A coarser water level around the near one, so rivers stay simulated further out
+		float FarWaterScale = 4.0f;          ///< Far water width as a multiple of the near width, at the same resolution
 		float SurfaceNormalStrength = 1.0f;  ///< How strongly the simulated waves tilt the water's surface normal
 		float WaveDamping = 0.3f;            ///< Fraction of the water's speed lost per second, as an exponential rate
 		float SplashStrength = 1.0f;         ///< How hard actors entering or leaving the water push it
@@ -110,6 +114,11 @@ struct FluidField : OverlayFeature
 		uint32_t Enabled = 0;
 		float FlowDetail = 0.0f;
 		float pad = 0.0f;
+		int32_t FarGridMin[2]{};  ///< The far level's placement; FarEnabled = 0 when it has no valid output
+		uint32_t FarGridRes = 0;
+		float FarCellSize = 0.0f;
+		uint32_t FarEnabled = 0;
+		float farPad[3]{};
 	};
 	static_assert(sizeof(WaterShaderData) % 16 == 0);
 	/** @brief This frame's water grid placement, or Enabled = 0 when the water outputs are not valid. */
@@ -148,19 +157,30 @@ private:
 	/** @brief Drops the depth map's data and debug images. */
 	void ClearDepthMap();
 
-	FluidFieldSim::ShallowWaterSolver waterSolver;
-	FluidFieldSim::WaterMapBuilder waterMap;
+	/** @brief One water simulation level: its solver, map and this step's placement on the world. */
+	struct WaterLevel
+	{
+		FluidFieldSim::ShallowWaterSolver solver;
+		FluidFieldSim::WaterMapBuilder map;
+		bool awaitingMap = true;    ///< After a reset, wait for a map built from settled inputs
+		float lastCellSize = 0.0f;  ///< A change invalidates the level's contents
+		int32_t gridMin[2]{};       ///< World cell of logical texel (0, 0) this step
+		bool resourceFailed = false;
+	};
+	WaterLevel nearWater;  ///< Full detail around the player: obstacles, bed detail, wakes
+	WaterLevel farWater;   ///< Coarser and wider: river flow and turbulence further out
 	bool waterShaderFailed = false;
 	bool waterResourceFailed = false;
+	/** @brief Near water world units per texel. */
+	float GetWaterCellSize() const { return settings.WaterSize / static_cast<float>(settings.WaterResolution); }
 	FluidFieldSim::WakeSources wakeSources;
-	/** @brief After a reset, the water waits for a map built from this location's settled inputs. */
-	bool waterAwaitingMap = true;
 
 	/** @brief Creates the water layer's GPU resources and shaders as needed. Returns false if it cannot run. */
-	bool EnsureWater();
+	bool EnsureWater(WaterLevel& a_level, uint32_t a_resolution, float a_size, bool a_obstacles);
 	void ReleaseWater();
 	/** @brief Rebuilds the water map, then steps and writes out the water layer for this frame. */
-	void StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos, const int32_t a_gridMin[2], float a_cellSize, float a_deltaTime);
+	/** @brief Steps one water level, centred on the player. The near level also takes obstacles and wakes. */
+	void StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, bool a_near, uint32_t a_resolution, float a_size, const RE::NiPoint3& a_playerPos, float a_deltaTime);
 	/**
 	 * @brief Uploads changed obstacle blocks: refined ray detail with mesh-cut solids on top.
 	 * Mesh-cut blocks are kept resident only inside the obstacle texture's window around the player,
@@ -190,6 +210,7 @@ private:
 	int32_t lastGridMin[2]{};
 	float lastPlayerTexel[2]{};
 	float lastHeading = 0.0f;
+	float lastPlayerPos[2]{};
 
 	// Debug overlay, not saved
 	bool showDebugOverlay = false;
