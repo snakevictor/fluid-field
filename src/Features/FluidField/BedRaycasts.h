@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <unordered_map>
@@ -22,9 +23,11 @@ namespace FluidFieldSim
 	 * which water flows under) from a solid rising out of the water (a rock or pier, an obstacle).
 	 * Non-static hits (the water's own collision, actors, clutter) are stepped through.
 	 * Results are cached per lattice point, since statics do not move, and a few rays are cast per
-	 * frame. Around meshes near the water and overhead structures, the surrounding lattice squares
-	 * are refined with REFINE x REFINE rays each, so pillars and the gaps between them are resolved.
-	 * Runs on the main thread under the physics world's read lock.
+	 * frame. The coarse lattice comes first and takes only the first hit (the coarse map ignores meshes
+	 * rising out of the water anyway). Once it is complete, lattice squares around meshes near the
+	 * water within REFINE_RADIUS of the player are refined with REFINE x REFINE rays each; those rays
+	 * also probe for overhead structures, so pillars and the gaps between them are resolved. A hard
+	 * time limit is checked before every ray. Runs on the main thread under the physics world's read lock.
 	 */
 	class BedRaycasts
 	{
@@ -108,8 +111,8 @@ namespace FluidFieldSim
 		/** @brief Counts the cached results; walks every sample, so call it for display only. */
 		Counts CountSamples() const;
 		std::size_t GetSampleCount() const { return samples.size(); }
-		/** @brief True during the fast refill after a load or teleport, until the area is resolved. */
-		bool IsRefilling() const { return burstUpdates > 0 && !idle; }
+		/** @brief True during the fast refill after a load or teleport, until the coarse lattice is complete. */
+		bool IsRefilling() const { return burstUpdates > 0 && !coarseResolved; }
 
 	private:
 		/** @brief CPU time the rays of one update may take, so moving fast cannot blow the budget. */
@@ -117,6 +120,8 @@ namespace FluidFieldSim
 		/** @brief Larger allowance for the first updates after a load or teleport, so the area refills quickly. */
 		static constexpr double BURST_TIME_BUDGET_MS = 0.5;
 		static constexpr uint32_t BURST_UPDATES = 90;
+		/** @brief Squares are refined only this close to the player, where fine detail is visible. */
+		static constexpr float REFINE_RADIUS = 1024.0f;
 		/** @brief Updates between summary log lines. */
 		static constexpr uint32_t LOG_SUMMARY_INTERVAL = 300;
 		/** @brief Most hit log lines per summary interval. */
@@ -132,14 +137,22 @@ namespace FluidFieldSim
 		};
 
 		static uint64_t MakeKey(int32_t a_x, int32_t a_y);
-		RayHit CastVertical(RE::hkpWorld* a_world, float a_worldX, float a_worldY, float a_fromZ, float a_toZ);
-		Sample Cast(float a_worldX, float a_worldY, float a_surface, bool a_log);
-		/** @brief Samples one point: no water, a buried plane, or a ray. Returns true if a ray was cast. */
-		bool Resolve(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, float a_worldX, float a_worldY, bool a_log, Sample& a_sample, float& a_surface);
+		using Clock = std::chrono::steady_clock;
+
+		/** @brief Casts until the first static hit; `aborted` is set if the deadline passed first. */
+		RayHit CastVertical(RE::hkpWorld* a_world, float a_worldX, float a_worldY, float a_fromZ, float a_toZ, bool& a_aborted);
+		/** @brief One bed sample. With a_probeOverheads, a mesh above the water is checked for air beneath it. */
+		Sample Cast(float a_worldX, float a_worldY, float a_surface, bool a_log, bool a_probeOverheads, bool& a_aborted);
+		/**
+		 * @brief Samples one point: no water, a buried plane, or a ray.
+		 * @return False if the deadline passed before the point was resolved; nothing is stored then.
+		 */
+		bool Resolve(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, float a_worldX, float a_worldY, bool a_log, bool a_probeOverheads,
+			Sample& a_sample, float& a_surface);
 		/** @brief Queues the lattice squares around a coarse point for refinement. */
 		void QueueRefinement(int32_t a_x, int32_t a_y);
-		/** @brief Casts the fine points of one square. */
-		void RefineSquare(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, int32_t a_squareX, int32_t a_squareY, bool a_log);
+		/** @brief Casts the fine points of one square. Returns false if the deadline passed before it was finished. */
+		bool RefineSquare(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, int32_t a_squareX, int32_t a_squareY, bool a_log);
 		void LogHit(float a_worldX, float a_worldY, float a_surface, const RayHit& a_hit, const char* a_what);
 
 		std::unordered_map<uint64_t, Sample> samples;
@@ -158,6 +171,8 @@ namespace FluidFieldSim
 		uint64_t lastWaterSignature = 0;
 		uint32_t newThisPass = 0;
 		bool idle = false;
+		bool coarseResolved = false;  ///< A full coarse pass around the current centre found nothing new
+		Clock::time_point deadline;   ///< This update's ray time limit
 		uint32_t burstUpdates = BURST_UPDATES;
 
 		// Logging

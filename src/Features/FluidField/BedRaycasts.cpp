@@ -66,6 +66,7 @@ namespace FluidFieldSim
 		prunedCentre[0] = prunedCentre[1] = INT32_MIN;
 		newThisPass = 0;
 		idle = false;
+		coarseResolved = false;
 		burstUpdates = BURST_UPDATES;
 	}
 
@@ -104,13 +105,20 @@ namespace FluidFieldSim
 		return it != samples.end() ? &it->second : nullptr;
 	}
 
-	BedRaycasts::RayHit BedRaycasts::CastVertical(RE::hkpWorld* a_world, float a_worldX, float a_worldY, float a_fromZ, float a_toZ)
+	BedRaycasts::RayHit BedRaycasts::CastVertical(RE::hkpWorld* a_world, float a_worldX, float a_worldY, float a_fromZ, float a_toZ, bool& a_aborted)
 	{
 		RayHit result;
+		if (a_aborted)
+			return result;
 		const float scale = RE::bhkWorld::GetWorldScale();
 		const float direction = a_toZ < a_fromZ ? -1.0f : 1.0f;
 		float fromZ = a_fromZ;
 		for (uint32_t attempt = 0; attempt <= MAX_STEP_THROUGHS && (a_toZ - fromZ) * direction > 0.0f; attempt++) {
+			// Checked before every ray, so no point can overshoot the frame by more than one ray
+			if (Clock::now() > deadline) {
+				a_aborted = true;
+				return result;
+			}
 			RE::hkpWorldRayCastInput input;
 			input.from = RE::hkVector4(a_worldX * scale, a_worldY * scale, fromZ * scale, 0.0f);
 			input.to = RE::hkVector4(a_worldX * scale, a_worldY * scale, a_toZ * scale, 0.0f);
@@ -205,38 +213,45 @@ namespace FluidFieldSim
 		}
 	}
 
-	bool BedRaycasts::Resolve(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, float a_worldX, float a_worldY, bool a_log, Sample& a_sample, float& a_surface)
+	bool BedRaycasts::Resolve(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, float a_worldX, float a_worldY, bool a_log, bool a_probeOverheads,
+		Sample& a_sample, float& a_surface)
 	{
 		if (a_water.SampleHeight(a_worldX, a_worldY, a_surface) == WaterSurfaces::Source::None) {
 			a_sample = Sample{ .kind = HitKind::NoWater };
-			return false;
+			return true;
 		}
 		float landscape = 0.0f;
 		if (a_landscape.SampleHeight(a_worldX, a_worldY, landscape) && a_surface < landscape - BURIED_PLANE_MARGIN) {
 			a_sample = Sample{ .kind = HitKind::Skipped };
-			return false;
+			return true;
 		}
-		a_sample = Cast(a_worldX, a_worldY, a_surface, a_log);
-		return true;
+		bool aborted = false;
+		a_sample = Cast(a_worldX, a_worldY, a_surface, a_log, a_probeOverheads, aborted);
+		return !aborted;
 	}
 
-	void BedRaycasts::RefineSquare(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, int32_t a_squareX, int32_t a_squareY, bool a_log)
+	bool BedRaycasts::RefineSquare(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, int32_t a_squareX, int32_t a_squareY, bool a_log)
 	{
 		const float fineSpacing = GetFineSpacing();
 		for (int32_t j = 0; j < REFINE; j++) {
 			for (int32_t i = 0; i < REFINE; i++) {
 				const int32_t fx = a_squareX * REFINE + i;
 				const int32_t fy = a_squareY * REFINE + j;
+				const uint64_t key = MakeKey(fx, fy);
+				if (fine.contains(key))
+					continue;  // Done in an earlier, interrupted pass over this square
 				Sample sample;
 				float surface = 0.0f;
-				Resolve(a_landscape, a_water, static_cast<float>(fx) * fineSpacing, static_cast<float>(fy) * fineSpacing, a_log, sample, surface);
-				fine[MakeKey(fx, fy)] = sample;
+				if (!Resolve(a_landscape, a_water, static_cast<float>(fx) * fineSpacing, static_cast<float>(fy) * fineSpacing, a_log, true, sample, surface))
+					return false;
+				fine.emplace(key, sample);
 			}
 		}
 		dirtySquares.emplace_back(a_squareX, a_squareY);
+		return true;
 	}
 
-	BedRaycasts::Sample BedRaycasts::Cast(float a_worldX, float a_worldY, float a_surface, bool a_log)
+	BedRaycasts::Sample BedRaycasts::Cast(float a_worldX, float a_worldY, float a_surface, bool a_log, bool a_probeOverheads, bool& a_aborted)
 	{
 		Sample result{ .kind = HitKind::NoHit };
 
@@ -250,23 +265,23 @@ namespace FluidFieldSim
 		const float bottom = a_surface - RAY_END_BELOW_SURFACE;
 		const RE::BSReadLockGuard lock(bhkWorld->worldLock);
 
-		RayHit hit = CastVertical(world, a_worldX, a_worldY, a_surface + RAY_START_ABOVE_SURFACE, bottom);
+		RayHit hit = CastVertical(world, a_worldX, a_worldY, a_surface + RAY_START_ABOVE_SURFACE, bottom, a_aborted);
 		if (!hit.hit)
 			return result;
 
 		// Landscape never overhangs water, so only a mesh above the water can be overhead
-		if (hit.z > a_surface + ABOVE_SURFACE_MARGIN && !IsLandscapeLayer(hit.layer)) {
+		if (a_probeOverheads && hit.z > a_surface + ABOVE_SURFACE_MARGIN && !IsLandscapeLayer(hit.layer)) {
 			// Something above the water: look up from just under the surface. An underside below the
 			// top means air over the water (a deck, an arch); nothing, or only the top itself, means a
 			// solid rising out of the water (a rock, a pier), which stays an obstacle.
-			const RayHit up = CastVertical(world, a_worldX, a_worldY, a_surface - PROBE_OFFSET, hit.z + 1.0f);
+			const RayHit up = CastVertical(world, a_worldX, a_worldY, a_surface - PROBE_OFFSET, hit.z + 1.0f, a_aborted);
 			// An underside touching the water is solid (a pillar, a low deck edge); one clear of it is open
 			if (up.hit && up.z < hit.z - ABOVE_SURFACE_MARGIN && up.z > a_surface + UNDERSIDE_CLEARANCE) {
 				stats.overheads++;
 				result.overhead = true;
 				if (a_log)
 					LogHit(a_worldX, a_worldY, a_surface, hit, "overhead, looking under");
-				hit = CastVertical(world, a_worldX, a_worldY, std::min(up.z, a_surface + PROBE_OFFSET), bottom);
+				hit = CastVertical(world, a_worldX, a_worldY, std::min(up.z, a_surface + PROBE_OFFSET), bottom, a_aborted);
 				if (!hit.hit)
 					return result;
 			}
@@ -301,6 +316,7 @@ namespace FluidFieldSim
 			lastWaterSignature = a_water.GetSignature();
 			std::erase_if(samples, [](const auto& entry) { return entry.second.kind == HitKind::NoWater || entry.second.kind == HitKind::Skipped; });
 			idle = false;
+			coarseResolved = false;
 		}
 		if (centreX != lastCentre[0] || centreY != lastCentre[1]) {
 			// A jump of more than half the covered square is a teleport: refill quickly
@@ -309,6 +325,7 @@ namespace FluidFieldSim
 			lastCentre[0] = centreX;
 			lastCentre[1] = centreY;
 			idle = false;
+			coarseResolved = false;
 		}
 
 		const bool burst = burstUpdates > 0;
@@ -316,8 +333,9 @@ namespace FluidFieldSim
 			burstUpdates--;
 		const double timeBudget = burst ? BURST_TIME_BUDGET_MS : RAY_TIME_BUDGET_MS;
 		const uint32_t maxRays = burst ? a_maxRays * 8 : a_maxRays;
+		const auto updateStart = Clock::now();
+		deadline = updateStart + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double, std::milli>(timeBudget));
 
-		double rayMs = 0.0;
 		if (!refineQueue.empty())
 			idle = false;
 		if (!idle) {
@@ -342,29 +360,16 @@ namespace FluidFieldSim
 				});
 			}
 
-			// Refine around structures first: it is local detail where the flow is shaped
-			while (!refineQueue.empty() && rayMs < timeBudget) {
-				const auto [sx, sy] = refineQueue.front();
-				refineQueue.pop_front();
-				if (std::abs(sx - centreX) > half * 2 || std::abs(sy - centreY) > half * 2) {
-					refinedSquares.erase(MakeKey(sx, sy));
-					continue;
-				}
-				const auto begin = std::chrono::steady_clock::now();
-				RefineSquare(a_landscape, a_water, sx, sy, a_log);
-				rayMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
-			}
-
 			uint32_t cast = 0;
 			uint32_t examined = 0;
-			while (examined < SWEEP_PER_UPDATE && examined < total && cast < maxRays && rayMs < timeBudget) {
+			while (!coarseResolved && examined < SWEEP_PER_UPDATE && examined < total && cast < maxRays && Clock::now() < deadline) {
 				const uint32_t index = sweepCursor;
 				sweepCursor = (sweepCursor + 1) % total;
 				examined++;
 				if (sweepCursor == 0) {
-					// A whole pass found nothing to add: everything around this centre is resolved
+					// A whole pass found nothing to add: the coarse lattice around this centre is complete
 					if (newThisPass == 0) {
-						idle = true;
+						coarseResolved = true;
 						break;
 					}
 					newThisPass = 0;
@@ -379,19 +384,41 @@ namespace FluidFieldSim
 
 				const float wx = static_cast<float>(lx) * spacing;
 				const float wy = static_cast<float>(ly) * spacing;
-				const auto begin = std::chrono::steady_clock::now();
 				Sample sample;
 				float surface = 0.0f;
-				const bool rayCast = Resolve(a_landscape, a_water, wx, wy, a_log, sample, surface);
+				if (!Resolve(a_landscape, a_water, wx, wy, a_log, false, sample, surface)) {
+					newThisPass--;  // Out of time; this point is retried on the next pass
+					break;
+				}
 				samples.emplace(key, sample);
-				if (!rayCast)
-					continue;
-				rayMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
-				cast++;
-				if (sample.overhead || (sample.kind == HitKind::Static && sample.height > surface - REFINE_DEPTH))
+				if (sample.kind == HitKind::Terrain || sample.kind == HitKind::Static || sample.kind == HitKind::NoHit)
+					cast++;
+				if (sample.kind == HitKind::Static && sample.height > surface - REFINE_DEPTH)
 					QueueRefinement(lx, ly);
 			}
+
+			// Then refine around structures near the player, where the detail is visible
+			const float refineRadius = REFINE_RADIUS / spacing;
+			const float playerX = a_centreX / spacing;
+			const float playerY = a_centreY / spacing;
+			while (coarseResolved && !refineQueue.empty() && Clock::now() < deadline) {
+				const auto [sx, sy] = refineQueue.front();
+				refineQueue.pop_front();
+				const float dx = static_cast<float>(sx) + 0.5f - playerX;
+				const float dy = static_cast<float>(sy) + 0.5f - playerY;
+				if (dx * dx + dy * dy > refineRadius * refineRadius) {
+					refinedSquares.erase(MakeKey(sx, sy));  // Queued again when the coarse ray is recast nearby
+					continue;
+				}
+				if (!RefineSquare(a_landscape, a_water, sx, sy, a_log)) {
+					refineQueue.emplace_front(sx, sy);  // Out of time; finish it next update
+					break;
+				}
+			}
+			if (coarseResolved && refineQueue.empty())
+				idle = true;
 		}
+		const double rayMs = std::chrono::duration<double, std::milli>(Clock::now() - updateStart).count();
 
 		if (!a_log)
 			return;

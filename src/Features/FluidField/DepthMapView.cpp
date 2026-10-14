@@ -190,17 +190,20 @@ namespace FluidFieldSim
 					pixels[2][out] = Pack(0.55f, 0.45f, 0.30f);
 				}
 
-				// Raycasts: green terrain, orange mesh, dark blue nothing in reach, grey dry (not cast)
+				// Raycasts: green terrain, purple looked under a deck, orange mesh above the water (obstacle),
+				// brown mesh below it (riverbed), dark blue nothing in reach, grey dry (not cast)
 				const auto* ray = a_rays ? a_rays->FindDetail(wx, wy) : nullptr;
 				if (!ray) {
 					pixels[3][out] = NO_WATER;
+				} else if (ray->overhead) {
+					pixels[3][out] = Pack(0.65f, 0.35f, 0.95f);
 				} else {
 					switch (ray->kind) {
 					case BedRaycasts::HitKind::Terrain:
 						pixels[3][out] = Pack(0.30f, 0.75f, 0.30f);
 						break;
 					case BedRaycasts::HitKind::Static:
-						pixels[3][out] = Pack(1.0f, 0.55f, 0.10f);
+						pixels[3][out] = source != WaterSurfaces::Source::None && ray->height <= surface ? Pack(0.55f, 0.38f, 0.15f) : Pack(1.0f, 0.55f, 0.10f);
 						break;
 					case BedRaycasts::HitKind::NoHit:
 						pixels[3][out] = Pack(0.10f, 0.15f, 0.45f);

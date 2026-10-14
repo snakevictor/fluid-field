@@ -1,6 +1,10 @@
 // Fluid Field water, pass 1: refresh the per-cell map, carry state over from the previous step,
 // start new and reset cells from vanilla water, apply emitters, the background current, the level
 // relaxation and the edge blend back to vanilla.
+//
+// When a cell's bed changes under live water (its map arrived late, or fine detail landed), the
+// water surface is kept where it was and the depth recomputed, so data arriving makes no waves.
+// If the cell changes between wet and dry, it restarts as calm vanilla water instead.
 
 #include "FluidField/WaterCommon.hlsli"
 
@@ -15,7 +19,10 @@ struct Emitter
 
 Texture2D<float> DepthIn : register(t0);
 Texture2D<float2> VelocityIn : register(t1);
+Texture2D<float2> CellMapIn : register(t2);
 StructuredBuffer<Emitter> Emitters : register(t3);
+
+static const float BED_CHANGE_THRESHOLD = 2.0;
 
 RWTexture2D<float> DepthOut : register(u0);
 RWTexture2D<float2> VelocityOut : register(u1);
@@ -44,6 +51,20 @@ RWTexture2D<float2> CellMapOut : register(u2);
 	bool kept = HistoryValid != 0 && all(cell >= PrevGridMin) && all(cell < PrevGridMin + int(GridRes));
 	float depth = kept ? DepthIn[id] : vanillaDepth;
 	float2 velocity = kept ? VelocityIn[id] : restVelocity;
+
+	if (kept) {
+		float oldBed = CellMapIn[id].x;
+		if (abs(bed - oldBed) > BED_CHANGE_THRESHOLD) {
+			bool wasWet = depth > WetThreshold;
+			float keptDepth = oldBed + depth - bed;
+			if (wasWet && keptDepth > WetThreshold && vanillaWet) {
+				depth = keptDepth;
+			} else {
+				depth = vanillaDepth;
+				velocity = restVelocity;
+			}
+		}
+	}
 
 	if (depth > WetThreshold) {
 		float2 position = float2(logical) + 0.5;

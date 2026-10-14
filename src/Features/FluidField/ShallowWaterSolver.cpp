@@ -56,7 +56,8 @@ namespace FluidFieldSim
 		depth[1] = CreateLayer(device, a_resolution, DXGI_FORMAT_R32_FLOAT, name, "WaterDepth1");
 		velocity[0] = CreateLayer(device, a_resolution, DXGI_FORMAT_R32G32_FLOAT, name, "WaterVelocity0");
 		velocity[1] = CreateLayer(device, a_resolution, DXGI_FORMAT_R32G32_FLOAT, name, "WaterVelocity1");
-		cellMap = CreateLayer(device, a_resolution, DXGI_FORMAT_R32G32_FLOAT, name, "WaterCellMap");
+		cellMap[0] = CreateLayer(device, a_resolution, DXGI_FORMAT_R32G32_FLOAT, name, "WaterCellMap0");
+		cellMap[1] = CreateLayer(device, a_resolution, DXGI_FORMAT_R32G32_FLOAT, name, "WaterCellMap1");
 		surface = CreateLayer(device, a_resolution, DXGI_FORMAT_R16G16B16A16_FLOAT, name, "WaterSurface");
 		flow = CreateLayer(device, a_resolution, DXGI_FORMAT_R16G16_FLOAT, name, "WaterFlow");
 		map = CreateLayer(device, a_mapResolution, DXGI_FORMAT_R32G32_FLOAT, name, "WaterMap", false);
@@ -291,11 +292,12 @@ namespace FluidFieldSim
 
 	void ShallowWaterSolver::Forces(ID3D11DeviceContext* context)
 	{
-		ID3D11ShaderResourceView* srvs[] = { depth[currentDepth].srv.get(), velocity[currentVelocity].srv.get(), nullptr, emitterSRV.get() };
-		ID3D11UnorderedAccessView* uavs[] = { depth[currentDepth ^ 1].uav.get(), velocity[currentVelocity ^ 1].uav.get(), cellMap.uav.get() };
+		ID3D11ShaderResourceView* srvs[] = { depth[currentDepth].srv.get(), velocity[currentVelocity].srv.get(), cellMap[currentCellMap].srv.get(), emitterSRV.get() };
+		ID3D11UnorderedAccessView* uavs[] = { depth[currentDepth ^ 1].uav.get(), velocity[currentVelocity ^ 1].uav.get(), cellMap[currentCellMap ^ 1].uav.get() };
 		Dispatch(context, forcesCS.get(), srvs, uavs);
 		currentDepth ^= 1;
 		currentVelocity ^= 1;
+		currentCellMap ^= 1;
 	}
 
 	void ShallowWaterSolver::Advect(ID3D11DeviceContext* context)
@@ -316,7 +318,7 @@ namespace FluidFieldSim
 
 	void ShallowWaterSolver::Velocity(ID3D11DeviceContext* context)
 	{
-		ID3D11ShaderResourceView* srvs[] = { depth[currentDepth].srv.get(), velocity[currentVelocity].srv.get(), cellMap.srv.get() };
+		ID3D11ShaderResourceView* srvs[] = { depth[currentDepth].srv.get(), velocity[currentVelocity].srv.get(), cellMap[currentCellMap].srv.get() };
 		ID3D11UnorderedAccessView* uavs[] = { velocity[currentVelocity ^ 1].uav.get() };
 		Dispatch(context, velocityCS.get(), srvs, uavs);
 		currentVelocity ^= 1;
@@ -329,7 +331,7 @@ namespace FluidFieldSim
 
 		ID3D11Buffer* cbs[] = { gridConstants.get(), waterConstants.get() };
 		context->CSSetConstantBuffers(0, 2, cbs);
-		ID3D11ShaderResourceView* srvs[] = { depth[currentDepth].srv.get(), velocity[currentVelocity].srv.get(), cellMap.srv.get() };
+		ID3D11ShaderResourceView* srvs[] = { depth[currentDepth].srv.get(), velocity[currentVelocity].srv.get(), cellMap[currentCellMap].srv.get() };
 		ID3D11UnorderedAccessView* uavs[] = { surface.uav.get(), flow.uav.get() };
 		Dispatch(context, outputCS.get(), srvs, uavs);
 		EndStep(context);

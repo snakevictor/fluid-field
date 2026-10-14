@@ -205,7 +205,7 @@ namespace FluidFieldSim
 
 		std::array<Layer, 2> depth;     // Ping-pong, `current` holds the latest
 		std::array<Layer, 2> velocity;  // Ping-pong, `current` holds the latest
-		Layer cellMap;
+		std::array<Layer, 2> cellMap;   // Ping-pong: the forces pass compares the new bed with the previous one
 		Layer surface;
 		Layer flow;
 		Layer map;
@@ -213,6 +213,7 @@ namespace FluidFieldSim
 		std::array<Layer, 3> debugViews;
 		std::uint32_t currentDepth = 0;
 		std::uint32_t currentVelocity = 0;
+		std::uint32_t currentCellMap = 0;
 		bool hasDebugViews = false;
 
 		winrt::com_ptr<ID3D11Buffer> gridConstants;
