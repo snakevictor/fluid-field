@@ -116,6 +116,11 @@ Entry format:
        with a per-frame ray cap. Only after stage 3 is reviewed.
        The map reuses the toroidal grid and addressing from `ff/grid-core`
        instead of a second implementation.
+-   Amended 2026-10-14 (@Victor): the stage 3 debug overlay (bed, water
+    surface, depth) is built together with stage 2, so progress is visible in
+    game early. It is the layer overlay's second row. The stage 3 review of
+    landscape against placed riverbed meshes still happens on the test routes
+    before stage 4.
 -   Alternatives rejected: Prototype A (top-down depth capture through the
     precipitation-occlusion path) is deferred, not rejected. It is the
     documented fallback, built only if B fails the success criteria on the
