@@ -121,6 +121,13 @@ Entry format:
     game early. It is the layer overlay's second row. The stage 3 review of
     landscape against placed riverbed meshes still happens on the test routes
     before stage 4.
+-   Amended 2026-10-14 after the route run (`reports/r1-route-run.md`):
+    stage 4 classifies `kGround` as landscape; when the first hit is above the
+    water, an upward probe from under the surface separates overhead
+    structures (water flows under) from solids rising out of the water
+    (obstacles); and the first 90 updates after a load or teleport get a
+    larger ray budget (0.5 ms) so the area refills quickly. A gallop at
+    0.116 ms, just over the 0.1 ms target, is accepted for now.
 -   Alternatives rejected: Prototype A (top-down depth capture through the
     precipitation-occlusion path) is deferred, not rejected. It is the
     documented fallback, built only if B fails the success criteria on the

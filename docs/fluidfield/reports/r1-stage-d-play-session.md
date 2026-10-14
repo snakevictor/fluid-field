@@ -71,6 +71,7 @@ At 01:35:55 a screenshot was taken by the lake at Brittleshin Pass, at about (âˆ
 -   **Depth:** almost all tan (water plane under the ground). Only 471 texels are submerged, along the southern edge, deepest 85 units. The player stands on a rock well above the water, and most of the lake in view is more than 2048 units away, beyond the square. The submerged strip matches the near shore and the dock to the south-west.
 -   **Raycasts:** grey (dry, no ray) across most of the square. Along the southern shore there is a wide orange band (static meshes: rocks and banks) with a small green patch (terrain). So by this shore most rays end on placed meshes rather than landscape. That is the case stage d exists for (R1 open question 3), and here it makes the riverbed mostly meshes.
 -   This is one screenshot, read by eye. Whether the orange band is right (real rocks rather than, say, the dock) needs the in-game check described in section 7.
+-   **Correction (route run, `r1-route-run.md` section 4):** the reading above is wrong. Landscape collision is on layer 17 (`kGround`), which this build counts as a mesh, so the orange band is mostly landscape. The screenshot says nothing about how much of this shore is placed meshes.
 
 ## 6. Logs and stability
 
