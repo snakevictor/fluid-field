@@ -6,6 +6,8 @@
 #include "State.h"
 #include "Utils/D3D.h"
 
+#include <numbers>
+
 #define I18N_KEY_PREFIX "feature.fluid_field."
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
@@ -23,7 +25,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	RaycastBed,
 	RaysPerFrame,
 	RaySpacing,
-	LogDepthMap)
+	LogDepthMap,
+	WaterEnabled,
+	WakeStrength,
+	TestCurrentSpeed,
+	TestCurrentAngle)
 
 void FluidField::DrawSettings()
 {
@@ -131,6 +137,26 @@ void FluidField::DrawSettings()
 			stats.runs, stats.maxError, stats.maxPlaneDifference, stats.samplesMissed, stats.samplesChecked);
 	}
 
+	ImGui::SeparatorText(T(TKEY("water"), "Water (Experimental)"));
+
+	ImGui::Checkbox(T(TKEY("water_enabled"), "Simulate Water"), &settings.WaterEnabled);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("water_enabled_tooltip"), "Simulates shallow water on the grid, on top of the depth map. Work in progress: only the layer overlay shows it yet."));
+	}
+	if (waterShaderFailed)
+		ImGui::TextColored(Menu::GetSingleton()->GetTheme().StatusPalette.Error, "%s", T(TKEY("water_shader_failed"), "Water shaders failed to compile, so the water layer is off. Check CommunityShaders.log."));
+	if (waterResourceFailed)
+		ImGui::TextColored(Menu::GetSingleton()->GetTheme().StatusPalette.Error, "%s", T(TKEY("water_resource_failed"), "Fluid Field could not create the water textures, so the water layer is off. Check CommunityShaders.log."));
+	ImGui::SliderFloat(T(TKEY("wake_strength"), "Wake Strength"), &settings.WakeStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("wake_strength_tooltip"), "How strongly the player pushes the water when moving through it."));
+	}
+	ImGui::SliderFloat(T(TKEY("test_current_speed"), "Test Current Speed"), &settings.TestCurrentSpeed, 0.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("test_current_angle"), "Test Current Direction"), &settings.TestCurrentAngle, 0.0f, 360.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("test_current_tooltip"), "Temporary test: a uniform current, in game units per second, heading in degrees clockwise from north. Vanilla river flow will replace it."));
+	}
+
 	ImGui::SeparatorText(T(TKEY("debug"), "Debug"));
 
 	ImGui::Checkbox(T(TKEY("show_layer_overlay"), "Show Layer Overlay"), &showDebugOverlay);
@@ -229,10 +255,32 @@ void FluidField::DrawOverlay()
 		ImGui::TextUnformatted(T(TKEY("overlay_legend_raycasts"), "Raycasts: green hit terrain, orange hit a mesh (rock, bank, pier), dark blue found nothing in reach, grey had no ray (dry)."));
 		ImGui::Text(T(TKEY("overlay_depth_stats"), "Wet %u texels (%u water object, %u cell water), deepest %.0f units; %u plane under ground; %u without a bed"),
 			depthStats.submerged, depthStats.waterObject, depthStats.cellWater, depthStats.maxDepth, depthStats.buried, depthStats.bedMissing);
-	} else if (settings.DepthMapEnabled) {
+	} else if (settings.DepthMapEnabled || settings.WaterEnabled) {
 		ImGui::TextUnformatted(T(TKEY("overlay_depth_waiting"), "Depth map: waiting for data."));
 	} else {
 		ImGui::TextUnformatted(T(TKEY("overlay_depth_off"), "Depth map: turn on Build Depth Map to see the bed, water surface and depth here."));
+	}
+
+	if (waterSolver.HasDebugViews()) {
+		const std::array<const char*, FluidFieldSim::ShallowWaterSolver::DEBUG_VIEW_NAMES.size()> waterNames = {
+			T(TKEY("layer_water_depth"), "Water Depth"),
+			T(TKEY("layer_water_flow"), "Flow"),
+			T(TKEY("layer_waves"), "Waves")
+		};
+		for (std::size_t i = 0; i < waterNames.size(); i++) {
+			if (i > 0)
+				ImGui::SameLine();
+			ImGui::BeginGroup();
+			ImGui::TextUnformatted(waterNames[i]);
+			ImGui::Image(reinterpret_cast<ImTextureID>(waterSolver.GetDebugViewSRV(i)), ImVec2(imageSize, imageSize));
+			const ImVec2 imageMin = ImGui::GetItemRectMin();
+			const ImVec2 marker(imageMin.x + lastPlayerTexel[0] / res * imageSize, imageMin.y + (1.0f - lastPlayerTexel[1] / res) * imageSize);
+			auto* drawList = ImGui::GetWindowDrawList();
+			drawList->AddCircle(marker, 3.0f * uiScale, markerColor);
+			drawList->AddLine(marker, ImVec2(marker.x + std::sin(lastHeading) * 10.0f * uiScale, marker.y - std::cos(lastHeading) * 10.0f * uiScale), markerColor);
+			ImGui::EndGroup();
+		}
+		ImGui::TextUnformatted(T(TKEY("overlay_legend_water_sim"), "Water depth: light is shallow, dark is deep. Flow: hue is direction, brightness speed. Waves: red above vanilla water, blue below."));
 	}
 
 	ImGui::End();
@@ -259,6 +307,9 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.TestPuffRadius = std::isfinite(a_settings.TestPuffRadius) ? std::clamp(a_settings.TestPuffRadius, 16.0f, 2048.0f) : defaults.TestPuffRadius;
 	a_settings.RaysPerFrame = std::clamp(a_settings.RaysPerFrame, MIN_RAYS_PER_FRAME, MAX_RAYS_PER_FRAME);
 	a_settings.RaySpacing = std::isfinite(a_settings.RaySpacing) ? std::clamp(a_settings.RaySpacing, MIN_RAY_SPACING, MAX_RAY_SPACING) : defaults.RaySpacing;
+	a_settings.WakeStrength = std::isfinite(a_settings.WakeStrength) ? std::clamp(a_settings.WakeStrength, 0.0f, 3.0f) : defaults.WakeStrength;
+	a_settings.TestCurrentSpeed = std::isfinite(a_settings.TestCurrentSpeed) ? std::clamp(a_settings.TestCurrentSpeed, 0.0f, 400.0f) : defaults.TestCurrentSpeed;
+	a_settings.TestCurrentAngle = std::isfinite(a_settings.TestCurrentAngle) ? std::clamp(a_settings.TestCurrentAngle, 0.0f, 360.0f) : defaults.TestCurrentAngle;
 
 	return a_settings;
 }
@@ -294,6 +345,8 @@ void FluidField::ClearShaderCache()
 {
 	solver.ReleaseShaders();
 	shaderCompileFailed = false;
+	waterSolver.ReleaseShaders();
+	waterShaderFailed = false;
 }
 
 bool FluidField::EnsureSolver()
@@ -359,6 +412,7 @@ void FluidField::Prepass()
 		// Disabled costs nothing: no textures, no shaders, no dispatches
 		if (solver.HasResources() || solver.HasShaders())
 			ReleaseSolver();
+		ReleaseWater();
 		ClearDepthMap();
 		return;
 	}
@@ -371,7 +425,7 @@ void FluidField::Prepass()
 	if (!player)
 		return;
 
-	if (settings.DepthMapEnabled) {
+	if (settings.DepthMapEnabled || settings.WaterEnabled) {
 		if (queuedLandscapeClear.exchange(false)) {
 			landscape.Clear();
 			water.Clear();
@@ -427,6 +481,8 @@ void FluidField::Prepass()
 		TracyD3D11Zone(state->tracyCtx, "FluidField - Reset");
 		globals::profiler->BeginPass("FluidField::Reset");
 		solver.Reset(context);
+		waterSolver.Reset();
+		hasLastPlayerPos = false;
 		globals::profiler->EndPass();
 	}
 
@@ -487,14 +543,138 @@ void FluidField::Prepass()
 	lastPlayerTexel[1] = playerPos.y / cellSize - static_cast<float>(gridMin[1]);
 	lastHeading = player->GetAngleZ();
 
+	if (settings.WaterEnabled) {
+		ZoneScopedN("FluidField - Water Step");
+		TracyD3D11Zone(state->tracyCtx, "FluidField - Water Step");
+		StepWater(context, playerPos, gridMin, cellSize, deltaTime);
+	} else {
+		ReleaseWater();
+	}
+
 	if (showDebugOverlay) {
 		ZoneScopedN("FluidField - Debug View");
 		TracyD3D11Zone(state->tracyCtx, "FluidField - Debug View");
 		globals::profiler->BeginPass("FluidField::Debug View");
 		solver.RenderDebugViews(context, { .velocity = 1.0f / debugVelocityRange, .divergence = 1.0f / debugDivergenceRange, .pressure = 1.0f / debugPressureRange });
+		if (settings.WaterEnabled)
+			waterSolver.RenderDebugViews(context, {});
 		globals::profiler->EndPass();
 		hasDebugViews = true;
 	}
+}
+
+bool FluidField::EnsureWater()
+{
+	if (waterShaderFailed || waterResourceFailed)
+		return false;
+
+	const uint mapResolution = FluidFieldSim::WaterMapBuilder::ResolutionFor(settings.GridSize);
+	if (waterSolver.GetResolution() != settings.GridResolution || waterSolver.GetMapResolution() != mapResolution) {
+		try {
+			waterSolver.CreateResources(globals::d3d::device, settings.GridResolution, mapResolution, [](ID3D11DeviceChild* object, const char* name) {
+				Util::SetResourceName(object, "%s", name);
+			});
+		} catch (const winrt::hresult_error& e) {
+			logger::error("[Fluid Field] Failed to create water GPU resources: {}", winrt::to_string(e.message()));
+			waterSolver.ReleaseResources();
+			waterResourceFailed = true;
+			return false;
+		}
+		waterMap.Clear();
+	}
+
+	if (!waterSolver.HasShaders()) {
+		const bool compiled = waterSolver.CompileShaders([](const wchar_t* fileName) {
+			const auto path = std::filesystem::path("Data\\Shaders\\FluidField") / fileName;
+			return reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), {}, "cs_5_0"));
+		});
+		if (!compiled) {
+			logger::error("[Fluid Field] Water compute shaders failed to compile; the water layer stays off");
+			waterSolver.ReleaseShaders();
+			waterShaderFailed = true;
+			return false;
+		}
+	}
+	return true;
+}
+
+void FluidField::ReleaseWater()
+{
+	if (waterSolver.HasResources() || waterSolver.HasShaders()) {
+		waterSolver.ReleaseResources();
+		waterSolver.ReleaseShaders();
+	}
+	waterMap.Clear();
+	hasLastPlayerPos = false;
+}
+
+void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos, const int32_t a_gridMin[2], float a_cellSize, float a_deltaTime)
+{
+	if (!EnsureWater())
+		return;
+
+	{
+		ZoneScopedN("FluidField - Water Map");
+		globals::profiler->BeginPass("FluidField::Water Map");
+		if (waterMap.Update(landscape, water, settings.RaycastBed ? &bedRays : nullptr, a_playerPos.x, a_playerPos.y, waterSolver.GetMapResolution()))
+			waterSolver.UploadMap(a_context, waterMap.GetData(), FluidFieldSim::WaterMapBuilder::MAP_SPACING);
+		globals::profiler->EndPass();
+	}
+	if (!waterSolver.HasMap())
+		return;
+
+	// The player's velocity from their movement since the last step, ignoring teleports
+	constexpr float MAX_WAKE_SPEED = 1500.0f;
+	RE::NiPoint3 playerVelocity{};
+	if (hasLastPlayerPos)
+		playerVelocity = (a_playerPos - lastPlayerPos) / a_deltaTime;
+	lastPlayerPos = a_playerPos;
+	hasLastPlayerPos = true;
+	const float speed = std::sqrt(playerVelocity.x * playerVelocity.x + playerVelocity.y * playerVelocity.y);
+
+	// A wake only where the player is in or at the water, not on a bridge above it
+	std::optional<FluidFieldSim::WaterEmitter> wake;
+	float surface = 0.0f;
+	if (settings.WakeStrength > 0.0f && speed > 20.0f && speed < MAX_WAKE_SPEED &&
+		water.SampleHeight(a_playerPos.x, a_playerPos.y, surface) != FluidFieldSim::WaterSurfaces::Source::None &&
+		a_playerPos.z < surface + 32.0f && a_playerPos.z > surface - 256.0f) {
+		wake = FluidFieldSim::WaterEmitter{
+			.position = { a_playerPos.x / a_cellSize - static_cast<float>(a_gridMin[0]), a_playerPos.y / a_cellSize - static_cast<float>(a_gridMin[1]) },
+			.radius = std::max(40.0f / a_cellSize, 1.5f),
+			.depthRate = 0.0f,
+			.velocity = { playerVelocity.x * settings.WakeStrength, playerVelocity.y * settings.WakeStrength },
+			.pad1 = {}
+		};
+	}
+	const auto emitters = wake ? std::span<const FluidFieldSim::WaterEmitter>(&*wake, 1) : std::span<const FluidFieldSim::WaterEmitter>();
+
+	FluidFieldSim::WaterParams params;
+	const float currentHeading = settings.TestCurrentAngle * std::numbers::pi_v<float> / 180.0f;
+	params.current[0] = std::sin(currentHeading) * settings.TestCurrentSpeed;
+	params.current[1] = std::cos(currentHeading) * settings.TestCurrentSpeed;
+
+	// Short sub-steps keep waves on deep water stable
+	constexpr float MAX_SUBSTEP = 0.012f;
+	const uint substeps = std::clamp(static_cast<uint>(std::ceil(a_deltaTime / MAX_SUBSTEP)), 1u, 4u);
+	const FluidFieldSim::StepParams grid{
+		.gridMin = { a_gridMin[0], a_gridMin[1] },
+		.cellSize = a_cellSize,
+		.deltaTime = a_deltaTime / static_cast<float>(substeps),
+		.velocityDecay = 1.0f,
+		.jacobiIterations = 0,
+		.emitters = {}
+	};
+	const auto wrap = [&](const char* passName, auto&& runPass) {
+		globals::profiler->BeginPass(std::format("FluidField::{}", passName));
+		runPass();
+		globals::profiler->EndPass();
+	};
+	for (uint i = 0; i < substeps; i++)
+		waterSolver.Step(a_context, grid, params, emitters, wrap);
+
+	globals::profiler->BeginPass("FluidField::Water Output");
+	waterSolver.WriteOutputs(a_context);
+	globals::profiler->EndPass();
 }
 
 RE::BSEventNotifyControl FluidField::MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)

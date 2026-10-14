@@ -3,6 +3,8 @@
 #include "FluidField/BedRaycasts.h"
 #include "FluidField/DepthMapView.h"
 #include "FluidField/LandscapeCache.h"
+#include "FluidField/ShallowWaterSolver.h"
+#include "FluidField/WaterMapBuilder.h"
 #include "FluidField/WaterSurfaces.h"
 #include "FluidField/WindSolver.h"
 #include "OverlayFeature.h"
@@ -11,9 +13,10 @@
  * @brief Player-centred fluid simulation shared by water, fog, smoke and buoyancy outputs.
  *
  * Phase 1: a wind layer solved with stable fluids on a grid that follows the player with
- * toroidal addressing. The grid has no obstacles yet. Every GPU resource is created and
- * freed here, and the field is cleared after every loading screen. While disabled it creates
- * nothing and dispatches nothing.
+ * toroidal addressing, a depth map of riverbed and vanilla water, and (flowing water slice) a
+ * shallow-water layer on the same grid. Every GPU resource is created and freed here, and the
+ * field is cleared after every loading screen. While disabled it creates nothing and dispatches
+ * nothing.
  */
 struct FluidField : OverlayFeature
 {
@@ -59,6 +62,10 @@ struct FluidField : OverlayFeature
 		uint RaysPerFrame = 32;           ///< Most bed rays cast in one frame
 		float RaySpacing = 64.0f;         ///< World units between bed rays
 		bool LogDepthMap = false;         ///< Debug: log what bed rays hit and periodic depth map statistics
+		bool WaterEnabled = false;        ///< Experimental: simulate shallow water on the grid (needs the depth map)
+		float WakeStrength = 1.0f;        ///< How strongly the player drags the water along
+		float TestCurrentSpeed = 0.0f;    ///< Test current until vanilla flow is read, world units per second
+		float TestCurrentAngle = 0.0f;    ///< Test current heading in degrees, 0 = north, clockwise
 	};
 
 	Settings settings;
@@ -112,6 +119,19 @@ private:
 
 	/** @brief Drops the depth map's data and debug images. */
 	void ClearDepthMap();
+
+	FluidFieldSim::ShallowWaterSolver waterSolver;
+	FluidFieldSim::WaterMapBuilder waterMap;
+	bool waterShaderFailed = false;
+	bool waterResourceFailed = false;
+	RE::NiPoint3 lastPlayerPos;
+	bool hasLastPlayerPos = false;
+
+	/** @brief Creates the water layer's GPU resources and shaders as needed. Returns false if it cannot run. */
+	bool EnsureWater();
+	void ReleaseWater();
+	/** @brief Rebuilds the water map, then steps and writes out the water layer for this frame. */
+	void StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos, const int32_t a_gridMin[2], float a_cellSize, float a_deltaTime);
 	bool shaderCompileFailed = false;
 	bool resourceCreateFailed = false;
 
