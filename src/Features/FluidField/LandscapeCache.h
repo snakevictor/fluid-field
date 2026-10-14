@@ -66,7 +66,6 @@ namespace FluidFieldSim
 		const VerifyStats& GetVerifyStats() const { return verifyStats; }
 
 	private:
-		static uint64_t MakeKey(int32_t a_cellX, int32_t a_cellY);
 		void Verify(const Cell& a_cell);
 
 		std::unordered_map<uint64_t, Cell> cells;

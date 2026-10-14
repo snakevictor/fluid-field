@@ -1,6 +1,8 @@
 #pragma once
 
+#include "FluidField/DepthMapView.h"
 #include "FluidField/LandscapeCache.h"
+#include "FluidField/WaterSurfaces.h"
 #include "FluidField/WindSolver.h"
 #include "OverlayFeature.h"
 
@@ -47,6 +49,7 @@ struct FluidField : OverlayFeature
 		float TestPuffRadius = 256.0f;    ///< Test puff radius, world units
 		bool DepthMapEnabled = false;     ///< Experimental: build the riverbed and obstacle map (R1)
 		bool VerifyLandscape = false;     ///< Debug: compare cached landscape heights with the engine's
+		bool VerifyWater = false;         ///< Debug: compare water surface heights with the engine's
 	};
 
 	Settings settings;
@@ -85,6 +88,11 @@ private:
 
 	FluidFieldSim::WindSolver solver;
 	FluidFieldSim::LandscapeCache landscape;
+	FluidFieldSim::WaterSurfaces water;
+	FluidFieldSim::DepthMapView depthView;
+
+	/** @brief Drops the depth map's data and debug images. */
+	void ClearDepthMap();
 	bool shaderCompileFailed = false;
 	bool resourceCreateFailed = false;
 

@@ -1,0 +1,179 @@
+#include "WaterSurfaces.h"
+
+#include "EngineGrid.h"
+
+namespace FluidFieldSim
+{
+	namespace
+	{
+		/** @brief Water objects whose bound is taller than this are sloped (rapids, waterfalls); Skin uses the same cut-off. */
+		constexpr float MAX_FLAT_BOUND_HALF_HEIGHT = 10.0f;
+		/** @brief Cell water heights at or above this mean "unset" (as CommonLib's GetExteriorWaterHeight treats them). */
+		constexpr float UNSET_WATER_HEIGHT = 2147483600.0f;
+
+		uint64_t HashFloat(uint64_t a_hash, float a_value)
+		{
+			// FNV-1a over the value rounded to whole units, so tiny float noise does not count as a change
+			const auto bits = static_cast<uint32_t>(static_cast<int32_t>(std::round(a_value)));
+			for (int i = 0; i < 4; i++) {
+				a_hash ^= (bits >> (i * 8)) & 0xFF;
+				a_hash *= 1099511628211ull;
+			}
+			return a_hash;
+		}
+	}
+
+	void WaterSurfaces::Clear()
+	{
+		surfaces.clear();
+		cellWater.clear();
+		slopedCount = 0;
+		hasInteriorWater = false;
+		updatesUntilRebuild = 0;
+		lastSignature = 0;
+	}
+
+	void WaterSurfaces::Update(bool a_verify)
+	{
+		if (updatesUntilRebuild > 0) {
+			updatesUntilRebuild--;
+			return;
+		}
+		updatesUntilRebuild = REBUILD_INTERVAL;
+		Rebuild(a_verify);
+	}
+
+	void WaterSurfaces::Rebuild(bool a_verify)
+	{
+		surfaces.clear();
+		cellWater.clear();
+		slopedCount = 0;
+		hasInteriorWater = false;
+
+		auto tes = RE::TES::GetSingleton();
+		if (!tes)
+			return;
+
+		if (auto waterSystem = RE::TESWaterSystem::GetSingleton()) {
+			// Other threads add and remove water objects; hold the lock while reading them (as UnifiedWater does)
+			RE::BSSpinLockGuard guard(waterSystem->lock);
+			for (const auto& waterObject : waterSystem->waterObjects) {
+				if (!waterObject)
+					continue;
+				const auto& plane = waterObject->plane;
+				const float planeHeight = std::abs(plane.normal.z) > 1e-4f ? plane.constant / plane.normal.z : std::numeric_limits<float>::quiet_NaN();
+				for (const auto& bound : waterObject->multiBounds) {
+					if (!bound)
+						continue;
+					if (bound->size.z > MAX_FLAT_BOUND_HALF_HEIGHT) {
+						slopedCount++;
+						continue;
+					}
+					surfaces.push_back({ .minX = bound->center.x - bound->size.x,
+						.minY = bound->center.y - bound->size.y,
+						.maxX = bound->center.x + bound->size.x,
+						.maxY = bound->center.y + bound->size.y,
+						.height = bound->center.z,
+						.planeHeight = planeHeight });
+				}
+			}
+		}
+
+		if (auto interior = tes->interiorCell) {
+			const float height = interior->GetRuntimeData().waterHeight;
+			if (interior->cellFlags.any(RE::TESObjectCELL::Flag::kHasWater) && height < UNSET_WATER_HEIGHT) {
+				interiorWater = height;
+				hasInteriorWater = true;
+			}
+		} else if (auto* grid = tes->gridCells) {
+			for (uint32_t gx = 0; gx < grid->length; gx++) {
+				for (uint32_t gy = 0; gy < grid->length; gy++) {
+					auto* cell = GetGridCell(grid, gx, gy);
+					if (!cell || cell->IsInteriorCell() || !cell->IsAttached())
+						continue;
+					auto* coordinates = cell->GetCoordinates();
+					const float height = cell->GetExteriorWaterHeight();
+					if (coordinates && height > -RE::NI_INFINITY)
+						cellWater[MakeCellKey(coordinates->cellX, coordinates->cellY)] = height;
+				}
+			}
+		}
+
+		uint64_t signature = 14695981039346656037ull;
+		for (const auto& surface : surfaces) {
+			signature = HashFloat(signature, surface.minX);
+			signature = HashFloat(signature, surface.minY);
+			signature = HashFloat(signature, surface.height);
+		}
+		signature = HashFloat(signature, static_cast<float>(cellWater.size()));
+		if (a_verify && signature != lastSignature)
+			Verify();
+		lastSignature = signature;
+	}
+
+	WaterSurfaces::Source WaterSurfaces::SampleHeight(float a_worldX, float a_worldY, float& a_height) const
+	{
+		// Highest water object covering the point wins; which overlap rule is right is R3's question
+		bool found = false;
+		for (const auto& surface : surfaces) {
+			if (a_worldX < surface.minX || a_worldX > surface.maxX || a_worldY < surface.minY || a_worldY > surface.maxY)
+				continue;
+			if (!found || surface.height > a_height)
+				a_height = surface.height;
+			found = true;
+		}
+		if (found)
+			return Source::WaterObject;
+
+		if (hasInteriorWater) {
+			a_height = interiorWater;
+			return Source::CellWater;
+		}
+
+		const int32_t cellX = static_cast<int32_t>(std::floor(a_worldX / 4096.0f));
+		const int32_t cellY = static_cast<int32_t>(std::floor(a_worldY / 4096.0f));
+		if (const auto it = cellWater.find(MakeCellKey(cellX, cellY)); it != cellWater.end()) {
+			a_height = it->second;
+			return Source::CellWater;
+		}
+		return Source::None;
+	}
+
+	void WaterSurfaces::Verify()
+	{
+		auto tes = RE::TES::GetSingleton();
+		if (!tes)
+			return;
+
+		uint32_t checked = 0;
+		uint32_t missed = 0;
+		float maxError = 0.0f;
+		float maxPlaneDifference = 0.0f;
+
+		for (const auto& surface : surfaces) {
+			const RE::NiPoint3 centre((surface.minX + surface.maxX) * 0.5f, (surface.minY + surface.maxY) * 0.5f, surface.height);
+			if (std::isfinite(surface.planeHeight))
+				maxPlaneDifference = std::max(maxPlaneDifference, std::abs(surface.planeHeight - surface.height));
+
+			auto* cell = tes->interiorCell ? tes->interiorCell : tes->GetCell(centre);
+			float engine = 0.0f;
+			checked++;
+			if (!cell || !cell->GetWaterHeight(centre, engine) || !(engine > -RE::NI_INFINITY)) {
+				missed++;
+				continue;
+			}
+			float ours = 0.0f;
+			SampleHeight(centre.x, centre.y, ours);  // Same overlap rule the simulation will see
+			maxError = std::max(maxError, std::abs(ours - engine));
+		}
+
+		verifyStats.runs++;
+		verifyStats.samplesChecked += checked;
+		verifyStats.samplesMissed += missed;
+		verifyStats.maxError = std::max(verifyStats.maxError, maxError);
+		verifyStats.maxPlaneDifference = std::max(verifyStats.maxPlaneDifference, maxPlaneDifference);
+
+		logger::info("[Fluid Field] Water check: {} surfaces, {} sloped skipped, {} cells with water, interior water {}; error {:.2f}, plane vs bound {:.2f}, missed {} of {}",
+			surfaces.size(), slopedCount, cellWater.size(), hasInteriorWater ? "yes" : "no", maxError, maxPlaneDifference, missed, checked);
+	}
+}

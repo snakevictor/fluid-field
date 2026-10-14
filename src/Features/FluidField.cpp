@@ -18,7 +18,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	TestPuffStrength,
 	TestPuffRadius,
 	DepthMapEnabled,
-	VerifyLandscape)
+	VerifyLandscape,
+	VerifyWater)
 
 void FluidField::DrawSettings()
 {
@@ -85,16 +86,26 @@ void FluidField::DrawSettings()
 
 	ImGui::Checkbox(T(TKEY("depth_map_enabled"), "Build Depth Map"), &settings.DepthMapEnabled);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("depth_map_enabled_tooltip"), "Copies the landscape heights of the loaded cells around the player. Work in progress: nothing uses them yet."));
+		ImGui::Text("%s", T(TKEY("depth_map_enabled_tooltip"), "Maps the riverbed and vanilla water around the player. Work in progress: only the layer overlay uses it yet."));
 	}
 	ImGui::Checkbox(T(TKEY("verify_landscape"), "Verify Landscape Heights"), &settings.VerifyLandscape);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("verify_landscape_tooltip"), "Debug: compares each newly copied cell with the game's own height query and logs the difference."));
 	}
+	ImGui::Checkbox(T(TKEY("verify_water"), "Verify Water Heights"), &settings.VerifyWater);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("verify_water_tooltip"), "Debug: compares the water surface heights with the game's own water query whenever they change, and logs the difference."));
+	}
 	ImGui::Text(T(TKEY("landscape_cells"), "Cached cells: %u"), static_cast<uint>(landscape.GetCellCount()));
+	ImGui::Text(T(TKEY("water_surfaces"), "Water surfaces: %u flat, %u sloped (not used yet), %u cells with water"),
+		static_cast<uint>(water.GetSurfaceCount()), water.GetSlopedCount(), static_cast<uint>(water.GetCellWaterCount()));
 	if (const auto& stats = landscape.GetVerifyStats(); stats.cellsChecked > 0) {
 		ImGui::Text(T(TKEY("landscape_verify_result"), "Checked %u cells: vertex error %.2f, interpolated %.2f units, largest anchor %.0f (%u of %u samples missed)"),
 			stats.cellsChecked, stats.maxVertexError, stats.maxInterpolatedError, stats.maxAbsAnchor, stats.samplesMissed, stats.samplesChecked);
+	}
+	if (const auto& stats = water.GetVerifyStats(); stats.runs > 0) {
+		ImGui::Text(T(TKEY("water_verify_result"), "Water checked %u times: error %.2f units, plane vs bound %.2f (%u of %u samples missed)"),
+			stats.runs, stats.maxError, stats.maxPlaneDifference, stats.samplesMissed, stats.samplesChecked);
 	}
 
 	ImGui::SeparatorText(T(TKEY("debug"), "Debug"));
@@ -165,6 +176,39 @@ void FluidField::DrawOverlay()
 
 	ImGui::TextUnformatted(T(TKEY("overlay_legend_velocity"), "Velocity: hue is direction (east red, north green, west cyan, south violet), brightness is speed."));
 	ImGui::TextUnformatted(T(TKEY("overlay_legend_scalar"), "Divergence and pressure: red is positive, blue is negative."));
+
+	if (depthView.HasImages()) {
+		const std::array<const char*, FluidFieldSim::DepthMapView::IMAGE_COUNT> depthNames = {
+			T(TKEY("layer_bed"), "Bed"),
+			T(TKEY("layer_water"), "Water Surface"),
+			T(TKEY("layer_depth"), "Depth")
+		};
+		for (std::size_t i = 0; i < depthNames.size(); i++) {
+			if (i > 0)
+				ImGui::SameLine();
+			ImGui::BeginGroup();
+			ImGui::TextUnformatted(depthNames[i]);
+			ImGui::Image(reinterpret_cast<ImTextureID>(depthView.GetSRV(i)), ImVec2(imageSize, imageSize));
+
+			// The depth map images are centred on the player
+			const ImVec2 imageMin = ImGui::GetItemRectMin();
+			const ImVec2 marker(imageMin.x + imageSize * 0.5f, imageMin.y + imageSize * 0.5f);
+			auto* drawList = ImGui::GetWindowDrawList();
+			drawList->AddCircle(marker, 3.0f * uiScale, markerColor);
+			drawList->AddLine(marker, ImVec2(marker.x + std::sin(lastHeading) * 10.0f * uiScale, marker.y - std::cos(lastHeading) * 10.0f * uiScale), markerColor);
+			ImGui::EndGroup();
+		}
+		const auto& depthStats = depthView.GetStats();
+		ImGui::TextUnformatted(T(TKEY("overlay_legend_bed"), "Bed: green below the player, brown above, magenta where no landscape is loaded."));
+		ImGui::TextUnformatted(T(TKEY("overlay_legend_water"), "Water: blue is a water object, cyan is the cell's water height only."));
+		ImGui::TextUnformatted(T(TKEY("overlay_legend_depth"), "Depth: lighter is shallow, darker is deep; tan is water plane under the ground."));
+		ImGui::Text(T(TKEY("overlay_depth_stats"), "Submerged %u texels, deepest %.0f units; %u water-object and %u cell-water texels; %u without landscape"),
+			depthStats.submerged, depthStats.maxDepth, depthStats.waterObject, depthStats.cellWater, depthStats.bedMissing);
+	} else if (settings.DepthMapEnabled) {
+		ImGui::TextUnformatted(T(TKEY("overlay_depth_waiting"), "Depth map: waiting for data."));
+	} else {
+		ImGui::TextUnformatted(T(TKEY("overlay_depth_off"), "Depth map: turn on Build Depth Map to see the bed, water surface and depth here."));
+	}
 
 	ImGui::End();
 }
@@ -262,6 +306,16 @@ bool FluidField::EnsureSolver()
 	return true;
 }
 
+void FluidField::ClearDepthMap()
+{
+	if (landscape.GetCellCount() > 0)
+		landscape.Clear();
+	if (water.GetSurfaceCount() > 0 || water.GetCellWaterCount() > 0)
+		water.Clear();
+	if (depthView.HasImages())
+		depthView.Release();
+}
+
 void FluidField::ReleaseSolver()
 {
 	solver.ReleaseResources();
@@ -276,8 +330,7 @@ void FluidField::Prepass()
 		// Disabled costs nothing: no textures, no shaders, no dispatches
 		if (solver.HasResources() || solver.HasShaders())
 			ReleaseSolver();
-		if (landscape.GetCellCount() > 0)
-			landscape.Clear();
+		ClearDepthMap();
 		return;
 	}
 
@@ -290,14 +343,33 @@ void FluidField::Prepass()
 		return;
 
 	if (settings.DepthMapEnabled) {
-		if (queuedLandscapeClear.exchange(false))
+		if (queuedLandscapeClear.exchange(false)) {
 			landscape.Clear();
-		ZoneScopedN("FluidField - Landscape Cache");
-		globals::profiler->BeginPass("FluidField::Landscape Cache");
-		landscape.Update(settings.VerifyLandscape);
-		globals::profiler->EndPass();
-	} else if (landscape.GetCellCount() > 0) {
-		landscape.Clear();
+			water.Clear();
+		}
+		{
+			ZoneScopedN("FluidField - Landscape Cache");
+			globals::profiler->BeginPass("FluidField::Landscape Cache");
+			landscape.Update(settings.VerifyLandscape);
+			globals::profiler->EndPass();
+		}
+		{
+			ZoneScopedN("FluidField - Water Surfaces");
+			globals::profiler->BeginPass("FluidField::Water Surfaces");
+			water.Update(settings.VerifyWater);
+			globals::profiler->EndPass();
+		}
+		if (showDebugOverlay) {
+			ZoneScopedN("FluidField - Depth Map View");
+			globals::profiler->BeginPass("FluidField::Depth Map View");
+			const auto playerPos = player->GetPosition();
+			depthView.Update(globals::d3d::context, landscape, water, playerPos.x, playerPos.y, playerPos.z, settings.GridSize);
+			globals::profiler->EndPass();
+		} else if (depthView.HasImages()) {
+			depthView.Release();
+		}
+	} else {
+		ClearDepthMap();
 	}
 
 	if (!EnsureSolver())

@@ -1,20 +1,11 @@
 #include "LandscapeCache.h"
 
+#include "EngineGrid.h"
+
 namespace FluidFieldSim
 {
 	namespace
 	{
-		/** @brief Loaded-grid cell lookup, under the terrain-cell lock that Skyrim 1.7.99 added (as UnifiedWater does). */
-		RE::TESObjectCELL* GetGridCell(RE::GridCellArray* a_grid, uint32_t a_x, uint32_t a_y)
-		{
-			if (REL::Module::IsAE() && REL::Module::IsAtLeast(SKSE::RUNTIME_SSE_1_7_99)) {
-				static REL::Relocation<RE::BSReadWriteLock*> terrainCellMapLock{ REL::ID(564236) };
-				const RE::BSReadLockGuard lock(*terrainCellMapLock);
-				return a_grid->GetCell(a_x, a_y);
-			}
-			return a_grid->GetCell(a_x, a_y);
-		}
-
 		/**
 		 * @brief Height of cell vertex (x, y) from the engine's four 17x17 quadrants.
 		 * Quadrant bit 0 is the east half and bit 1 the north half; quadrants share their edge
@@ -32,11 +23,6 @@ namespace FluidFieldSim
 		}
 	}
 
-	uint64_t LandscapeCache::MakeKey(int32_t a_cellX, int32_t a_cellY)
-	{
-		return (static_cast<uint64_t>(static_cast<uint32_t>(a_cellX)) << 32) | static_cast<uint32_t>(a_cellY);
-	}
-
 	void LandscapeCache::Clear()
 	{
 		cells.clear();
@@ -45,7 +31,7 @@ namespace FluidFieldSim
 
 	const LandscapeCache::Cell* LandscapeCache::Find(int32_t a_cellX, int32_t a_cellY) const
 	{
-		const auto it = cells.find(MakeKey(a_cellX, a_cellY));
+		const auto it = cells.find(MakeCellKey(a_cellX, a_cellY));
 		return it != cells.end() ? &it->second : nullptr;
 	}
 
@@ -103,7 +89,7 @@ namespace FluidFieldSim
 				if (!land || !land->loadedData || !coordinates)
 					continue;  // Land 3D can arrive a few frames after the cell attaches; retry next update
 
-				const uint64_t key = MakeKey(coordinates->cellX, coordinates->cellY);
+				const uint64_t key = MakeCellKey(coordinates->cellX, coordinates->cellY);
 				present.push_back(key);
 				if (cells.contains(key))
 					continue;
