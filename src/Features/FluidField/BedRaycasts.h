@@ -133,6 +133,7 @@ namespace FluidFieldSim
 		{
 			bool hit = false;
 			float z = 0.0f;
+			float normalZ = 0.0f;  ///< Vertical component of the hit surface's normal
 			RE::COL_LAYER layer = RE::COL_LAYER::kUnidentified;
 			const RE::hkpCollidable* collidable = nullptr;
 		};
@@ -160,6 +161,8 @@ namespace FluidFieldSim
 		std::unordered_map<uint64_t, Sample> fine;    ///< Refined points, keyed by fine lattice coordinates
 		std::unordered_set<uint64_t> refinedSquares;  ///< Squares queued or done, keyed by coarse lattice coordinates
 		std::deque<std::pair<int32_t, int32_t>> refineQueue;
+		/** @brief Squares waiting until the player is within REFINE_RADIUS; coarse rays are cached, so nothing else re-queues them. */
+		std::vector<std::pair<int32_t, int32_t>> deferredSquares;
 		std::vector<std::pair<int32_t, int32_t>> dirtySquares;
 		bool cleared = true;
 		float spacing = 0.0f;

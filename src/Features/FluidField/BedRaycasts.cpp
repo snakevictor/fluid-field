@@ -58,6 +58,7 @@ namespace FluidFieldSim
 		fine.clear();
 		refinedSquares.clear();
 		refineQueue.clear();
+		deferredSquares.clear();
 		dirtySquares.clear();
 		cleared = true;
 		sweepCursor = 0;
@@ -132,7 +133,9 @@ namespace FluidFieldSim
 			const float hitZ = fromZ + (a_toZ - fromZ) * output.hitFraction;
 			const auto layer = output.rootCollidable->GetCollisionLayer();
 			if (IsStaticLayer(layer)) {
-				result = { .hit = true, .z = hitZ, .layer = layer, .collidable = output.rootCollidable };
+				float normal[4];
+				_mm_storeu_ps(normal, output.normal.quad);
+				result = { .hit = true, .z = hitZ, .normalZ = normal[2], .layer = layer, .collidable = output.rootCollidable };
 				return result;
 			}
 			// The water's own collision, an actor or clutter: continue past it
@@ -276,17 +279,20 @@ namespace FluidFieldSim
 			// top means air over the water (a deck, an arch); nothing, or only the top itself, means a
 			// solid rising out of the water (a rock, a pier), which stays an obstacle.
 			const RayHit up = CastVertical(world, a_worldX, a_worldY, a_surface - PROBE_OFFSET, hit.z + 1.0f, a_aborted);
-			if (a_log && !a_aborted && !(up.hit && up.z < hit.z - ABOVE_SURFACE_MARGIN && up.z > a_surface + UNDERSIDE_CLEARANCE)) {
+			// A downward-facing underside clear of the water is open (a deck, an arch, a thin plank whose
+			// underside is at its top's height). An underside touching the water is solid (a pillar, a post);
+			// so is no underside, or an upward-facing hit from inside a solid.
+			const bool open = up.hit && up.normalZ < -0.3f && up.z > a_surface + UNDERSIDE_CLEARANCE;
+			if (a_log && !a_aborted && !open) {
 				const auto what = !up.hit ? std::string("solid, probe found no underside") :
-				                            std::format("solid, underside at {:.0f} above the water", up.z - a_surface);
+				                            std::format("solid, underside at {:.0f} above the water, normal z {:.2f}", up.z - a_surface, up.normalZ);
 				LogHit(a_worldX, a_worldY, a_surface, hit, what.c_str());
 			}
-			// An underside touching the water is solid (a pillar, a low deck edge); one clear of it is open
-			if (up.hit && up.z < hit.z - ABOVE_SURFACE_MARGIN && up.z > a_surface + UNDERSIDE_CLEARANCE) {
+			if (open) {
+				if (a_log)
+					LogHit(a_worldX, a_worldY, a_surface, up, std::format("open, underside normal z {:.2f}", up.normalZ).c_str());
 				stats.overheads++;
 				result.overhead = true;
-				if (a_log)
-					LogHit(a_worldX, a_worldY, a_surface, hit, "overhead, looking under");
 				hit = CastVertical(world, a_worldX, a_worldY, std::min(up.z, a_surface + PROBE_OFFSET), bottom, a_aborted);
 				if (!hit.hit)
 					return result;
@@ -407,13 +413,29 @@ namespace FluidFieldSim
 			const float refineRadius = REFINE_RADIUS / spacing;
 			const float playerX = a_centreX / spacing;
 			const float playerY = a_centreY / spacing;
+			const auto withinRadius = [&](int32_t sx, int32_t sy) {
+				const float dx = static_cast<float>(sx) + 0.5f - playerX;
+				const float dy = static_cast<float>(sy) + 0.5f - playerY;
+				return dx * dx + dy * dy <= refineRadius * refineRadius;
+			};
+			// Squares that were too far when they came up wait here until the player comes near
+			if (coarseResolved && !deferredSquares.empty()) {
+				std::erase_if(deferredSquares, [&](const auto& square) {
+					if (std::abs(square.first - centreX) > half * 2 || std::abs(square.second - centreY) > half * 2) {
+						refinedSquares.erase(MakeKey(square.first, square.second));
+						return true;
+					}
+					if (!withinRadius(square.first, square.second))
+						return false;
+					refineQueue.push_back(square);
+					return true;
+				});
+			}
 			while (coarseResolved && !refineQueue.empty() && Clock::now() < deadline) {
 				const auto [sx, sy] = refineQueue.front();
 				refineQueue.pop_front();
-				const float dx = static_cast<float>(sx) + 0.5f - playerX;
-				const float dy = static_cast<float>(sy) + 0.5f - playerY;
-				if (dx * dx + dy * dy > refineRadius * refineRadius) {
-					refinedSquares.erase(MakeKey(sx, sy));  // Queued again when the coarse ray is recast nearby
+				if (!withinRadius(sx, sy)) {
+					deferredSquares.emplace_back(sx, sy);
 					continue;
 				}
 				if (!RefineSquare(a_landscape, a_water, sx, sy, a_log)) {
