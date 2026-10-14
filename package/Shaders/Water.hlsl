@@ -618,6 +618,14 @@ FlowmapData GetFlowmapDataWorldSpace(FlowmapData textureSpaceData)
 #				include "WetnessEffects/WetnessEffects.hlsli"
 #			endif
 
+#			if defined(LOD)
+#				undef FLUID_FIELD
+#			endif
+
+#			if defined(FLUID_FIELD)
+#				include "FluidField/WaterNormal.hlsli"
+#			endif
+
 // Structure to return both normal and ripple/splash color information
 struct WaterNormalData
 {
@@ -748,6 +756,17 @@ WaterNormalData GetWaterNormal(PS_INPUT input, float distanceFactor, float norma
 	float3 displacement = normalize(float3(normalsAmplitude.w * (-0.5 + DisplacementTex.Sample(DisplacementSampler, displacementUv).zw),
 		0.04));
 	finalNormal = lerp(displacement, finalNormal, displacement.z);
+#			endif
+
+#			if defined(FLUID_FIELD)
+	{
+		// Fluid Field's simulated waves on top of the vanilla normal, at the parallax-shifted position
+		float3 fluidFieldPosition = input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz;
+#				if defined(WATER_PARALLAX)
+		fluidFieldPosition.xy += parallaxOffset;
+#				endif
+		finalNormal = FluidField::ApplyWaterNormal(fluidFieldPosition, finalNormal);
+	}
 #			endif
 
 #			if defined(WETNESS_EFFECTS)

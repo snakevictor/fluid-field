@@ -452,6 +452,16 @@ namespace SharedData
 		float3 pad;
 	};
 
+	struct FluidFieldSettings
+	{
+		int2 GridMin;  // World cell of the water grid's south-west corner
+		uint GridRes;  // Cells per side, a power of two
+		float CellSize;
+		float NormalStrength;
+		uint Enabled;  // Water outputs are valid this frame
+		float2 pad;
+	};
+
 	cbuffer FeatureData : register(b6)
 	{
 		GrassLightingSettings grassLightingSettings;
@@ -474,6 +484,7 @@ namespace SharedData
 		TruePBRSettings truePBRSettings;
 		SkinData skinData;
 		HorizonFixSettings horizonFixSettings;
+		FluidFieldSettings fluidFieldSettings;
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);

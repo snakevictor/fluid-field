@@ -50,24 +50,25 @@ struct FluidField : OverlayFeature
 	struct Settings
 	{
 		bool Enabled = false;
-		uint GridResolution = 256;        ///< Texels per side
-		float GridSize = 4096.0f;         ///< World units per side
-		uint JacobiIterations = 30;       ///< Pressure solve iterations per step
-		float WindDamping = 0.3f;         ///< Fraction of wind speed lost per second, as an exponential rate
-		float TestPuffStrength = 800.0f;  ///< Test puff wind speed at its centre, world units per second
-		float TestPuffRadius = 256.0f;    ///< Test puff radius, world units
-		bool DepthMapEnabled = false;     ///< Experimental: build the riverbed and obstacle map (R1)
-		bool VerifyLandscape = false;     ///< Debug: compare cached landscape heights with the engine's
-		bool VerifyWater = false;         ///< Debug: compare water surface heights with the engine's
-		bool RaycastBed = true;           ///< Find rocks, banks and riverbed meshes under water with Havok rays
-		uint RaysPerFrame = 32;           ///< Most bed rays cast in one frame
-		float RaySpacing = 64.0f;         ///< World units between bed rays
-		bool LogDepthMap = false;         ///< Debug: log what bed rays hit and periodic depth map statistics
-		bool MeshCutObstacles = true;     ///< Water-line obstacles from cutting placed meshes at the water height (D15)
-		bool WaterEnabled = false;        ///< Experimental: simulate shallow water on the grid (needs the depth map)
-		float WakeStrength = 1.0f;        ///< How strongly the player drags the water along
-		float TestCurrentSpeed = 0.0f;    ///< Test current until vanilla flow is read, world units per second
-		float TestCurrentAngle = 0.0f;    ///< Test current heading in degrees, 0 = north, clockwise
+		uint GridResolution = 256;           ///< Texels per side
+		float GridSize = 4096.0f;            ///< World units per side
+		uint JacobiIterations = 30;          ///< Pressure solve iterations per step
+		float WindDamping = 0.3f;            ///< Fraction of wind speed lost per second, as an exponential rate
+		float TestPuffStrength = 800.0f;     ///< Test puff wind speed at its centre, world units per second
+		float TestPuffRadius = 256.0f;       ///< Test puff radius, world units
+		bool DepthMapEnabled = false;        ///< Experimental: build the riverbed and obstacle map (R1)
+		bool VerifyLandscape = false;        ///< Debug: compare cached landscape heights with the engine's
+		bool VerifyWater = false;            ///< Debug: compare water surface heights with the engine's
+		bool RaycastBed = true;              ///< Find rocks, banks and riverbed meshes under water with Havok rays
+		uint RaysPerFrame = 32;              ///< Most bed rays cast in one frame
+		float RaySpacing = 64.0f;            ///< World units between bed rays
+		bool LogDepthMap = false;            ///< Debug: log what bed rays hit and periodic depth map statistics
+		bool MeshCutObstacles = true;        ///< Water-line obstacles from cutting placed meshes at the water height (D15)
+		bool WaterEnabled = false;           ///< Experimental: simulate shallow water on the grid (needs the depth map)
+		float WakeStrength = 1.0f;           ///< How strongly the player drags the water along
+		float TestCurrentSpeed = 0.0f;       ///< Test current until vanilla flow is read, world units per second
+		float TestCurrentAngle = 0.0f;       ///< Test current heading in degrees, 0 = north, clockwise
+		float SurfaceNormalStrength = 2.0f;  ///< How strongly the simulated waves tilt the water's surface normal
 	};
 
 	Settings settings;
@@ -88,14 +89,23 @@ struct FluidField : OverlayFeature
 
 	virtual void ClearShaderCache() override;
 
-	/**
-	 * @brief Always valid: Fluid Field adds no defines to engine shaders, so its version and install
-	 * state cannot change them, and its own compute shaders compile at runtime. Without this, every
-	 * version bump discarded the engine shader cache index. Remove both overrides once Fluid Field
-	 * adds a define to an engine shader (the flowing water slice's FLUID_FIELD in Water.hlsl).
-	 */
-	virtual bool ValidateCache(CSimpleIniA&) override { return true; }
-	virtual void WriteDiskCacheInfo(CSimpleIniA&) override {}
+	/** @brief FLUID_FIELD, defined for the water shader only. */
+	virtual std::string_view GetShaderDefineName() override { return "FLUID_FIELD"; }
+	virtual bool HasShaderDefine(RE::BSShader::Type a_type) override { return a_type == RE::BSShader::Type::Water; }
+
+	/** @brief Water grid placement for the water shader (SharedData::fluidFieldSettings); 16-byte sized. */
+	struct alignas(16) WaterShaderData
+	{
+		int32_t GridMin[2]{};
+		uint32_t GridRes = 0;
+		float CellSize = 0.0f;
+		float NormalStrength = 0.0f;
+		uint32_t Enabled = 0;
+		float pad[2]{};
+	};
+	static_assert(sizeof(WaterShaderData) % 16 == 0);
+	/** @brief This frame's water grid placement, or Enabled = 0 when the water outputs are not valid. */
+	WaterShaderData GetCommonBufferData() const;
 
 	/** @brief Draws the per-layer debug overlay when it is turned on from the menu. */
 	virtual void DrawOverlay() override;
@@ -154,6 +164,10 @@ private:
 	std::array<float, FluidFieldSim::MeshCut::BLOCK * FluidFieldSim::MeshCut::BLOCK * 4> ComposeObstacleBlock(int32_t a_originX, int32_t a_originY) const;
 	/** @brief Mesh-cut blocks currently uploaded, keyed by block coordinates. */
 	std::unordered_set<uint64_t> residentMeshBlocks;
+	/** @brief Placement of the water outputs last written, for the water shader. */
+	WaterShaderData waterShaderData;
+	/** @brief Binds the water surface output for the water shader (t66) when it is valid. */
+	void BindWaterOutputs(ID3D11DeviceContext* a_context) const;
 	int32_t meshWindowCentre[2]{ INT32_MIN, INT32_MIN };
 	bool shaderCompileFailed = false;
 	bool resourceCreateFailed = false;

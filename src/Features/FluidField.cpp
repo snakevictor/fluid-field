@@ -31,7 +31,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	WaterEnabled,
 	WakeStrength,
 	TestCurrentSpeed,
-	TestCurrentAngle)
+	TestCurrentAngle,
+	SurfaceNormalStrength)
 
 void FluidField::DrawSettings()
 {
@@ -152,7 +153,11 @@ void FluidField::DrawSettings()
 
 	ImGui::Checkbox(T(TKEY("water_enabled"), "Simulate Water"), &settings.WaterEnabled);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("water_enabled_tooltip"), "Simulates shallow water on the grid, on top of the depth map. Work in progress: only the layer overlay shows it yet."));
+		ImGui::Text("%s", T(TKEY("water_enabled_tooltip"), "Simulates shallow water on the grid, on top of the depth map, and adds its waves to the water surface. Work in progress."));
+	}
+	ImGui::SliderFloat(T(TKEY("surface_normal_strength"), "Surface Strength"), &settings.SurfaceNormalStrength, 0.0f, 8.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("surface_normal_strength_tooltip"), "How strongly the simulated waves tilt the water's surface. 0 hides them; the simulation keeps running."));
 	}
 	if (waterShaderFailed)
 		ImGui::TextColored(Menu::GetSingleton()->GetTheme().StatusPalette.Error, "%s", T(TKEY("water_shader_failed"), "Water shaders failed to compile, so the water layer is off. Check CommunityShaders.log."));
@@ -322,6 +327,7 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.TestCurrentSpeed = std::isfinite(a_settings.TestCurrentSpeed) ? std::clamp(a_settings.TestCurrentSpeed, 0.0f, 400.0f) : defaults.TestCurrentSpeed;
 	a_settings.TestCurrentAngle = std::isfinite(a_settings.TestCurrentAngle) ? std::clamp(a_settings.TestCurrentAngle, 0.0f, 360.0f) : defaults.TestCurrentAngle;
 
+	a_settings.SurfaceNormalStrength = std::isfinite(a_settings.SurfaceNormalStrength) ? std::clamp(a_settings.SurfaceNormalStrength, 0.0f, 8.0f) : defaults.SurfaceNormalStrength;
 	return a_settings;
 }
 
@@ -521,8 +527,11 @@ void FluidField::Prepass()
 	const auto ui = globals::game::ui;
 	const bool paused = ui && ui->GameIsPaused();
 	const float deltaTime = (globals::game::deltaTime && !paused) ? std::min(*globals::game::deltaTime, MAX_STEP_SECONDS) : 0.0f;
-	if (!(deltaTime > 0.0f))
+	if (!(deltaTime > 0.0f)) {
+		// Paused: keep showing the last water outputs
+		BindWaterOutputs(context);
 		return;
+	}
 
 	// Centre the grid on the player, snapped to whole cells so texels never resample
 	const auto playerPos = player->GetPosition();
@@ -640,6 +649,7 @@ void FluidField::ReleaseWater()
 	waterMap.Clear();
 	waterAwaitingMap = true;
 	hasLastPlayerPos = false;
+	waterShaderData = {};
 }
 
 int32_t FluidField::GetObstacleRatio() const
@@ -764,6 +774,21 @@ void FluidField::UploadObstacles(ID3D11DeviceContext* a_context, const RE::NiPoi
 	}
 }
 
+FluidField::WaterShaderData FluidField::GetCommonBufferData() const
+{
+	if (!loaded || !settings.Enabled || !settings.WaterEnabled)
+		return {};
+	return waterShaderData;
+}
+
+void FluidField::BindWaterOutputs(ID3D11DeviceContext* a_context) const
+{
+	if (!waterShaderData.Enabled)
+		return;
+	ID3D11ShaderResourceView* srv = waterSolver.GetSurfaceSRV();
+	a_context->PSSetShaderResources(66, 1, &srv);
+}
+
 void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos, const int32_t a_gridMin[2], float a_cellSize, float a_deltaTime)
 {
 	if (!EnsureWater())
@@ -846,6 +871,15 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a
 
 	globals::profiler->BeginPass("FluidField::Water Output");
 	waterSolver.WriteOutputs(a_context);
+	waterShaderData = {
+		.GridMin = { a_gridMin[0], a_gridMin[1] },
+		.GridRes = settings.GridResolution,
+		.CellSize = a_cellSize,
+		.NormalStrength = settings.SurfaceNormalStrength,
+		.Enabled = waterSolver.HasMap() ? 1u : 0u,
+		.pad = {}
+	};
+	BindWaterOutputs(a_context);
 	globals::profiler->EndPass();
 }
 
