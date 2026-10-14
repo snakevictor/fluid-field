@@ -80,7 +80,7 @@ namespace FluidFieldSim
 		return true;
 	}
 
-	void DepthMapView::FillBedRow(uint32_t a_row, const LandscapeCache& a_landscape, const BedRaycasts* a_rays)
+	void DepthMapView::FillBedRow(uint32_t a_row, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays)
 	{
 		constexpr uint32_t n = RESOLUTION;
 		for (uint32_t x = 0; x < n + 2; x++) {
@@ -89,11 +89,14 @@ namespace FluidFieldSim
 			float height = std::numeric_limits<float>::quiet_NaN();
 			if (!a_landscape.SampleHeight(wx, wy, height))
 				height = std::numeric_limits<float>::quiet_NaN();
-			// A terrain hit is the engine's own triangle height; a static hit raises the bed to the mesh
+			// The same rule as the water map: a terrain hit is the engine's own triangle height and a static
+			// hit raises the bed, except a coarse mesh above the water, which was never checked for air beneath
 			if (const auto* ray = a_rays ? a_rays->FindDetail(wx, wy) : nullptr) {
+				float surface = 0.0f;
+				const bool hasWater = a_water.SampleHeight(wx, wy, surface) != WaterSurfaces::Source::None;
 				if (ray->kind == BedRaycasts::HitKind::Terrain)
 					height = ray->height;
-				else if (ray->kind == BedRaycasts::HitKind::Static)
+				else if (ray->kind == BedRaycasts::HitKind::Static && (ray->refined || !(hasWater && ray->height > surface)))
 					height = std::isfinite(height) ? std::max(height, ray->height) : ray->height;
 			}
 			bed[a_row * (n + 2) + x] = height;
@@ -129,7 +132,7 @@ namespace FluidFieldSim
 		const uint32_t endRow = std::min(n, nextRow + n / SLICES);
 		// Output row y reads bed rows y .. y + 2 (the bed has a one-texel border)
 		while (bedRowsFilled < std::min(n + 2, endRow + 2))
-			FillBedRow(bedRowsFilled++, a_landscape, a_rays);
+			FillBedRow(bedRowsFilled++, a_landscape, a_water, a_rays);
 
 		for (uint32_t y = nextRow; y < endRow; y++) {
 			for (uint32_t x = 0; x < n; x++) {
@@ -203,7 +206,12 @@ namespace FluidFieldSim
 						pixels[3][out] = Pack(0.30f, 0.75f, 0.30f);
 						break;
 					case BedRaycasts::HitKind::Static:
-						pixels[3][out] = source != WaterSurfaces::Source::None && ray->height <= surface ? Pack(0.55f, 0.38f, 0.15f) : Pack(1.0f, 0.55f, 0.10f);
+						if (source != WaterSurfaces::Source::None && ray->height <= surface)
+							pixels[3][out] = Pack(0.55f, 0.38f, 0.15f);  // Riverbed mesh
+						else if (ray->refined || source == WaterSurfaces::Source::None)
+							pixels[3][out] = Pack(1.0f, 0.55f, 0.10f);  // Checked: solid above the water
+						else
+							pixels[3][out] = Pack(0.95f, 0.90f, 0.25f);  // Above the water, not checked (coarse)
 						break;
 					case BedRaycasts::HitKind::NoHit:
 						pixels[3][out] = Pack(0.10f, 0.15f, 0.45f);

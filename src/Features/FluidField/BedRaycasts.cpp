@@ -244,6 +244,7 @@ namespace FluidFieldSim
 				float surface = 0.0f;
 				if (!Resolve(a_landscape, a_water, static_cast<float>(fx) * fineSpacing, static_cast<float>(fy) * fineSpacing, a_log, true, sample, surface))
 					return false;
+				sample.refined = true;
 				fine.emplace(key, sample);
 			}
 		}
@@ -275,6 +276,11 @@ namespace FluidFieldSim
 			// top means air over the water (a deck, an arch); nothing, or only the top itself, means a
 			// solid rising out of the water (a rock, a pier), which stays an obstacle.
 			const RayHit up = CastVertical(world, a_worldX, a_worldY, a_surface - PROBE_OFFSET, hit.z + 1.0f, a_aborted);
+			if (a_log && !a_aborted && !(up.hit && up.z < hit.z - ABOVE_SURFACE_MARGIN && up.z > a_surface + UNDERSIDE_CLEARANCE)) {
+				const auto what = !up.hit ? std::string("solid, probe found no underside") :
+				                            std::format("solid, underside at {:.0f} above the water", up.z - a_surface);
+				LogHit(a_worldX, a_worldY, a_surface, hit, what.c_str());
+			}
 			// An underside touching the water is solid (a pillar, a low deck edge); one clear of it is open
 			if (up.hit && up.z < hit.z - ABOVE_SURFACE_MARGIN && up.z > a_surface + UNDERSIDE_CLEARANCE) {
 				stats.overheads++;

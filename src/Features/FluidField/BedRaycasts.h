@@ -46,6 +46,7 @@ namespace FluidFieldSim
 			float height = 0.0f;  ///< Hit height; meaningful for Terrain and Static
 			HitKind kind = HitKind::Skipped;
 			bool overhead = false;  ///< An overhead structure was looked under to find this bed
+			bool refined = false;   ///< A fine point; coarse points never probe for overheads
 		};
 
 		/** @brief Fine points per lattice spacing, along each axis. */

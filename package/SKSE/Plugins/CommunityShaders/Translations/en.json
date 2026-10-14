@@ -898,7 +898,7 @@
     "feature.fluid_field.overlay_grid_info": "%u x %u texels, %.1f units each, south-west cell (%d, %d)",
     "feature.fluid_field.overlay_legend_bed": "Bed: green below the player, brown above, magenta where no landscape is loaded.",
     "feature.fluid_field.overlay_legend_depth": "Depth: lighter is shallow, darker is deep; tan is water plane under the ground.",
-    "feature.fluid_field.overlay_legend_raycasts": "Raycasts: green terrain, purple under a deck or arch, orange a mesh above the water, brown a mesh below it, dark blue nothing in reach, grey no ray (dry).",
+    "feature.fluid_field.overlay_legend_raycasts": "Raycasts: green terrain, purple under a deck or arch, orange solid above the water, yellow above the water but not checked (ignored), brown a mesh below the water, dark blue nothing in reach, grey no ray.",
     "feature.fluid_field.overlay_legend_scalar": "Divergence and pressure: red is positive, blue is negative.",
     "feature.fluid_field.overlay_legend_velocity": "Velocity: hue is direction (east red, north green, west cyan, south violet), brightness is speed.",
     "feature.fluid_field.overlay_legend_water": "Water: bright blue is wet under a water object, bright cyan wet under cell water only; dim is a water plane under the ground.",

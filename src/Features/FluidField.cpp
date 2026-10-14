@@ -253,7 +253,7 @@ void FluidField::DrawOverlay()
 		ImGui::TextUnformatted(T(TKEY("overlay_legend_bed"), "Bed: green below the player, brown above, magenta where no landscape is loaded."));
 		ImGui::TextUnformatted(T(TKEY("overlay_legend_water"), "Water: bright blue is wet under a water object, bright cyan wet under cell water only; dim is a water plane under the ground."));
 		ImGui::TextUnformatted(T(TKEY("overlay_legend_depth"), "Depth: lighter is shallow, darker is deep; tan is water plane under the ground."));
-		ImGui::TextUnformatted(T(TKEY("overlay_legend_raycasts"), "Raycasts: green terrain, purple under a deck or arch, orange a mesh above the water, brown a mesh below it, dark blue nothing in reach, grey no ray (dry)."));
+		ImGui::TextUnformatted(T(TKEY("overlay_legend_raycasts"), "Raycasts: green terrain, purple under a deck or arch, orange solid above the water, yellow above the water but not checked (ignored), brown a mesh below the water, dark blue nothing in reach, grey no ray."));
 		ImGui::Text(T(TKEY("overlay_depth_stats"), "Wet %u texels (%u water object, %u cell water), deepest %.0f units; %u plane under ground; %u without a bed"),
 			depthStats.submerged, depthStats.waterObject, depthStats.cellWater, depthStats.maxDepth, depthStats.buried, depthStats.bedMissing);
 	} else if (settings.DepthMapEnabled || settings.WaterEnabled) {
