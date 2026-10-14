@@ -13,7 +13,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GridResolution,
 	GridSize,
 	JacobiIterations,
-	WindDamping)
+	WindDamping,
+	TestPuffStrength,
+	TestPuffRadius)
 
 void FluidField::DrawSettings()
 {
@@ -64,6 +66,17 @@ void FluidField::DrawSettings()
 
 	if (ImGui::Button(T(TKEY("reset_field"), "Reset Field")))
 		queuedReset = true;
+
+	ImGui::SeparatorText(T(TKEY("test_emitter"), "Test Emitter"));
+
+	if (ImGui::Button(T(TKEY("test_puff"), "Puff of Wind")))
+		queuedTestPuff = true;
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("test_puff_tooltip"), "Temporary test: blows a gust of wind from the player in the direction they face. Turn on the layer overlay to see it."));
+	}
+
+	ImGui::SliderFloat(T(TKEY("test_puff_strength"), "Puff Strength"), &settings.TestPuffStrength, 0.0f, 5000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("test_puff_radius"), "Puff Radius"), &settings.TestPuffRadius, 16.0f, 2048.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 }
 
 #undef I18N_KEY_PREFIX
@@ -78,6 +91,8 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.GridSize = std::isfinite(a_settings.GridSize) ? std::clamp(a_settings.GridSize, MIN_GRID_SIZE, MAX_GRID_SIZE) : defaults.GridSize;
 	a_settings.JacobiIterations = std::clamp(a_settings.JacobiIterations, MIN_JACOBI_ITERATIONS, MAX_JACOBI_ITERATIONS);
 	a_settings.WindDamping = std::isfinite(a_settings.WindDamping) ? std::clamp(a_settings.WindDamping, 0.0f, 5.0f) : defaults.WindDamping;
+	a_settings.TestPuffStrength = std::isfinite(a_settings.TestPuffStrength) ? std::clamp(a_settings.TestPuffStrength, 0.0f, 5000.0f) : defaults.TestPuffStrength;
+	a_settings.TestPuffRadius = std::isfinite(a_settings.TestPuffRadius) ? std::clamp(a_settings.TestPuffRadius, 16.0f, 2048.0f) : defaults.TestPuffRadius;
 
 	return a_settings;
 }
@@ -207,13 +222,26 @@ void FluidField::Prepass()
 		static_cast<int32_t>(std::floor(playerPos.y / cellSize)) - halfRes
 	};
 
+	// Test puff: a gust centred on the player, blowing the way they face (heading 0 faces +Y, north)
+	std::optional<FluidFieldSim::Emitter> testPuff;
+	if (std::exchange(queuedTestPuff, false)) {
+		const float heading = player->GetAngleZ();
+		testPuff = FluidFieldSim::Emitter{
+			.position = { playerPos.x / cellSize - static_cast<float>(gridMin[0]), playerPos.y / cellSize - static_cast<float>(gridMin[1]) },
+			.radius = settings.TestPuffRadius / cellSize,
+			.pad0 = 0.0f,
+			.velocity = { std::sin(heading) * settings.TestPuffStrength, std::cos(heading) * settings.TestPuffStrength },
+			.pad1 = {}
+		};
+	}
+
 	FluidFieldSim::StepParams params{
 		.gridMin = { gridMin[0], gridMin[1] },
 		.cellSize = cellSize,
 		.deltaTime = deltaTime,
 		.velocityDecay = std::exp(-settings.WindDamping * deltaTime),
 		.jacobiIterations = settings.JacobiIterations,
-		.emitters = {}
+		.emitters = testPuff ? std::span<const FluidFieldSim::Emitter>(&*testPuff, 1) : std::span<const FluidFieldSim::Emitter>()
 	};
 
 	TracyD3D11Zone(state->tracyCtx, "FluidField - Wind Step");

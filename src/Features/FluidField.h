@@ -37,10 +37,12 @@ struct FluidField : Feature
 	struct Settings
 	{
 		bool Enabled = false;
-		uint GridResolution = 256;   ///< Texels per side
-		float GridSize = 4096.0f;    ///< World units per side
-		uint JacobiIterations = 30;  ///< Pressure solve iterations per step
-		float WindDamping = 0.3f;    ///< Fraction of wind speed lost per second, as an exponential rate
+		uint GridResolution = 256;        ///< Texels per side
+		float GridSize = 4096.0f;         ///< World units per side
+		uint JacobiIterations = 30;       ///< Pressure solve iterations per step
+		float WindDamping = 0.3f;         ///< Fraction of wind speed lost per second, as an exponential rate
+		float TestPuffStrength = 800.0f;  ///< Test puff wind speed at its centre, world units per second
+		float TestPuffRadius = 256.0f;    ///< Test puff radius, world units
 	};
 
 	Settings settings;
@@ -78,6 +80,9 @@ private:
 
 	/** @brief Set by the loading-screen listener on the UI thread, consumed on the render thread. */
 	std::atomic<bool> queuedReset = true;
+	/** @brief A test puff was requested from the menu; consumed by the next step. */
+	bool queuedTestPuff = false;
+
 	/** @brief Cell size the field was last stepped with; a change invalidates its contents. */
 	float lastCellSize = 0.0f;
 
