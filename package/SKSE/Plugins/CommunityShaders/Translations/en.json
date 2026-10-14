@@ -877,7 +877,7 @@
     "feature.fluid_field.key_feature_1": "Shallow water that flows around obstacles and carries wakes",
     "feature.fluid_field.key_feature_2": "Fog and smoke pushed by actors, shouts and spells",
     "feature.fluid_field.landscape_cells": "Cached cells: %u",
-    "feature.fluid_field.landscape_verify_result": "Checked %u cells: vertex error %.2f, anchored %.2f, interpolated %.2f units (%u of %u samples missed)",
+    "feature.fluid_field.landscape_verify_result": "Checked %u cells: vertex error %.2f, interpolated %.2f units, largest anchor %.0f (%u of %u samples missed)",
     "feature.fluid_field.layer_divergence": "Divergence",
     "feature.fluid_field.layer_pressure": "Pressure",
     "feature.fluid_field.layer_velocity": "Velocity",

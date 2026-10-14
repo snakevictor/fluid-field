@@ -93,8 +93,8 @@ void FluidField::DrawSettings()
 	}
 	ImGui::Text(T(TKEY("landscape_cells"), "Cached cells: %u"), static_cast<uint>(landscape.GetCellCount()));
 	if (const auto& stats = landscape.GetVerifyStats(); stats.cellsChecked > 0) {
-		ImGui::Text(T(TKEY("landscape_verify_result"), "Checked %u cells: vertex error %.2f, anchored %.2f, interpolated %.2f units (%u of %u samples missed)"),
-			stats.cellsChecked, stats.maxVertexError, stats.maxAnchoredVertexError, stats.maxInterpolatedError, stats.samplesMissed, stats.samplesChecked);
+		ImGui::Text(T(TKEY("landscape_verify_result"), "Checked %u cells: vertex error %.2f, interpolated %.2f units, largest anchor %.0f (%u of %u samples missed)"),
+			stats.cellsChecked, stats.maxVertexError, stats.maxInterpolatedError, stats.maxAbsAnchor, stats.samplesMissed, stats.samplesChecked);
 	}
 
 	ImGui::SeparatorText(T(TKEY("debug"), "Debug"));

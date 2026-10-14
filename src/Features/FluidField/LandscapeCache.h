@@ -11,8 +11,9 @@ namespace FluidFieldSim
 	 *
 	 * Each attached cell's `TESObjectLAND` heights are copied once when the cell appears in the
 	 * engine's loaded grid, and dropped when it leaves. This is the riverbed source for the depth
-	 * map (R1, D7 stage 1). Heights are kept exactly as the engine stores them; `Verify` compares
-	 * them with `TES::GetLandHeight` to establish whether they are absolute world heights.
+	 * map (R1, D7 stage 1). The engine stores the heights relative to the cell; adding
+	 * `heightExtents.x - min(heights)` turns them into world heights, which `Verify` confirms
+	 * against `TES::GetLandHeight`.
 	 */
 	class LandscapeCache
 	{
@@ -25,10 +26,10 @@ namespace FluidFieldSim
 		{
 			int32_t x = 0;
 			int32_t y = 0;
-			/** @brief Heights in row-major order, index `y * VERTS_PER_SIDE + x`, south-west first. */
+			/** @brief World heights in row-major order, index `y * VERTS_PER_SIDE + x`, south-west first. */
 			std::array<float, VERTS_PER_SIDE * VERTS_PER_SIDE> heights{};
-			/** @brief `heightExtents.x` from the engine's loaded land data, kept for the verification check. */
-			float heightExtentsMin = 0.0f;
+			/** @brief Added to the engine's stored heights to make them world heights. */
+			float anchor = 0.0f;
 		};
 
 		/** @brief Result of comparing cached heights with the engine's own height query. */
@@ -36,10 +37,10 @@ namespace FluidFieldSim
 		{
 			uint32_t cellsChecked = 0;
 			uint32_t samplesChecked = 0;
-			uint32_t samplesMissed = 0;           ///< Engine query returned no height
-			float maxVertexError = 0.0f;          ///< Raw cached height at a vertex vs the engine
-			float maxAnchoredVertexError = 0.0f;  ///< Same, with the `heightExtents` anchoring applied
-			float maxInterpolatedError = 0.0f;    ///< Bilinear sample between vertices vs the engine
+			uint32_t samplesMissed = 0;         ///< Engine query returned no height
+			float maxVertexError = 0.0f;        ///< Cached world height at a vertex vs the engine
+			float maxInterpolatedError = 0.0f;  ///< Bilinear sample between vertices vs the engine's triangles
+			float maxAbsAnchor = 0.0f;          ///< Largest relative-to-world offset seen
 		};
 
 		/**

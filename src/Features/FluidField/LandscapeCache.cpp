@@ -111,11 +111,15 @@ namespace FluidFieldSim
 				Cell copy;
 				copy.x = coordinates->cellX;
 				copy.y = coordinates->cellY;
-				copy.heightExtentsMin = land->loadedData->heightExtents.x;
 				for (int32_t y = 0; y < VERTS_PER_SIDE; y++) {
 					for (int32_t x = 0; x < VERTS_PER_SIDE; x++)
 						copy.heights[y * VERTS_PER_SIDE + x] = GetLandVertexHeight(*land->loadedData, x, y);
 				}
+				// Stored heights are relative; heightExtents.x is the cell's lowest world height
+				// (confirmed against TES::GetLandHeight, see reports/r1-stage-a-checks.md)
+				copy.anchor = land->loadedData->heightExtents.x - *std::ranges::min_element(copy.heights);
+				for (float& height : copy.heights)
+					height += copy.anchor;
 
 				const auto& inserted = cells.emplace(key, copy).first->second;
 				if (a_verify)
@@ -135,11 +139,7 @@ namespace FluidFieldSim
 
 		const float originX = static_cast<float>(a_cell.x * CELL_UNITS);
 		const float originY = static_cast<float>(a_cell.y * CELL_UNITS);
-		const float rawMin = *std::ranges::min_element(a_cell.heights);
-		const float anchor = a_cell.heightExtentsMin - rawMin;
-
 		float vertexError = 0.0f;
-		float anchoredError = 0.0f;
 		float interpolatedError = 0.0f;
 		uint32_t missed = 0;
 
@@ -158,7 +158,6 @@ namespace FluidFieldSim
 				continue;
 			}
 			vertexError = std::max(vertexError, std::abs(cached - engine));
-			anchoredError = std::max(anchoredError, std::abs(cached + anchor - engine));
 		}
 
 		// A point between vertices: the engine interpolates over triangles, this cache bilinearly
@@ -175,10 +174,10 @@ namespace FluidFieldSim
 		verifyStats.samplesChecked += static_cast<uint32_t>(vertices.size()) + 1;
 		verifyStats.samplesMissed += missed;
 		verifyStats.maxVertexError = std::max(verifyStats.maxVertexError, vertexError);
-		verifyStats.maxAnchoredVertexError = std::max(verifyStats.maxAnchoredVertexError, anchoredError);
 		verifyStats.maxInterpolatedError = std::max(verifyStats.maxInterpolatedError, interpolatedError);
+		verifyStats.maxAbsAnchor = std::max(verifyStats.maxAbsAnchor, std::abs(a_cell.anchor));
 
-		logger::info("[Fluid Field] Landscape check cell ({}, {}): vertex error {:.2f}, anchored error {:.2f} (anchor {:.2f}), interpolated error {:.2f}, missed {}",
-			a_cell.x, a_cell.y, vertexError, anchoredError, anchor, interpolatedError, missed);
+		logger::info("[Fluid Field] Landscape check cell ({}, {}): vertex error {:.2f}, interpolated error {:.2f}, anchor {:.2f}, missed {}",
+			a_cell.x, a_cell.y, vertexError, interpolatedError, a_cell.anchor, missed);
 	}
 }
