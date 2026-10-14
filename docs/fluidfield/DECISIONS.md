@@ -180,8 +180,11 @@ Entry format:
     Dwemer Engineer's Procedural Grass test build, is treated as Community
     Shaders code under GPL-3.0-or-later. Fluid Field may study it and reuse
     it. Reused code keeps a credit to its author in the file header and the
-    commit message. Shipped shader source is the material to work from;
-    compiled DLLs are not disassembled or decompiled.
+    commit message. Shipped shader source is the first material to work from.
+    Amended the same day: the build's DLL may also be decompiled with
+    Ghidra, using its shipped PDB, scoped to the Procedural Grass code.
+    Decompiled output is reference only. Anything reused is rewritten,
+    with credit.
 -   Alternatives rejected: study only, copying only after the author
     publishes the source or gives permission.
 -   Decided by: @Victor
