@@ -16,7 +16,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	JacobiIterations,
 	WindDamping,
 	TestPuffStrength,
-	TestPuffRadius)
+	TestPuffRadius,
+	DepthMapEnabled,
+	VerifyLandscape)
 
 void FluidField::DrawSettings()
 {
@@ -78,6 +80,22 @@ void FluidField::DrawSettings()
 
 	ImGui::SliderFloat(T(TKEY("test_puff_strength"), "Puff Strength"), &settings.TestPuffStrength, 0.0f, 5000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 	ImGui::SliderFloat(T(TKEY("test_puff_radius"), "Puff Radius"), &settings.TestPuffRadius, 16.0f, 2048.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+
+	ImGui::SeparatorText(T(TKEY("depth_map"), "Depth Map (Experimental)"));
+
+	ImGui::Checkbox(T(TKEY("depth_map_enabled"), "Build Depth Map"), &settings.DepthMapEnabled);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("depth_map_enabled_tooltip"), "Copies the landscape heights of the loaded cells around the player. Work in progress: nothing uses them yet."));
+	}
+	ImGui::Checkbox(T(TKEY("verify_landscape"), "Verify Landscape Heights"), &settings.VerifyLandscape);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("verify_landscape_tooltip"), "Debug: compares each newly copied cell with the game's own height query and logs the difference."));
+	}
+	ImGui::Text(T(TKEY("landscape_cells"), "Cached cells: %u"), static_cast<uint>(landscape.GetCellCount()));
+	if (const auto& stats = landscape.GetVerifyStats(); stats.cellsChecked > 0) {
+		ImGui::Text(T(TKEY("landscape_verify_result"), "Checked %u cells: vertex error %.2f, anchored %.2f, interpolated %.2f units (%u of %u samples missed)"),
+			stats.cellsChecked, stats.maxVertexError, stats.maxAnchoredVertexError, stats.maxInterpolatedError, stats.samplesMissed, stats.samplesChecked);
+	}
 
 	ImGui::SeparatorText(T(TKEY("debug"), "Debug"));
 
@@ -258,6 +276,8 @@ void FluidField::Prepass()
 		// Disabled costs nothing: no textures, no shaders, no dispatches
 		if (solver.HasResources() || solver.HasShaders())
 			ReleaseSolver();
+		if (landscape.GetCellCount() > 0)
+			landscape.Clear();
 		return;
 	}
 
@@ -268,6 +288,17 @@ void FluidField::Prepass()
 	auto player = RE::PlayerCharacter::GetSingleton();
 	if (!player)
 		return;
+
+	if (settings.DepthMapEnabled) {
+		if (queuedLandscapeClear.exchange(false))
+			landscape.Clear();
+		ZoneScopedN("FluidField - Landscape Cache");
+		globals::profiler->BeginPass("FluidField::Landscape Cache");
+		landscape.Update(settings.VerifyLandscape);
+		globals::profiler->EndPass();
+	} else if (landscape.GetCellCount() > 0) {
+		landscape.Clear();
+	}
 
 	if (!EnsureSolver())
 		return;
@@ -359,8 +390,10 @@ void FluidField::Prepass()
 RE::BSEventNotifyControl FluidField::MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
 {
 	// Every load leaves the player somewhere new; start the next step from rest
-	if (a_event && a_event->menuName == RE::LoadingMenu::MENU_NAME && !a_event->opening)
+	if (a_event && a_event->menuName == RE::LoadingMenu::MENU_NAME && !a_event->opening) {
 		globals::features::fluidField.queuedReset = true;
+		globals::features::fluidField.queuedLandscapeClear = true;
+	}
 
 	return RE::BSEventNotifyControl::kContinue;
 }

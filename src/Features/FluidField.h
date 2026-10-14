@@ -1,5 +1,6 @@
 #pragma once
 
+#include "FluidField/LandscapeCache.h"
 #include "FluidField/WindSolver.h"
 #include "OverlayFeature.h"
 
@@ -44,6 +45,8 @@ struct FluidField : OverlayFeature
 		float WindDamping = 0.3f;         ///< Fraction of wind speed lost per second, as an exponential rate
 		float TestPuffStrength = 800.0f;  ///< Test puff wind speed at its centre, world units per second
 		float TestPuffRadius = 256.0f;    ///< Test puff radius, world units
+		bool DepthMapEnabled = false;     ///< Experimental: build the riverbed and obstacle map (R1)
+		bool VerifyLandscape = false;     ///< Debug: compare cached landscape heights with the engine's
 	};
 
 	Settings settings;
@@ -81,11 +84,14 @@ private:
 	float GetCellSize() const { return settings.GridSize / static_cast<float>(settings.GridResolution); }
 
 	FluidFieldSim::WindSolver solver;
+	FluidFieldSim::LandscapeCache landscape;
 	bool shaderCompileFailed = false;
 	bool resourceCreateFailed = false;
 
 	/** @brief Set by the loading-screen listener on the UI thread, consumed on the render thread. */
 	std::atomic<bool> queuedReset = true;
+	/** @brief Same as queuedReset, for the landscape cache; consumed on the main thread. */
+	std::atomic<bool> queuedLandscapeClear = true;
 	/** @brief A test puff was requested from the menu; consumed by the next step. */
 	bool queuedTestPuff = false;
 
