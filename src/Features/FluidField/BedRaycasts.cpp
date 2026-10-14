@@ -157,7 +157,8 @@ namespace FluidFieldSim
 		if (!hit.hit)
 			return result;
 
-		if (hit.z > a_surface + ABOVE_SURFACE_MARGIN) {
+		// Landscape never overhangs water, so only a mesh above the water can be overhead
+		if (hit.z > a_surface + ABOVE_SURFACE_MARGIN && !IsLandscapeLayer(hit.layer)) {
 			// Something above the water: look up from just under the surface. An underside below the
 			// top means air over the water (a deck, an arch); nothing, or only the top itself, means a
 			// solid rising out of the water (a rock, a pier), which stays an obstacle.

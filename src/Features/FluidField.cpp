@@ -482,6 +482,8 @@ void FluidField::Prepass()
 		globals::profiler->BeginPass("FluidField::Reset");
 		solver.Reset(context);
 		waterSolver.Reset();
+		waterMap.Clear();
+		waterAwaitingMap = true;
 		hasLastPlayerPos = false;
 		globals::profiler->EndPass();
 	}
@@ -605,6 +607,7 @@ void FluidField::ReleaseWater()
 		waterSolver.ReleaseShaders();
 	}
 	waterMap.Clear();
+	waterAwaitingMap = true;
 	hasLastPlayerPos = false;
 }
 
@@ -616,8 +619,18 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, const RE::NiPoint3& a
 	{
 		ZoneScopedN("FluidField - Water Map");
 		globals::profiler->BeginPass("FluidField::Water Map");
-		if (waterMap.Update(landscape, water, settings.RaycastBed ? &bedRays : nullptr, a_playerPos.x, a_playerPos.y, waterSolver.GetMapResolution()))
-			waterSolver.UploadMap(a_context, waterMap.GetData(), FluidFieldSim::WaterMapBuilder::MAP_SPACING);
+		const uint64_t inputVersion = water.GetSignature() ^ (static_cast<uint64_t>(bedRays.GetSampleCount()) << 20) ^ (static_cast<uint64_t>(landscape.GetCellCount()) << 52);
+		if (waterMap.Update(landscape, water, settings.RaycastBed ? &bedRays : nullptr, a_playerPos.x, a_playerPos.y, waterSolver.GetMapResolution(), inputVersion)) {
+			// After a reset, start only once this location's inputs have settled, so the water
+			// begins calm on the right bed instead of flooding or draining when they arrive
+			const bool settled = !(settings.RaycastBed && bedRays.IsRefilling());
+			if (!waterAwaitingMap || settled) {
+				waterSolver.UploadMap(a_context, waterMap.GetData(), FluidFieldSim::WaterMapBuilder::MAP_SPACING);
+				waterAwaitingMap = false;
+			} else {
+				waterMap.Clear();  // Built too early; rebuild once the inputs settle
+			}
+		}
 		globals::profiler->EndPass();
 	}
 	if (!waterSolver.HasMap())

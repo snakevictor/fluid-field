@@ -85,7 +85,7 @@ namespace FluidFieldSim
 		void UploadMap(ID3D11DeviceContext* context, std::span<const float> bedAndSurface, float mapSpacing);
 		bool HasMap() const { return mapUploaded; }
 
-		/** @brief Forgets all state; the next step starts every cell from vanilla water. */
+		/** @brief Forgets all state and the map; after the next upload, the first step starts every cell from vanilla water. */
 		void Reset();
 
 		/**

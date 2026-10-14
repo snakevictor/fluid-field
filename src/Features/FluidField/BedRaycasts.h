@@ -75,6 +75,8 @@ namespace FluidFieldSim
 		/** @brief Counts the cached results; walks every sample, so call it for display only. */
 		Counts CountSamples() const;
 		std::size_t GetSampleCount() const { return samples.size(); }
+		/** @brief True during the fast refill after a load or teleport, until the area is resolved. */
+		bool IsRefilling() const { return burstUpdates > 0 && !idle; }
 
 	private:
 		/** @brief CPU time the rays of one update may take, so moving fast cannot blow the budget. */

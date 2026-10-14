@@ -99,7 +99,6 @@ namespace FluidFieldSim
 
 		resolution = a_resolution;
 		mapResolution = a_mapResolution;
-		mapUploaded = false;
 		Reset();
 	}
 
@@ -152,16 +151,18 @@ namespace FluidFieldSim
 		emitterSRV = nullptr;
 		resolution = 0;
 		mapResolution = 0;
-		mapUploaded = false;
 		Reset();
 	}
 
 	void ShallowWaterSolver::Reset()
 	{
-		// The forces pass starts every cell from vanilla water while history is invalid
+		// The forces pass starts every cell from vanilla water while history is invalid. The map is
+		// forgotten too: after a load it describes the previous location, and starting from it would
+		// flood or drain the grid once the new map arrives.
 		historyValid = false;
 		stepped = false;
 		hasDebugViews = false;
+		mapUploaded = false;
 	}
 
 	void ShallowWaterSolver::UploadMap(ID3D11DeviceContext* context, std::span<const float> bedAndSurface, float a_mapSpacing)

@@ -28,11 +28,12 @@ namespace FluidFieldSim
 		static uint32_t ResolutionFor(float a_gridSize);
 
 		/**
-		 * @brief Advances the current rebuild by one slice.
+		 * @brief Advances the current rebuild by one slice. A new rebuild only starts when the inputs
+		 * changed (a_inputVersion) or the player moved to another lattice point.
 		 * @return True when a rebuild just completed and GetData() holds a new map.
 		 */
 		bool Update(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays,
-			float a_centreX, float a_centreY, uint32_t a_resolution);
+			float a_centreX, float a_centreY, uint32_t a_resolution, uint64_t a_inputVersion);
 
 		void Clear();
 
@@ -44,6 +45,9 @@ namespace FluidFieldSim
 		std::vector<float> build;  ///< Map being built
 		uint32_t resolution = 0;
 		uint32_t nextRow = 0;
-		int32_t originLattice[2]{};  ///< South-west lattice point of the rebuild in progress
+		int32_t originLattice[2]{};                      ///< South-west lattice point of the rebuild in progress
+		int32_t builtOrigin[2]{ INT32_MIN, INT32_MIN };  ///< Origin of the last completed map
+		uint64_t builtVersion = 0;                       ///< Input version of the last completed map
+		uint64_t buildingVersion = 0;
 	};
 }

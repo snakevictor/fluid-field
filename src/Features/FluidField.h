@@ -126,6 +126,8 @@ private:
 	bool waterResourceFailed = false;
 	RE::NiPoint3 lastPlayerPos;
 	bool hasLastPlayerPos = false;
+	/** @brief After a reset, the water waits for a map built from this location's settled inputs. */
+	bool waterAwaitingMap = true;
 
 	/** @brief Creates the water layer's GPU resources and shaders as needed. Returns false if it cannot run. */
 	bool EnsureWater();

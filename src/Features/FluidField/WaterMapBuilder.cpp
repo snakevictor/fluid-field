@@ -27,10 +27,12 @@ namespace FluidFieldSim
 		build.clear();
 		resolution = 0;
 		nextRow = 0;
+		builtOrigin[0] = builtOrigin[1] = INT32_MIN;
+		builtVersion = 0;
 	}
 
 	bool WaterMapBuilder::Update(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays,
-		float a_centreX, float a_centreY, uint32_t a_resolution)
+		float a_centreX, float a_centreY, uint32_t a_resolution, uint64_t a_inputVersion)
 	{
 		const uint32_t n = a_resolution;
 		if (n != resolution) {
@@ -39,9 +41,15 @@ namespace FluidFieldSim
 		}
 
 		if (nextRow == 0) {
+			const int32_t originX = static_cast<int32_t>(std::round(a_centreX / MAP_SPACING)) - static_cast<int32_t>(n / 2);
+			const int32_t originY = static_cast<int32_t>(std::round(a_centreY / MAP_SPACING)) - static_cast<int32_t>(n / 2);
+			// Nothing changed since the last map: no work
+			if (!data.empty() && a_inputVersion == builtVersion && originX == builtOrigin[0] && originY == builtOrigin[1])
+				return false;
 			build.assign(static_cast<std::size_t>(n) * n * 2, 0.0f);
-			originLattice[0] = static_cast<int32_t>(std::round(a_centreX / MAP_SPACING)) - static_cast<int32_t>(n / 2);
-			originLattice[1] = static_cast<int32_t>(std::round(a_centreY / MAP_SPACING)) - static_cast<int32_t>(n / 2);
+			originLattice[0] = originX;
+			originLattice[1] = originY;
+			buildingVersion = a_inputVersion;
 		}
 
 		const uint32_t endRow = std::min(n, nextRow + std::max(1u, n / SLICES));
@@ -83,6 +91,9 @@ namespace FluidFieldSim
 			return false;
 		data.swap(build);
 		nextRow = 0;
+		builtOrigin[0] = originLattice[0];
+		builtOrigin[1] = originLattice[1];
+		builtVersion = buildingVersion;
 		return true;
 	}
 }
