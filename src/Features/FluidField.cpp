@@ -321,6 +321,16 @@ void FluidField::DrawSettings()
 
 	ImGui::Checkbox(T(TKEY("show_layer_overlay"), "Show Layer Overlay"), &showDebugOverlay);
 	ImGui::Checkbox(T(TKEY("show_waterfall_sites"), "Show Waterfall Sites"), &showFallSites);
+	{
+		bool showTurn = fallGroundDebug == 1;
+		if (ImGui::Checkbox(T(TKEY("show_waterfall_turn"), "Show Waterfall Flow Turn"), &showTurn)) {
+			fallGroundDebug = showTurn ? 1 : 0;
+			fallGroundVersion = UINT64_MAX;  // Re-upload the constants
+		}
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("%s", T(TKEY("show_waterfall_turn_tooltip"), "Tints grounded waterfalls red where rock in the way turns their flow."));
+		}
+	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("show_waterfall_sites_tooltip"), "Draws the waterfall sites found in vanilla's layout: effect meshes by class (cyan falling water, blue skirts, white mist, yellow splashes, orange rapids), each site's water levels (green top, blue bottom, teal tiers) and a label. Also prints each cell's summary to the console."));
 	}
@@ -1428,7 +1438,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	fallSites.BuildGroundMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallGroundScratch);
 	context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, fallGroundScratch.data(), FALL_GROUND_SIZE * sizeof(float), 0);
 	const FallGroundData on{ { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET, FALL_GROUND_CLING, FALL_GROUND_CONTACT,
-		FALL_FLOW_DISTANCE, FALL_FLOW_PERIOD, FALL_REACH_ABOVE, FALL_REACH_WIDTH };
+		FALL_FLOW_DISTANCE, FALL_FLOW_PERIOD, FALL_REACH_ABOVE, FALL_REACH_WIDTH, FALL_GROUND_LIFT_MOST, static_cast<uint32_t>(fallGroundDebug), {} };
 	context->UpdateSubresource(fallGroundOn.get(), 0, nullptr, &on, 0, 0);
 }
 

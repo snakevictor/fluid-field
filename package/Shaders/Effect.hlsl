@@ -782,15 +782,16 @@ PS_OUTPUT main(PS_INPUT input)
 	baseColor.w *= softMul;
 
 #	if defined(FLUID_FIELD)
-	// Fluid Field (D26): falling water softens into the rock it meets, foaming along the contact
+	// Fluid Field (D26): falling water softens where it cuts into rock, and foams where rock turns it
 	[branch] if (FallGround::Enabled)
 	{
-		float visibility, foam;
-		FallGround::Contact(input.Position.xy, input.Position.z, visibility, foam);
-		foam = saturate(foam + fallTurn * 0.5);
+		// Foam where rock in the way turns the water: along its edges and in its wake
+		const float foam = fallTurn;
 		const float brightness = dot(baseColor.rgb, 1.0 / 3.0);
 		baseColor.rgb = lerp(baseColor.rgb, max(baseColor.rgb, brightness.xxx * 1.3), foam * 0.6);
-		baseColor.w = saturate(baseColor.w + foam * 0.35) * visibility;
+		baseColor.w = saturate(baseColor.w + foam * 0.35) * FallGround::Visibility(input.Position.xy, input.Position.z);
+		if (FallGround::DebugMode == 1)
+			baseColor = float4(lerp(baseColor.rgb, float3(1, 0, 0), fallTurn), max(baseColor.w, fallTurn));
 	}
 #	endif
 

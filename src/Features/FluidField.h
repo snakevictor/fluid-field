@@ -298,18 +298,22 @@ private:
 		float FlowPeriod;
 		float ReachAbove;
 		float ReachWidth;
+		float LiftMost;
+		uint32_t DebugMode;
+		float Pad[2];
 	};
-	static_assert(sizeof(FallGroundData) == 48);
+	static_assert(sizeof(FallGroundData) == 64);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
 	static constexpr float FALL_GROUND_CELL = 16.0f;
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
-	static constexpr float FALL_GROUND_OFFSET = 4.0f;
+	static constexpr float FALL_GROUND_OFFSET = 6.0f;
 	static constexpr float FALL_GROUND_CLING = 24.0f;
-	static constexpr float FALL_GROUND_CONTACT = 48.0f;
-	static constexpr float FALL_FLOW_DISTANCE = 48.0f;  ///< World units the texture is carried round a rock per cycle
+	static constexpr float FALL_GROUND_CONTACT = 6.0f;     ///< World units over which water fades where it cuts into rock
+	static constexpr float FALL_GROUND_LIFT_MOST = 24.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
+	static constexpr float FALL_FLOW_DISTANCE = 96.0f;     ///< World units the texture is carried round a rock per cycle
 	static constexpr float FALL_FLOW_PERIOD = 1.0f;
 	static constexpr float FALL_REACH_ABOVE = 32.0f;
-	static constexpr float FALL_REACH_WIDTH = 24.0f;
+	static constexpr float FALL_REACH_WIDTH = 48.0f;
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> fallGroundSRV;
 	winrt::com_ptr<ID3D11Buffer> fallGroundOn;   ///< Constants for grounded draws
@@ -322,6 +326,7 @@ private:
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
 	void ReleaseFallGround();
 	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
+	int fallGroundDebug = 0;                                 ///< Debug: 1 tints grounded falling water red where rock turns it; not saved
 	float waterfallTime = 0.0f;                              ///< Seconds simulated, for the waterfalls' pulsing
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 
