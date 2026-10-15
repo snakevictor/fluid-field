@@ -332,16 +332,30 @@ namespace FluidFieldSim
 				continue;
 			}
 			if (site.levels.size() == 1) {
+				// Judged on the falling water's own height range: splashes, mist and parts of meshes
+				// that sit underwater would otherwise make a plunge pool look like the top
+				float fallMin = FLT_MAX;
+				float fallMax = -FLT_MAX;
+				for (const uint32_t member : site.members) {
+					if (refs[member].cls != FxClass::Body && refs[member].cls != FxClass::Skirt)
+						continue;
+					fallMin = std::min(fallMin, refs[member].min[2]);
+					fallMax = std::max(fallMax, refs[member].max[2]);
+				}
+				if (fallMin > fallMax) {
+					fallMin = site.min[2];
+					fallMax = site.max[2];
+				}
 				const float level = site.levels.front();
-				if (level - site.min[2] < 0.5f * (site.max[2] - site.min[2])) {
+				if (level - fallMin < 0.5f * (fallMax - fallMin) || level >= fallMax - RAPIDS_THRESHOLD) {
 					// The only plane is at the bottom: the meshes' top stands in for the top level
 					site.bottom = level;
-					site.top = site.max[2];
+					site.top = std::max(fallMax, level);
 					site.topFromMesh = true;
 					site.levels.insert(site.levels.begin(), site.top);
 				} else {
 					site.top = level;
-					site.bottom = site.min[2];
+					site.bottom = fallMin;
 					site.kind = Kind::NoBottom;
 					continue;
 				}
