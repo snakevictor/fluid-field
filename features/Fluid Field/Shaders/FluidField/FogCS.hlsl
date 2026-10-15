@@ -2,11 +2,11 @@
 // ground fog pass (GroundFogCS). 1 is full fog, 0 clear air.
 //
 // Each step the fog is carried along by the wind and the weather's drift and settles back over a
-// few seconds toward a resting pattern of banks and clearings. Fog is thick and slow: an actor's
-// body shoves it aside rather than clearing it, so it piles into a raised rim around them (up to
-// MaxFog, twice the resting amount) and leaves a clear patch at their feet; walking drags the
-// displaced fog along and the air they push curls it into swirls behind them. Strong stirring
-// thins it a little, mixing in clear air.
+// few seconds toward a resting pattern of banks and clearings. Fog is thick and slow, and only
+// moving actors disturb it: their bodies plough it aside, mostly ahead and to the sides, packing it
+// up (to MaxFog, twice the resting amount) along their path, and the air they push curls it into
+// swirls behind them. An actor standing still pushes nothing, so the fog flows back over its feet.
+// Strong stirring thins it a little, mixing in clear air.
 // Cells that scrolled into the grid since the last step, and every cell after a reset, start at rest.
 
 #include "FluidField/Common.hlsli"
@@ -26,10 +26,13 @@ struct Emitter
 {
 	float2 Position;  // Logical texel coordinates
 	float Radius;     // Texels, Gaussian falloff
-	float Pad0;
-	float2 Velocity;
+	float Speed;      // The actor's speed, world units per second
+	float2 Velocity;  // Wind impulse, along the actor's motion
 	float2 Pad1;
 };
+
+/** Actor speed at which the shove reaches DisplaceSpeed (a run). */
+static const float FULL_SHOVE_SPEED = 350.0;
 
 Texture2D<float2> Velocity : register(t0);
 Texture2D<float> FogIn : register(t1);
@@ -81,20 +84,28 @@ float SampleFog(float2 position)
 }
 
 /**
- * How actors' bodies shove the fog at a logical position, world units per second: outward from
- * each actor, zero at its centre, strongest around its edge and gone a little beyond, so the fog
- * clears at the feet and packs into a rim.
+ * How moving actors plough the fog at a logical position, world units per second: outward from
+ * each actor, mostly ahead of it and to its sides, scaled by its speed. Zero at its centre,
+ * strongest around its edge and gone a little beyond.
  */
 float2 Displacement(float2 position)
 {
 	float2 shove = 0.0;
 	for (uint i = 0; i < EmitterCount; i++) {
 		Emitter e = Emitters[i];
+		float push = DisplaceSpeed * saturate(e.Speed / FULL_SHOVE_SPEED);
+		float impulse = length(e.Velocity);
+		if (push <= 0.0 || impulse <= 0.0)
+			continue;
+		float2 heading = e.Velocity / impulse;
 		float2 d = position - e.Position;
 		float distance = length(d);
 		float r = max(e.Radius, 0.5);
-		// d/r * exp(-(d/r)^2) peaks at 1/sqrt(2) of the radius; scaled so the peak is DisplaceSpeed
-		shove += (d / max(distance, 1e-3)) * DisplaceSpeed * 2.33 * (distance / r) * exp(-dot(d, d) / (r * r));
+		float2 outward = d / max(distance, 1e-3);
+		// Ahead and to the sides; little behind, where the actor has already been
+		float bow = 0.25 + 0.75 * saturate(dot(outward, heading) * 0.5 + 0.6);
+		// d/r * exp(-(d/r)^2) peaks at 1/sqrt(2) of the radius; scaled so the peak is the push
+		shove += outward * push * bow * 2.33 * (distance / r) * exp(-dot(d, d) / (r * r));
 	}
 	return shove;
 }

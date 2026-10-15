@@ -18,7 +18,7 @@ namespace FluidFieldSim
 	{
 		float position[2];  ///< Logical texel coordinates (texel centres at +0.5)
 		float radius;       ///< Gaussian falloff radius in texels
-		float pad0;
+		float pad0;         ///< Unused by the wind; the fog pass reads it as the actor's speed
 		float velocity[2];  ///< World units per second, added once
 		float pad1[2];
 	};

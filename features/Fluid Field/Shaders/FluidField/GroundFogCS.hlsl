@@ -45,10 +45,15 @@ static const float PILE_RISE = 0.8;
 static const float LIFT = 0.6;
 static const float LIFT_SPEED = 150.0;
 /** World units across one wisp in the fog, and how much the wisps vary its density. */
-static const float WISP_SIZE = 140.0;
-static const float WISP_CONTRAST = 0.45;
+static const float WISP_SIZE = 70.0;
+static const float WISP_CONTRAST = 0.55;
 /** Seconds between restarts of each of the wisps' two phases as the wind carries them. */
 static const float WISP_PERIOD = 2.0;
+/** World units across one billow of the layer's top, and how much the billows raise and lower it. */
+static const float BILLOW_SIZE = 220.0;
+static const float BILLOW_HEIGHT = 0.35;
+/** How strongly the fog above a point shades it from the sky: the layer's base is darker than its top. */
+static const float SELF_SHADING = 1.0;
 /** Fastest the wisps drift, world units per second, so fast gusts do not smear them. */
 static const float WISP_MAX_DRIFT = 200.0;
 /** Ground below this is unknown land: no fog there. */
@@ -113,8 +118,8 @@ float Wisps(float3 position, float2 wind)
 	const float phase0 = frac(time);
 	const float phase1 = frac(time + 0.5);
 	const float2 uv = position.xy / WISP_SIZE + position.z / (WISP_SIZE * 1.5);
-	const float n0 = ValueNoise(uv - drift * phase0) * 0.6 + ValueNoise(uv * 2.3 - drift * phase0 * 2.3) * 0.4;
-	const float n1 = ValueNoise(uv - drift * phase1 + 7.1) * 0.6 + ValueNoise(uv * 2.3 - drift * phase1 * 2.3 + 3.7) * 0.4;
+	const float n0 = ValueNoise(uv - drift * phase0) * 0.5 + ValueNoise(uv * 2.3 - drift * phase0 * 2.3) * 0.3 + ValueNoise(uv * 5.1 - drift * phase0 * 5.1 + 1.9) * 0.2;
+	const float n1 = ValueNoise(uv - drift * phase1 + 7.1) * 0.5 + ValueNoise(uv * 2.3 - drift * phase1 * 2.3 + 3.7) * 0.3 + ValueNoise(uv * 5.1 - drift * phase1 * 5.1 + 9.2) * 0.2;
 	return lerp(n0, n1, abs(phase0 * 2.0 - 1.0));
 }
 
@@ -166,13 +171,19 @@ float HenyeyGreenstein(float cosTheta, float g)
 			continue;
 		const float2 wind = SampleWind(position.xy);
 		const float churn = saturate(length(wind) / LIFT_SPEED);
-		const float top = Thickness * lerp(0.4, 1.0, saturate(fog)) * (1.0 + PILE_RISE * saturate(fog - 1.0)) * (1.0 + LIFT * churn);
+		// Billows: the top rises and falls, drifting with the wind, so the layer is not a flat sheet
+		const float billow = Wisps(float3(position.xy * (WISP_SIZE / BILLOW_SIZE), 0.0), wind);
+		const float top = Thickness * lerp(0.4, 1.0, saturate(fog)) * (1.0 + PILE_RISE * saturate(fog - 1.0)) * (1.0 + LIFT * churn) *
+		                  lerp(1.0 - BILLOW_HEIGHT, 1.0 + BILLOW_HEIGHT, billow);
 		const float wisps = lerp(1.0 - WISP_CONTRAST, 1.0 + WISP_CONTRAST, Wisps(position, wind));
 		const float extinction = Density * fog * wisps * (1.0 - smoothstep(top * (1.0 - TOP_SOFTNESS), top, height));
 		if (extinction <= 0.0)
 			continue;
+		// Light reaching this point from above passes through the fog over it: the base is darker
+		const float above = max(top - height, 0.0);
+		const float shading = exp(-SELF_SHADING * Density * fog * above);
 		const float stepTransmittance = exp(-extinction * stepLength);
-		inscattering += transmittance * (1.0 - stepTransmittance) * light;
+		inscattering += transmittance * (1.0 - stepTransmittance) * light * shading;
 		transmittance *= stepTransmittance;
 		if (transmittance < 0.01)
 			break;
