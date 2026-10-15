@@ -33,7 +33,7 @@ namespace FluidFieldSim
 		/** @brief Speed the water runs on in the fall's direction, world units per second. */
 		constexpr float OUTFLOW_SPEED = 120.0f;
 		/** @brief Foam made per second at the plunge. */
-		constexpr float FOAM_RATE = 8.0f;
+		constexpr float FOAM_RATE = 1.5f;
 
 		std::string Lowercase(const char* a_text)
 		{
