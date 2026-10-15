@@ -275,13 +275,11 @@ void FluidField::DrawSettings()
 		ImGui::Text("%s", T(TKEY("waterfalls_tooltip"), "Waterfalls landing on the simulated water churn it, push it out and downstream, and foam it."));
 	}
 	ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Waterfall Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-	ImGui::Checkbox(T(TKEY("replace_waterfalls"), "Replace Waterfalls"), &settings.ReplaceWaterfalls);
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("replace_waterfalls_tooltip"), "Simulates the water of waterfalls in place of vanilla's: the river pours over the lip and runs down the real rock, splitting, speeding up and foaming like the rest of the water. Splashes and mist stay vanilla."));
-	}
+	ImGui::Text(T(TKEY("waterfall_sites"), "Waterfall sites: %u falls, %u cascades, %u rapids, %u no bottom, %u failed"),
+		fallSites.CountKind(FluidFieldSim::FallSites::Kind::Fall), fallSites.CountKind(FluidFieldSim::FallSites::Kind::Cascade),
+		fallSites.CountKind(FluidFieldSim::FallSites::Kind::Rapids), fallSites.CountKind(FluidFieldSim::FallSites::Kind::NoBottom),
+		fallSites.CountKind(FluidFieldSim::FallSites::Kind::Failed));
 	ImGui::Text(T(TKEY("waterfalls_found"), "Waterfalls driving the water: %u"), static_cast<uint32_t>(waterfalls.GetFalls().size()));
-	ImGui::Text(T(TKEY("fall_bed_stats"), "Fall areas: %u; rock points cast: %u (hit %u), queued: %u"), static_cast<uint32_t>(fallBed.GetAreas().size()),
-		static_cast<uint32_t>(fallBed.GetSampleCount()), static_cast<uint32_t>(fallBed.CountHits()), static_cast<uint32_t>(fallBed.GetPendingCount()));
 	ImGui::SliderFloat(T(TKEY("water_tint"), "Water Tint"), &settings.WaterTint, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("water_tint_tooltip"), "Tints what is seen through all water with the water's own colour, deepening with depth, as it looks from underwater. 0 keeps vanilla's clear look."));
@@ -313,6 +311,10 @@ void FluidField::DrawSettings()
 	}
 
 	ImGui::Checkbox(T(TKEY("show_layer_overlay"), "Show Layer Overlay"), &showDebugOverlay);
+	ImGui::Checkbox(T(TKEY("show_waterfall_sites"), "Show Waterfall Sites"), &showFallSites);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("show_waterfall_sites_tooltip"), "Draws the waterfall sites found in vanilla's layout: effect meshes by class (cyan falling water, blue skirts, white mist, yellow splashes, orange rapids), each site's water levels (green top, blue bottom, teal tiers) and a label. Also prints each cell's summary to the console."));
+	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("show_layer_overlay_tooltip"), "Draws every simulation layer on screen, north up, centred on the player. Not saved."));
 	}
@@ -327,7 +329,9 @@ void FluidField::DrawSettings()
 
 void FluidField::DrawOverlay()
 {
-	if (!IsOverlayVisible())
+	if (showFallSites && loaded && settings.Enabled)
+		fallSites.DrawDebug(ImGui::GetBackgroundDrawList(), FALL_SITES_DEBUG_RANGE);
+	if (!(showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews))
 		return;
 
 	const float uiScale = Util::GetUIScale();
@@ -445,7 +449,7 @@ void FluidField::DrawOverlay()
 
 bool FluidField::IsOverlayVisible() const
 {
-	return showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews;
+	return (showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews) || (showFallSites && settings.Enabled);
 }
 
 #undef I18N_KEY_PREFIX
@@ -523,7 +527,6 @@ void FluidField::ClearShaderCache()
 	shaderCompileFailed = false;
 	groundFogCS = nullptr;
 	groundFogFailed = false;
-	simSurface.ReleaseShaders();
 	nearWater.solver.ReleaseShaders();
 	waterShaderFailed = false;
 }
@@ -835,18 +838,13 @@ void FluidField::Prepass()
 		if (settings.Waterfalls) {
 			// Waterfalls over the whole simulated area, far level included
 			const float simulated = 0.5f * (settings.FarWater ? settings.WaterSize * settings.FarWaterScale : settings.WaterSize);
-			waterfalls.Update(water, playerPos.x, playerPos.y, simulated, settings.ReplaceWaterfalls);
-			// The rock under the replaced falls, mapped a little each frame (D24)
-			if (settings.ReplaceWaterfalls) {
-				fallBed.SetAreas(waterfalls.GetAreas());
-				fallBed.CastPending(FALL_BED_BUDGET_MS);
-			} else {
-				fallBed.Clear();
-			}
+			waterfalls.Update(water, playerPos.x, playerPos.y, simulated);
+			// Waterfall sites reconstructed from vanilla's layout (D25)
+			fallSites.SetConsoleSummary(showFallSites);
+			fallSites.Update(water);
 		} else {
-			waterfalls.RestoreBodies();
 			waterfalls.Clear();
-			fallBed.Clear();
+			fallSites.Clear();
 		}
 	} else {
 		ReleaseWater();
@@ -917,10 +915,9 @@ void FluidField::ReleaseWater()
 	}
 	wakeSources.Clear();
 	vanillaFoam.RestoreAll();
-	waterfalls.RestoreBodies();
 	waterfalls.Clear();
+	fallSites.Clear();
 	fallBed.Clear();
-	simSurface.Release();
 	waterShaderData = {};
 }
 
@@ -1065,23 +1062,6 @@ void FluidField::DrawGroundFogAfterWorld()
 	auto* renderer = globals::game::renderer;
 	if (!renderer)
 		return;
-
-	// The simulated water off vanilla's planes (D24), such as the falls, before the ground fog
-	if (settings.WaterEnabled && settings.Waterfalls && settings.ReplaceWaterfalls && fallBed.GetSRV() && nearWater.solver.HasMap() && cameraSnapshot) {
-		const auto& shadow = globals::game::shadowState->GetRuntimeData();
-		const auto colorIndex = static_cast<uint32_t>(shadow.renderTargets[0]);
-		const auto depthIndex = shadow.depthStencil;
-		if (colorIndex < RE::RENDER_TARGET::kTOTAL && depthIndex < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
-			auto& target = renderer->GetRuntimeData().renderTargets[colorIndex];
-			auto& depth = renderer->GetDepthStencilData().depthStencils[depthIndex];
-			const FluidFieldSim::SimSurfaceRenderer::Level level{ { nearWater.gridMin[0], nearWater.gridMin[1] }, settings.WaterResolution, GetWaterCellSize(),
-				nearWater.solver.GetDepthSRV(), nearWater.solver.GetCellMapSRV(), nearWater.solver.GetFlowSRV(), fallBed.GetSRV() };
-			globals::profiler->BeginPass("FluidField::Simulated Water Surface");
-			simSurface.Draw(globals::d3d::device, globals::d3d::context, target.texture, target.RTV, depth.readOnlyViews[0], cameraSnapshot.get(), globals::state->sharedDataCB->CB(),
-				globals::state->featureDataCB->CB(), level, fallBed.GetAreas(), waterfallTime, SIM_SURFACE_BRIGHTNESS);
-			globals::profiler->EndPass();
-		}
-	}
 
 	if (!settings.InteractiveFog || !fogReady)
 		return;
@@ -1302,11 +1282,6 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 		params.seedGridMin[1] = farWater.gridMin[1];
 		params.seedRes = settings.WaterResolution;
 		params.seedCellSize = settings.WaterSize * settings.FarWaterScale / static_cast<float>(settings.WaterResolution);
-	}
-	// The rock under the replaced falls (D24), near level only
-	if (a_near && settings.Waterfalls && settings.ReplaceWaterfalls && !fallBed.GetAreas().empty()) {
-		if (fallBed.Upload(globals::d3d::device, a_context, a_gridMin, a_resolution, a_cellSize))
-			params.fallBed = fallBed.GetSRV();
 	}
 	// River currents from Unified Water's flowmap; the test current when there is none
 	RE::NiPointer<RE::NiSourceTexture> flowmapTexture;

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "FallBed.h"
 #include "ShallowWaterSolver.h"
 
 #include <cstdint>
@@ -32,16 +31,8 @@ namespace FluidFieldSim
 			float direction[2]{};  ///< Horizontal direction it falls toward (unit length), or zero
 		};
 
-		/**
-		 * @brief Rescans the loaded waterfalls around a point every few updates.
-		 * @param a_replace Hide vanilla's bodies and simulate their water instead (D24).
-		 */
-		void Update(const WaterSurfaces& a_water, float a_centreX, float a_centreY, float a_halfSize, bool a_replace);
-
-		/** @brief The areas of the falls being replaced, for mapping the rock under them (D24). */
-		const std::vector<FallBed::Area>& GetAreas() const { return areas; }
-		/** @brief Shows vanilla's hidden bodies again. */
-		void RestoreBodies();
+		/** @brief Rescans the loaded waterfalls around a point every few updates. */
+		void Update(const WaterSurfaces& a_water, float a_centreX, float a_centreY, float a_halfSize);
 
 		/**
 		 * @brief This step's emitters for one water level, in its logical texel coordinates.
@@ -65,8 +56,6 @@ namespace FluidFieldSim
 			float lowest = 0.0f;  ///< Lowest point of the body, world units
 			float lip[3]{};       ///< Centre of the top edge, where the water leaves the lip
 			float lipWidth = 0.0f;
-			RE::ObjectRefHandle handle;
-			bool hidden = false;
 		};
 
 		/** @brief Updates between scans of the loaded references. */
@@ -75,15 +64,6 @@ namespace FluidFieldSim
 		static constexpr std::size_t MAX_FALLS = 6;
 
 		static bool ReadBody(RE::TESObjectREFR& a_ref, Body& a_body);
-		std::vector<FallBed::Area> areas;
-		/** @brief Where each replaced fall's water starts (D24): lip centre, width and direction. */
-		struct Lip
-		{
-			float position[3];
-			float width;
-			float direction[2];
-		};
-		std::vector<Lip> lips;
 
 		std::unordered_map<uint32_t, Body> bodies;  ///< Keyed by form ID
 		std::vector<Fall> falls;

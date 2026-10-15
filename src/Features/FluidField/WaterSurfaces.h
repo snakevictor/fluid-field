@@ -70,6 +70,20 @@ namespace FluidFieldSim
 		 */
 		Source SampleHeight(float a_worldX, float a_worldY, float& a_height, float& a_flowScale) const;
 
+		/** @brief A water plane overlapping a query box: its footprint and height. */
+		struct Plane
+		{
+			float minX, minY, maxX, maxY;
+			float height;
+			Source source;
+		};
+
+		/**
+		 * @brief Every water plane overlapping a world box: water objects, and the water of each loaded
+		 * cell the box touches (an interior's water covers everything).
+		 */
+		void CollectPlanes(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<Plane>& a_planes) const;
+
 		std::size_t GetSurfaceCount() const { return surfaces.size(); }
 		uint32_t GetSlopedCount() const { return slopedCount; }
 		std::size_t GetCellWaterCount() const { return cellWater.size(); }

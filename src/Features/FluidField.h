@@ -4,11 +4,11 @@
 #include "FluidField/BedRaycasts.h"
 #include "FluidField/DepthMapView.h"
 #include "FluidField/FallBed.h"
+#include "FluidField/FallSites.h"
 #include "FluidField/GroundHeightMap.h"
 #include "FluidField/LandscapeCache.h"
 #include "FluidField/MeshCut.h"
 #include "FluidField/ShallowWaterSolver.h"
-#include "FluidField/SimSurfaceRenderer.h"
 #include "FluidField/VanillaFoam.h"
 #include "FluidField/WakeSources.h"
 #include "FluidField/WaterMapBuilder.h"
@@ -216,11 +216,11 @@ private:
 	static constexpr float FOG_GROUND_CELL = 16.0f;
 	/** @brief Fog drift at the weather's full wind speed, world units per second. */
 	static constexpr float MAX_WEATHER_DRIFT = 150.0f;
+	/** @brief Distance within which the waterfall sites' debug view is drawn, world units. */
+	static constexpr float FALL_SITES_DEBUG_RANGE = 12000.0f;
 	/** @brief The far water level's foam: a fraction of the near level's, and its most per cell. */
 	static constexpr float FAR_FOAM_SCALE = 0.25f;
 	static constexpr float FAR_FOAM_MAX = 0.5f;
-	/** @brief How brightly the simulated water's reflection and white water are lit (as the ground fog). */
-	static constexpr float SIM_SURFACE_BRIGHTNESS = 0.2f;
 	/** @brief Time per frame for mapping the rock under waterfalls, milliseconds. */
 	static constexpr double FALL_BED_BUDGET_MS = 0.4;
 	/** @brief Substep length of the warm-up, as the regular step's shortest substep. */
@@ -277,8 +277,9 @@ public:
 private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
 	FluidFieldSim::WaterfallSources waterfalls;
+	FluidFieldSim::FallSites fallSites;
+	bool showFallSites = false;  ///< Debug: draws the waterfall sites (D25) in the world; not saved
 	FluidFieldSim::FallBed fallBed;
-	FluidFieldSim::SimSurfaceRenderer simSurface;
 	float waterfallTime = 0.0f;                              ///< Seconds simulated, for the waterfalls' pulsing
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 

@@ -32,15 +32,7 @@ namespace FluidFieldSim
 		constexpr float RADIAL_SPEED = 110.0f;
 		/** @brief Speed the water runs on in the fall's direction, world units per second. */
 		constexpr float OUTFLOW_SPEED = 60.0f;
-		/** @brief A fall's area reaches this far beyond its lip, its plunge and its sides, world units. */
-		constexpr float AREA_MARGIN = 160.0f;
-		/** @brief Rays over a fall's area start this far above its lip and reach this far below its lowest point. */
-		constexpr float AREA_ABOVE = 160.0f;
-		constexpr float AREA_BELOW = 512.0f;
 
-		/** @brief Depth added per second at a replaced fall's lip, and the speed the water leaves it at (D24). */
-		constexpr float LIP_DEPTH_RATE = 20.0f;
-		constexpr float LIP_SPEED = 150.0f;
 		/** @brief Foam made per second at the plunge. */
 		constexpr float FOAM_RATE = 0.6f;
 
@@ -181,24 +173,7 @@ namespace FluidFieldSim
 		return true;
 	}
 
-	void WaterfallSources::RestoreBodies()
-	{
-		bool changed = false;
-		for (auto& [formID, body] : bodies) {
-			if (!body.hidden)
-				continue;
-			if (const auto ref = body.handle.get(); ref && ref->Get3D())
-				ref->Get3D()->SetAppCulled(false);
-			body.hidden = false;
-			changed = true;
-		}
-		if (!areas.empty() || changed) {
-			areas.clear();
-			lips.clear();
-		}
-	}
-
-	void WaterfallSources::Update(const WaterSurfaces& a_water, float a_centreX, float a_centreY, float a_halfSize, bool a_replace)
+	void WaterfallSources::Update(const WaterSurfaces& a_water, float a_centreX, float a_centreY, float a_halfSize)
 	{
 		if (updatesUntilScan > 0) {
 			updatesUntilScan--;
@@ -216,7 +191,6 @@ namespace FluidFieldSim
 			float distance;
 		};
 		std::vector<Landing> landings;
-		std::vector<uint32_t> seenBodies;
 		const auto visitCell = [&](RE::TESObjectCELL* a_cell, bool a_requireAttached) {
 			if (!a_cell || (a_requireAttached && !a_cell->IsAttached()))
 				return;
@@ -234,9 +208,7 @@ namespace FluidFieldSim
 					bodies.erase(it);
 					return RE::BSContainer::ForEachResult::kContinue;
 				}
-				Body& body = it->second;
-				body.handle = a_ref->GetHandle();
-				seenBodies.push_back(a_ref->GetFormID());
+				const Body& body = it->second;
 				if (std::abs(body.plunge[0] - a_centreX) > a_halfSize || std::abs(body.plunge[1] - a_centreY) > a_halfSize)
 					return RE::BSContainer::ForEachResult::kContinue;
 
@@ -318,59 +290,6 @@ namespace FluidFieldSim
 			else
 				++it;
 		}
-
-		// Replace the bodies in the area with simulated water (D24): hide vanilla's, and map the rock
-		// under each so the water runs down it
-		if (!a_replace) {
-			RestoreBodies();
-			return;
-		}
-		areas.clear();
-		lips.clear();
-		for (const uint32_t formID : seenBodies) {
-			auto it = bodies.find(formID);
-			if (it == bodies.end())
-				continue;
-			Body& body = it->second;
-			FallBed::Area area{};
-			area.min[0] = std::min(body.lip[0], body.plunge[0]) - 0.5f * body.lipWidth - AREA_MARGIN;
-			area.min[1] = std::min(body.lip[1], body.plunge[1]) - 0.5f * body.lipWidth - AREA_MARGIN;
-			area.max[0] = std::max(body.lip[0], body.plunge[0]) + 0.5f * body.lipWidth + AREA_MARGIN;
-			area.max[1] = std::max(body.lip[1], body.plunge[1]) + 0.5f * body.lipWidth + AREA_MARGIN;
-			area.top = body.lip[2] + AREA_ABOVE;
-			area.bottom = body.lowest - AREA_BELOW;
-			areas.push_back(area);
-			lips.push_back({ { body.lip[0], body.lip[1], body.lip[2] }, body.lipWidth, { body.direction[0], body.direction[1] } });
-			if (const auto ref = body.handle.get(); ref && ref->Get3D()) {
-				// Hidden again after every reload of its 3D
-				ref->Get3D()->SetAppCulled(true);
-				body.hidden = true;
-			}
-		}
-		// A wide fall is several overlapping meshes: overlapping areas become one
-		for (bool merged = true; merged;) {
-			merged = false;
-			for (std::size_t i = 0; i < areas.size() && !merged; i++) {
-				for (std::size_t j = i + 1; j < areas.size(); j++) {
-					auto& a = areas[i];
-					const auto& b = areas[j];
-					if (a.min[0] > b.max[0] || b.min[0] > a.max[0] || a.min[1] > b.max[1] || b.min[1] > a.max[1])
-						continue;
-					a.min[0] = std::min(a.min[0], b.min[0]);
-					a.min[1] = std::min(a.min[1], b.min[1]);
-					a.max[0] = std::max(a.max[0], b.max[0]);
-					a.max[1] = std::max(a.max[1], b.max[1]);
-					a.top = std::max(a.top, b.top);
-					a.bottom = std::min(a.bottom, b.bottom);
-					areas.erase(areas.begin() + static_cast<std::ptrdiff_t>(j));
-					merged = true;
-					break;
-				}
-			}
-		}
-		std::sort(areas.begin(), areas.end(), [](const FallBed::Area& a, const FallBed::Area& b) {
-			return a.min[0] != b.min[0] ? a.min[0] < b.min[0] : a.min[1] < b.min[1];
-		});
 	}
 
 	void WaterfallSources::AppendEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_time,
@@ -378,23 +297,6 @@ namespace FluidFieldSim
 	{
 		if (a_strength <= 0.0f || !(a_cellSize > 0.0f))
 			return;
-
-		// The replaced falls' water starts at their lips (D24): vanilla's river often ends short of
-		// the lip, its slope meshes covering the gap, so each lip is a source that may wet dry rock
-		// and pushes the water over the edge. Lips before plunges, which the falls' own water now feeds.
-		// Near level only (a_foam): the rock under the falls is mapped there
-		for (const auto& lip : lips) {
-			if (!a_foam || a_emitters.size() >= a_maxEmitters)
-				break;
-			const float texel[2] = { lip.position[0] / a_cellSize - static_cast<float>(a_gridMin[0]), lip.position[1] / a_cellSize - static_cast<float>(a_gridMin[1]) };
-			if (texel[0] < 0.0f || texel[1] < 0.0f || texel[0] >= static_cast<float>(a_gridRes) || texel[1] >= static_cast<float>(a_gridRes))
-				continue;
-			a_emitters.push_back({ .position = { texel[0], texel[1] },
-				.radius = std::max(0.5f * lip.width / a_cellSize, 1.5f),
-				.depthRate = LIP_DEPTH_RATE * a_strength,
-				.velocity = { lip.direction[0] * LIP_SPEED, lip.direction[1] * LIP_SPEED },
-				.pad1 = { -1.0f, 0.0f } });  // Negative radial speed: a source
-		}
 
 		for (std::size_t i = 0; i < falls.size() && a_emitters.size() < a_maxEmitters; i++) {
 			const auto& fall = falls[i];

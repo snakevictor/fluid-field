@@ -1,0 +1,421 @@
+#include "FallSites.h"
+
+#include "EngineGrid.h"
+#include "WaterSurfaces.h"
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cmath>
+#include <format>
+#include <numeric>
+
+namespace FluidFieldSim
+{
+	namespace
+	{
+		std::string Lowercase(const char* a_text)
+		{
+			std::string result(a_text ? a_text : "");
+			std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			return result;
+		}
+
+		const char* ModelOf(const RE::TESBoundObject* a_base)
+		{
+			const auto* model = a_base ? a_base->As<RE::TESModel>() : nullptr;
+			return model ? model->GetModel() : nullptr;
+		}
+
+		/** @brief Classifies an effect model path; false when it is not a waterfall or rapids effect. */
+		bool Classify(const char* a_model, FallSites::FxClass& a_class)
+		{
+			const std::string model = Lowercase(a_model);
+			if (model.find("effects\\") == std::string::npos)
+				return false;
+			// Ambient fish leaping in waterfalls are not water
+			if (model.find("salmon") != std::string::npos)
+				return false;
+			const auto has = [&](const char* a_part) { return model.find(a_part) != std::string::npos; };
+			if (has("waterfallbody") || has("waterfallthin") || has("waterfalltall") || has("waterwall"))
+				a_class = FallSites::FxClass::Body;
+			else if (has("waterfallskirt"))
+				a_class = FallSites::FxClass::Skirt;
+			else if (has("rapids"))
+				a_class = FallSites::FxClass::Rapids;
+			else if (has("splash") || has("churn"))
+				a_class = FallSites::FxClass::Splash;
+			else if ((has("waterfall") && has("mist")) || has("mistblast"))
+				a_class = FallSites::FxClass::Mist;
+			else
+				return false;
+			return true;
+		}
+
+		/** @brief World bounds of a reference: its bound box's corners through its 3D's transform. */
+		bool WorldBounds(RE::TESObjectREFR& a_ref, float a_min[3], float a_max[3])
+		{
+			auto* root = a_ref.Get3D();
+			if (!root)
+				return false;
+			const auto boundMin = a_ref.GetBoundMin();
+			const auto boundMax = a_ref.GetBoundMax();
+			for (int k = 0; k < 3; k++) {
+				a_min[k] = FLT_MAX;
+				a_max[k] = -FLT_MAX;
+			}
+			for (int corner = 0; corner < 8; corner++) {
+				const RE::NiPoint3 local((corner & 1) ? boundMax.x : boundMin.x, (corner & 2) ? boundMax.y : boundMin.y, (corner & 4) ? boundMax.z : boundMin.z);
+				const RE::NiPoint3 world = root->world * local;
+				const float p[3] = { world.x, world.y, world.z };
+				for (int k = 0; k < 3; k++) {
+					a_min[k] = std::min(a_min[k], p[k]);
+					a_max[k] = std::max(a_max[k], p[k]);
+				}
+			}
+			return true;
+		}
+
+		/** @brief Gap between two boxes (0 where they overlap), the largest of the three axes. */
+		float BoxGap(const float a_minA[3], const float a_maxA[3], const float a_minB[3], const float a_maxB[3])
+		{
+			float gap = 0.0f;
+			for (int k = 0; k < 3; k++)
+				gap = std::max(gap, std::max(a_minA[k] - a_maxB[k], a_minB[k] - a_maxA[k]));
+			return gap;
+		}
+
+		const char* KindName(FallSites::Kind a_kind)
+		{
+			switch (a_kind) {
+			case FallSites::Kind::Fall:
+				return "fall";
+			case FallSites::Kind::Cascade:
+				return "cascade";
+			case FallSites::Kind::Rapids:
+				return "rapids";
+			case FallSites::Kind::NoBottom:
+				return "no bottom";
+			default:
+				return "failed";
+			}
+		}
+
+		RE::NiCamera* PlayerCamera()
+		{
+			auto* playerCamera = RE::PlayerCamera::GetSingleton();
+			if (!playerCamera || !playerCamera->cameraRoot)
+				return nullptr;
+			for (auto& child : playerCamera->cameraRoot->GetChildren()) {
+				if (auto* camera = netimmerse_cast<RE::NiCamera*>(child.get()))
+					return camera;
+			}
+			return nullptr;
+		}
+	}
+
+	void FallSites::Clear()
+	{
+		refs.clear();
+		sites.clear();
+		refSignature = 0;
+		waterSignature = 0;
+		updatesUntilScan = 0;
+		cellSummaries.clear();
+	}
+
+	uint32_t FallSites::CountKind(Kind a_kind) const
+	{
+		return static_cast<uint32_t>(std::count_if(sites.begin(), sites.end(), [&](const Site& a_site) { return a_site.kind == a_kind; }));
+	}
+
+	void FallSites::Update(const WaterSurfaces& a_water)
+	{
+		if (updatesUntilScan > 0) {
+			updatesUntilScan--;
+			return;
+		}
+		updatesUntilScan = SCAN_INTERVAL;
+
+		// S1, inventory
+		auto* tes = RE::TES::GetSingleton();
+		if (!tes)
+			return;
+		std::vector<FxRef> found;
+		const auto visitCell = [&](RE::TESObjectCELL* a_cell, bool a_requireAttached) {
+			if (!a_cell || (a_requireAttached && !a_cell->IsAttached()))
+				return;
+			a_cell->ForEachReference([&](RE::TESObjectREFR* a_ref) {
+				if (!a_ref || a_ref->IsDisabled() || a_ref->IsDeleted() || !a_ref->Get3D())
+					return RE::BSContainer::ForEachResult::kContinue;
+				FxClass cls;
+				if (!Classify(ModelOf(a_ref->GetBaseObject()), cls))
+					return RE::BSContainer::ForEachResult::kContinue;
+				FxRef ref{ a_ref->GetFormID(), cls, {}, {} };
+				if (WorldBounds(*a_ref, ref.min, ref.max))
+					found.push_back(ref);
+				return RE::BSContainer::ForEachResult::kContinue;
+			});
+		};
+		if (tes->interiorCell) {
+			visitCell(tes->interiorCell, true);
+		} else if (auto* grid = tes->gridCells) {
+			for (uint32_t gx = 0; gx < grid->length; gx++) {
+				for (uint32_t gy = 0; gy < grid->length; gy++)
+					visitCell(GetGridCell(grid, gx, gy), true);
+			}
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (auto* worldspace = player ? player->GetWorldspace() : nullptr)
+				visitCell(worldspace->persistentCell, false);
+		}
+		std::sort(found.begin(), found.end(), [](const FxRef& a, const FxRef& b) { return a.formID < b.formID; });
+
+		uint64_t signature = found.size();
+		for (const auto& ref : found)
+			signature = signature * 1099511628211ull ^ ref.formID;
+		if (signature == refSignature && a_water.GetSignature() == waterSignature)
+			return;
+		refSignature = signature;
+		waterSignature = a_water.GetSignature();
+		refs.swap(found);
+		Rebuild(a_water);
+		Summarise();
+	}
+
+	void FallSites::Rebuild(const WaterSurfaces& a_water)
+	{
+		sites.clear();
+		const std::size_t n = refs.size();
+
+		// S2, clustering: union-find over references within CLUSTER_RADIUS of each other
+		std::vector<std::size_t> parent(n);
+		std::iota(parent.begin(), parent.end(), std::size_t{ 0 });
+		const auto find = [&](std::size_t a_i) {
+			while (parent[a_i] != a_i) {
+				parent[a_i] = parent[parent[a_i]];
+				a_i = parent[a_i];
+			}
+			return a_i;
+		};
+		for (std::size_t i = 0; i < n; i++) {
+			for (std::size_t j = i + 1; j < n; j++) {
+				if (BoxGap(refs[i].min, refs[i].max, refs[j].min, refs[j].max) <= CLUSTER_RADIUS)
+					parent[find(i)] = find(j);
+			}
+		}
+		std::unordered_map<std::size_t, std::size_t> siteOf;
+		for (std::size_t i = 0; i < n; i++) {
+			const std::size_t root = find(i);
+			auto [it, added] = siteOf.try_emplace(root, sites.size());
+			if (added) {
+				Site site{};
+				site.id = static_cast<uint32_t>(sites.size());
+				for (int k = 0; k < 3; k++) {
+					site.min[k] = FLT_MAX;
+					site.max[k] = -FLT_MAX;
+				}
+				sites.push_back(site);
+			}
+			Site& site = sites[it->second];
+			site.members.push_back(static_cast<uint32_t>(i));
+			site.classCounts[static_cast<int>(refs[i].cls)]++;
+			for (int k = 0; k < 3; k++) {
+				site.min[k] = std::min(site.min[k], refs[i].min[k]);
+				site.max[k] = std::max(site.max[k], refs[i].max[k]);
+			}
+		}
+
+		// S3, level pairing and tiers
+		std::vector<WaterSurfaces::Plane> planes;
+		for (auto& site : sites) {
+			for (int k = 0; k < 3; k++)
+				site.centroid[k] = 0.5f * (site.min[k] + site.max[k]);
+			planes.clear();
+			a_water.CollectPlanes(site.min[0] - PAIR_MARGIN, site.min[1] - PAIR_MARGIN, site.max[0] + PAIR_MARGIN, site.max[1] + PAIR_MARGIN, planes);
+			std::vector<float> heights;
+			for (const auto& plane : planes) {
+				if (plane.height >= site.min[2] - NEAR_LEVEL && plane.height <= site.max[2] + NEAR_LEVEL)
+					heights.push_back(plane.height);
+			}
+			std::sort(heights.begin(), heights.end(), std::greater<float>());
+			for (const float height : heights) {
+				if (site.levels.empty() || site.levels.back() - height > LEVEL_TOLERANCE)
+					site.levels.push_back(height);
+			}
+
+			const bool hasFallMeshes = site.classCounts[static_cast<int>(FxClass::Body)] > 0 || site.classCounts[static_cast<int>(FxClass::Skirt)] > 0;
+			if (site.levels.empty()) {
+				site.kind = Kind::Failed;
+				site.failure = "S3: no water plane";
+				continue;
+			}
+			if (site.levels.size() == 1) {
+				const float level = site.levels.front();
+				if (level - site.min[2] < 0.5f * (site.max[2] - site.min[2])) {
+					// The only plane is at the bottom: the meshes' top stands in for the top level
+					site.bottom = level;
+					site.top = site.max[2];
+					site.topFromMesh = true;
+					site.levels.insert(site.levels.begin(), site.top);
+				} else {
+					site.top = level;
+					site.bottom = site.min[2];
+					site.kind = Kind::NoBottom;
+					continue;
+				}
+			} else {
+				site.top = site.levels.front();
+				site.bottom = site.levels.back();
+			}
+			const float drop = site.top - site.bottom;
+			if (drop < RAPIDS_THRESHOLD || !hasFallMeshes)
+				site.kind = Kind::Rapids;
+			else
+				site.kind = site.levels.size() > 2 ? Kind::Cascade : Kind::Fall;
+		}
+	}
+
+	void FallSites::Summarise()
+	{
+		// One line per cell (by each site's centroid), logged when it changes
+		struct Counts
+		{
+			uint32_t sites = 0, falls = 0, cascades = 0, rapids = 0, noBottom = 0, failed = 0;
+			std::string failures;
+		};
+		std::unordered_map<uint64_t, Counts> perCell;
+		std::unordered_map<uint64_t, std::pair<int32_t, int32_t>> coordinates;
+		for (const auto& site : sites) {
+			const auto cx = static_cast<int32_t>(std::floor(site.centroid[0] / 4096.0f));
+			const auto cy = static_cast<int32_t>(std::floor(site.centroid[1] / 4096.0f));
+			const uint64_t key = MakeCellKey(cx, cy);
+			coordinates[key] = { cx, cy };
+			auto& counts = perCell[key];
+			counts.sites++;
+			switch (site.kind) {
+			case Kind::Fall:
+				counts.falls++;
+				break;
+			case Kind::Cascade:
+				counts.cascades++;
+				break;
+			case Kind::Rapids:
+				counts.rapids++;
+				break;
+			case Kind::NoBottom:
+				counts.noBottom++;
+				break;
+			default:
+				counts.failed++;
+				counts.failures += std::format(" #{}({})", site.id, site.failure ? site.failure : "?");
+				break;
+			}
+		}
+		for (const auto& [key, counts] : perCell) {
+			const auto [cx, cy] = coordinates[key];
+			std::string line = std::format("[Fluid Field] Waterfall sites in cell ({}, {}): {} sites, {} falls, {} cascades, {} rapids, {} no bottom, {} failed{}",
+				cx, cy, counts.sites, counts.falls, counts.cascades, counts.rapids, counts.noBottom, counts.failed, counts.failures);
+			auto& last = cellSummaries[key];
+			if (last == line)
+				continue;
+			last = line;
+			logger::info("{}", line);
+			if (consoleSummary) {
+				if (auto* console = RE::ConsoleLog::GetSingleton())
+					console->Print("%s", line.c_str());
+			}
+		}
+	}
+
+	void FallSites::DrawDebug(ImDrawList* a_drawList, float a_range) const
+	{
+		auto* camera = PlayerCamera();
+		if (!camera || !a_drawList)
+			return;
+		const ImVec2 display = ImGui::GetIO().DisplaySize;
+		const RE::NiPoint3 eye = camera->world.translate;
+
+		const auto project = [&](float a_x, float a_y, float a_z, ImVec2& a_screen) {
+			float sx, sy, sz;
+			if (!camera->WorldPtToScreenPt3(RE::NiPoint3(a_x, a_y, a_z), sx, sy, sz, 1e-5f) || sz <= 0.0f)
+				return false;
+			a_screen = ImVec2(sx * display.x, (1.0f - sy) * display.y);
+			return true;
+		};
+		const auto line = [&](const float a[3], const float b[3], ImU32 a_color, float a_thickness) {
+			ImVec2 pa, pb;
+			if (project(a[0], a[1], a[2], pa) && project(b[0], b[1], b[2], pb))
+				a_drawList->AddLine(pa, pb, a_color, a_thickness);
+		};
+		const auto box = [&](const float a_min[3], const float a_max[3], ImU32 a_color) {
+			float c[8][3];
+			for (int i = 0; i < 8; i++) {
+				c[i][0] = (i & 1) ? a_max[0] : a_min[0];
+				c[i][1] = (i & 2) ? a_max[1] : a_min[1];
+				c[i][2] = (i & 4) ? a_max[2] : a_min[2];
+			}
+			static constexpr int EDGES[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+			for (const auto& e : EDGES)
+				line(c[e[0]], c[e[1]], a_color, 1.5f);
+		};
+		const auto rectangle = [&](float a_minX, float a_minY, float a_maxX, float a_maxY, float a_z, ImU32 a_fill, ImU32 a_outline) {
+			ImVec2 p[4];
+			if (!project(a_minX, a_minY, a_z, p[0]) || !project(a_maxX, a_minY, a_z, p[1]) || !project(a_maxX, a_maxY, a_z, p[2]) || !project(a_minX, a_maxY, a_z, p[3]))
+				return;
+			a_drawList->AddConvexPolyFilled(p, 4, a_fill);
+			a_drawList->AddPolyline(p, 4, a_outline, ImDrawFlags_Closed, 2.0f);
+		};
+
+		static constexpr std::array<ImU32, static_cast<int>(FxClass::Count)> CLASS_COLORS = {
+			IM_COL32(80, 220, 255, 255),   // Body: cyan
+			IM_COL32(60, 120, 255, 255),   // Skirt: blue
+			IM_COL32(230, 230, 230, 255),  // Mist: white
+			IM_COL32(255, 230, 60, 255),   // Splash: yellow
+			IM_COL32(255, 150, 40, 255)    // Rapids: orange
+		};
+		const auto kindColor = [](Kind a_kind) -> ImU32 {
+			switch (a_kind) {
+			case Kind::Fall:
+				return IM_COL32(80, 255, 120, 255);
+			case Kind::Cascade:
+				return IM_COL32(80, 255, 220, 255);
+			case Kind::Rapids:
+				return IM_COL32(255, 160, 60, 255);
+			case Kind::NoBottom:
+				return IM_COL32(255, 80, 255, 255);
+			default:
+				return IM_COL32(255, 60, 60, 255);
+			}
+		};
+
+		for (const auto& site : sites) {
+			const float dx = site.centroid[0] - eye.x;
+			const float dy = site.centroid[1] - eye.y;
+			if (dx * dx + dy * dy > a_range * a_range)
+				continue;
+			for (const uint32_t member : site.members) {
+				const auto& ref = refs[member];
+				box(ref.min, ref.max, CLASS_COLORS[static_cast<int>(ref.cls)]);
+			}
+			// Levels: the top green, the bottom blue, tiers between teal; translucent over the footprint
+			for (std::size_t i = 0; i < site.levels.size(); i++) {
+				const bool isTop = i == 0;
+				const bool isBottom = i + 1 == site.levels.size();
+				const ImU32 outline = isTop ? IM_COL32(80, 255, 120, 230) : isBottom ? IM_COL32(80, 140, 255, 230) :
+				                                                                       IM_COL32(80, 230, 210, 230);
+				const ImU32 fill = isTop ? IM_COL32(80, 255, 120, 40) : isBottom ? IM_COL32(80, 140, 255, 40) :
+				                                                                   IM_COL32(80, 230, 210, 40);
+				rectangle(site.min[0], site.min[1], site.max[0], site.max[1], site.levels[i], fill, outline);
+			}
+			ImVec2 label;
+			if (project(site.centroid[0], site.centroid[1], site.max[2] + 64.0f, label)) {
+				std::string text = std::format("#{} {}  drop {:.0f}  levels {}{}  refs {}", site.id, KindName(site.kind), site.top - site.bottom,
+					site.levels.size(), site.topFromMesh ? " (top from mesh)" : "", site.members.size());
+				if (site.kind == Kind::Failed && site.failure)
+					text += std::format("  [{}]", site.failure);
+				a_drawList->AddText(ImVec2(label.x + 1, label.y + 1), IM_COL32(0, 0, 0, 220), text.c_str());
+				a_drawList->AddText(label, kindColor(site.kind), text.c_str());
+			}
+		}
+	}
+}

@@ -24,10 +24,6 @@ Texture2D<float2> CellMapIn : register(t2);
 StructuredBuffer<Emitter> Emitters : register(t3);
 
 static const float BED_CHANGE_THRESHOLD = 2.0;
-/** World units of depth per second that drain from water running off vanilla's planes in a fall area. */
-static const float FALL_DRAIN = 4.0;
-/** Deepest water running off vanilla's planes in a fall area: a sheet over the rock, not a pond. */
-static const float MAX_FALL_DEPTH = 24.0;
 
 RWTexture2D<float> DepthOut : register(u0);
 RWTexture2D<float2> VelocityOut : register(u1);
@@ -125,13 +121,6 @@ float2 StirVelocity(float2 worldPos)
 	float detailBed;
 	if (ObstacleRes > 0 && LoadObstacle(worldPos, detailBed))
 		bed = detailBed;
-	// Under waterfalls the rock is mapped by rays (D24): the water runs over its surface. The rays
-	// see the rock's real top, so they replace the bed there; the water-line cut would wall the river
-	// off from the fall where the lip's rock crosses its water plane.
-	const float fallBed = FallBedEnabled != 0 ? FallBed[id] : NO_FALL_BED * 2.0;
-	const bool inFall = fallBed > NO_FALL_BED;
-	if (inFall)
-		bed = fallBed;
 	float vanillaDepth = HasWater(map.y) ? max(map.y - bed, 0.0) : 0.0;
 	CellMapOut[id] = float2(bed, vanillaDepth);
 
@@ -158,16 +147,10 @@ float2 StirVelocity(float2 worldPos)
 		}
 	}
 
-	{
+	if (depth > WetThreshold) {
 		float2 position = float2(logical) + 0.5;
-		const bool wet = depth > WetThreshold;
 		for (uint i = 0; i < EmitterCount; i++) {
 			Emitter e = Emitters[i];
-			// A source (a waterfall's lip, D24; marked by a negative radial speed) may start water on
-			// dry rock; every other emitter acts only on water
-			const bool source = e.RadialSpeed < 0.0 && e.DepthRate > 0.0;
-			if (!wet && !source)
-				continue;
 			float2 d = position - e.Position;
 			float w = exp(-dot(d, d) / (e.Radius * e.Radius));
 			// Outward from the centre, strongest around its edge (a plunge spreading out)
@@ -196,13 +179,7 @@ float2 StirVelocity(float2 worldPos)
 	}
 
 	velocity = lerp(velocity, restVelocity, saturate(CurrentRelax * DeltaTime));
-	if (inFall && !vanillaWet) {
-		// Falling water off vanilla's planes is the simulation's own: it runs on by gravity and only
-		// thin films drain away, instead of being pulled back to dry
-		depth = min(max(depth - FALL_DRAIN * DeltaTime, 0.0), MAX_FALL_DEPTH);
-	} else {
-		depth = lerp(depth, vanillaDepth, saturate(LevelRelax * DeltaTime));
-	}
+	depth = lerp(depth, vanillaDepth, saturate(LevelRelax * DeltaTime));
 
 	// Absorbing border: the pull toward calm vanilla water grows quadratically toward the edge and is
 	// a per-second rate, so waves fade into it instead of bouncing off an abrupt change

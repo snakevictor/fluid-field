@@ -161,6 +161,30 @@ namespace FluidFieldSim
 		return Source::None;
 	}
 
+	void WaterSurfaces::CollectPlanes(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<Plane>& a_planes) const
+	{
+		for (const auto& surface : surfaces) {
+			if (surface.maxX < a_minX || surface.minX > a_maxX || surface.maxY < a_minY || surface.minY > a_maxY)
+				continue;
+			a_planes.push_back({ surface.minX, surface.minY, surface.maxX, surface.maxY, surface.height, Source::WaterObject });
+		}
+		if (hasInteriorWater) {
+			a_planes.push_back({ a_minX, a_minY, a_maxX, a_maxY, interiorWater, Source::CellWater });
+			return;
+		}
+		constexpr float CELL = 4096.0f;
+		const auto x0 = static_cast<int32_t>(std::floor(a_minX / CELL));
+		const auto y0 = static_cast<int32_t>(std::floor(a_minY / CELL));
+		const auto x1 = static_cast<int32_t>(std::floor(a_maxX / CELL));
+		const auto y1 = static_cast<int32_t>(std::floor(a_maxY / CELL));
+		for (int32_t y = y0; y <= y1; y++) {
+			for (int32_t x = x0; x <= x1; x++) {
+				if (const auto it = cellWater.find(MakeCellKey(x, y)); it != cellWater.end())
+					a_planes.push_back({ x * CELL, y * CELL, (x + 1) * CELL, (y + 1) * CELL, it->second, Source::CellWater });
+			}
+		}
+	}
+
 	void WaterSurfaces::Verify()
 	{
 		auto tes = RE::TES::GetSingleton();

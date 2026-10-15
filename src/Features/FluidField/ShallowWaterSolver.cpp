@@ -15,8 +15,7 @@ namespace FluidFieldSim
 		constexpr std::uint32_t MAX_SRVS = 4;    // t0..t3; the map sits at t4, fine detail at t5, the flowmap at t6
 		constexpr std::uint32_t MAP_SLOT = 4;
 		constexpr std::uint32_t BOUND_SRVS = 8;
-		constexpr std::uint32_t FOAM_SLOT = 7;      // The foam pass reads last step's foam here
-		constexpr std::uint32_t FALL_BED_SLOT = 9;  // Rock under waterfalls (D24), for the forces pass
+		constexpr std::uint32_t FOAM_SLOT = 7;  // The foam pass reads last step's foam here
 		constexpr std::uint32_t MAX_UAVS = 3;
 
 		ID3D11ShaderResourceView* const NULL_SRVS[BOUND_SRVS] = {};
@@ -262,12 +261,9 @@ namespace FluidFieldSim
 			.foamMax = params.foamMax,
 			.seedGridMin = { params.seedGridMin[0], params.seedGridMin[1] },
 			.seedRes = params.seedFoam ? params.seedRes : 0u,
-			.seedCellSize = params.seedCellSize,
-			.fallBedEnabled = params.fallBed ? 1u : 0u,
-			.pad2 = {}
+			.seedCellSize = params.seedCellSize
 		};
 		seedFoamSRV = params.seedFoam;
-		fallBedSRV = params.fallBed;
 		UpdateBuffer(context, waterConstants.get(), &waterData, sizeof(waterData));
 
 		if (emitterCount > 0)
@@ -285,14 +281,12 @@ namespace FluidFieldSim
 			ClearObstacles(context);
 		ID3D11ShaderResourceView* mapSRVs[] = { map.srv.get(), obstacles.srv.get(), params.flowmap };
 		context->CSSetShaderResources(MAP_SLOT, 3, mapSRVs);
-		context->CSSetShaderResources(FALL_BED_SLOT, 1, &fallBedSRV);
 	}
 
 	void ShallowWaterSolver::EndStep(ID3D11DeviceContext* context)
 	{
 		ID3D11Buffer* nullCBs[2] = {};
 		context->CSSetShaderResources(0, BOUND_SRVS, NULL_SRVS);
-		context->CSSetShaderResources(FALL_BED_SLOT, 1, NULL_SRVS);
 		context->CSSetUnorderedAccessViews(0, MAX_UAVS, NULL_UAVS, nullptr);
 		context->CSSetConstantBuffers(0, 2, nullCBs);
 		context->CSSetShader(nullptr, nullptr, 0);
