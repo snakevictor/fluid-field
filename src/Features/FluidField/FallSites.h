@@ -50,6 +50,7 @@ namespace FluidFieldSim
 			float min[3];  ///< World bounds
 			float max[3];
 			std::vector<std::array<float, 2>> topEdge;  ///< Its vertices within TOP_EDGE of its top, across: where its water goes over
+			float bottomCentre[2];                      ///< Across, the middle of its vertices within TOP_EDGE of its bottom: where its water goes
 		};
 
 		enum class Kind : uint8_t

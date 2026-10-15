@@ -21,7 +21,8 @@ namespace FluidFieldSim
 	 * the edge the water falls from. Gorge walls, boulders and banks above deep pools pass that test
 	 * too, so a lip must also lie within FALL_NEAR of the top edge of one of vanilla's falling-water
 	 * meshes whose top is near the level: the mesh says roughly where water goes over, the ground says
-	 * exactly. Chained into
+	 * exactly. A falling-water mesh no lip lies by (one starting from flowing water, with no level of
+	 * its own) gets its top edge as a lip, at its top, facing toward its bottom. Chained into
 	 * polylines; runs shorter than MIN_LIP are dropped. Each point carries the outward (downhill)
 	 * direction.
 	 *
@@ -88,6 +89,7 @@ namespace FluidFieldSim
 			float level;
 			std::vector<LipPoint> points;
 			float length;
+			bool fromMesh = false;  ///< A falling-water mesh's top edge, not found on the ground
 		};
 		/** @brief For the debug view: a piece of a level's shoreline (the ground's contour at the level), or of a lip. */
 		struct Edge
@@ -110,6 +112,7 @@ namespace FluidFieldSim
 		{
 			std::vector<std::array<float, 2>> edge;
 			float top;
+			float bottomCentre[2];  ///< Across, where its water goes
 		};
 
 		/** @brief Extracts the lips at each of a_levels (once complete), near the falling water in a_falls. */

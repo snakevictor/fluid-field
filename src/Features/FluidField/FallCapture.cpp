@@ -378,6 +378,84 @@ namespace FluidFieldSim
 				lips.push_back(std::move(lip));
 			}
 		}
+
+		// Falling water with no lip on the ground: its own top edge is the lip
+		constexpr float BIN = 16.0f;
+		for (std::size_t f = 0; f < a_falls.size(); f++) {
+			const auto& fall = a_falls[f];
+			if (fallsWithLips[f] || fall.edge.empty())
+				continue;
+			// The edge's run: its principal direction across
+			float centre[2] = { 0.0f, 0.0f };
+			for (const auto& vertex : fall.edge) {
+				centre[0] += vertex[0];
+				centre[1] += vertex[1];
+			}
+			centre[0] /= static_cast<float>(fall.edge.size());
+			centre[1] /= static_cast<float>(fall.edge.size());
+			float sxx = 0.0f, sxy = 0.0f, syy = 0.0f;
+			for (const auto& vertex : fall.edge) {
+				const float dx = vertex[0] - centre[0];
+				const float dy = vertex[1] - centre[1];
+				sxx += dx * dx;
+				sxy += dx * dy;
+				syy += dy * dy;
+			}
+			const float angle = 0.5f * std::atan2(2.0f * sxy, sxx - syy);
+			const float axis[2] = { std::cos(angle), std::sin(angle) };
+			// Outward: across the run, toward where the mesh's water goes
+			float normal[2] = { -axis[1], axis[0] };
+			if ((fall.bottomCentre[0] - centre[0]) * normal[0] + (fall.bottomCentre[1] - centre[1]) * normal[1] < 0.0f) {
+				normal[0] = -normal[0];
+				normal[1] = -normal[1];
+			}
+			// The vertices binned along the run, each bin's middle a lip point
+			float lo = FLT_MAX, hi = -FLT_MAX;
+			for (const auto& vertex : fall.edge) {
+				const float t = (vertex[0] - centre[0]) * axis[0] + (vertex[1] - centre[1]) * axis[1];
+				lo = std::min(lo, t);
+				hi = std::max(hi, t);
+			}
+			// Even a thin stream gets a lip as wide as one stream either side of its middle
+			if (hi - lo < 2.0f * BIN) {
+				const float middle = 0.5f * (lo + hi);
+				lo = middle - BIN;
+				hi = middle + BIN;
+			}
+			const auto bins = static_cast<uint32_t>(std::ceil((hi - lo) / BIN)) + 1;
+			std::vector<float> across(bins, 0.0f), count(bins, 0.0f);
+			for (const auto& vertex : fall.edge) {
+				const float dx = vertex[0] - centre[0];
+				const float dy = vertex[1] - centre[1];
+				const float t = dx * axis[0] + dy * axis[1];
+				const auto bin = std::min(bins - 1, static_cast<uint32_t>(std::max(0.0f, (t - lo) / BIN)));
+				across[bin] += dx * normal[0] + dy * normal[1];
+				count[bin] += 1.0f;
+			}
+			Lip lip{ fall.top, {}, 0.0f, true };
+			float lastOffset = 0.0f;
+			for (uint32_t bin = 0; bin < bins; bin++) {
+				// Bins with no vertex keep the offset of the last that had one
+				const float offset = count[bin] > 0.0f ? across[bin] / count[bin] : lastOffset;
+				lastOffset = offset;
+				const float t = std::min(lo + static_cast<float>(bin) * BIN, hi);
+				LipPoint point{ { centre[0] + axis[0] * t + normal[0] * offset, centre[1] + axis[1] * t + normal[1] * offset, fall.top }, { normal[0], normal[1] } };
+				if (!lip.points.empty()) {
+					const auto& last = lip.points.back().position;
+					lip.length += std::hypot(point.position[0] - last[0], point.position[1] - last[1]);
+				}
+				lip.points.push_back(point);
+			}
+			if (lip.points.size() < 2)
+				continue;
+			fallsWithLips[f] = true;
+			for (std::size_t i = 1; i < lip.points.size(); i++) {
+				const auto& a = lip.points[i - 1].position;
+				const auto& b = lip.points[i].position;
+				edges.push_back({ { a[0], a[1] }, { b[0], b[1] }, fall.top, true });
+			}
+			lips.push_back(std::move(lip));
+		}
 	}
 
 	void FallCapture::TraceStreams(const std::vector<float>& a_levels)

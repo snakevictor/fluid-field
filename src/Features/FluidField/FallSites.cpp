@@ -61,7 +61,7 @@ namespace FluidFieldSim
 		 * huge bounds for their particles (a skirt's is thousands of units tall), so their bound box is no
 		 * use; references without triangles get a small box around their position.
 		 */
-		bool WorldBounds(RE::TESObjectREFR& a_ref, float a_min[3], float a_max[3], std::vector<std::array<float, 2>>& a_topEdge)
+		bool WorldBounds(RE::TESObjectREFR& a_ref, float a_min[3], float a_max[3], std::vector<std::array<float, 2>>& a_topEdge, float a_bottomCentre[2])
 		{
 			auto* root = a_ref.Get3D();
 			if (!root)
@@ -107,10 +107,19 @@ namespace FluidFieldSim
 			}
 			// The top edge: the vertices where the falling water goes over
 			a_topEdge.clear();
+			float bottomSum[2] = { 0.0f, 0.0f };
+			uint32_t bottomCount = 0;
 			for (const auto& point : points) {
 				if (point.z >= a_max[2] - FallSites::TOP_EDGE)
 					a_topEdge.push_back({ point.x, point.y });
+				if (point.z <= a_min[2] + FallSites::TOP_EDGE) {
+					bottomSum[0] += point.x;
+					bottomSum[1] += point.y;
+					bottomCount++;
+				}
 			}
+			a_bottomCentre[0] = bottomCount ? bottomSum[0] / static_cast<float>(bottomCount) : 0.5f * (a_min[0] + a_max[0]);
+			a_bottomCentre[1] = bottomCount ? bottomSum[1] / static_cast<float>(bottomCount) : 0.5f * (a_min[1] + a_max[1]);
 			return true;
 		}
 
@@ -208,7 +217,7 @@ namespace FluidFieldSim
 			for (const uint32_t member : site.members) {
 				const auto& ref = refs[member];
 				if (ref.cls == FxClass::Body)
-					falls.push_back({ ref.topEdge, ref.max[2] });
+					falls.push_back({ ref.topEdge, ref.max[2], { ref.bottomCentre[0], ref.bottomCentre[1] } });
 			}
 			capture.ExtractLips(LipLevels(site), falls);
 			capture.TraceStreams(LipLevels(site));
@@ -219,7 +228,7 @@ namespace FluidFieldSim
 			}
 			std::string lips;
 			for (const auto& lip : capture.GetLips())
-				lips += std::format(" {:.0f}:{:.0f}u/{}pt", lip.level, lip.length, lip.points.size());
+				lips += std::format(" {:.0f}:{:.0f}u/{}pt{}", lip.level, lip.length, lip.points.size(), lip.fromMesh ? "(mesh)" : "");
 			logger::info("[Fluid Field] Waterfall site #{} ground captured: {}x{} at {:.0f}, {:.0f}, {} holes left; {} lips (level:length/points){}", site.id,
 				capture.GetWidth(), capture.GetHeight(), capture.GetOriginX(), capture.GetOriginY(), holes, capture.GetLips().size(), lips);
 			const uint32_t* ends = capture.GetStreamEnds();
@@ -286,8 +295,8 @@ namespace FluidFieldSim
 				FxClass cls;
 				if (!Classify(ModelOf(a_ref->GetBaseObject()), cls))
 					return RE::BSContainer::ForEachResult::kContinue;
-				FxRef ref{ a_ref->GetFormID(), cls, {}, {}, {} };
-				if (WorldBounds(*a_ref, ref.min, ref.max, ref.topEdge))
+				FxRef ref{ a_ref->GetFormID(), cls, {}, {}, {}, {} };
+				if (WorldBounds(*a_ref, ref.min, ref.max, ref.topEdge, ref.bottomCentre))
 					found.push_back(ref);
 				return RE::BSContainer::ForEachResult::kContinue;
 			});
