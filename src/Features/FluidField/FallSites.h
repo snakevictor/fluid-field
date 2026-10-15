@@ -1,5 +1,7 @@
 #pragma once
 
+#include "FallCapture.h"
+
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -22,8 +24,9 @@ namespace FluidFieldSim
 	 * RAPIDS_CLUSTER_RADIUS (rivers are lined with them, so a wider radius links whole gorges). S3, pairing: the water planes around a
 	 * site give its levels; the highest near its top is the top level, the lowest near its bottom the
 	 * bottom level, and more than two distinct heights make a cascade of tiers. A drop under
-	 * RAPIDS_THRESHOLD is rapids. Rebuilt when the loaded references or water change. Runs on the
-	 * main thread.
+	 * RAPIDS_THRESHOLD is rapids. Rebuilt when the loaded references or water change. S4 and S5 (the
+	 * ground under each fall, cascade and fall without a bottom, and its lips) are FallCapture's, cast
+	 * a little every update and kept while the site stays the same. Runs on the main thread.
 	 */
 	class FallSites
 	{
@@ -81,6 +84,7 @@ namespace FluidFieldSim
 			bool topFromMesh = false;  ///< No plane near the top: the top of the meshes stands in
 			Kind kind = Kind::Failed;
 			const char* failure = nullptr;  ///< Why, when Failed: "S3: no water plane", ...
+			uint64_t captureKey = 0;        ///< Its FallCapture, when it has a drop to capture
 		};
 
 		/** @brief Rescans every few updates; rebuilds the sites when the references or water changed. */
@@ -89,6 +93,10 @@ namespace FluidFieldSim
 
 		const std::vector<FxRef>& GetRefs() const { return refs; }
 		const std::vector<Site>& GetSites() const { return sites; }
+		/** @brief A site's ground capture and lips; null for rapids and failed sites. */
+		const FallCapture* GetCapture(const Site& a_site) const;
+		/** @brief Counts for the menu: captures complete and in all, and lips found. */
+		void CountCaptures(uint32_t& a_complete, uint32_t& a_total, uint32_t& a_lips) const;
 
 		/** @brief Counts for the menu: sites by kind. */
 		uint32_t CountKind(Kind a_kind) const;
@@ -109,12 +117,16 @@ namespace FluidFieldSim
 		static constexpr float NEAR_LEVEL_ABOVE = 64.0f;  ///< How far above its falling water's top a plane may lie and still pair
 		static constexpr float LEVEL_TOLERANCE = 16.0f;
 		static constexpr float RAPIDS_THRESHOLD = 64.0f;
+		static constexpr double CAPTURE_BUDGET_MS = 1.0;  ///< Ray casting per update
 
 	private:
 		static constexpr uint32_t SCAN_INTERVAL = 60;
 
 		void Rebuild(const WaterSurfaces& a_water);
 		void Summarise();
+		void CaptureStep();
+		/** @brief The levels a site's lips are found at: its levels, and the ground it ends on when it has no bottom. */
+		static std::vector<float> LipLevels(const Site& a_site);
 
 		std::vector<FxRef> refs;
 		std::vector<Site> sites;
@@ -123,5 +135,6 @@ namespace FluidFieldSim
 		uint32_t updatesUntilScan = 0;
 		bool consoleSummary = false;
 		std::unordered_map<uint64_t, std::string> cellSummaries;  ///< Last summary logged per cell
+		std::unordered_map<uint64_t, FallCapture> captures;       ///< By Site::captureKey
 	};
 }

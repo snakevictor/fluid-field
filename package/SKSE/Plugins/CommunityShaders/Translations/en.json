@@ -997,6 +997,7 @@
     "feature.fluid_field.water_tint": "Water Tint",
     "feature.fluid_field.water_tint_tooltip": "Tints what is seen through all water with the water's own colour, deepening with depth, as it looks from underwater. 0 keeps vanilla's clear look.",
     "feature.fluid_field.water_verify_result": "Water checked %u times: error %.2f units, plane vs bound %.2f (%u of %u samples missed)",
+    "feature.fluid_field.waterfall_captures": "Waterfall ground captured: %u of %u, %u lips",
     "feature.fluid_field.waterfall_sites": "Waterfall sites: %u falls, %u cascades, %u rapids, %u no bottom, %u failed",
     "feature.fluid_field.waterfall_strength": "Waterfall Strength",
     "feature.fluid_field.waterfalls": "Waterfalls",

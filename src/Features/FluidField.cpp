@@ -279,6 +279,11 @@ void FluidField::DrawSettings()
 		fallSites.CountKind(FluidFieldSim::FallSites::Kind::Fall), fallSites.CountKind(FluidFieldSim::FallSites::Kind::Cascade),
 		fallSites.CountKind(FluidFieldSim::FallSites::Kind::Rapids), fallSites.CountKind(FluidFieldSim::FallSites::Kind::NoBottom),
 		fallSites.CountKind(FluidFieldSim::FallSites::Kind::Failed));
+	{
+		uint32_t captured, captures, lips;
+		fallSites.CountCaptures(captured, captures, lips);
+		ImGui::Text(T(TKEY("waterfall_captures"), "Waterfall ground captured: %u of %u, %u lips"), captured, captures, lips);
+	}
 	ImGui::Text(T(TKEY("waterfalls_found"), "Waterfalls driving the water: %u"), static_cast<uint32_t>(waterfalls.GetFalls().size()));
 	ImGui::SliderFloat(T(TKEY("water_tint"), "Water Tint"), &settings.WaterTint, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
