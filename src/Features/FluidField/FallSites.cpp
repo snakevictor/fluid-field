@@ -166,6 +166,8 @@ namespace FluidFieldSim
 		ShowAll();
 		sheets.clear();
 		sheetVersion++;
+		grounded.clear();
+		groundVersion++;
 		refs.clear();
 		sites.clear();
 		refSignature = 0;
@@ -541,6 +543,32 @@ namespace FluidFieldSim
 		RefreshSheets();
 	}
 
+	void FallSites::BuildGroundMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const
+	{
+		a_heights.assign(static_cast<std::size_t>(a_size) * a_size, FallCapture::NONE);
+		for (const auto& [key, capture] : captures) {
+			if (!capture.IsComplete())
+				continue;
+			const float minX = capture.GetOriginX();
+			const float minY = capture.GetOriginY();
+			const float maxX = minX + static_cast<float>(capture.GetWidth() - 1) * FallCapture::CELL;
+			const float maxY = minY + static_cast<float>(capture.GetHeight() - 1) * FallCapture::CELL;
+			const auto x0 = std::max(0, static_cast<int32_t>(std::ceil((minX - a_originX) / a_cell)));
+			const auto y0 = std::max(0, static_cast<int32_t>(std::ceil((minY - a_originY) / a_cell)));
+			const auto x1 = std::min(static_cast<int32_t>(a_size) - 1, static_cast<int32_t>(std::floor((maxX - a_originX) / a_cell)));
+			const auto y1 = std::min(static_cast<int32_t>(a_size) - 1, static_cast<int32_t>(std::floor((maxY - a_originY) / a_cell)));
+			for (int32_t y = y0; y <= y1; y++) {
+				for (int32_t x = x0; x <= x1; x++) {
+					float height;
+					if (!capture.Sample(a_originX + static_cast<float>(x) * a_cell, a_originY + static_cast<float>(y) * a_cell, height))
+						continue;
+					float& stored = a_heights[static_cast<std::size_t>(y) * a_size + x];
+					stored = std::max(stored, height);
+				}
+			}
+		}
+	}
+
 	void FallSites::ShowAll()
 	{
 		for (auto& [formID, root] : hidden) {
@@ -571,6 +599,27 @@ namespace FluidFieldSim
 			}
 		}
 		sheetVersion++;
+
+		// D26: the falling-water meshes of every site with captured ground are grounded on it
+		grounded.clear();
+		for (const auto& site : sites) {
+			const FallCapture* capture = GetCapture(site);
+			if (!capture || !capture->IsComplete())
+				continue;
+			for (const uint32_t member : site.members) {
+				if (refs[member].cls != FxClass::Body)
+					continue;
+				auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refs[member].formID);
+				auto* root = ref ? ref->Get3D() : nullptr;
+				if (!root)
+					continue;
+				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+					grounded.insert(a_geometry);
+					return RE::BSVisit::BSVisitControl::kContinue;
+				});
+			}
+		}
+		groundVersion++;
 
 		// S10: hide what is replaced, show again what no longer is
 		for (auto it = hidden.begin(); it != hidden.end();) {

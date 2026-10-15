@@ -14,6 +14,7 @@
 #include "Util.h"
 
 #include "Features/Effects11.h"
+#include "Features/FluidField.h"
 #include "Features/HDRDisplay.h"
 #include "Features/InteriorSun.h"
 #include "Features/LightLimitFix.h"
@@ -246,6 +247,8 @@ namespace EffectExtensions
 			ExternalEmittance::UpdatePermutation(pass);
 			globals::state->UpdateEffectShaderPermutation(pass);
 			globals::state->permutationData.EffectRadius = pass->geometry->worldBound.radius;
+			if (globals::features::fluidField.loaded)
+				globals::features::fluidField.SetupEffectGeometry(pass);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};

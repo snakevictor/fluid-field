@@ -432,12 +432,23 @@ namespace FluidFieldSim
 				across[bin] += dx * normal[0] + dy * normal[1];
 				count[bin] += 1.0f;
 			}
-			Lip lip{ fall.top, {}, 0.0f, true };
+			// Each bin's offset across the run; bins with no vertex keep the last that had one
+			std::vector<float> offsets(bins, 0.0f);
 			float lastOffset = 0.0f;
 			for (uint32_t bin = 0; bin < bins; bin++) {
-				// Bins with no vertex keep the offset of the last that had one
-				const float offset = count[bin] > 0.0f ? across[bin] / count[bin] : lastOffset;
-				lastOffset = offset;
+				offsets[bin] = count[bin] > 0.0f ? across[bin] / count[bin] : lastOffset;
+				lastOffset = offsets[bin];
+			}
+			// Smoothed twice over neighbours: a sloped mesh's top is a band, not a line
+			for (int pass = 0; pass < 2; pass++) {
+				std::vector<float> smoothed(bins);
+				for (uint32_t bin = 0; bin < bins; bin++)
+					smoothed[bin] = (offsets[bin > 0 ? bin - 1 : bin] + 2.0f * offsets[bin] + offsets[std::min(bin + 1, bins - 1)]) * 0.25f;
+				offsets.swap(smoothed);
+			}
+			Lip lip{ fall.top, {}, 0.0f, true };
+			for (uint32_t bin = 0; bin < bins; bin++) {
+				const float offset = offsets[bin];
 				const float t = std::min(lo + static_cast<float>(bin) * BIN, hi);
 				LipPoint point{ { centre[0] + axis[0] * t + normal[0] * offset, centre[1] + axis[1] * t + normal[1] * offset, fall.top }, { normal[0], normal[1] } };
 				if (!lip.points.empty()) {
@@ -478,6 +489,8 @@ namespace FluidFieldSim
 		};
 		std::vector<PathPoint> path;
 		std::vector<float> lengths;
+		uint32_t previousSample = UINT32_MAX;
+		const Lip* previousLip = nullptr;
 
 		for (const auto& lip : lips) {
 			if (lip.points.size() < 2)
@@ -607,6 +620,24 @@ namespace FluidFieldSim
 				if (total < 1.0f)
 					continue;
 				const float across = 2.0f * static_cast<float>(sample) / static_cast<float>(count - 1) - 1.0f;
+				// Along the lip, toward the next sample: the way its next neighbour lies
+				float tangent[2] = { pb.position[0] - pa.position[0], pb.position[1] - pa.position[1] };
+				const float tangentLength = std::hypot(tangent[0], tangent[1]);
+				if (tangentLength > 1e-3f) {
+					tangent[0] /= tangentLength;
+					tangent[1] /= tangentLength;
+				} else {
+					tangent[0] = -normal[1];
+					tangent[1] = normal[0];
+				}
+				// Linked with the stream before it when that was the previous sample on this lip
+				const bool linked = previousSample + 1 == sample && previousLip == &lip && streams.size() >= STREAM_ROWS;
+				if (linked) {
+					for (std::size_t i = streams.size() - STREAM_ROWS; i < streams.size(); i++)
+						streams[i].links |= STREAM_LINK_NEXT;
+				}
+				previousSample = sample;
+				previousLip = &lip;
 				std::size_t at = 0;
 				for (uint32_t row = 0; row < STREAM_ROWS; row++) {
 					const float along = static_cast<float>(row) / static_cast<float>(STREAM_ROWS - 1);
@@ -621,12 +652,12 @@ namespace FluidFieldSim
 					for (int k = 0; k < 3; k++)
 						point.position[k] = a.position[k] + (b.position[k] - a.position[k]) * f;
 					point.along = along;
-					// Across the stream: along the lip, so the ribbons side by side make one sheet
-					point.side[0] = -normal[1];
-					point.side[1] = normal[0];
+					point.side[0] = tangent[0];
+					point.side[1] = tangent[1];
 					point.speed = a.speed + (b.speed - a.speed) * f;
-					// Overlapping its neighbours, spreading a little as it falls
-					point.halfWidth = spacing * (0.65f + 0.35f * along);
+					// An unlinked side reaches half way to where a neighbour would be
+					point.halfWidth = spacing * 0.5f;
+					point.links = linked ? STREAM_LINK_PREVIOUS : 0u;
 					point.across = across;
 					point.onRock = a.onRock + (b.onRock - a.onRock) * f;
 					point.travelTime = a.time + (b.time - a.time) * f;

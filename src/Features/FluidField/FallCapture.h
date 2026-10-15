@@ -31,7 +31,8 @@ namespace FluidFieldSim
 	 * against the captured ground. Where it meets rock it slides, accelerated down the slope and slowed
 	 * by friction, and falls free again where the rock drops away faster than it would fall. It ends in
 	 * water at a lower level, when it stalls, or when it leaves the capture. Each path is resampled to
-	 * STREAM_ROWS points by length, for drawing as a ribbon.
+	 * STREAM_ROWS points by length. Neighbouring streams on a lip are linked, so they draw as one sheet
+	 * between them (split where they part); a stream's unlinked side reaches half the spacing out.
 	 */
 	class FallCapture
 	{
@@ -54,7 +55,7 @@ namespace FluidFieldSim
 		static constexpr float STREAM_SPACING = 16.0f;
 		static constexpr uint32_t STREAM_ROWS = 32;
 		static constexpr float MIN_STREAM_DROP = 32.0f;  ///< Shorter paths are not drawn
-		static constexpr float ROCK_FRICTION = 1.5f;     ///< Speed lost on rock, per second, as a fraction
+		static constexpr float ROCK_FRICTION = 0.25f;    ///< Speed lost on rock, per second, as a fraction
 		static constexpr float ROCK_OFFSET = 3.0f;       ///< How far above the rock sliding water runs
 		static constexpr float STALL_SPEED = 20.0f;
 
@@ -69,8 +70,10 @@ namespace FluidFieldSim
 			float across;      ///< -1 at one end of its lip to 1 at the other
 			float onRock;      ///< 1 where it slides on rock
 			float travelTime;  ///< Seconds from the lip
-			float pad;
+			uint32_t links;    ///< STREAM_LINK_NEXT, STREAM_LINK_PREVIOUS: its neighbours on the lip, next and previous in the buffer
 		};
+		static constexpr uint32_t STREAM_LINK_NEXT = 1;
+		static constexpr uint32_t STREAM_LINK_PREVIOUS = 2;
 		static_assert(sizeof(StreamPoint) == 48);
 		/** @brief How a stream ended. */
 		enum class StreamEnd : uint8_t

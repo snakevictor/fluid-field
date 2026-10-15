@@ -569,3 +569,26 @@ Entry format:
     spread over the rock; tuning could not fix that.
 -   Decided by: @Victor ("Yeah go on full speed ahead")
 -   References: D22, D23, D24, `plans/waterfall-replacement.md`
+
+## D26: Keep vanilla's waterfall meshes and ground them on the captured rock
+
+-   Date: 2026-10-15
+-   Phase / spike: D25 follow-up; replaces D25's sheet drawing (S7, S10)
+-   Decision: Vanilla's falling-water meshes stay, with their authored
+    textures and scrolling. D25's capture (S4) feeds a world-space ground map;
+    CS's effect shader, under `FLUID_FIELD` and only for draws FluidField
+    flags as a grounded falling-water mesh (BSEffectShader SetupGeometry,
+    constants at b13, ground at t120), bends their vertices onto the rock
+    (out of rock sideways off steep faces, else up; eased down where they
+    hover just above it), and softens them into the rock with foam along the
+    contact using the post-z-prepass depth copy (t121). Next: blending where
+    two falling-water meshes meet, then a surface simulation in each mesh's
+    texture space driving its flow and vertices.
+-   Alternatives rejected: D25's own traced sheets (ribbons per stream): they
+    read as flat paper with combs at the lips and strands across the rock;
+    shading invented from scratch looks painted next to vanilla's authored
+    falls. Kept behind Replace Waterfalls (off by default) as an experiment.
+-   Decided by: @Victor ("why cant we base it off the existing meshes but add
+    some grounding to it?"; "if we can get those water meshes to interact
+    with cliffs/rocks and with each other, we're golden")
+-   References: D25, `plans/waterfall-replacement.md`

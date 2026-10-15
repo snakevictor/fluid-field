@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 struct ImDrawList;
@@ -112,6 +113,20 @@ namespace FluidFieldSim
 		uint64_t GetSheetVersion() const { return sheetVersion; }
 		uint32_t GetHiddenCount() const { return static_cast<uint32_t>(hidden.size()); }
 
+		/**
+		 * @brief Grounding (D26): whether a geometry is part of a vanilla falling-water mesh at a site
+		 * whose ground is captured. Its vertices are then bent onto the rock in the effect shader.
+		 * Pointers are compared only, never followed.
+		 */
+		bool IsGrounded(const RE::BSGeometry* a_geometry) const { return grounded.contains(a_geometry); }
+		/** @brief Changes whenever the captured ground or the grounded meshes change. */
+		uint64_t GetGroundVersion() const { return groundVersion; }
+		/**
+		 * @brief The captured ground of every site, sampled every a_cell units over a_size x a_size texels
+		 * from a_origin (world); FallCapture::NONE where none is captured.
+		 */
+		void BuildGroundMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const;
+
 		/** @brief Counts for the menu: sites by kind. */
 		uint32_t CountKind(Kind a_kind) const;
 
@@ -158,5 +173,7 @@ namespace FluidFieldSim
 		uint64_t sheetVersion = 0;
 		bool replace = false;
 		std::unordered_map<uint32_t, RE::NiPointer<RE::NiAVObject>> hidden;  ///< Vanilla falling water hidden, by form ID: the 3D culled
+		std::unordered_set<const RE::BSGeometry*> grounded;
+		uint64_t groundVersion = 0;
 	};
 }

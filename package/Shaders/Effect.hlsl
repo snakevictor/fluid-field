@@ -7,6 +7,9 @@
 #include "Common/Random.hlsli"
 #include "Common/SharedData.hlsli"
 #include "Common/Skinned.hlsli"
+#if defined(FLUID_FIELD)
+#	include "FluidField/FallGround.hlsli"
+#endif
 #define EFFECT
 
 #if defined(SOFT) && defined(NORMALS) && defined(TEXTURE) && defined(FALLOFF) && defined(VC) && \
@@ -205,6 +208,17 @@ VS_OUTPUT main(VS_INPUT input)
 	precise float4 previousWorldPosition = float4(mul(PreviousWorld, inputPosition), 1);
 	precise row_major float4x4 modelView = mul(viewProj, world4x4);
 	float4 viewPos = mul(modelView, inputPosition);
+#	endif
+
+#	if defined(FLUID_FIELD) && !defined(SKINNED)
+	// Fluid Field (D26): vanilla's falling water bent onto the rock it runs over
+	[branch] if (FallGround::Enabled)
+	{
+		const float3 grounded = FallGround::Ground(worldPosition.xyz + PosAdjust.xyz) - PosAdjust.xyz;
+		previousWorldPosition.xyz += grounded - worldPosition.xyz;
+		worldPosition.xyz = grounded;
+		viewPos = mul(viewProj, worldPosition);
+	}
 #	endif
 
 	vsout.Position = viewPos;
@@ -752,6 +766,18 @@ PS_OUTPUT main(PS_INPUT input)
 
 	baseColor = baseColorMul * baseColor;
 	baseColor.w *= softMul;
+
+#	if defined(FLUID_FIELD)
+	// Fluid Field (D26): falling water softens into the rock it meets, foaming along the contact
+	[branch] if (FallGround::Enabled)
+	{
+		float visibility, foam;
+		FallGround::Contact(input.Position.xy, input.Position.z, visibility, foam);
+		const float brightness = dot(baseColor.rgb, 1.0 / 3.0);
+		baseColor.rgb = lerp(baseColor.rgb, max(baseColor.rgb, brightness.xxx * 1.3), foam * 0.6);
+		baseColor.w = saturate(baseColor.w + foam * 0.35) * visibility;
+	}
+#	endif
 
 #	if defined(SOFT) && !(defined(FALLOFF) && defined(MULTBLEND))
 	if (baseColor.w - 0.003 < 0) {
