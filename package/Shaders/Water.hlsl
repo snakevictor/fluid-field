@@ -1203,13 +1203,13 @@ PS_OUTPUT main(PS_INPUT input)
 
 	diffuseOutput.refractionDiffuseColor = dirColor + ambientColor;
 #				if defined(FLUID_FIELD)
-	// Light reaching the surface, for Fluid Field's foam (lit like any white surface). dirColor and
-	// ambientColor above are the water's own colour under that light, so the scene light is taken here.
+	// Fluid Field's foam colour: the water's own lit colour (dirColor + ambientColor) lifted toward the
+	// scene light, so foam takes the water's hue without blowing out the exposure
 	float3 fluidAmbientLight = ShadowSampling::GetAmbientLighting();
 #					if defined(SKYLIGHTING)
 	fluidAmbientLight = Color::IrradianceToGamma(Color::IrradianceToLinear(fluidAmbientLight) * skylightingDiffuse);
 #					endif
-	float3 fluidFoamLight = ShadowSampling::GetDirectionalLighting() * dirShadow + fluidAmbientLight;
+	const float3 fluidFoamLight = FluidField::FoamColor(dirColor + ambientColor, ShadowSampling::GetDirectionalLighting() * dirShadow + fluidAmbientLight);
 	{
 		// Bubbles in fast, foamy water make the water body lighter and milkier
 		const float3 fluidPosition = input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz;

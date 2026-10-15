@@ -254,28 +254,45 @@ namespace FluidField
 		return exp2(exponent * log2(a_cosine)) * energy;
 	}
 
-	/** Strongest whitening of the water body by bubbles, as a fraction of the lit foam colour. */
-	static const float MAX_AERATION = 0.35;
+	/** Strongest whitening of the water body by bubbles, as a fraction of the foam colour. */
+	static const float MAX_AERATION = 0.15;
+	/** How far foam's colour goes from the lit water colour toward the scene light (white). */
+	static const float FOAM_WHITENESS = 0.3;
+
+	/**
+	 * Foam's colour: the lit water colour lifted toward the scene light. Foam takes on the water's
+	 * hue and stays within the scene's brightness range; pure lit white blows out the exposure.
+	 * a_waterLit is the water colour under the surface light, a_light the scene light itself.
+	 */
+	float3 FoamColor(float3 a_waterLit, float3 a_light)
+	{
+		return lerp(a_waterLit, a_light, FOAM_WHITENESS);
+	}
 
 	/**
 	 * Fast, foamy water is full of bubbles that scatter light, so rapids look lighter and milkier than
-	 * calm pools: blends a water colour toward the lit foam colour by foam and flow speed. a_light is
-	 * the scene light at the surface (white), not the water's colour.
+	 * calm pools: blends a water colour toward the foam colour by foam and flow speed.
 	 */
-	void ApplyAeration(inout float3 a_color, float3 a_worldPosition, float3 a_light, float a_amount)
+	void ApplyAeration(inout float3 a_color, float3 a_worldPosition, float3 a_foamColor, float a_amount)
 	{
 		const float4 flowFoam = FlowFoamAtWorld(a_worldPosition.xy);
-		const float aeration = saturate(flowFoam.z * 0.6 + length(flowFoam.xy) / 400.0) * MAX_AERATION * a_amount;
-		a_color = lerp(a_color, a_light * 0.5, aeration);
+		const float aeration = saturate(flowFoam.z * 0.6 + length(flowFoam.xy) / 600.0) * MAX_AERATION * a_amount;
+		a_color = lerp(a_color, a_foamColor, aeration);
 	}
 
 	/** World units one tile of the foam's bubbly breakup pattern covers. */
 	static const float FOAM_TILE = 160.0;
+	/** Seconds between restarts of each of the foam pattern's two phases: short, so it never stretches far. */
+	static const float FOAM_PERIOD = 0.6;
+	/** Fastest the foam pattern drifts, world units per second. */
+	static const float FOAM_MAX_DRIFT = 120.0;
 
 	/**
 	 * How white the water is at a world position (0 to 1): the simulated foam, broken into bubbles and
 	 * streaks by vanilla's normal texture dragged along the simulated flow (two-phase, like the flow
-	 * detail), so foam streams and churns with the water instead of sitting on it.
+	 * detail), so foam streams and churns with the water instead of sitting on it. The pattern follows
+	 * the smoothed flow, restarts often and drifts at a capped speed: dragged by the raw flow, tight
+	 * swirls pull it into long smears.
 	 */
 	float GetFoamCover(float3 a_worldPosition)
 	{
@@ -283,11 +300,13 @@ namespace FluidField
 		const float foam = flowFoam.z;
 		if (foam <= 0.02)
 			return 0.0;
-		const float time = SharedData::Timer / FLOW_DETAIL_PERIOD;
+		const float time = SharedData::Timer / FOAM_PERIOD;
 		const float phase0 = frac(time);
 		const float phase1 = frac(time + 0.5);
 		const float2 uv = a_worldPosition.xy / FOAM_TILE;
-		const float2 drift = flowFoam.xy * FLOW_DETAIL_PERIOD / FOAM_TILE;
+		float2 flow = SampleFlow(a_worldPosition);
+		flow *= min(1.0, FOAM_MAX_DRIFT / max(length(flow), 1e-3));
+		const float2 drift = flow * FOAM_PERIOD / FOAM_TILE;
 		const float p0 = length(Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase0, SharedData::MipBias).xy * 2.0 - 1.0);
 		const float p1 = length(Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase1 + 0.37, SharedData::MipBias).xy * 2.0 - 1.0);
 		const float pattern = saturate(lerp(p0, p1, abs(phase0 * 2.0 - 1.0)) * 1.4);
@@ -297,14 +316,14 @@ namespace FluidField
 	}
 
 	/**
-	 * Draws foam over a water colour: lit white (direct and ambient light at the surface), covering the
-	 * reflection and refraction where the foam is. Returns how much foam covers this pixel.
+	 * Draws foam (a_foamColor, from FoamColor) over a water colour, covering the reflection and
+	 * refraction where the foam is. Returns how much foam covers this pixel.
 	 */
-	float ApplyFoam(inout float3 a_color, float3 a_worldPosition, float3 a_light)
+	float ApplyFoam(inout float3 a_color, float3 a_worldPosition, float3 a_foamColor)
 	{
 		const float cover = GetFoamCover(a_worldPosition);
 		if (cover > 0.0)
-			a_color = lerp(a_color, a_light * 0.9, cover);
+			a_color = lerp(a_color, a_foamColor, cover);
 		return cover;
 	}
 
@@ -314,13 +333,13 @@ namespace FluidField
 	 * together. Lerping the colour alone is wrong where vanilla has divided the colour by a small
 	 * opacity, and shows as bright rims of water colour around rocks.
 	 */
-	void ApplyFoamBlended(inout float3 a_color, inout float a_opacity, float3 a_worldPosition, float3 a_light)
+	void ApplyFoamBlended(inout float3 a_color, inout float a_opacity, float3 a_worldPosition, float3 a_foamColor)
 	{
 		const float cover = GetFoamCover(a_worldPosition);
 		if (cover <= 0.0)
 			return;
 		const float opacity = lerp(a_opacity, 1.0, cover);
-		a_color = (a_color * (a_opacity * (1.0 - cover)) + a_light * (0.9 * cover)) / max(opacity, 1e-3);
+		a_color = (a_color * (a_opacity * (1.0 - cover)) + a_foamColor * cover) / max(opacity, 1e-3);
 		a_opacity = opacity;
 	}
 
