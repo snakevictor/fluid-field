@@ -158,11 +158,22 @@ float HenyeyGreenstein(float cosTheta, float g)
 
 	// Skip rays that stay above the fog
 	const float3 camera = FrameBuffer::CameraPosAdjust.xyz;
+	const float bandTop = MaxHeight + Thickness * (1.0 + PILE_RISE) * (1.0 + LIFT) * (1.0 + BILLOW_HEIGHT);
 	const float lowestZ = camera.z + min(0.0, direction.z * rayLength);
-	if (lowestZ > MaxHeight + Thickness * (1.0 + PILE_RISE) * (1.0 + LIFT) || rayLength <= 0.0)
+	if (lowestZ > bandTop || rayLength <= 0.0)
 		return;
+	// Only march where the ray is inside the fog's band: from where it comes down into it, if the
+	// camera is above it, to where it climbs out of it or hits the scene
+	float rayStart = 0.0;
+	float rayEnd = rayLength;
+	if (camera.z > bandTop)
+		rayStart = (camera.z - bandTop) / max(-direction.z, 1e-4);
+	else if (direction.z > 1e-4)
+		rayEnd = min(rayEnd, (bandTop - camera.z) / direction.z);
+	if (rayEnd <= rayStart)
+		return;
+	const float span = rayEnd - rayStart;
 
-	const float stepLength = rayLength / StepCount;
 	const float jitter = Random::InterleavedGradientNoise(float2(dispatchID.xy), SharedData::FrameCount);
 
 	// Light: the sun, scattered toward the eye, and the ambient light's average
@@ -174,7 +185,10 @@ float HenyeyGreenstein(float cosTheta, float g)
 	float3 inscattering = 0.0;
 	[loop] for (uint i = 0; i < StepCount; i++)
 	{
-		const float3 position = camera + direction * ((i + jitter) * stepLength);
+		// Samples packed toward the start of the span (near the camera), where detail shows most
+		const float u = (i + jitter) / StepCount;
+		const float stepLength = span * 2.0 * u / StepCount;
+		const float3 position = camera + direction * (rayStart + span * u * u);
 		float areaFade;
 		const float ground = SampleGround(position.xy, areaFade);
 		const float fog = SampleFog(position.xy) * areaFade;

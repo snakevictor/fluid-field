@@ -184,7 +184,7 @@ private:
 	/** @brief Simulated seconds run at once when a level starts, so it begins already flowing around obstacles. */
 	static constexpr float WARMUP_SECONDS = 2.0f;
 	/** @brief Samples along each pixel's ray through the ground fog. */
-	static constexpr uint32_t GROUND_FOG_STEPS = 24;
+	static constexpr uint32_t GROUND_FOG_STEPS = 48;
 	/** @brief Matches GroundFogCB in GroundFogCS.hlsl. */
 	struct alignas(16) GroundFogConstants
 	{
