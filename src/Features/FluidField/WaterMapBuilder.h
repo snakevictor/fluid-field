@@ -21,7 +21,7 @@ namespace FluidFieldSim
 	class WaterMapBuilder
 	{
 	public:
-		/** @brief Floats per map texel: bed height, vanilla surface (NO_WATER where none), river flow scale, unused. */
+		/** @brief Floats per map texel: bed height, vanilla surface (NO_WATER where none), river flow scale, free water (0 here; the waterfall map's, D27). */
 		static constexpr uint32_t MAP_CHANNELS = 4;
 		static constexpr float MAP_SPACING = 64.0f;  ///< Matches the default bed ray spacing
 		static constexpr uint32_t SLICES = 8;        ///< Calls one rebuild is spread over

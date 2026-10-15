@@ -1542,7 +1542,7 @@ void FluidField::StepFallFlow(ID3D11DeviceContext* a_context, const RE::NiPoint3
 		fallFlowVersion = fallSites.GetGroundVersion();
 		// New falls start already flowing round their rock
 		if (fresh)
-			fallFlowWarmup = static_cast<uint32_t>(WARMUP_SECONDS / WARMUP_SUBSTEP);
+			fallFlowWarmup = static_cast<uint32_t>(FALL_FLOW_WARMUP / WARMUP_SUBSTEP);
 	}
 	if (!fallSolver.HasMap())
 		return;

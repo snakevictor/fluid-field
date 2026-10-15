@@ -179,7 +179,7 @@ float2 StirVelocity(float2 worldPos)
 	}
 
 	velocity = lerp(velocity, restVelocity, saturate(CurrentRelax * DeltaTime));
-	depth = lerp(depth, vanillaDepth, saturate(LevelRelax * DeltaTime));
+	depth = lerp(depth, vanillaDepth, saturate(LevelRelax * DeltaTime * (1.0 - SampleFreeWater(worldPos))));
 
 	// Absorbing border: the pull toward calm vanilla water grows quadratically toward the edge and is
 	// a per-second rate, so waves fade into it instead of bouncing off an abrupt change

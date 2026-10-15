@@ -344,7 +344,8 @@ private:
 	static constexpr uint32_t FALL_FLOW_RES = 512;
 	static constexpr float FALL_FLOW_CELL = 16.0f;
 	static constexpr float FALL_FLOW_RECENTRE = 1024.0f;  ///< How far the player moves before the flow's map recentres
-	static constexpr float FALL_FLOW_LEVEL_RELAX = 0.5f;  ///< Per-second pull toward vanilla's falling-water surface: weak, so the shadow behind rock stays open
+	static constexpr float FALL_FLOW_LEVEL_RELAX = 4.0f;  ///< Per-second pull toward vanilla's surface where the falls' water comes in (their tops and pools)
+	static constexpr float FALL_FLOW_WARMUP = 5.0f;       ///< Seconds run at once when the falls' map changes, so their water has flowed down
 	static constexpr float FALL_FLOW_LIE_HEIGHT = 48.0f;  ///< Water within about this of the rock lies on it: the fall flow says where it is
 	static constexpr float FALL_FLOW_PERIOD = 1.2f;       ///< Seconds per flowmap cycle in the effect shader
 	std::vector<float> fallFlowMap;

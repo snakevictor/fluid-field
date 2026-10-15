@@ -240,7 +240,7 @@ namespace FluidFieldSim
 
 	void FallSites::BuildFlowMap(int32_t a_centreX, int32_t a_centreY, float a_spacing, uint32_t a_size, std::vector<float>& a_map) const
 	{
-		constexpr uint32_t CHANNELS = 4;     // WaterMapBuilder::MAP_CHANNELS: bed, surface, river flow scale, unused
+		constexpr uint32_t CHANNELS = 4;     // WaterMapBuilder::MAP_CHANNELS: bed, surface, river flow scale, free water
 		constexpr float NO_WATER = -1.0e8f;  // ShallowWaterSolver::NO_WATER
 		const auto n = static_cast<int32_t>(a_size);
 		const int32_t x0 = a_centreX - n / 2;
@@ -276,6 +276,10 @@ namespace FluidFieldSim
 
 		// The surface: the falling water seen from above, the highest of its triangles over each point
 		std::vector<float> surface(static_cast<std::size_t>(a_size) * a_size, NO_WATER);
+		// Where the water comes in: the tops of the falls, and the pools. Everywhere else it is free to
+		// flow (and to leave the shadow behind rock empty)
+		std::vector<uint8_t> source(static_cast<std::size_t>(a_size) * a_size, 0);
+		float meshTop = 0.0f;
 		const auto raster = [&](const RE::NiPoint3& a, const RE::NiPoint3& b, const RE::NiPoint3& c) {
 			const float area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
 			if (std::abs(area) < 1e-3f)
@@ -292,8 +296,11 @@ namespace FluidFieldSim
 					const float w2 = 1.0f - w0 - w1;
 					if (w0 < -1e-4f || w1 < -1e-4f || w2 < -1e-4f)
 						continue;
+					const float z = w0 * a.z + w1 * b.z + w2 * c.z;
 					float& stored = surface[window(x, y)];
-					stored = std::max(stored, w0 * a.z + w1 * b.z + w2 * c.z);
+					stored = std::max(stored, z);
+					if (z >= meshTop - FLOW_SOURCE_BAND)
+						source[window(x, y)] = 1;
 				}
 			}
 		};
@@ -308,6 +315,7 @@ namespace FluidFieldSim
 				auto* root = ref ? ref->Get3D() : nullptr;
 				if (!root)
 					continue;
+				meshTop = refs[member].max[2];
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
 					auto* triShape = a_geometry->AsTriShape();
 					auto* renderer = a_geometry->GetGeometryRuntimeData().rendererData;
@@ -341,8 +349,10 @@ namespace FluidFieldSim
 				for (int32_t y = ly0; y <= ly1; y++) {
 					for (int32_t x = lx0; x <= lx1; x++) {
 						const std::size_t i = window(x, y);
-						if (bed[i] < plane.height)
+						if (bed[i] < plane.height) {
 							surface[i] = std::max(surface[i], plane.height);
+							source[i] = 1;
+						}
 					}
 				}
 			}
@@ -355,6 +365,7 @@ namespace FluidFieldSim
 				a_map[s + 0] = bed[i];
 				// Water only where its surface stands above the rock: rock standing through it stays dry
 				a_map[s + 1] = bed[i] < FLOW_WALL && surface[i] > bed[i] + 1.0f ? surface[i] : NO_WATER;
+				a_map[s + 3] = source[i] ? 0.0f : 1.0f;
 			}
 		}
 	}

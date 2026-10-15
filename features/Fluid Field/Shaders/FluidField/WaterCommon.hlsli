@@ -90,6 +90,24 @@ float2 LoadMapLattice(int2 lattice)
 	return WaterMap[uint2(lattice & int(MapRes - 1))].xy;
 }
 
+/**
+ * @brief How free the water at a world position is of the pull toward the vanilla surface, bilinear:
+ * 0 everywhere in the river and lake maps; 1 on the waterfalls (D27) except where their water comes
+ * in, so it flows down the rock and leaves the shadow behind a boulder empty.
+ */
+float SampleFreeWater(float2 worldPos)
+{
+	float2 f = worldPos / MapSpacing;
+	int2 i = int2(floor(f));
+	float2 t = f - float2(i);
+	int mask = int(MapRes - 1);
+	float s00 = WaterMap[uint2(i & mask)].w;
+	float s10 = WaterMap[uint2((i + int2(1, 0)) & mask)].w;
+	float s01 = WaterMap[uint2((i + int2(0, 1)) & mask)].w;
+	float s11 = WaterMap[uint2((i + int2(1, 1)) & mask)].w;
+	return lerp(lerp(s00, s10, t.x), lerp(s01, s11, t.x), t.y);
+}
+
 /** @brief How much the water at a world position flows with the river current (its water type), bilinear. */
 float SampleRiverFlowScale(float2 worldPos)
 {
