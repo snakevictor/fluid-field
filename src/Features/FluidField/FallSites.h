@@ -63,7 +63,9 @@ namespace FluidFieldSim
 			uint32_t classCounts[static_cast<int>(FxClass::Count)]{};
 			float min[3];  ///< Bounds of every member
 			float max[3];
-			float centroid[3];
+			float centroid[3];  ///< Of the falling water
+			float fallMin[3];   ///< Bounds of the falling water (all members when there is none)
+			float fallMax[3];
 			std::vector<float> levels;  ///< Distinct water heights, highest first: top, intermediate tiers, bottom
 			float top = 0.0f;
 			float bottom = 0.0f;

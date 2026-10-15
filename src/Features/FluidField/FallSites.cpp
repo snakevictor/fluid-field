@@ -252,7 +252,8 @@ namespace FluidFieldSim
 		// gorge into one site. So falls (falling water and skirts) cluster among themselves; the other
 		// effects join the nearest fall within CLUSTER_RADIUS, and those left over form rapids sites
 		// among themselves at a tighter radius.
-		const auto isFall = [&](std::size_t a_i) { return refs[a_i].cls == FxClass::Body || refs[a_i].cls == FxClass::Skirt; };
+		// Skirts are tall mist sheets, so only the falling water itself makes a fall
+		const auto isFall = [&](std::size_t a_i) { return refs[a_i].cls == FxClass::Body; };
 		for (std::size_t i = 0; i < n; i++) {
 			for (std::size_t j = i + 1; j < n; j++) {
 				if (isFall(i) && isFall(j) && BoxGap(refs[i].min, refs[i].max, refs[j].min, refs[j].max) <= CLUSTER_RADIUS)
@@ -307,16 +308,35 @@ namespace FluidFieldSim
 			}
 		}
 
-		// S3, level pairing and tiers
+		// S3, level pairing and tiers, on the falling water's own bounds (the whole site's include
+		// mist and splashes well away from the drop)
 		std::vector<WaterSurfaces::Plane> planes;
 		for (auto& site : sites) {
+			for (int k = 0; k < 3; k++) {
+				site.fallMin[k] = FLT_MAX;
+				site.fallMax[k] = -FLT_MAX;
+			}
+			for (const uint32_t member : site.members) {
+				if (refs[member].cls != FxClass::Body)
+					continue;
+				for (int k = 0; k < 3; k++) {
+					site.fallMin[k] = std::min(site.fallMin[k], refs[member].min[k]);
+					site.fallMax[k] = std::max(site.fallMax[k], refs[member].max[k]);
+				}
+			}
+			if (site.fallMin[0] > site.fallMax[0]) {
+				for (int k = 0; k < 3; k++) {
+					site.fallMin[k] = site.min[k];
+					site.fallMax[k] = site.max[k];
+				}
+			}
 			for (int k = 0; k < 3; k++)
-				site.centroid[k] = 0.5f * (site.min[k] + site.max[k]);
+				site.centroid[k] = 0.5f * (site.fallMin[k] + site.fallMax[k]);
 			planes.clear();
-			a_water.CollectPlanes(site.min[0] - PAIR_MARGIN, site.min[1] - PAIR_MARGIN, site.max[0] + PAIR_MARGIN, site.max[1] + PAIR_MARGIN, planes);
+			a_water.CollectPlanes(site.fallMin[0] - PAIR_MARGIN, site.fallMin[1] - PAIR_MARGIN, site.fallMax[0] + PAIR_MARGIN, site.fallMax[1] + PAIR_MARGIN, planes);
 			std::vector<float> heights;
 			for (const auto& plane : planes) {
-				if (plane.height >= site.min[2] - NEAR_LEVEL && plane.height <= site.max[2] + NEAR_LEVEL)
+				if (plane.height >= site.fallMin[2] - NEAR_LEVEL && plane.height <= site.fallMax[2] + NEAR_LEVEL)
 					heights.push_back(plane.height);
 			}
 			std::sort(heights.begin(), heights.end(), std::greater<float>());
@@ -332,23 +352,13 @@ namespace FluidFieldSim
 				continue;
 			}
 			if (site.levels.size() == 1) {
-				// Judged on the falling water's own height range: splashes, mist and parts of meshes
-				// that sit underwater would otherwise make a plunge pool look like the top
-				float fallMin = FLT_MAX;
-				float fallMax = -FLT_MAX;
-				for (const uint32_t member : site.members) {
-					if (refs[member].cls != FxClass::Body && refs[member].cls != FxClass::Skirt)
-						continue;
-					fallMin = std::min(fallMin, refs[member].min[2]);
-					fallMax = std::max(fallMax, refs[member].max[2]);
-				}
-				if (fallMin > fallMax) {
-					fallMin = site.min[2];
-					fallMax = site.max[2];
-				}
+				const float fallMin = site.fallMin[2];
+				const float fallMax = site.fallMax[2];
 				const float level = site.levels.front();
-				if (level - fallMin < 0.5f * (fallMax - fallMin) || level >= fallMax - RAPIDS_THRESHOLD) {
-					// The only plane is at the bottom: the meshes' top stands in for the top level
+				// A plane near the top of the falling water is its top, and the fall ends on ground; one lower
+				// down is its bottom (falling water often runs on well below the surface)
+				if (level < fallMax - RAPIDS_THRESHOLD) {
+					// The only plane is at the bottom: the falling water's top stands in for the top level
 					site.bottom = level;
 					site.top = std::max(fallMax, level);
 					site.topFromMesh = true;
@@ -518,7 +528,7 @@ namespace FluidFieldSim
 				const bool isBottom = i + 1 == site.levels.size();
 				const ImU32 outline = isTop ? IM_COL32(80, 255, 120, 230) : isBottom ? IM_COL32(80, 140, 255, 230) :
 				                                                                       IM_COL32(80, 230, 210, 230);
-				rectangle(site.min[0], site.min[1], site.max[0], site.max[1], site.levels[i], outline);
+				rectangle(site.fallMin[0], site.fallMin[1], site.fallMax[0], site.fallMax[1], site.levels[i], outline);
 			}
 			ImVec2 label;
 			if (project(site.centroid[0], site.centroid[1], site.top + 48.0f, label)) {
