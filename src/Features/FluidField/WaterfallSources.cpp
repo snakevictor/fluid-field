@@ -38,6 +38,9 @@ namespace FluidFieldSim
 		constexpr float AREA_ABOVE = 160.0f;
 		constexpr float AREA_BELOW = 512.0f;
 
+		/** @brief Depth added per second at a replaced fall's lip, and the speed the water leaves it at (D24). */
+		constexpr float LIP_DEPTH_RATE = 120.0f;
+		constexpr float LIP_SPEED = 150.0f;
 		/** @brief Foam made per second at the plunge. */
 		constexpr float FOAM_RATE = 0.6f;
 
@@ -189,8 +192,10 @@ namespace FluidFieldSim
 			body.hidden = false;
 			changed = true;
 		}
-		if (!areas.empty() || changed)
+		if (!areas.empty() || changed) {
 			areas.clear();
+			lips.clear();
+		}
 	}
 
 	void WaterfallSources::Update(const WaterSurfaces& a_water, float a_centreX, float a_centreY, float a_halfSize, bool a_replace)
@@ -321,6 +326,7 @@ namespace FluidFieldSim
 			return;
 		}
 		areas.clear();
+		lips.clear();
 		for (const uint32_t formID : seenBodies) {
 			auto it = bodies.find(formID);
 			if (it == bodies.end())
@@ -334,6 +340,7 @@ namespace FluidFieldSim
 			area.top = body.lip[2] + AREA_ABOVE;
 			area.bottom = body.lowest - AREA_BELOW;
 			areas.push_back(area);
+			lips.push_back({ { body.lip[0], body.lip[1], body.lip[2] }, body.lipWidth, { body.direction[0], body.direction[1] } });
 			if (const auto ref = body.handle.get(); ref && ref->Get3D()) {
 				// Hidden again after every reload of its 3D
 				ref->Get3D()->SetAppCulled(true);
@@ -371,6 +378,24 @@ namespace FluidFieldSim
 	{
 		if (a_strength <= 0.0f || !(a_cellSize > 0.0f))
 			return;
+
+		// The replaced falls' water starts at their lips (D24): vanilla's river often ends short of
+		// the lip, its slope meshes covering the gap, so each lip is a source that may wet dry rock
+		// and pushes the water over the edge. Lips before plunges, which the falls' own water now feeds.
+		// Near level only (a_foam): the rock under the falls is mapped there
+		for (const auto& lip : lips) {
+			if (!a_foam || a_emitters.size() >= a_maxEmitters)
+				break;
+			const float texel[2] = { lip.position[0] / a_cellSize - static_cast<float>(a_gridMin[0]), lip.position[1] / a_cellSize - static_cast<float>(a_gridMin[1]) };
+			if (texel[0] < 0.0f || texel[1] < 0.0f || texel[0] >= static_cast<float>(a_gridRes) || texel[1] >= static_cast<float>(a_gridRes))
+				continue;
+			a_emitters.push_back({ .position = { texel[0], texel[1] },
+				.radius = std::max(0.5f * lip.width / a_cellSize, 1.5f),
+				.depthRate = LIP_DEPTH_RATE * a_strength,
+				.velocity = { lip.direction[0] * LIP_SPEED, lip.direction[1] * LIP_SPEED },
+				.pad1 = { -1.0f, 0.0f } });  // Negative radial speed: a source
+		}
+
 		for (std::size_t i = 0; i < falls.size() && a_emitters.size() < a_maxEmitters; i++) {
 			const auto& fall = falls[i];
 			const float texel[2] = { fall.plunge[0] / a_cellSize - static_cast<float>(a_gridMin[0]), fall.plunge[1] / a_cellSize - static_cast<float>(a_gridMin[1]) };

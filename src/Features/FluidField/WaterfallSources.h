@@ -76,6 +76,14 @@ namespace FluidFieldSim
 
 		static bool ReadBody(RE::TESObjectREFR& a_ref, Body& a_body);
 		std::vector<FallBed::Area> areas;
+		/** @brief Where each replaced fall's water starts (D24): lip centre, width and direction. */
+		struct Lip
+		{
+			float position[3];
+			float width;
+			float direction[2];
+		};
+		std::vector<Lip> lips;
 
 		std::unordered_map<uint32_t, Body> bodies;  ///< Keyed by form ID
 		std::vector<Fall> falls;

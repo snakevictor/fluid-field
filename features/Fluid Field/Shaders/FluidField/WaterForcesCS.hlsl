@@ -156,10 +156,16 @@ float2 StirVelocity(float2 worldPos)
 		}
 	}
 
-	if (depth > WetThreshold) {
+	{
 		float2 position = float2(logical) + 0.5;
+		const bool wet = depth > WetThreshold;
 		for (uint i = 0; i < EmitterCount; i++) {
 			Emitter e = Emitters[i];
+			// A source (a waterfall's lip, D24; marked by a negative radial speed) may start water on
+			// dry rock; every other emitter acts only on water
+			const bool source = e.RadialSpeed < 0.0 && e.DepthRate > 0.0;
+			if (!wet && !source)
+				continue;
 			float2 d = position - e.Position;
 			float w = exp(-dot(d, d) / (e.Radius * e.Radius));
 			// Outward from the centre, strongest around its edge (a plunge spreading out)
