@@ -123,11 +123,13 @@ float2 StirVelocity(float2 worldPos)
 	float detailBed;
 	if (ObstacleRes > 0 && LoadObstacle(worldPos, detailBed))
 		bed = detailBed;
-	// Under waterfalls the rock is mapped by rays (D24): the water runs over its surface
+	// Under waterfalls the rock is mapped by rays (D24): the water runs over its surface. The rays
+	// see the rock's real top, so they replace the bed there; the water-line cut would wall the river
+	// off from the fall where the lip's rock crosses its water plane.
 	const float fallBed = FallBedEnabled != 0 ? FallBed[id] : NO_FALL_BED * 2.0;
 	const bool inFall = fallBed > NO_FALL_BED;
 	if (inFall)
-		bed = max(bed, fallBed);
+		bed = fallBed;
 	float vanillaDepth = HasWater(map.y) ? max(map.y - bed, 0.0) : 0.0;
 	CellMapOut[id] = float2(bed, vanillaDepth);
 
