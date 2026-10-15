@@ -1,8 +1,9 @@
 // Fluid Field ground fog (D21): fog lying on the terrain around the player, moved by the field.
 //
 // The fog's amount comes from the fog layer on the wind grid (carried by the wind, carved and
-// stirred by actors, refilling), its shape from the ground height under the grid: density falls
-// off exponentially with height above the ground. Each pixel marches its view ray up to the
+// stirred by actors, refilling), its shape from the ground height under the grid: a dense layer
+// lying on the ground with a soft top, taller where there is more fog, so banks stand out and
+// clearings dip. Each pixel marches its view ray up to the
 // scene's depth through that layer, after the opaque scene is lit and before water and effects,
 // and blends the fog in, lit by the sun (scattered forward) and the ambient light.
 
@@ -17,7 +18,7 @@ cbuffer GroundFogCB : register(b0)
 	uint GridRes;       // Texels per side, a power of two
 	float CellSize;     // World units per texel
 	float Density;      // Extinction per world unit at the ground where the field is 1
-	float Thickness;    // Height over which the fog thins to about a third
+	float Thickness;    // Height of the layer's top above the ground where the field is 1
 	float MaxHeight;    // Highest ground in the grid, world units
 	uint StepCount;     // Samples along each ray
 	float3 Albedo;      // Colour of the fog's scattering
@@ -31,8 +32,12 @@ RWTexture2D<float4> MainRW : register(u0);
 
 /** Fraction of the field's width over which the fog fades out toward its edge. */
 static const float EDGE_FADE = 0.2;
-/** Forward-scattering anisotropy (Henyey-Greenstein g): mist glows toward the sun. */
-static const float PHASE_G = 0.45;
+/** Forward-scattering anisotropy (Henyey-Greenstein g): mist glows a little toward the sun. */
+static const float PHASE_G = 0.25;
+/** Share of the sun in the fog's light; ground fog sits low and is mostly lit by the sky. */
+static const float SUN_SHARE = 0.35;
+/** Fraction of the layer's height over which its top softens into clear air. */
+static const float TOP_SOFTNESS = 0.5;
 /** Ground below this is unknown land: no fog there. */
 static const float NO_GROUND = -1.0e6;
 
@@ -81,10 +86,10 @@ float HenyeyGreenstein(float cosTheta, float g)
 	const float3 direction = surface / max(surfaceDistance, 1e-3);
 	const float rayLength = min(depth >= 1.0 ? MaxDistance : surfaceDistance, MaxDistance);
 
-	// Skip rays that stay well above the fog: the fog is negligible a few thicknesses up
+	// Skip rays that stay above the fog
 	const float3 camera = FrameBuffer::CameraPosAdjust.xyz;
 	const float lowestZ = camera.z + min(0.0, direction.z * rayLength);
-	if (lowestZ > MaxHeight + 5.0 * Thickness || rayLength <= 0.0)
+	if (lowestZ > MaxHeight + Thickness || rayLength <= 0.0)
 		return;
 
 	const float stepLength = rayLength / StepCount;
@@ -93,7 +98,7 @@ float HenyeyGreenstein(float cosTheta, float g)
 	// Light: the sun, scattered toward the eye, and the ambient light's average
 	const float3 sun = SharedData::DirLightColor.xyz * HenyeyGreenstein(dot(direction, SharedData::DirLightDirection.xyz), PHASE_G) * 4.0 * Math::PI;
 	const float3 ambient = max(float3(SharedData::AmbientSHR.x, SharedData::AmbientSHG.x, SharedData::AmbientSHB.x), 0.0) * 0.886;
-	const float3 light = Albedo * (sun * (1.0 - SharedData::InInterior) + ambient);
+	const float3 light = Albedo * (sun * SUN_SHARE * (1.0 - SharedData::InInterior) + ambient);
 
 	float transmittance = 1.0;
 	float3 inscattering = 0.0;
@@ -102,8 +107,10 @@ float HenyeyGreenstein(float cosTheta, float g)
 		const float3 position = camera + direction * ((i + jitter) * stepLength);
 		float fog, ground;
 		SampleField(position.xy, fog, ground);
+		// A layer on the ground with a soft top, whose height follows the amount of fog
 		const float height = position.z - ground;
-		const float extinction = Density * fog * exp(-max(height, 0.0) / Thickness);
+		const float top = Thickness * lerp(0.4, 1.0, saturate(fog));
+		const float extinction = Density * fog * (1.0 - smoothstep(top * (1.0 - TOP_SOFTNESS), top, height));
 		if (extinction <= 0.0)
 			continue;
 		const float stepTransmittance = exp(-extinction * stepLength);

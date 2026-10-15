@@ -87,8 +87,8 @@ struct FluidField : OverlayFeature
 		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
 		bool InteractiveFog = true;          ///< Ground fog that actors and the weather's wind move (D21)
-		float FogDensity = 0.003f;           ///< Ground fog extinction per world unit at the ground, in its banks
-		float FogThickness = 80.0f;          ///< Height over which the ground fog thins to about a third, world units
+		float FogDensity = 0.012f;           ///< Ground fog extinction per world unit inside the layer, in its banks
+		float FogThickness = 60.0f;          ///< Height of the ground fog layer's top above the ground, in its banks, world units
 		float FogStir = 1.0f;                ///< How strongly moving actors push the air and part the fog
 		float FogRefillSeconds = 6.0f;       ///< Seconds for parted fog to fill back in (about two thirds of the way)
 	};

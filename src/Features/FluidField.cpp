@@ -110,13 +110,13 @@ void FluidField::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("interactive_fog_tooltip"), "Fog lying on the ground around you, in banks and clearings. It parts and swirls around moving actors and drifts with the weather's wind."));
 	}
-	ImGui::SliderFloat(T(TKEY("fog_density"), "Fog Density"), &settings.FogDensity, 0.0f, 0.02f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("fog_density"), "Fog Density"), &settings.FogDensity, 0.0f, 0.05f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("fog_density_tooltip"), "How thick the fog is at the ground, in its banks."));
+		ImGui::Text("%s", T(TKEY("fog_density_tooltip"), "How thick the fog is inside its layer, in its banks."));
 	}
 	ImGui::SliderFloat(T(TKEY("fog_thickness"), "Fog Thickness"), &settings.FogThickness, 10.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("fog_thickness_tooltip"), "How high the fog reaches above the ground before thinning out, in world units."));
+		ImGui::Text("%s", T(TKEY("fog_thickness_tooltip"), "How high the fog layer reaches above the ground, in world units. Thinner patches lie lower."));
 	}
 	ImGui::SliderFloat(T(TKEY("fog_stir"), "Fog Stirring"), &settings.FogStir, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -451,7 +451,7 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.FlowDetail = std::isfinite(a_settings.FlowDetail) ? std::clamp(a_settings.FlowDetail, 0.0f, 2.0f) : defaults.FlowDetail;
 	a_settings.FoamStrength = std::isfinite(a_settings.FoamStrength) ? std::clamp(a_settings.FoamStrength, 0.0f, 3.0f) : defaults.FoamStrength;
 	a_settings.WaterTint = std::isfinite(a_settings.WaterTint) ? std::clamp(a_settings.WaterTint, 0.0f, 1.0f) : defaults.WaterTint;
-	a_settings.FogDensity = std::isfinite(a_settings.FogDensity) ? std::clamp(a_settings.FogDensity, 0.0f, 0.02f) : defaults.FogDensity;
+	a_settings.FogDensity = std::isfinite(a_settings.FogDensity) ? std::clamp(a_settings.FogDensity, 0.0f, 0.05f) : defaults.FogDensity;
 	a_settings.FogThickness = std::isfinite(a_settings.FogThickness) ? std::clamp(a_settings.FogThickness, 10.0f, 400.0f) : defaults.FogThickness;
 	a_settings.FogStir = std::isfinite(a_settings.FogStir) ? std::clamp(a_settings.FogStir, 0.0f, 3.0f) : defaults.FogStir;
 	a_settings.FogRefillSeconds = std::isfinite(a_settings.FogRefillSeconds) ? std::clamp(a_settings.FogRefillSeconds, 0.5f, 30.0f) : defaults.FogRefillSeconds;
