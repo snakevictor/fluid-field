@@ -201,7 +201,8 @@ private:
 		uint32_t groundRes;
 		float groundCellSize;
 		float patternOffset[2];
-		float pad[2];
+		uint32_t debugMode;
+		float pad;
 	};
 	static_assert(sizeof(GroundFogConstants) == 80);
 	/** @brief The fog area: the ground map's texels per side and their size; twice the wind grid's width, around the player. */
@@ -236,6 +237,7 @@ private:
 	uint32_t fogDrawsThisFrame = 0;  ///< Debug: fog passes drawn since the last Prepass
 	std::string fogDrawTargets;      ///< Debug: the colour and depth targets they drew into
 	uint32_t fogLogCountdown = 0;
+	int fogDebugMode = 0;  ///< Debug: isolates parts of the ground fog to find visual problems; not saved
 
 public:
 	/**

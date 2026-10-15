@@ -28,7 +28,8 @@ cbuffer GroundFogCB : register(b0)
 	uint GroundRes;        // Ground map texels per side, a power of two
 	float GroundCellSize;  // World units per ground map texel
 	float2 PatternOffset;  // How far the resting pattern has drifted with the weather's wind, world units
-	float2 FogPad;
+	uint DebugMode;        // 0 normal, 1 static shape (no wind), 2 resting fog only, 3 fixed sample offsets, 4 no fog field at all (resting pattern, no wind, fixed offsets)
+	float FogPad;
 };
 
 Texture2D<float> DepthTexture : register(t0);
@@ -113,6 +114,8 @@ float SampleGround(float2 worldXY, out float areaFade)
 float SampleFog(float2 worldXY)
 {
 	const float resting = FogPattern::Resting(worldXY, PatternOffset);
+	if (DebugMode == 2 || DebugMode == 4)
+		return resting;
 	const float2 cellPosition = worldXY / CellSize - 0.5;
 	const float2 logical = cellPosition - float2(GridMin);
 	const float fromEdge = min(min(logical.x, logical.y), min(GridRes - 1 - logical.x, GridRes - 1 - logical.y));
@@ -205,7 +208,7 @@ float HenyeyGreenstein(float cosTheta, float g)
 	const float firstStep = min(FIRST_STEP, span / StepCount);
 	const float growth = StepGrowth(span / firstStep, StepCount);
 
-	const float jitter = Random::InterleavedGradientNoise(float2(dispatchID.xy), SharedData::FrameCount);
+	const float jitter = (DebugMode == 3 || DebugMode == 4) ? 0.5 : Random::InterleavedGradientNoise(float2(dispatchID.xy), SharedData::FrameCount);
 
 	// Light: the sun, scattered toward the eye, and the ambient light's average
 	const float3 sun = SharedData::DirLightColor.xyz * HenyeyGreenstein(dot(direction, SharedData::DirLightDirection.xyz), PHASE_G) * 4.0 * Math::PI;
@@ -230,7 +233,7 @@ float HenyeyGreenstein(float cosTheta, float g)
 		const float height = position.z - ground;
 		if (fog <= 0.0 || height > maxTop)
 			continue;
-		const float2 wind = SampleWind(position.xy);
+		const float2 wind = (DebugMode == 1 || DebugMode == 4) ? 0.0 : SampleWind(position.xy);
 		const float churn = saturate(length(wind) / LIFT_SPEED);
 		// Billows: the top rises and falls, drifting with the wind, so the layer is not a flat sheet
 		const float billow = Wisps(float3(position.xy * (WISP_SIZE / BILLOW_SIZE), 0.0), wind);

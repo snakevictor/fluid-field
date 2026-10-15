@@ -286,6 +286,14 @@ void FluidField::DrawSettings()
 	}
 
 	ImGui::SeparatorText(T(TKEY("debug"), "Debug"));
+	{
+		const char* fogDebugModes[] = { T(TKEY("fog_debug_normal"), "Normal"), T(TKEY("fog_debug_static"), "Static shape (no wind)"),
+			T(TKEY("fog_debug_resting"), "Resting fog only"), T(TKEY("fog_debug_fixed"), "Fixed sample offsets"), T(TKEY("fog_debug_bare"), "All of the above") };
+		ImGui::Combo(T(TKEY("fog_debug"), "Fog Debug"), &fogDebugMode, fogDebugModes, IM_ARRAYSIZE(fogDebugModes));
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("%s", T(TKEY("fog_debug_tooltip"), "Isolates parts of the ground fog to find visual problems. Not saved."));
+		}
+	}
 
 	ImGui::Checkbox(T(TKEY("show_layer_overlay"), "Show Layer Overlay"), &showDebugOverlay);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -1074,7 +1082,8 @@ void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderRe
 		.groundRes = FOG_GROUND_RESOLUTION,
 		.groundCellSize = FOG_GROUND_CELL,
 		.patternOffset = { fogPatternOffset[0], fogPatternOffset[1] },
-		.pad = {}
+		.debugMode = static_cast<uint32_t>(fogDebugMode),
+		.pad = 0.0f
 	};
 	D3D11_MAPPED_SUBRESOURCE mapped{};
 	if (FAILED(context->Map(groundFogCB.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
