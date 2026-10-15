@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 namespace FluidFieldSim
@@ -43,8 +44,17 @@ namespace FluidFieldSim
 		std::span<const float> GetData() const { return data; }
 
 	private:
-		/** @brief Fades the flow scale where the water spreads out (lakes), keeping it in channels (rivers). */
-		static void ApplyWidthFactor(std::vector<float>& a_map, uint32_t a_resolution, const int32_t a_origin[2]);
+		/** @brief Fraction of water around a lattice point (rings out to 4096 units), remembered once its surroundings are loaded. */
+		float Openness(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, int32_t a_latticeX, int32_t a_latticeY);
+		/** @brief How much of the river current water keeps at a position: 1 in channels, fading to 0 where it opens out (lakes). */
+		float CurrentFactor(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, float a_worldX, float a_worldY);
+
+		struct OpennessEntry
+		{
+			float value = 0.0f;
+			bool settled = false;  ///< Measured with its surroundings mostly loaded; kept for good
+		};
+		std::unordered_map<uint64_t, OpennessEntry> openness;  ///< Openness per lattice point, keyed by packed lattice coordinates
 
 		std::vector<float> data;   ///< Last completed map
 		std::vector<float> build;  ///< Map being built
