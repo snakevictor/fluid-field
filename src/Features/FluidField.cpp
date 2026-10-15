@@ -56,7 +56,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	FogRefillSeconds,
 	ReplaceVanillaFoam,
 	Waterfalls,
-	WaterfallStrength)
+	WaterfallStrength,
+	ReplaceWaterfalls)
 
 void FluidField::DrawSettings()
 {
@@ -274,6 +275,10 @@ void FluidField::DrawSettings()
 		ImGui::Text("%s", T(TKEY("waterfalls_tooltip"), "Waterfalls landing on the simulated water churn it, push it out and downstream, and foam it."));
 	}
 	ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Waterfall Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::Checkbox(T(TKEY("replace_waterfalls"), "Replace Waterfalls"), &settings.ReplaceWaterfalls);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("replace_waterfalls_tooltip"), "Draws Fluid Field's own falling water in place of vanilla's waterfalls: it arcs off the lip and runs over the rock below. Splashes and mist stay vanilla."));
+	}
 	ImGui::Text(T(TKEY("waterfalls_found"), "Waterfalls driving the water: %u"), static_cast<uint32_t>(waterfalls.GetFalls().size()));
 	ImGui::SliderFloat(T(TKEY("water_tint"), "Water Tint"), &settings.WaterTint, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -516,6 +521,7 @@ void FluidField::ClearShaderCache()
 	shaderCompileFailed = false;
 	groundFogCS = nullptr;
 	groundFogFailed = false;
+	waterfallRenderer.ReleaseShaders();
 	nearWater.solver.ReleaseShaders();
 	waterShaderFailed = false;
 }
@@ -827,9 +833,12 @@ void FluidField::Prepass()
 		if (settings.Waterfalls) {
 			// Waterfalls over the whole simulated area, far level included
 			const float simulated = 0.5f * (settings.FarWater ? settings.WaterSize * settings.FarWaterScale : settings.WaterSize);
-			waterfalls.Update(water, playerPos.x, playerPos.y, simulated);
+			waterfalls.Update(water, playerPos.x, playerPos.y, simulated, settings.ReplaceWaterfalls);
+			waterfallRenderer.Upload(globals::d3d::device, context, waterfalls);
 		} else {
+			waterfalls.RestoreBodies();
 			waterfalls.Clear();
+			waterfallRenderer.Upload(globals::d3d::device, context, waterfalls);
 		}
 	} else {
 		ReleaseWater();
@@ -900,7 +909,9 @@ void FluidField::ReleaseWater()
 	}
 	wakeSources.Clear();
 	vanillaFoam.RestoreAll();
+	waterfalls.RestoreBodies();
 	waterfalls.Clear();
+	waterfallRenderer.Release();
 	waterShaderData = {};
 }
 
@@ -1040,11 +1051,31 @@ FluidField::WaterShaderData FluidField::GetCommonBufferData() const
 
 void FluidField::DrawGroundFogAfterWorld()
 {
-	if (!loaded || !settings.Enabled || !settings.InteractiveFog || !fogReady || !globals::state->inWorld)
+	if (!loaded || !settings.Enabled || !globals::state->inWorld)
+		return;
+	auto* renderer = globals::game::renderer;
+	if (!renderer)
+		return;
+
+	// Waterfalls first (D23), so the ground fog lies over their base
+	if (settings.WaterEnabled && settings.Waterfalls && settings.ReplaceWaterfalls && waterfallRenderer.HasCurtains() && cameraSnapshot) {
+		const auto& shadow = globals::game::shadowState->GetRuntimeData();
+		const auto colorIndex = static_cast<uint32_t>(shadow.renderTargets[0]);
+		const auto depthIndex = shadow.depthStencil;
+		if (colorIndex < RE::RENDER_TARGET::kTOTAL && depthIndex < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
+			auto& target = renderer->GetRuntimeData().renderTargets[colorIndex];
+			auto& depth = renderer->GetDepthStencilData().depthStencils[depthIndex];
+			globals::profiler->BeginPass("FluidField::Waterfalls");
+			waterfallRenderer.Draw(globals::d3d::device, globals::d3d::context, target.RTV, depth.readOnlyViews[0], cameraSnapshot.get(), globals::state->sharedDataCB->CB(),
+				globals::state->featureDataCB->CB(), waterfallTime, WATERFALL_OPACITY);
+			globals::profiler->EndPass();
+		}
+	}
+
+	if (!settings.InteractiveFog || !fogReady)
 		return;
 	if (fogDebugMode == FOG_DEBUG_BEFORE_WATER)
 		return;  // Drawn from the deferred passes instead
-	auto* renderer = globals::game::renderer;
 	if (!renderer)
 		return;
 	// The targets the world was just rendered into; not always kMAIN, so the fog follows whatever is bound
@@ -1070,7 +1101,7 @@ void FluidField::DrawGroundFogAfterWorld()
 
 void FluidField::DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main)
 {
-	if (!loaded || !settings.Enabled || !settings.InteractiveFog || !fogReady)
+	if (!loaded || !settings.Enabled)
 		return;
 	// Snapshot the main camera while it is still bound: by the time the world has finished
 	// drawing, the engine's per-frame buffer can hold another view's camera, and the fog drawn
@@ -1091,7 +1122,7 @@ void FluidField::DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main)
 		if (cameraSnapshot)
 			globals::d3d::context->CopyResource(cameraSnapshot.get(), perFrame);
 	}
-	if (fogDebugMode == FOG_DEBUG_BEFORE_WATER)
+	if (fogDebugMode == FOG_DEBUG_BEFORE_WATER && settings.InteractiveFog && fogReady)
 		DrawGroundFog(a_main, Util::GetCurrentSceneDepthSRV(false));
 }
 
@@ -1246,6 +1277,15 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 	params.currentRelax = settings.CurrentPull;
 	params.vorticity = settings.Turbulence;
 	params.foamStrength = settings.FoamStrength;
+	// The near level takes over the far level's foam for cells coming into it, so foam does not
+	// drop out and rebuild as the player approaches
+	if (a_near && settings.FarWater && farWater.solver.HasMap() && waterShaderData.FarEnabled) {
+		params.seedFoam = farWater.solver.GetFlowSRV();
+		params.seedGridMin[0] = farWater.gridMin[0];
+		params.seedGridMin[1] = farWater.gridMin[1];
+		params.seedRes = settings.WaterResolution;
+		params.seedCellSize = settings.WaterSize * settings.FarWaterScale / static_cast<float>(settings.WaterResolution);
+	}
 	// River currents from Unified Water's flowmap; the test current when there is none
 	RE::NiPointer<RE::NiSourceTexture> flowmapTexture;
 	const auto& unifiedWater = globals::features::unifiedWater;

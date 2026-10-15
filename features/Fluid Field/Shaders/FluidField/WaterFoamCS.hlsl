@@ -25,6 +25,24 @@ Texture2D<float2> Velocity : register(t1);
 Texture2D<float2> CellMap : register(t2);
 StructuredBuffer<Emitter> Emitters : register(t3);
 Texture2D<float> FoamIn : register(t7);
+// Another level's flow output (foam in z): cells coming into this grid take its foam
+Texture2D<float4> SeedFlow : register(t8);
+
+/** Foam from the seeding level at a world position, bilinear; 0 without one or outside it. */
+float SeedFoam(float2 worldXY)
+{
+	if (SeedRes == 0)
+		return 0.0;
+	const float2 cellPosition = worldXY / SeedCellSize - 0.5;
+	const float2 logical = cellPosition - float2(SeedGridMin);
+	if (any(logical < 0.0) || any(logical >= float(SeedRes) - 1.0))
+		return 0.0;
+	const int2 c = int2(floor(cellPosition));
+	const float2 t = cellPosition - float2(c);
+	const int mask = int(SeedRes) - 1;
+	return lerp(lerp(SeedFlow.Load(int3(c & mask, 0)).z, SeedFlow.Load(int3((c + int2(1, 0)) & mask, 0)).z, t.x),
+		lerp(SeedFlow.Load(int3((c + int2(0, 1)) & mask, 0)).z, SeedFlow.Load(int3((c + int2(1, 1)) & mask, 0)).z, t.x), t.y);
+}
 
 RWTexture2D<float> FoamOut : register(u0);
 
@@ -59,7 +77,7 @@ float LoadFoam(int2 logical)
 {
 	int2 cell = GridMin + logical;
 	bool kept = HistoryValid != 0 && all(cell >= PrevGridMin) && all(cell < PrevGridMin + int(GridRes));
-	return kept ? FoamIn[LogicalToStorage(clamp(logical, 0, int(GridRes) - 1))] : 0.0;
+	return kept ? FoamIn[LogicalToStorage(clamp(logical, 0, int(GridRes) - 1))] : SeedFoam((float2(cell) + 0.5) * CellSize);
 }
 
 /** Last step's foam at a logical position (texel centres at +0.5), bilinear. */
@@ -128,7 +146,12 @@ float SampleFoam(float2 position)
 		Emitter e = Emitters[i];
 		float2 d = position - e.Position;
 		float w = exp(-dot(d, d) / (e.Radius * e.Radius));
-		made += w * (WAKE_RATE * saturate(length(e.Velocity) / 300.0) + SPLASH_RATE * saturate(-e.DepthRate / 400.0) + e.FoamRate);
+		// Waterfalls (a radial speed) make only their own foam rate: their pulsing and outflow are
+		// not splashes or wakes
+		if (e.RadialSpeed > 0.0)
+			made += w * e.FoamRate;
+		else
+			made += w * (WAKE_RATE * saturate(length(e.Velocity) / 300.0) + SPLASH_RATE * saturate(-e.DepthRate / 400.0) + e.FoamRate);
 	}
 
 	foam = min(foam + made * FoamStrength * DeltaTime, FOAM_MAX);

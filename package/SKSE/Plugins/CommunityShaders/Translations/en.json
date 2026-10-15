@@ -953,6 +953,8 @@
     "feature.fluid_field.rays_per_frame": "Rays Per Frame",
     "feature.fluid_field.replace_vanilla_foam": "Replace Vanilla Foam",
     "feature.fluid_field.replace_vanilla_foam_tooltip": "Hides vanilla's placed rapids foam, splash and spray effects where the water is simulated. Waterfalls and low mist stay.",
+    "feature.fluid_field.replace_waterfalls": "Replace Waterfalls",
+    "feature.fluid_field.replace_waterfalls_tooltip": "Draws Fluid Field's own falling water in place of vanilla's waterfalls: it arcs off the lip and runs over the rock below. Splashes and mist stay vanilla.",
     "feature.fluid_field.reset_field": "Reset Field",
     "feature.fluid_field.resource_create_failed": "Fluid Field could not create its textures, so the simulation is off. Check CommunityShaders.log.",
     "feature.fluid_field.river_speed": "River Speed",

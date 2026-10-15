@@ -11,6 +11,7 @@
 #include "FluidField/WakeSources.h"
 #include "FluidField/WaterMapBuilder.h"
 #include "FluidField/WaterSurfaces.h"
+#include "FluidField/WaterfallRenderer.h"
 #include "FluidField/WaterfallSources.h"
 #include "FluidField/WindSolver.h"
 #include "OverlayFeature.h"
@@ -87,6 +88,7 @@ struct FluidField : OverlayFeature
 		float FoamStrength = 1.0f;           ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
 		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
 		bool Waterfalls = true;              ///< Waterfalls landing on the simulated water drive it (D22)
+		bool ReplaceWaterfalls = true;       ///< Draw Fluid Field's own falling water in place of vanilla's waterfall bodies (D23)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
 		bool InteractiveFog = true;          ///< Ground fog that actors and the weather's wind move (D21)
@@ -213,6 +215,8 @@ private:
 	static constexpr float FOG_GROUND_CELL = 16.0f;
 	/** @brief Fog drift at the weather's full wind speed, world units per second. */
 	static constexpr float MAX_WEATHER_DRIFT = 150.0f;
+	/** @brief Most opacity of the replaced waterfalls' falling water. */
+	static constexpr float WATERFALL_OPACITY = 0.85f;
 	/** @brief Substep length of the warm-up, as the regular step's shortest substep. */
 	static constexpr float WARMUP_SUBSTEP = 0.012f;
 	/** @brief Seconds over which the simulated water fades in after a (re)start. */
@@ -267,6 +271,7 @@ public:
 private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
 	FluidFieldSim::WaterfallSources waterfalls;
+	FluidFieldSim::WaterfallRenderer waterfallRenderer;
 	float waterfallTime = 0.0f;                              ///< Seconds simulated, for the waterfalls' pulsing
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 

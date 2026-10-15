@@ -32,8 +32,56 @@ namespace FluidFieldSim
 		constexpr float RADIAL_SPEED = 110.0f;
 		/** @brief Speed the water runs on in the fall's direction, world units per second. */
 		constexpr float OUTFLOW_SPEED = 60.0f;
+		/** @brief Gravity, world units per second squared (9.81 m/s^2). */
+		constexpr float GRAVITY = 687.0f;
+		/** @brief Fastest the water leaves a lip, world units per second. */
+		constexpr float MAX_LIP_SPEED = 600.0f;
+		/** @brief The curtain runs on past vanilla's plunge by this fraction of the fall, so it reaches the water. */
+		constexpr float OVERSHOOT = 0.2f;
+		/** @brief Water lying on rock sits this far above it, world units. */
+		constexpr float ROCK_OFFSET = 6.0f;
+		/** @brief Bed rays start this far above the arc and reach this far below it, world units. */
+		constexpr float RAY_ABOVE = 96.0f;
+		constexpr float RAY_BELOW = 2048.0f;
+
+		bool IsSolidLayer(RE::COL_LAYER a_layer)
+		{
+			switch (a_layer) {
+			case RE::COL_LAYER::kStatic:
+			case RE::COL_LAYER::kAnimStatic:
+			case RE::COL_LAYER::kTerrain:
+			case RE::COL_LAYER::kGround:
+				return true;
+			default:
+				return false;
+			}
+		}
+
+		/** @brief The highest solid surface below a point, by a downward Havok ray; false if none in reach. */
+		bool CastDown(RE::hkpWorld* a_world, float a_x, float a_y, float a_fromZ, float a_toZ, float& a_hitZ)
+		{
+			const float scale = RE::bhkWorld::GetWorldScale();
+			float fromZ = a_fromZ;
+			for (int attempt = 0; attempt < 4 && fromZ > a_toZ; attempt++) {
+				RE::hkpWorldRayCastInput input;
+				input.from = RE::hkVector4(a_x * scale, a_y * scale, fromZ * scale, 0.0f);
+				input.to = RE::hkVector4(a_x * scale, a_y * scale, a_toZ * scale, 0.0f);
+				RE::hkpWorldRayCastOutput output;
+				a_world->CastRay(input, output);
+				if (!output.HasHit())
+					return false;
+				const float hitZ = fromZ + (a_toZ - fromZ) * output.hitFraction;
+				if (output.rootCollidable && IsSolidLayer(output.rootCollidable->GetCollisionLayer())) {
+					a_hitZ = hitZ;
+					return true;
+				}
+				fromZ = hitZ - 1.0f;  // Through anything that is not rock or ground
+			}
+			return false;
+		}
+
 		/** @brief Foam made per second at the plunge. */
-		constexpr float FOAM_RATE = 1.5f;
+		constexpr float FOAM_RATE = 0.6f;
 
 		std::string Lowercase(const char* a_text)
 		{
@@ -138,6 +186,27 @@ namespace FluidFieldSim
 		low /= static_cast<float>(lowCount);
 		high /= static_cast<float>(highCount);
 
+		// The lip's width: the top band's spread across the fall's direction
+		{
+			float fx = low.x - high.x;
+			float fy = low.y - high.y;
+			const float fl = std::sqrt(fx * fx + fy * fy);
+			fx = fl > 1.0f ? fx / fl : 1.0f;
+			fy = fl > 1.0f ? fy / fl : 0.0f;
+			float across[2] = { FLT_MAX, -FLT_MAX };
+			for (const auto& p : points) {
+				if (p.z < maxZ - band)
+					continue;
+				const float side = (p.x - high.x) * -fy + (p.y - high.y) * fx;
+				across[0] = std::min(across[0], side);
+				across[1] = std::max(across[1], side);
+			}
+			a_body.lip[0] = high.x + -fy * 0.5f * (across[0] + across[1]);
+			a_body.lip[1] = high.y + fx * 0.5f * (across[0] + across[1]);
+			a_body.lip[2] = high.z;
+			a_body.lipWidth = std::max(across[1] - across[0], MIN_WIDTH);
+		}
+
 		a_body.plunge[0] = low.x;
 		a_body.plunge[1] = low.y;
 		a_body.plunge[2] = low.z;
@@ -151,7 +220,89 @@ namespace FluidFieldSim
 		return true;
 	}
 
-	void WaterfallSources::Update(const WaterSurfaces& a_water, float a_centreX, float a_centreY, float a_halfSize)
+	void WaterfallSources::BuildCurtain(Body& a_body)
+	{
+		a_body.curtain.clear();
+		const float drop = a_body.lip[2] - a_body.plunge[2];
+		if (drop < 32.0f)
+			return;
+		auto tes = RE::TES::GetSingleton();
+		auto* cell = tes ? (tes->interiorCell ? tes->interiorCell : tes->GetCell(RE::NiPoint3(a_body.plunge[0], a_body.plunge[1], a_body.plunge[2]))) : nullptr;
+		auto* bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
+		auto* world = bhkWorld ? bhkWorld->GetWorld1() : nullptr;
+		if (!world)
+			return;
+		const RE::BSReadLockGuard lock(bhkWorld->worldLock);
+
+		// Free fall from the lip, at the speed that would carry the water to vanilla's plunge
+		const float dx = a_body.plunge[0] - a_body.lip[0];
+		const float dy = a_body.plunge[1] - a_body.lip[1];
+		const float reach = std::sqrt(dx * dx + dy * dy);
+		const float dir[2] = { reach > 1.0f ? dx / reach : a_body.direction[0], reach > 1.0f ? dy / reach : a_body.direction[1] };
+		const float side[2] = { -dir[1], dir[0] };
+		const float fallTime = std::sqrt(2.0f * drop / GRAVITY);
+		const float speed = std::min(reach / fallTime, MAX_LIP_SPEED);
+		const float endTime = fallTime * (1.0f + OVERSHOOT);
+
+		a_body.curtain.resize(static_cast<std::size_t>(CURTAIN_COLUMNS) * CURTAIN_ROWS);
+		for (uint32_t c = 0; c < CURTAIN_COLUMNS; c++) {
+			const float across = static_cast<float>(c) / static_cast<float>(CURTAIN_COLUMNS - 1) * 2.0f - 1.0f;
+			const float startX = a_body.lip[0] + side[0] * across * 0.5f * a_body.lipWidth;
+			const float startY = a_body.lip[1] + side[1] * across * 0.5f * a_body.lipWidth;
+			// Each column falls on its own; where it meets rock it lies on it and slides down, keeping
+			// its horizontal speed, and falls free again where the rock drops away
+			float x = startX;
+			float y = startY;
+			float z = a_body.lip[2];
+			float vz = 0.0f;
+			float previousTime = 0.0f;
+			for (uint32_t r = 0; r < CURTAIN_ROWS; r++) {
+				const float t = endTime * static_cast<float>(r) / static_cast<float>(CURTAIN_ROWS - 1);
+				const float dt = t - previousTime;
+				previousTime = t;
+				x += dir[0] * speed * dt;
+				y += dir[1] * speed * dt;
+				vz -= GRAVITY * dt;
+				z += vz * dt;
+				float onRock = 0.0f;
+				float bed = 0.0f;
+				if (r > 0 && CastDown(world, x, y, z + RAY_ABOVE, z - RAY_BELOW, bed) && z < bed + ROCK_OFFSET) {
+					// Lying on the rock: it takes the rock's height, and sliding slows the fall
+					z = bed + ROCK_OFFSET;
+					vz = std::max(vz, -speed);
+					onRock = 1.0f;
+				}
+				auto& point = a_body.curtain[static_cast<std::size_t>(r) * CURTAIN_COLUMNS + c];
+				point.position[0] = x;
+				point.position[1] = y;
+				point.position[2] = z;
+				point.along = static_cast<float>(r) / static_cast<float>(CURTAIN_ROWS - 1);
+				point.speed = std::sqrt(speed * speed + vz * vz);
+				point.across = across;
+				point.onRock = onRock;
+				point.pad = 0.0f;
+			}
+		}
+	}
+
+	void WaterfallSources::RestoreBodies()
+	{
+		bool changed = false;
+		for (auto& [formID, body] : bodies) {
+			if (!body.hidden)
+				continue;
+			if (const auto ref = body.handle.get(); ref && ref->Get3D())
+				ref->Get3D()->SetAppCulled(false);
+			body.hidden = false;
+			changed = true;
+		}
+		if (!curtainPoints.empty() || changed) {
+			curtainPoints.clear();
+			curtainVersion++;
+		}
+	}
+
+	void WaterfallSources::Update(const WaterSurfaces& a_water, float a_centreX, float a_centreY, float a_halfSize, bool a_replace)
 	{
 		if (updatesUntilScan > 0) {
 			updatesUntilScan--;
@@ -169,6 +320,7 @@ namespace FluidFieldSim
 			float distance;
 		};
 		std::vector<Landing> landings;
+		std::vector<uint32_t> seenBodies;
 		const auto visitCell = [&](RE::TESObjectCELL* a_cell, bool a_requireAttached) {
 			if (!a_cell || (a_requireAttached && !a_cell->IsAttached()))
 				return;
@@ -186,7 +338,9 @@ namespace FluidFieldSim
 					bodies.erase(it);
 					return RE::BSContainer::ForEachResult::kContinue;
 				}
-				const Body& body = it->second;
+				Body& body = it->second;
+				body.handle = a_ref->GetHandle();
+				seenBodies.push_back(a_ref->GetFormID());
 				if (std::abs(body.plunge[0] - a_centreX) > a_halfSize || std::abs(body.plunge[1] - a_centreY) > a_halfSize)
 					return RE::BSContainer::ForEachResult::kContinue;
 
@@ -267,6 +421,33 @@ namespace FluidFieldSim
 				it = bodies.erase(it);
 			else
 				++it;
+		}
+
+		// Replace the bodies in the area with curtains (D23): build each once, hide vanilla's
+		if (!a_replace) {
+			RestoreBodies();
+			return;
+		}
+		std::vector<CurtainPoint> points;
+		for (const uint32_t formID : seenBodies) {
+			auto it = bodies.find(formID);
+			if (it == bodies.end())
+				continue;
+			Body& body = it->second;
+			if (body.curtain.empty())
+				BuildCurtain(body);
+			if (body.curtain.empty())
+				continue;
+			points.insert(points.end(), body.curtain.begin(), body.curtain.end());
+			if (const auto ref = body.handle.get(); ref && ref->Get3D()) {
+				// Hidden again after every reload of its 3D
+				ref->Get3D()->SetAppCulled(true);
+				body.hidden = true;
+			}
+		}
+		if (points.size() != curtainPoints.size() || std::memcmp(points.data(), curtainPoints.data(), points.size() * sizeof(CurtainPoint)) != 0) {
+			curtainPoints.swap(points);
+			curtainVersion++;
 		}
 	}
 

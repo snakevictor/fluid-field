@@ -48,6 +48,12 @@ namespace FluidFieldSim
 		float riverSpeed = 0.0f;          ///< World units per second at full flowmap strength
 		float vorticity = 0.0f;           ///< Vorticity confinement strength (0: off)
 		float foamStrength = 1.0f;        ///< Scales how much foam the flow makes (0: none)
+		/// Foam for cells coming into the grid: another level's flow output (foam in z), with its
+		/// placement, so the near level takes over the far level's foam instead of starting clean
+		ID3D11ShaderResourceView* seedFoam = nullptr;
+		std::int32_t seedGridMin[2]{};
+		std::uint32_t seedRes = 0;
+		float seedCellSize = 0.0f;
 	};
 
 	/** @brief Colour scales for the water debug view: a value of 1/scale maps to full intensity. */
@@ -186,8 +192,11 @@ namespace FluidFieldSim
 			float simTime;
 			float foamStrength;
 			float pad1;
+			std::int32_t seedGridMin[2];
+			std::uint32_t seedRes;
+			float seedCellSize;
 		};
-		static_assert(sizeof(WaterConstants) == 96);
+		static_assert(sizeof(WaterConstants) == 112);
 
 		// Matches WaterDebugCB in WaterDebugViewCS.hlsl
 		struct alignas(16) DebugConstants
@@ -213,6 +222,7 @@ namespace FluidFieldSim
 		void Dispatch(ID3D11DeviceContext* context, ID3D11ComputeShader* shader, std::span<ID3D11ShaderResourceView* const> srvs, std::span<ID3D11UnorderedAccessView* const> uavs);
 
 		std::uint32_t resolution = 0;
+		ID3D11ShaderResourceView* seedFoamSRV = nullptr;  ///< This step's seed foam (not owned)
 		std::uint32_t mapResolution = 0;
 		float mapSpacing = 64.0f;
 		bool mapUploaded = false;
