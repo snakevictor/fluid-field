@@ -586,9 +586,16 @@ Entry format:
     from its texture coordinates (down the fall along v), rock near the
     surface turns it aside, and a two-phase flowmap carries the turn, with
     foam in the wake. Ground Waterfalls toggles it for A/B against vanilla.
-    Next: blending where two falling-water meshes meet, then a surface
-    simulation in each mesh's texture space driving its flow and vertices;
-    later, vanilla's waterfall mist made volumetric through the ground fog.
+    Revised the same day: a rock field built once on the CPU from the
+    capture (prominence over the bed, smoothed presence, push away from rock)
+    drives a static u-shift of the streaks, a foam collar and pillow, and a
+    thinned V wake; vertices move only a little of the push (they tore at
+    full push). Tested at the White River falls: the capture is right, but the
+    water still reads as cutting through boulders. Next (agreed with
+    @Victor): a shallow-water solver on the fall surface, with the captured
+    rock as walls, driving the texture flow and the mesh; then blending where
+    two falling-water meshes meet; later, vanilla's waterfall mist made
+    volumetric through the ground fog.
 -   Alternatives rejected: D25's own traced sheets (ribbons per stream): they
     read as flat paper with combs at the lips and strands across the rock;
     shading invented from scratch looks painted next to vanilla's authored

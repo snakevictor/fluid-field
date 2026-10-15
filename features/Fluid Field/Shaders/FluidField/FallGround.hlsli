@@ -12,20 +12,21 @@ namespace FallGround
 {
 	cbuffer FallGroundCB : register(b13)
 	{
-		float2 Origin;       // World position of texel (0, 0)
-		float InverseCell;   // Texels per world unit
-		float Size;          // Texels along each side
-		uint Enabled;        // This draw is a grounded mesh
-		float Offset;        // How far above the rock the water lies
-		float Cling;         // Water hovering less than this above the rock is drawn down onto it
-		float ContactWidth;  // World units over which the water fades where it cuts into rock
-		float Reach;         // How far above rock its push still bends the water
-		float WakeLength;    // World units the foam trails behind rock
-		float FoamStrength;  // How white the foam is
-		float LiftMost;      // Water deeper than this inside rock is left there (a boulder hides it); shallower is lifted onto it
-		uint DebugMode;      // 0 off, 1 the rock field: push as red, foam as green, coverage as blue
-		float Parting;       // Most the water thins where the flow parts behind rock
-		float2 Pad;
+		float2 Origin;         // World position of texel (0, 0)
+		float InverseCell;     // Texels per world unit
+		float Size;            // Texels along each side
+		uint Enabled;          // This draw is a grounded mesh
+		float Offset;          // How far above the rock the water lies
+		float Cling;           // Water hovering less than this above the rock is drawn down onto it
+		float ContactWidth;    // World units over which the water fades where it cuts into rock
+		float Reach;           // How far above rock its push still bends the water
+		float WakeLength;      // World units the foam trails behind rock
+		float FoamStrength;    // How white the foam is
+		float LiftMost;        // Water deeper than this inside rock is left there (a boulder hides it); shallower is lifted onto it
+		uint DebugMode;        // 0 off, 1 the rock field: push as red, foam as green, coverage as blue
+		float Parting;         // Most the water thins where the flow parts behind rock
+		float VertexPush;      // How much of the push moves the mesh's vertices
+		float VertexPushMost;  // World units
 	};
 
 	Texture2D<float> Heights : register(t120);
@@ -82,8 +83,14 @@ namespace FallGround
 	 */
 	float3 Ground(float3 a_position)
 	{
+		// The mesh is coarse: moved far, its triangles tear. So vertices move only a little of the push
+		// (the texture carries the rest), and only at or inside rock
 		const float4 rock = RockAt(a_position.xy);
-		a_position.xy += rock.xy * Nearness(a_position.xy, a_position.z);
+		float2 move = rock.xy * VertexPush * saturate(Nearness(a_position.xy, a_position.z) * 2.0 - 1.0);
+		const float length2 = dot(move, move);
+		if (length2 > VertexPushMost * VertexPushMost)
+			move *= VertexPushMost * rsqrt(length2);
+		a_position.xy += move;
 		float ground;
 		if (!Height(a_position.xy, ground))
 			return a_position;

@@ -1447,7 +1447,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	FluidFieldSim::FallSites::BuildRockField(fallGroundScratch, FALL_GROUND_SIZE, FALL_GROUND_CELL, fallRockScratch);
 	context->UpdateSubresource(fallRockTexture.get(), 0, nullptr, fallRockScratch.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
 	const FallGroundData on{ { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET, FALL_GROUND_CLING, FALL_GROUND_CONTACT,
-		FALL_REACH, FALL_WAKE_LENGTH, FALL_FOAM_STRENGTH, FALL_GROUND_LIFT_MOST, static_cast<uint32_t>(fallGroundDebug), FALL_PARTING, {} };
+		FALL_REACH, FALL_WAKE_LENGTH, FALL_FOAM_STRENGTH, FALL_GROUND_LIFT_MOST, static_cast<uint32_t>(fallGroundDebug), FALL_PARTING, FALL_VERTEX_PUSH, FALL_VERTEX_PUSH_MOST };
 	context->UpdateSubresource(fallGroundOn.get(), 0, nullptr, &on, 0, 0);
 }
 

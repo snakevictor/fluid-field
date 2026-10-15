@@ -284,6 +284,6 @@ Agreed with @Victor when this design replaced D24 (simulated water down the rock
 S7 (custom sheets) and S10 (hiding vanilla) were dropped: the traced sheets looked painted next to vanilla's authored falls. Vanilla's falling-water meshes stay and are grounded on S4's captured rock in CS's effect shader: vertices bent onto the rock, the texture flowed around rock in the way, and the water softened into the rock with foam at the contact. S5 (lips) and S6 (tracing) were removed with the sheets. Open items:
 
 -   Blending where two falling-water meshes meet (the upper one pouring into the lower one, not a hard seam).
--   A surface simulation in each mesh's texture space driving its flow and vertex displacement.
+-   **Next:** a shallow-water solver on the fall surface (each mesh's texture space, or a site grid along the fall), the captured rock as walls, driving the texture flow and the mesh. The texture warp from the rock field (push, collar, pillow, wake) is not enough on its own: water still reads as cutting through boulders.
 -   S8 coupling from where each fall really lands.
 -   Vanilla's waterfall mist made volumetric through the ground fog (D21).
