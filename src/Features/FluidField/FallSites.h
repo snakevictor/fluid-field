@@ -125,8 +125,8 @@ namespace FluidFieldSim
 		static constexpr float PROMINENCE_FLOOR = 8.0f;
 		static constexpr float PROMINENCE_FULL = 48.0f;
 		static constexpr float OBSTACLE_RADIUS = 96.0f;  ///< How far round rock its presence is smoothed (twice): it reaches about twice this
-		static constexpr float PUSH = 768.0f;            ///< Push per unit of presence change per texel: PUSH_MOST at the rock's edge
-		static constexpr float PUSH_MOST = 64.0f;        ///< World units
+		static constexpr float PUSH = 1536.0f;           ///< Push per unit of presence change per texel: PUSH_MOST at the rock's edge
+		static constexpr float PUSH_MOST = 128.0f;       ///< World units
 
 		/** @brief Counts for the menu: sites by kind. */
 		uint32_t CountKind(Kind a_kind) const;

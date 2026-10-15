@@ -328,7 +328,7 @@ void FluidField::DrawSettings()
 			fallGroundVersion = UINT64_MAX;  // Re-upload the constants
 		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("show_waterfall_turn_tooltip"), "Paints grounded waterfalls with the rock field: red where rock pushes the water aside, green where rock stands out of the flow, blue where the captured rock covers the water (black: not covered)."));
+			ImGui::Text("%s", T(TKEY("show_waterfall_turn_tooltip"), "Paints grounded waterfalls with the rock field: red where rock pushes the water aside, green where it foams, blue where the captured rock covers the water (black: not covered)."));
 		}
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -1447,7 +1447,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	FluidFieldSim::FallSites::BuildRockField(fallGroundScratch, FALL_GROUND_SIZE, FALL_GROUND_CELL, fallRockScratch);
 	context->UpdateSubresource(fallRockTexture.get(), 0, nullptr, fallRockScratch.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
 	const FallGroundData on{ { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET, FALL_GROUND_CLING, FALL_GROUND_CONTACT,
-		FALL_REACH, FALL_WAKE_LENGTH, FALL_FOAM_STRENGTH, FALL_GROUND_LIFT_MOST, static_cast<uint32_t>(fallGroundDebug), {} };
+		FALL_REACH, FALL_WAKE_LENGTH, FALL_FOAM_STRENGTH, FALL_GROUND_LIFT_MOST, static_cast<uint32_t>(fallGroundDebug), FALL_PARTING, {} };
 	context->UpdateSubresource(fallGroundOn.get(), 0, nullptr, &on, 0, 0);
 }
 

@@ -299,7 +299,8 @@ private:
 		float FoamStrength;
 		float LiftMost;
 		uint32_t DebugMode;
-		float Pad[3];
+		float Parting;
+		float Pad[2];
 	};
 	static_assert(sizeof(FallGroundData) == 64);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
@@ -312,6 +313,7 @@ private:
 	static constexpr float FALL_REACH = 96.0f;             ///< How far above rock its push still bends the water
 	static constexpr float FALL_WAKE_LENGTH = 160.0f;      ///< World units foam trails behind rock
 	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
+	static constexpr float FALL_PARTING = 0.85f;  ///< Most the water thins where the flow parts behind rock
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> fallGroundSRV;
 	winrt::com_ptr<ID3D11Texture2D> fallRockTexture;  ///< FallSites::BuildRockField over the ground map: push x, y, presence, prominence
