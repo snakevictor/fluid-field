@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <span>
-#include <unordered_map>
 #include <vector>
 
 namespace FluidFieldSim
@@ -22,7 +21,7 @@ namespace FluidFieldSim
 	class WaterMapBuilder
 	{
 	public:
-		/** @brief Floats per map texel: bed height, vanilla surface (NO_WATER where none), river flow scale (0 still to 1, fading where the water opens out), unused. */
+		/** @brief Floats per map texel: bed height, vanilla surface (NO_WATER where none), river flow scale, unused. */
 		static constexpr uint32_t MAP_CHANNELS = 4;
 		static constexpr float MAP_SPACING = 64.0f;  ///< Matches the default bed ray spacing
 		static constexpr uint32_t SLICES = 8;        ///< Calls one rebuild is spread over
@@ -44,18 +43,6 @@ namespace FluidFieldSim
 		std::span<const float> GetData() const { return data; }
 
 	private:
-		/** @brief Fraction of water around a lattice point (rings out to 4096 units), remembered once its surroundings are loaded. */
-		float Openness(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, int32_t a_latticeX, int32_t a_latticeY);
-		/** @brief How much of the river current water keeps at a position: 1 in channels, fading to 0 where it opens out (lakes). */
-		float CurrentFactor(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, float a_worldX, float a_worldY);
-
-		struct OpennessEntry
-		{
-			float value = 0.0f;
-			bool settled = false;  ///< Measured with its surroundings mostly loaded; kept for good
-		};
-		std::unordered_map<uint64_t, OpennessEntry> openness;  ///< Openness per lattice point, keyed by packed lattice coordinates
-
 		std::vector<float> data;   ///< Last completed map
 		std::vector<float> build;  ///< Map being built
 		uint32_t resolution = 0;
