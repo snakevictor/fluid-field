@@ -34,10 +34,14 @@ namespace FluidFieldSim
 		constexpr float OUTFLOW_SPEED = 60.0f;
 		/** @brief Gravity, world units per second squared (9.81 m/s^2). */
 		constexpr float GRAVITY = 687.0f;
-		/** @brief Fastest the water leaves a lip, world units per second. */
-		constexpr float MAX_LIP_SPEED = 600.0f;
-		/** @brief The curtain runs on past vanilla's plunge by this fraction of the fall, so it reaches the water. */
-		constexpr float OVERSHOOT = 0.2f;
+		/** @brief Speed the water leaves a lip at, world units per second (about a river's). */
+		constexpr float LIP_SPEED = 150.0f;
+		/** @brief Seconds per step of the traced water, and most steps traced. */
+		constexpr float TRACE_STEP = 0.03f;
+		constexpr uint32_t MAX_TRACE_STEPS = 200;
+		/** @brief Per-second slowing of water sliding on rock, and the slowest it slides. */
+		constexpr float SLIDE_FRICTION = 0.6f;
+		constexpr float MIN_SLIDE_SPEED = 80.0f;
 		/** @brief Water lying on rock sits this far above it, world units. */
 		constexpr float ROCK_OFFSET = 6.0f;
 		/** @brief Bed rays start this far above the arc and reach this far below it, world units. */
@@ -234,53 +238,88 @@ namespace FluidFieldSim
 			return;
 		const RE::BSReadLockGuard lock(bhkWorld->worldLock);
 
-		// Free fall from the lip, at the speed that would carry the water to vanilla's plunge
 		const float dx = a_body.plunge[0] - a_body.lip[0];
 		const float dy = a_body.plunge[1] - a_body.lip[1];
 		const float reach = std::sqrt(dx * dx + dy * dy);
 		const float dir[2] = { reach > 1.0f ? dx / reach : a_body.direction[0], reach > 1.0f ? dy / reach : a_body.direction[1] };
 		const float side[2] = { -dir[1], dir[0] };
-		const float fallTime = std::sqrt(2.0f * drop / GRAVITY);
-		const float speed = std::min(reach / fallTime, MAX_LIP_SPEED);
-		const float endTime = fallTime * (1.0f + OVERSHOOT);
+		// Where the water ends: the plunge (the water surface or the bottom of vanilla's body)
+		const float endZ = a_body.plunge[2];
+		const float maxTravel = reach * 1.5f + drop;
 
+		struct PathPoint
+		{
+			float x, y, z, speed, onRock;
+		};
+		std::vector<PathPoint> path;
 		a_body.curtain.resize(static_cast<std::size_t>(CURTAIN_COLUMNS) * CURTAIN_ROWS);
 		for (uint32_t c = 0; c < CURTAIN_COLUMNS; c++) {
 			const float across = static_cast<float>(c) / static_cast<float>(CURTAIN_COLUMNS - 1) * 2.0f - 1.0f;
-			const float startX = a_body.lip[0] + side[0] * across * 0.5f * a_body.lipWidth;
-			const float startY = a_body.lip[1] + side[1] * across * 0.5f * a_body.lipWidth;
-			// Each column falls on its own; where it meets rock it lies on it and slides down, keeping
-			// its horizontal speed, and falls free again where the rock drops away
-			float x = startX;
-			float y = startY;
+			// Each column is traced as water: it leaves the lip at about river speed and falls; on rock
+			// it lies on the surface and slides, sped up by the slope and slowed a little by friction;
+			// where the rock drops away it falls free again. Ends where it reaches the water below.
+			float x = a_body.lip[0] + side[0] * across * 0.5f * a_body.lipWidth;
+			float y = a_body.lip[1] + side[1] * across * 0.5f * a_body.lipWidth;
 			float z = a_body.lip[2];
+			float horizontal = LIP_SPEED;
 			float vz = 0.0f;
-			float previousTime = 0.0f;
-			for (uint32_t r = 0; r < CURTAIN_ROWS; r++) {
-				const float t = endTime * static_cast<float>(r) / static_cast<float>(CURTAIN_ROWS - 1);
-				const float dt = t - previousTime;
-				previousTime = t;
-				x += dir[0] * speed * dt;
-				y += dir[1] * speed * dt;
-				vz -= GRAVITY * dt;
-				z += vz * dt;
+			float travelled = 0.0f;
+			float bed = z - RAY_BELOW;
+			bool haveBed = CastDown(world, x, y, z + RAY_ABOVE, z - RAY_BELOW, bed);
+			path.clear();
+			path.push_back({ x, y, z, horizontal, 0.0f });
+			for (uint32_t step = 0; step < MAX_TRACE_STEPS && z > endZ && travelled < maxTravel; step++) {
+				const float previousBed = bed;
+				const bool hadBed = haveBed;
+				x += dir[0] * horizontal * TRACE_STEP;
+				y += dir[1] * horizontal * TRACE_STEP;
+				travelled += horizontal * TRACE_STEP;
+				haveBed = CastDown(world, x, y, z + RAY_ABOVE, z - RAY_BELOW, bed);
+				vz -= GRAVITY * TRACE_STEP;
+				float nextZ = z + vz * TRACE_STEP;
 				float onRock = 0.0f;
-				float bed = 0.0f;
-				if (r > 0 && CastDown(world, x, y, z + RAY_ABOVE, z - RAY_BELOW, bed) && z < bed + ROCK_OFFSET) {
-					// Lying on the rock: it takes the rock's height, and sliding slows the fall
-					z = bed + ROCK_OFFSET;
-					vz = std::max(vz, -speed);
+				if (haveBed && nextZ < bed + ROCK_OFFSET) {
+					// On the rock: follow it, sliding faster where it is steep
+					nextZ = bed + ROCK_OFFSET;
+					const float run = std::max(horizontal * TRACE_STEP, 1.0f);
+					const float fall = hadBed ? std::max(previousBed - bed, 0.0f) : 0.0f;
+					const float slope = fall / run;
+					const float sine = slope / std::sqrt(1.0f + slope * slope);
+					horizontal = std::max(horizontal + (GRAVITY * sine - SLIDE_FRICTION * horizontal) * TRACE_STEP, MIN_SLIDE_SPEED);
+					vz = -horizontal * slope;
 					onRock = 1.0f;
 				}
+				z = nextZ;
+				path.push_back({ x, y, z, std::sqrt(horizontal * horizontal + vz * vz), onRock });
+			}
+
+			// Resample the path into evenly spaced rows by distance along it
+			std::vector<float> distance(path.size(), 0.0f);
+			for (std::size_t i = 1; i < path.size(); i++) {
+				const float ex = path[i].x - path[i - 1].x;
+				const float ey = path[i].y - path[i - 1].y;
+				const float ez = path[i].z - path[i - 1].z;
+				distance[i] = distance[i - 1] + std::sqrt(ex * ex + ey * ey + ez * ez);
+			}
+			const float total = std::max(distance.back(), 1.0f);
+			std::size_t segment = 1;
+			for (uint32_t r = 0; r < CURTAIN_ROWS; r++) {
+				const float wanted = total * static_cast<float>(r) / static_cast<float>(CURTAIN_ROWS - 1);
+				while (segment + 1 < path.size() && distance[segment] < wanted)
+					segment++;
+				const auto& a = path[std::min(segment - 1, path.size() - 1)];
+				const auto& b = path[std::min(segment, path.size() - 1)];
+				const float span = distance[std::min(segment, path.size() - 1)] - distance[segment - 1];
+				const float t = span > 1e-3f ? std::clamp((wanted - distance[segment - 1]) / span, 0.0f, 1.0f) : 0.0f;
 				auto& point = a_body.curtain[static_cast<std::size_t>(r) * CURTAIN_COLUMNS + c];
-				point.position[0] = x;
-				point.position[1] = y;
-				point.position[2] = z;
+				point.position[0] = a.x + (b.x - a.x) * t;
+				point.position[1] = a.y + (b.y - a.y) * t;
+				point.position[2] = a.z + (b.z - a.z) * t;
 				point.along = static_cast<float>(r) / static_cast<float>(CURTAIN_ROWS - 1);
-				point.speed = std::sqrt(speed * speed + vz * vz);
+				point.speed = a.speed + (b.speed - a.speed) * t;
 				point.across = across;
-				point.onRock = onRock;
-				point.pad = 0.0f;
+				point.onRock = a.onRock + (b.onRock - a.onRock) * t;
+				point.distance = wanted;
 			}
 		}
 	}

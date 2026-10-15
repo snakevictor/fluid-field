@@ -35,7 +35,7 @@ namespace FluidFieldSim
 			float speed;        ///< How fast the water falls here, world units per second
 			float across;       ///< -1 at one edge of the curtain to 1 at the other
 			float onRock;       ///< 1 where the water lies on rock, 0 where it falls free
-			float pad;
+			float distance;     ///< World units down the fall from the lip
 		};
 		static_assert(sizeof(CurtainPoint) == 32);
 

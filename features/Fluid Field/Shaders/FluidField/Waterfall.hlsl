@@ -13,7 +13,7 @@ struct CurtainPoint
 	float Speed;      // World units per second
 	float Across;     // -1 at one edge to 1 at the other
 	float OnRock;     // 1 where the water lies on rock
-	float Pad;
+	float Distance;   // World units down the fall from the lip
 };
 
 cbuffer WaterfallCB : register(b7)
@@ -52,8 +52,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	output.Across = p.Across;
 	output.Speed = p.Speed;
 	output.OnRock = p.OnRock;
-	// Distance down the fall, for texture flow: the sum of speed over time, approximated per row
-	output.Distance = p.Along * p.Speed;
+	output.Distance = p.Distance;
 	return output;
 }
 
@@ -76,7 +75,7 @@ static const float BRIGHTNESS = 0.2;
 float4 PSMain(VSOutput input) : SV_Target
 {
 	// Streaks: narrow across the curtain, stretched down it, and scrolling down at the water's speed
-	const float2 uv = float2(input.Across * 6.0, input.Along * 2.0 - Time * 0.9);
+	const float2 uv = float2(input.Across * 6.0, input.Distance / 300.0 - Time * max(input.Speed, 100.0) / 300.0);
 	const float streak = ValueNoise(float2(uv.x * 3.0, uv.y * 0.6)) * 0.6 + ValueNoise(float2(uv.x * 9.0, uv.y * 1.8)) * 0.4;
 
 	// The curtain's edges thin out; the water is solid near the lip and breaks up as it falls
