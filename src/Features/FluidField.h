@@ -229,10 +229,13 @@ private:
 	winrt::com_ptr<ID3D11ComputeShader> groundFogCS;
 	winrt::com_ptr<ID3D11Buffer> groundFogCB;
 	bool groundFogFailed = false;
-	int32_t fogGridMin[2]{};      ///< The wind grid's placement this frame, for the fog pass
-	int32_t fogGroundMin[2]{};    ///< The ground map's placement this frame
-	float fogPatternOffset[2]{};  ///< How far the resting fog has drifted with the weather's wind
-	bool fogReady = false;        ///< The fog layer and ground height are valid this frame
+	int32_t fogGridMin[2]{};         ///< The wind grid's placement this frame, for the fog pass
+	int32_t fogGroundMin[2]{};       ///< The ground map's placement this frame
+	float fogPatternOffset[2]{};     ///< How far the resting fog has drifted with the weather's wind
+	bool fogReady = false;           ///< The fog layer and ground height are valid this frame
+	uint32_t fogDrawsThisFrame = 0;  ///< Debug: fog passes drawn since the last Prepass
+	std::string fogDrawTargets;      ///< Debug: the colour and depth targets they drew into
+	uint32_t fogLogCountdown = 0;
 
 public:
 	/**

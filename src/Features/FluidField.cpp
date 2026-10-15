@@ -751,6 +751,16 @@ void FluidField::Prepass()
 
 	lastGridMin[0] = gridMin[0];
 	lastGridMin[1] = gridMin[1];
+	if (settings.LogDepthMap && fog) {
+		if (fogLogCountdown == 0) {
+			logger::info("[Fluid Field] Ground fog: {} draw(s) last frame into colour/depth {}", fogDrawsThisFrame, fogDrawTargets);
+			fogLogCountdown = 120;
+		} else {
+			fogLogCountdown--;
+		}
+	}
+	fogDrawsThisFrame = 0;
+	fogDrawTargets.clear();
 	fogReady = false;
 	if (fog) {
 		// The ground the fog lies on, under the wind grid
@@ -1019,6 +1029,10 @@ void FluidField::DrawGroundFogAfterWorld()
 	if (!main.UAV || !depth.depthSRV)
 		return;
 
+	fogDrawsThisFrame++;
+	if (settings.LogDepthMap)
+		fogDrawTargets += std::format("{}/{} ", colorIndex, depthIndex);
+
 	// The live depth holds the water surfaces; it can only be read once it is no longer bound
 	globals::d3d::context->OMSetRenderTargets(0, nullptr, nullptr);
 	DrawGroundFog(main.UAV, depth.depthSRV);
@@ -1072,9 +1086,13 @@ void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderRe
 	ID3D11Buffer* cb = groundFogCB.get();
 	ID3D11ShaderResourceView* srvs[] = { a_depth, solver.GetFogSRV(), groundHeight.GetSRV(), solver.GetVelocitySRV() };
 	context->CSSetConstantBuffers(0, 1, &cb);
-	// The camera (FrameBuffer, b12): the deferred composite unbinds it when it finishes
+	// The camera (FrameBuffer, b12) and the shared and feature data (b5, b6) are bound here rather
+	// than relied on: other passes unbind or replace them before this one runs, and the fog then
+	// read an empty screen size or camera and drew nothing that frame
 	ID3D11Buffer* perFrame = *globals::game::perFrame;
 	context->CSSetConstantBuffers(12, 1, &perFrame);
+	ID3D11Buffer* sharedBuffers[2]{ globals::state->sharedDataCB->CB(), globals::state->featureDataCB->CB() };
+	context->CSSetConstantBuffers(5, 2, sharedBuffers);
 	context->CSSetShaderResources(0, 4, srvs);
 	context->CSSetUnorderedAccessViews(0, 1, &a_main, nullptr);
 	context->CSSetShader(groundFogCS.get(), nullptr, 0);
