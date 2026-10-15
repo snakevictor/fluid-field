@@ -1,7 +1,9 @@
 // Fluid Field waterfall grounding (D26): vanilla's falling-water meshes bent onto the rock they run
-// over, their texture flowed around rocks in the way, and softened where they meet the rock.
-// FluidField binds the constants and the captured ground (FallSites::BuildGroundMap) only for the
-// draws of grounded meshes; Enabled is 0 for every other effect draw.
+// over and pushed round rock standing in their way, their streaks curved round that rock with foam
+// piled against it and trailing behind it, and softened where they cut into rock.
+// FluidField binds the constants, the captured ground (FallSites::BuildGroundMap) and the rock field
+// (FallSites::BuildRockField) only for the draws of grounded meshes; Enabled is 0 for every other
+// effect draw.
 
 #ifndef FLUID_FIELD_FALL_GROUND_HLSLI
 #define FLUID_FIELD_FALL_GROUND_HLSLI
@@ -16,18 +18,18 @@ namespace FallGround
 		uint Enabled;        // This draw is a grounded mesh
 		float Offset;        // How far above the rock the water lies
 		float Cling;         // Water hovering less than this above the rock is drawn down onto it
-		float ContactWidth;  // World units over which the water softens and foams where it meets rock
-		float FlowDistance;  // How far, world units, the texture is carried sideways round a rock per flow cycle
-		float FlowPeriod;    // Seconds per flow cycle
-		float ReachAbove;    // Rock this far below the water already turns it
-		float ReachWidth;    // World units over which rock in the way turns the water
+		float ContactWidth;  // World units over which the water fades where it cuts into rock
+		float Reach;         // How far above rock its push still bends the water
+		float WakeLength;    // World units the foam trails behind rock
+		float FoamStrength;  // How white the foam is
 		float LiftMost;      // Water deeper than this inside rock is left there (a boulder hides it); shallower is lifted onto it
-		uint DebugMode;      // 0 off, 1 red where rock turns the water, 2 green where the mesh was moved
-		float2 Pad;
+		uint DebugMode;      // 0 off, 1 the rock field: push as red and green, presence as blue
+		float3 Pad;
 	};
 
 	Texture2D<float> Heights : register(t120);
 	Texture2D<float> SceneDepth : register(t121);
+	Texture2D<float4> Rock : register(t122);  // Push x, y (world units), presence, prominence
 
 	static const float NONE = -1.0e6;  // Below this, no ground is captured
 
@@ -50,14 +52,37 @@ namespace FallGround
 		return true;
 	}
 
+	/** The rock field at a world position, bilinear; zero outside the map. */
+	float4 RockAt(float2 a_position)
+	{
+		const float2 texel = (a_position - Origin) * InverseCell;
+		const int2 base = int2(floor(texel));
+		if (any(base < 0) || any(base + 1 >= int(Size)))
+			return 0.0;
+		const float2 t = texel - float2(base);
+		return lerp(lerp(Rock.Load(int3(base, 0)), Rock.Load(int3(base + int2(1, 0), 0)), t.x),
+			lerp(Rock.Load(int3(base + int2(0, 1), 0)), Rock.Load(int3(base + int2(1, 1), 0)), t.x), t.y);
+	}
+
+	/** How strongly rock at a world position bends water at a_z: fully at the rock's top, none Reach above it. */
+	float Nearness(float2 a_position, float a_z)
+	{
+		float ground;
+		if (!Height(a_position, ground))
+			return 0.0;
+		return saturate(1.0 - (a_z - ground) / Reach);
+	}
+
 	/**
-	 * A vertex of falling water, at a world position, moved onto the rock: out of the bed where it
-	 * clips just under it, and down onto rock it hovers just above, so the water runs on the rock
-	 * rather than through or over it. Water deep inside rock is a boulder standing out of the flow:
-	 * it is left where it is, hidden by the rock, so the boulder stays dry with the water around it.
+	 * A vertex of falling water, at a world position, moved onto the rock: pushed aside round rock
+	 * standing in its way, out of the bed where it clips just under it, and down onto rock it hovers
+	 * just above. Water deep inside rock it is not pushed out of is a boulder's: it is left there,
+	 * hidden, so the boulder stays dry.
 	 */
 	float3 Ground(float3 a_position)
 	{
+		const float4 rock = RockAt(a_position.xy);
+		a_position.xy += rock.xy * Nearness(a_position.xy, a_position.z);
 		float ground;
 		if (!Height(a_position.xy, ground))
 			return a_position;
@@ -72,30 +97,18 @@ namespace FallGround
 	}
 
 	/**
-	 * How much rock stands in the water's way at a world position: 0 where it is well below the water
-	 * (at a_z), 1 where it reaches the surface or above.
+	 * A pixel of falling water flowed round rock in its way. Vanilla's texture scrolls along v, so its
+	 * streaks are lines of constant u: shifting u by the push across the flow curves each streak round
+	 * the rock and back behind it. Foam piles up where the water runs into rock (the rock's presence
+	 * rises just downstream) and trails behind it in a widening wake.
+	 * @param a_uv The pixel's texture coordinates; returns them shifted.
+	 * @param a_rock The rock field here, for the debug view.
+	 * @param a_foam How much foam is here, 0 to 1.
 	 */
-	float Obstacle(float2 a_position, float a_z)
+	float2 Flow(float2 a_uv, float3 a_position, out float4 a_rock, out float a_foam)
 	{
-		float ground;
-		if (!Height(a_position, ground))
-			return 0.0;
-		return saturate((ground - a_z + ReachAbove) / ReachAbove);
-	}
-
-	/**
-	 * The texture coordinates of a pixel of falling water, flowed around the rock in its way. The way
-	 * the texture runs in the world comes from the mesh's own coordinates (down the fall along v); rock
-	 * in the way turns it aside, down the slope of the rock around it. The sideways turn is carried by
-	 * the flow as a two-phase flowmap, so the streaks bend round the rock, part ahead of it and close
-	 * up behind it. a_turn is how hard the water is turned there, for foam in its wake.
-	 */
-	void Flow(float2 a_uv, float3 a_position, float a_time, out float2 a_uv0, out float2 a_uv1, out float a_blend, out float a_turn)
-	{
-		a_uv0 = a_uv;
-		a_uv1 = a_uv;
-		a_blend = 0.0;
-		a_turn = 0.0;
+		a_rock = 0.0;
+		a_foam = 0.0;
 
 		// The world's change across the texture: d(position)/du and d(position)/dv
 		const float3 dPdx = ddx(a_position);
@@ -104,31 +117,33 @@ namespace FallGround
 		const float2 dUVdy = ddy(a_uv);
 		const float det = dUVdx.x * dUVdy.y - dUVdx.y * dUVdy.x;
 		if (abs(det) < 1e-12)
-			return;
+			return a_uv;
 		const float3 dPdu = (dPdx * dUVdy.y - dPdy * dUVdx.y) / det;
 		const float3 dPdv = (dPdy * dUVdx.x - dPdx * dUVdy.x) / det;
-
-		// Rock in the way, around this point: the water turns away from it
-		const float step = 24.0;
-		const float2 gradient = float2(Obstacle(a_position.xy + float2(step, 0), a_position.z) - Obstacle(a_position.xy - float2(step, 0), a_position.z),
-									Obstacle(a_position.xy + float2(0, step), a_position.z) - Obstacle(a_position.xy - float2(0, step), a_position.z)) /
-		                        (2.0 * step) * ReachWidth;
-		float3 turn = float3(-gradient, 0.0);
-		// Only across the flow: water is not pushed back up the fall
+		// Down the fall: along v, whichever way descends
 		const float3 down = normalize(dPdv.z <= 0.0 ? dPdv : -dPdv);
-		turn -= down * dot(turn, down);
-		a_turn = saturate(length(turn));
-		if (a_turn < 0.01)
-			return;
+		const float2 downAcross = normalize(down.xy + float2(1e-5, 0.0));
 
-		// The turn in texture units per cycle
-		const float3 carried = turn * FlowDistance;
-		const float2 flowUV = float2(dot(carried, dPdu) / max(dot(dPdu, dPdu), 1e-6), dot(carried, dPdv) / max(dot(dPdv, dPdv), 1e-6));
-		const float phase0 = frac(a_time / FlowPeriod);
-		const float phase1 = frac(a_time / FlowPeriod + 0.5);
-		a_uv0 = a_uv - flowUV * (phase0 - 0.5);
-		a_uv1 = a_uv - flowUV * (phase1 - 0.5);
-		a_blend = abs(2.0 * phase0 - 1.0);
+		a_rock = RockAt(a_position.xy);
+		const float near = Nearness(a_position.xy, a_position.z);
+
+		// The push, across the flow only, moves the streak that passes here: sample where it came from
+		float3 push = float3(a_rock.xy * near, 0.0);
+		push -= down * dot(push, down);
+		const float2 shift = float2(dot(push, dPdu) / max(dot(dPdu, dPdu), 1e-6), dot(push, dPdv) / max(dot(dPdv, dPdv), 1e-6));
+
+		// Foam piled where the water runs into rock, and trailing behind it
+		const float ahead = RockAt(a_position.xy + downAcross * 24.0).z;
+		const float pillow = saturate((ahead - a_rock.z) * 4.0) * near;
+		float wake = 0.0;
+		[unroll] for (int i = 1; i <= 4; i++)
+		{
+			const float distance = WakeLength * i / 4.0;
+			wake = max(wake, RockAt(a_position.xy - downAcross * distance).w * (1.0 - distance / (WakeLength * 1.25)));
+		}
+		wake *= 1.0 - a_rock.w;
+		a_foam = saturate(pillow + wake * 0.8);
+		return a_uv - shift;
 	}
 
 	/**

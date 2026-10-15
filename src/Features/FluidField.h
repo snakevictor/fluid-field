@@ -294,13 +294,12 @@ private:
 		float Offset;
 		float Cling;
 		float ContactWidth;
-		float FlowDistance;
-		float FlowPeriod;
-		float ReachAbove;
-		float ReachWidth;
+		float Reach;
+		float WakeLength;
+		float FoamStrength;
 		float LiftMost;
 		uint32_t DebugMode;
-		float Pad[2];
+		float Pad[3];
 	};
 	static_assert(sizeof(FallGroundData) == 64);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
@@ -310,12 +309,14 @@ private:
 	static constexpr float FALL_GROUND_CLING = 24.0f;
 	static constexpr float FALL_GROUND_CONTACT = 6.0f;     ///< World units over which water fades where it cuts into rock
 	static constexpr float FALL_GROUND_LIFT_MOST = 24.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
-	static constexpr float FALL_FLOW_DISTANCE = 96.0f;     ///< World units the texture is carried round a rock per cycle
-	static constexpr float FALL_FLOW_PERIOD = 1.0f;
-	static constexpr float FALL_REACH_ABOVE = 32.0f;
-	static constexpr float FALL_REACH_WIDTH = 48.0f;
+	static constexpr float FALL_REACH = 96.0f;             ///< How far above rock its push still bends the water
+	static constexpr float FALL_WAKE_LENGTH = 160.0f;      ///< World units foam trails behind rock
+	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> fallGroundSRV;
+	winrt::com_ptr<ID3D11Texture2D> fallRockTexture;  ///< FallSites::BuildRockField over the ground map: push x, y, presence, prominence
+	winrt::com_ptr<ID3D11ShaderResourceView> fallRockSRV;
+	std::vector<float> fallRockScratch;
 	winrt::com_ptr<ID3D11Buffer> fallGroundOn;   ///< Constants for grounded draws
 	winrt::com_ptr<ID3D11Buffer> fallGroundOff;  ///< Enabled = 0, for every other effect draw
 	float fallGroundOrigin[2]{};

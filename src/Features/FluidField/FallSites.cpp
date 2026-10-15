@@ -154,13 +154,88 @@ namespace FluidFieldSim
 		waterSignature = 0;
 		updatesUntilScan = 0;
 		cellSummaries.clear();
-		captures.clear();
+		// Captures stay: turning waterfalls back on finds the same sites, and their rock, at once
 	}
 
 	const FallCapture* FallSites::GetCapture(const Site& a_site) const
 	{
 		const auto it = a_site.captureKey ? captures.find(a_site.captureKey) : captures.end();
 		return it != captures.end() ? &it->second : nullptr;
+	}
+
+	namespace
+	{
+		/** @brief A box blur of the known values (weight 1) over a_radius texels, both axes; unknown texels stay unknown (weight 0). */
+		void BoxBlur(std::vector<float>& a_values, std::vector<float>& a_weights, uint32_t a_size, int32_t a_radius)
+		{
+			const auto n = static_cast<int32_t>(a_size);
+			std::vector<double> sum(static_cast<std::size_t>(n) + 1), weight(static_cast<std::size_t>(n) + 1);
+			std::vector<float> values(a_values.size()), weights(a_weights.size());
+			for (int pass = 0; pass < 2; pass++) {
+				const bool rows = pass == 0;
+				for (int32_t line = 0; line < n; line++) {
+					const auto at = [&](int32_t i) { return rows ? static_cast<std::size_t>(line) * n + i : static_cast<std::size_t>(i) * n + line; };
+					sum[0] = weight[0] = 0.0;
+					for (int32_t i = 0; i < n; i++) {
+						const float w = a_weights[at(i)];
+						sum[i + 1] = sum[i] + static_cast<double>(a_values[at(i)]) * w;
+						weight[i + 1] = weight[i] + w;
+					}
+					for (int32_t i = 0; i < n; i++) {
+						const int32_t lo = std::max(0, i - a_radius);
+						const int32_t hi = std::min(n, i + a_radius + 1);
+						const double w = weight[hi] - weight[lo];
+						values[at(i)] = w > 0.0 ? static_cast<float>((sum[hi] - sum[lo]) / w) : 0.0f;
+						weights[at(i)] = static_cast<float>(w / (hi - lo));
+					}
+				}
+				a_values.swap(values);
+				a_weights.swap(weights);
+			}
+		}
+	}
+
+	void FallSites::BuildRockField(const std::vector<float>& a_heights, uint32_t a_size, float a_cell, std::vector<float>& a_field)
+	{
+		const std::size_t count = static_cast<std::size_t>(a_size) * a_size;
+		a_field.assign(count * 4, 0.0f);
+		// The bed: the ground blurred wide
+		std::vector<float> bed(count), known(count);
+		for (std::size_t i = 0; i < count; i++) {
+			const bool isKnown = a_heights[i] > FallCapture::NONE;
+			bed[i] = isKnown ? a_heights[i] : 0.0f;
+			known[i] = isKnown ? 1.0f : 0.0f;
+		}
+		std::vector<float> bedWeight = known;
+		BoxBlur(bed, bedWeight, a_size, static_cast<int32_t>(std::lround(BED_RADIUS / a_cell)));
+		// Rock standing out of it, then smoothed so its presence falls off round it
+		std::vector<float> presence(count), presenceWeight(count, 1.0f);
+		for (std::size_t i = 0; i < count; i++) {
+			const float prominence = known[i] > 0.0f ? std::clamp((a_heights[i] - bed[i] - PROMINENCE_FLOOR) / (PROMINENCE_FULL - PROMINENCE_FLOOR), 0.0f, 1.0f) : 0.0f;
+			presence[i] = prominence;
+			a_field[i * 4 + 3] = prominence;
+		}
+		const auto radius = static_cast<int32_t>(std::lround(OBSTACLE_RADIUS / a_cell));
+		BoxBlur(presence, presenceWeight, a_size, radius);
+		presenceWeight.assign(count, 1.0f);
+		BoxBlur(presence, presenceWeight, a_size, radius);
+		// The push: away from the rock, down its presence's slope
+		const auto n = static_cast<int32_t>(a_size);
+		for (int32_t y = 1; y + 1 < n; y++) {
+			for (int32_t x = 1; x + 1 < n; x++) {
+				const std::size_t i = static_cast<std::size_t>(y) * n + x;
+				float px = -(presence[i + 1] - presence[i - 1]) * 0.5f * PUSH;
+				float py = -(presence[i + n] - presence[i - n]) * 0.5f * PUSH;
+				const float length = std::sqrt(px * px + py * py);
+				if (length > PUSH_MOST) {
+					px *= PUSH_MOST / length;
+					py *= PUSH_MOST / length;
+				}
+				a_field[i * 4 + 0] = px;
+				a_field[i * 4 + 1] = py;
+				a_field[i * 4 + 2] = presence[i];
+			}
+		}
 	}
 
 	void FallSites::CountCaptures(uint32_t& a_complete, uint32_t& a_total) const

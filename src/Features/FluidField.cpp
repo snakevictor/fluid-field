@@ -328,7 +328,7 @@ void FluidField::DrawSettings()
 			fallGroundVersion = UINT64_MAX;  // Re-upload the constants
 		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("show_waterfall_turn_tooltip"), "Tints grounded waterfalls red where rock in the way turns their flow."));
+			ImGui::Text("%s", T(TKEY("show_waterfall_turn_tooltip"), "Paints grounded waterfalls with the rock field: grey where nothing is in the way, red and green showing which way rock pushes the water, blue where rock stands out of the flow."));
 		}
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -1400,6 +1400,8 @@ void FluidField::ReleaseFallGround()
 {
 	fallGroundTexture = nullptr;
 	fallGroundSRV = nullptr;
+	fallRockTexture = nullptr;
+	fallRockSRV = nullptr;
 	fallGroundOn = nullptr;
 	fallGroundOff = nullptr;
 	fallGroundVersion = UINT64_MAX;
@@ -1414,7 +1416,10 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		D3D11_BUFFER_DESC cbDesc{ .ByteWidth = sizeof(FallGroundData), .Usage = D3D11_USAGE_DEFAULT, .BindFlags = D3D11_BIND_CONSTANT_BUFFER, .CPUAccessFlags = 0, .MiscFlags = 0, .StructureByteStride = 0 };
 		const FallGroundData off{};
 		const D3D11_SUBRESOURCE_DATA offData{ &off, 0, 0 };
+		D3D11_TEXTURE2D_DESC rockDesc = desc;
+		rockDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 		if (FAILED(device->CreateTexture2D(&desc, nullptr, fallGroundTexture.put())) || FAILED(device->CreateShaderResourceView(fallGroundTexture.get(), nullptr, fallGroundSRV.put())) ||
+			FAILED(device->CreateTexture2D(&rockDesc, nullptr, fallRockTexture.put())) || FAILED(device->CreateShaderResourceView(fallRockTexture.get(), nullptr, fallRockSRV.put())) ||
 			FAILED(device->CreateBuffer(&cbDesc, &offData, fallGroundOn.put())) || FAILED(device->CreateBuffer(&cbDesc, &offData, fallGroundOff.put()))) {
 			logger::warn("[Fluid Field] Could not create the waterfall ground map; waterfalls are not grounded");
 			ReleaseFallGround();
@@ -1422,6 +1427,8 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		}
 		Util::SetResourceName(fallGroundTexture.get(), "FluidField::FallGround");
 		Util::SetResourceName(fallGroundSRV.get(), "FluidField::FallGround SRV");
+		Util::SetResourceName(fallRockTexture.get(), "FluidField::FallRock");
+		Util::SetResourceName(fallRockSRV.get(), "FluidField::FallRock SRV");
 		Util::SetResourceName(fallGroundOn.get(), "FluidField::FallGroundOn");
 		Util::SetResourceName(fallGroundOff.get(), "FluidField::FallGroundOff");
 	}
@@ -1437,8 +1444,10 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	fallGroundOrigin[1] = std::floor((a_playerPos.y - half) / FALL_GROUND_CELL) * FALL_GROUND_CELL;
 	fallSites.BuildGroundMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallGroundScratch);
 	context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, fallGroundScratch.data(), FALL_GROUND_SIZE * sizeof(float), 0);
+	FluidFieldSim::FallSites::BuildRockField(fallGroundScratch, FALL_GROUND_SIZE, FALL_GROUND_CELL, fallRockScratch);
+	context->UpdateSubresource(fallRockTexture.get(), 0, nullptr, fallRockScratch.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
 	const FallGroundData on{ { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET, FALL_GROUND_CLING, FALL_GROUND_CONTACT,
-		FALL_FLOW_DISTANCE, FALL_FLOW_PERIOD, FALL_REACH_ABOVE, FALL_REACH_WIDTH, FALL_GROUND_LIFT_MOST, static_cast<uint32_t>(fallGroundDebug), {} };
+		FALL_REACH, FALL_WAKE_LENGTH, FALL_FOAM_STRENGTH, FALL_GROUND_LIFT_MOST, static_cast<uint32_t>(fallGroundDebug), {} };
 	context->UpdateSubresource(fallGroundOn.get(), 0, nullptr, &on, 0, 0);
 }
 
@@ -1450,9 +1459,11 @@ void FluidField::SetupEffectGeometry(RE::BSRenderPass* a_pass)
 		ID3D11Buffer* constants = fallGroundOn.get();
 		context->VSSetConstantBuffers(13, 1, &constants);
 		context->PSSetConstantBuffers(13, 1, &constants);
-		ID3D11ShaderResourceView* heights = fallGroundSRV.get();
-		context->VSSetShaderResources(120, 1, &heights);
-		context->PSSetShaderResources(120, 1, &heights);
+		ID3D11ShaderResourceView* ground[] = { fallGroundSRV.get(), nullptr, fallRockSRV.get() };
+		context->VSSetShaderResources(120, 1, &ground[0]);
+		context->VSSetShaderResources(122, 1, &ground[2]);
+		context->PSSetShaderResources(120, 1, &ground[0]);
+		context->PSSetShaderResources(122, 1, &ground[2]);
 		ID3D11ShaderResourceView* depth = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
 		context->PSSetShaderResources(121, 1, &depth);
 		fallGroundBound = true;

@@ -114,6 +114,20 @@ namespace FluidFieldSim
 		 */
 		void BuildGroundMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const;
 
+		/**
+		 * @brief The rock in falling water's way, from a ground map (BuildGroundMap's): per texel the push
+		 * away from rock that stands out of its bed (world units, x and y), how much rock is there (0 to
+		 * 1, smoothed), and how far it stands out (0 to 1). The bed is the ground blurred over
+		 * BED_RADIUS; rock more than PROMINENCE_FLOOR above it stands out, fully at PROMINENCE_FULL.
+		 */
+		static void BuildRockField(const std::vector<float>& a_heights, uint32_t a_size, float a_cell, std::vector<float>& a_field);
+		static constexpr float BED_RADIUS = 128.0f;
+		static constexpr float PROMINENCE_FLOOR = 8.0f;
+		static constexpr float PROMINENCE_FULL = 48.0f;
+		static constexpr float OBSTACLE_RADIUS = 48.0f;  ///< How far round rock its presence is smoothed
+		static constexpr float PUSH = 160.0f;            ///< Push per unit of presence gradient per texel
+		static constexpr float PUSH_MOST = 64.0f;        ///< World units
+
 		/** @brief Counts for the menu: sites by kind. */
 		uint32_t CountKind(Kind a_kind) const;
 

@@ -737,20 +737,19 @@ PS_OUTPUT main(PS_INPUT input)
 	float4 baseTexColor = float4(1, 1, 1, 1);
 	float4 baseColor = float4(1, 1, 1, 1);
 #	if defined(FLUID_FIELD)
-	float fallTurn = 0.0;  // How hard rock turns the falling water here, for its wake's foam
+	float4 fallRock = 0.0;  // The rock field here (FallGround::Flow), for the debug view
+	float fallFoam = 0.0;   // Foam where the falling water runs into rock and behind it
 #	endif
 #	if !defined(TEXTURE)
 	[branch] if (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToColor || Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha)
 #	endif
 	{
 #	if defined(FLUID_FIELD)
-		// Fluid Field (D26): falling water flowed around the rock in its way
+		// Fluid Field (D26): falling water's streaks curved round the rock in its way
 		[branch] if (FallGround::Enabled)
 		{
-			float2 uv0, uv1;
-			float blend;
-			FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, SharedData::Timer, uv0, uv1, blend, fallTurn);
-			baseTexColor = lerp(TexBaseSampler.Sample(SampBaseSampler, uv0), TexBaseSampler.Sample(SampBaseSampler, uv1), blend);
+			const float2 uv = FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, fallRock, fallFoam);
+			baseTexColor = TexBaseSampler.Sample(SampBaseSampler, uv);
 		}
 		else
 #	endif
@@ -780,20 +779,6 @@ PS_OUTPUT main(PS_INPUT input)
 
 	baseColor = baseColorMul * baseColor;
 	baseColor.w *= softMul;
-
-#	if defined(FLUID_FIELD)
-	// Fluid Field (D26): falling water softens where it cuts into rock, and foams where rock turns it
-	[branch] if (FallGround::Enabled)
-	{
-		// Foam where rock in the way turns the water: along its edges and in its wake
-		const float foam = fallTurn;
-		const float brightness = dot(baseColor.rgb, 1.0 / 3.0);
-		baseColor.rgb = lerp(baseColor.rgb, max(baseColor.rgb, brightness.xxx * 1.3), foam * 0.6);
-		baseColor.w = saturate(baseColor.w + foam * 0.35) * FallGround::Visibility(input.Position.xy, input.Position.z);
-		if (FallGround::DebugMode == 1)
-			baseColor = float4(lerp(baseColor.rgb, float3(1, 0, 0), fallTurn), max(baseColor.w, fallTurn));
-	}
-#	endif
 
 #	if defined(SOFT) && !(defined(FALLOFF) && defined(MULTBLEND))
 	if (baseColor.w - 0.003 < 0) {
@@ -837,6 +822,17 @@ PS_OUTPUT main(PS_INPUT input)
 #	endif
 		baseColor.xyz = Color::Effect(baseColorScale * TexGrayscaleSampler.Sample(SampGrayscaleSampler, grayscaleToColorUv).xyz);
 	}
+
+#	if defined(FLUID_FIELD)
+	// Fluid Field (D26), after vanilla's palette has coloured the water: foam where it runs into rock
+	// and behind it, whiter and denser; and soft where it cuts into rock
+	[branch] if (FallGround::Enabled)
+	{
+		const float brightest = max(max(baseColor.x, baseColor.y), baseColor.z);
+		baseColor.xyz = lerp(baseColor.xyz, brightest.xxx * FallGround::FoamStrength, fallFoam);
+		alpha = lerp(alpha, max(alpha, 0.9), fallFoam) * FallGround::Visibility(input.Position.xy, input.Position.z);
+	}
+#	endif
 
 	float3 lightColor = lerp(baseColor.xyz, propertyColor * baseColor.xyz, lightingInfluence);
 
@@ -928,6 +924,11 @@ PS_OUTPUT main(PS_INPUT input)
 		finalColor.xyz = pow(max(finalColor.xyz, 0.0), SharedData::enbSettings.AuroraCurve) * SharedData::enbSettings.AuroraIntensity;
 #	endif
 	psout.Diffuse = finalColor;
+#	if defined(FLUID_FIELD)
+	// Fluid Field (D26) debug: the rock field, push as red (x) and green (y) about grey, presence as blue
+	[branch] if (FallGround::Enabled && FallGround::DebugMode == 1)
+		psout.Diffuse.xyz = float3(saturate(0.5 + fallRock.x / 64.0), saturate(0.5 + fallRock.y / 64.0), fallRock.z);
+#	endif
 #	if defined(LIGHTING) && defined(LIGHT_LIMIT_FIX) && defined(LLFDEBUG)
 	if (SharedData::lightLimitFixSettings.EnableLightsVisualisation) {
 		if (SharedData::lightLimitFixSettings.LightsVisualisationMode == 0) {
