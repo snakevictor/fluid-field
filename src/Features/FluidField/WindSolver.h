@@ -24,6 +24,17 @@ namespace FluidFieldSim
 	};
 	static_assert(sizeof(Emitter) == 32);
 
+	/** @brief Inputs for the fog layer (D21), matching FogCB in FogCS.hlsl. */
+	struct FogParams
+	{
+		float drift[2]{};          ///< Weather wind carrying the fog, world units per second
+		float refillRate = 0.25f;  ///< Per-second rate at which thinned fog fills back in
+		float stirRate = 2.0f;     ///< Per-second rate at which fully stirred air clears the fog
+		float stirSpeed = 150.0f;  ///< Wind speed counted as fully stirred, world units per second
+		float pad[3]{};
+	};
+	static_assert(sizeof(FogParams) == 32);
+
 	/** @brief Inputs for one simulation step. */
 	struct StepParams
 	{
@@ -33,6 +44,7 @@ namespace FluidFieldSim
 		float velocityDecay = 1.0f;  ///< Multiplier applied after advection
 		std::uint32_t jacobiIterations = 30;
 		std::span<const Emitter> emitters;
+		const FogParams* fog = nullptr;  ///< Steps the fog layer too when set
 	};
 
 	/** @brief Colour scales for the debug view: a value of 1/scale maps to full intensity. */
@@ -86,6 +98,8 @@ namespace FluidFieldSim
 			wrap("Divergence", [&] { Divergence(context); });
 			wrap("Pressure Solve", [&] { SolvePressure(context, params.jacobiIterations); });
 			wrap("Project", [&] { Project(context); });
+			if (params.fog)
+				wrap("Fog", [&] { Fog(context, *params.fog); });
 			EndStep(context);
 		}
 
@@ -103,6 +117,8 @@ namespace FluidFieldSim
 		ID3D11Texture2D* GetPressureTexture() const { return pressure[pressureResult].texture.get(); }
 
 		ID3D11ShaderResourceView* GetVelocitySRV() const { return velocity[current].srv.get(); }
+		/** @brief Fog density multiplier (D21): 1 is the weather's fog, 0 clear air. Toroidal like the velocity. */
+		ID3D11ShaderResourceView* GetFogSRV() const { return fog[currentFog].srv.get(); }
 
 		/** @brief Debug images, in the order velocity, divergence, pressure. */
 		static constexpr std::array<const char*, 3> DEBUG_VIEW_NAMES = { "Velocity", "Divergence", "Pressure" };
@@ -149,6 +165,7 @@ namespace FluidFieldSim
 		void Divergence(ID3D11DeviceContext* context);
 		void SolvePressure(ID3D11DeviceContext* context, std::uint32_t iterations);
 		void Project(ID3D11DeviceContext* context);
+		void Fog(ID3D11DeviceContext* context, const FogParams& params);
 
 		/** @brief Binds one SRV set and one UAV, then dispatches over the whole grid. */
 		void Dispatch(ID3D11DeviceContext* context, ID3D11ComputeShader* shader, std::span<ID3D11ShaderResourceView* const> srvs, ID3D11UnorderedAccessView* uav);
@@ -159,11 +176,14 @@ namespace FluidFieldSim
 		std::array<Layer, 2> pressure;  // Ping-pong within the Jacobi solve
 		Layer divergence;
 		std::array<Layer, 3> debugViews;
+		std::array<Layer, 2> fog;  // Ping-pong, `currentFog` holds the latest result
+		std::uint32_t currentFog = 0;
 		std::uint32_t current = 0;
 		std::uint32_t pressureResult = 0;
 
 		winrt::com_ptr<ID3D11Buffer> constants;
 		winrt::com_ptr<ID3D11Buffer> debugConstants;
+		winrt::com_ptr<ID3D11Buffer> fogConstants;
 		winrt::com_ptr<ID3D11Buffer> emitterBuffer;
 		winrt::com_ptr<ID3D11ShaderResourceView> emitterSRV;
 
@@ -173,6 +193,7 @@ namespace FluidFieldSim
 		winrt::com_ptr<ID3D11ComputeShader> jacobiCS;
 		winrt::com_ptr<ID3D11ComputeShader> projectCS;
 		winrt::com_ptr<ID3D11ComputeShader> debugViewCS;
+		winrt::com_ptr<ID3D11ComputeShader> fogCS;
 
 		// Scroll and reset state carried between steps
 		std::int32_t prevGridMin[2]{};

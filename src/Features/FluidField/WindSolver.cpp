@@ -56,6 +56,8 @@ namespace FluidFieldSim
 		pressure[0] = CreateLayer(device, a_resolution, DXGI_FORMAT_R32_FLOAT, name, "Pressure0");
 		pressure[1] = CreateLayer(device, a_resolution, DXGI_FORMAT_R32_FLOAT, name, "Pressure1");
 		divergence = CreateLayer(device, a_resolution, DXGI_FORMAT_R32_FLOAT, name, "Divergence");
+		fog[0] = CreateLayer(device, a_resolution, DXGI_FORMAT_R16_FLOAT, name, "Fog0");
+		fog[1] = CreateLayer(device, a_resolution, DXGI_FORMAT_R16_FLOAT, name, "Fog1");
 		for (std::size_t i = 0; i < debugViews.size(); i++)
 			debugViews[i] = CreateLayer(device, a_resolution, DXGI_FORMAT_R8G8B8A8_UNORM, name, (std::string("DebugView") + DEBUG_VIEW_NAMES[i]).c_str());
 
@@ -73,6 +75,10 @@ namespace FluidFieldSim
 		cbDesc.ByteWidth = sizeof(DebugConstants);
 		winrt::check_hresult(device->CreateBuffer(&cbDesc, nullptr, debugConstants.put()));
 		name(debugConstants.get(), "FluidField::DebugViewConstants");
+
+		cbDesc.ByteWidth = sizeof(FogParams);
+		winrt::check_hresult(device->CreateBuffer(&cbDesc, nullptr, fogConstants.put()));
+		name(fogConstants.get(), "FluidField::FogConstants");
 
 		D3D11_BUFFER_DESC emitterDesc{
 			.ByteWidth = sizeof(Emitter) * MAX_EMITTERS,
@@ -95,6 +101,7 @@ namespace FluidFieldSim
 
 		resolution = a_resolution;
 		current = 0;
+		currentFog = 0;
 		pressureResult = 0;
 		historyValid = false;
 	}
@@ -110,6 +117,7 @@ namespace FluidFieldSim
 			{ &jacobiCS, L"JacobiCS.hlsl" },
 			{ &projectCS, L"ProjectCS.hlsl" },
 			{ &debugViewCS, L"DebugViewCS.hlsl" },
+			{ &fogCS, L"FogCS.hlsl" },
 		};
 
 		for (auto& [program, fileName] : shaders) {
@@ -122,7 +130,7 @@ namespace FluidFieldSim
 
 	bool WindSolver::HasShaders() const
 	{
-		return addForcesCS && advectCS && divergenceCS && jacobiCS && projectCS && debugViewCS;
+		return addForcesCS && advectCS && divergenceCS && jacobiCS && projectCS && debugViewCS && fogCS;
 	}
 
 	void WindSolver::ReleaseShaders()
@@ -133,6 +141,7 @@ namespace FluidFieldSim
 		jacobiCS = nullptr;
 		projectCS = nullptr;
 		debugViewCS = nullptr;
+		fogCS = nullptr;
 	}
 
 	void WindSolver::ReleaseResources()
@@ -141,8 +150,10 @@ namespace FluidFieldSim
 		pressure = {};
 		divergence = {};
 		debugViews = {};
+		fog = {};
 		constants = nullptr;
 		debugConstants = nullptr;
+		fogConstants = nullptr;
 		emitterBuffer = nullptr;
 		emitterSRV = nullptr;
 		resolution = 0;
@@ -159,6 +170,10 @@ namespace FluidFieldSim
 			context->ClearUnorderedAccessViewFloat(layer->uav.get(), zero);
 		for (auto& view : debugViews)
 			context->ClearUnorderedAccessViewFloat(view.uav.get(), zero);
+		// Fog starts as the weather has it
+		const float one[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+		for (auto& layer : fog)
+			context->ClearUnorderedAccessViewFloat(layer.uav.get(), one);
 
 		historyValid = false;
 	}
@@ -263,6 +278,24 @@ namespace FluidFieldSim
 		ID3D11ShaderResourceView* srvs[] = { velocity[current].srv.get(), pressure[pressureResult].srv.get() };
 		Dispatch(context, projectCS.get(), srvs, velocity[current ^ 1].uav.get());
 		current ^= 1;
+	}
+
+	void WindSolver::Fog(ID3D11DeviceContext* context, const FogParams& params)
+	{
+		D3D11_MAPPED_SUBRESOURCE mapped{};
+		if (SUCCEEDED(context->Map(fogConstants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+			std::memcpy(mapped.pData, &params, sizeof(params));
+			context->Unmap(fogConstants.get(), 0);
+		}
+		ID3D11Buffer* cb = fogConstants.get();
+		context->CSSetConstantBuffers(1, 1, &cb);
+
+		ID3D11ShaderResourceView* srvs[] = { velocity[current].srv.get(), fog[currentFog].srv.get() };
+		Dispatch(context, fogCS.get(), srvs, fog[currentFog ^ 1].uav.get());
+		currentFog ^= 1;
+
+		ID3D11Buffer* nullCB = nullptr;
+		context->CSSetConstantBuffers(1, 1, &nullCB);
 	}
 
 	void WindSolver::RenderDebugViews(ID3D11DeviceContext* context, const DebugViewScales& scales)

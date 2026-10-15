@@ -48,6 +48,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	FlowDetail,
 	FoamStrength,
 	WaterTint,
+	InteractiveFog,
+	FogStir,
+	FogRefillSeconds,
 	ReplaceVanillaFoam)
 
 void FluidField::DrawSettings()
@@ -95,6 +98,19 @@ void FluidField::DrawSettings()
 	ImGui::SliderFloat(T(TKEY("wind_damping"), "Damping"), &settings.WindDamping, 0.0f, 5.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("wind_damping_tooltip"), "How quickly wind dies down. Higher values calm it sooner."));
+	}
+
+	ImGui::Checkbox(T(TKEY("interactive_fog"), "Interactive Fog"), &settings.InteractiveFog);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("interactive_fog_tooltip"), "Ground fog parts and swirls around moving actors and drifts with the weather's wind. Needs Exponential Height Fog with volumetric fog on."));
+	}
+	ImGui::SliderFloat(T(TKEY("fog_stir"), "Fog Stirring"), &settings.FogStir, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("fog_stir_tooltip"), "How strongly moving actors push the air, parting the fog around them."));
+	}
+	ImGui::SliderFloat(T(TKEY("fog_refill"), "Fog Refill"), &settings.FogRefillSeconds, 0.5f, 30.0f, "%.1f s", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("fog_refill_tooltip"), "How long parted fog takes to fill back in."));
 	}
 
 	if (ImGui::Button(T(TKEY("reset_field"), "Reset Field")))
@@ -424,6 +440,8 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.FlowDetail = std::isfinite(a_settings.FlowDetail) ? std::clamp(a_settings.FlowDetail, 0.0f, 2.0f) : defaults.FlowDetail;
 	a_settings.FoamStrength = std::isfinite(a_settings.FoamStrength) ? std::clamp(a_settings.FoamStrength, 0.0f, 3.0f) : defaults.FoamStrength;
 	a_settings.WaterTint = std::isfinite(a_settings.WaterTint) ? std::clamp(a_settings.WaterTint, 0.0f, 1.0f) : defaults.WaterTint;
+	a_settings.FogStir = std::isfinite(a_settings.FogStir) ? std::clamp(a_settings.FogStir, 0.0f, 3.0f) : defaults.FogStir;
+	a_settings.FogRefillSeconds = std::isfinite(a_settings.FogRefillSeconds) ? std::clamp(a_settings.FogRefillSeconds, 0.5f, 30.0f) : defaults.FogRefillSeconds;
 	return a_settings;
 }
 
@@ -619,6 +637,7 @@ void FluidField::Prepass()
 			level->awaitingMap = true;
 		}
 		wakeSources.Clear();
+		airSources.Clear();
 		waterFade = 0.0f;
 		waterShaderData.Enabled = 0;
 		waterShaderData.FarEnabled = 0;
@@ -655,13 +674,37 @@ void FluidField::Prepass()
 		};
 	}
 
+	// Moving actors push the air (D21), leaving the test puff a slot
+	std::vector<FluidFieldSim::Emitter> windEmitters;
+	if (settings.InteractiveFog) {
+		windEmitters = airSources.Update(playerPos, gridMin, cellSize, settings.GridResolution, deltaTime, settings.FogStir, FluidFieldSim::WindSolver::MAX_EMITTERS - 1);
+	}
+	if (testPuff)
+		windEmitters.push_back(*testPuff);
+
+	// The fog: carried by the wind and the weather's own wind, refilling behind actors
+	const FluidFieldSim::FogParams* fog = nullptr;
+	if (settings.InteractiveFog) {
+		fogParams = {};
+		fogParams.refillRate = 1.0f / settings.FogRefillSeconds;
+		if (const auto* sky = RE::Sky::GetSingleton(); sky && sky->currentWeather) {
+			// Wind speed and direction are stored as 0-255; direction 0 blows from the north
+			const float speed = static_cast<float>(sky->currentWeather->data.windSpeed) / 255.0f * MAX_WEATHER_DRIFT;
+			const float heading = static_cast<float>(sky->currentWeather->data.windDirection) / 256.0f * 2.0f * std::numbers::pi_v<float>;
+			fogParams.drift[0] = -std::sin(heading) * speed;
+			fogParams.drift[1] = -std::cos(heading) * speed;
+		}
+		fog = &fogParams;
+	}
+
 	FluidFieldSim::StepParams params{
 		.gridMin = { gridMin[0], gridMin[1] },
 		.cellSize = cellSize,
 		.deltaTime = deltaTime,
 		.velocityDecay = std::exp(-settings.WindDamping * deltaTime),
 		.jacobiIterations = settings.JacobiIterations,
-		.emitters = testPuff ? std::span<const FluidFieldSim::Emitter>(&*testPuff, 1) : std::span<const FluidFieldSim::Emitter>()
+		.emitters = windEmitters,
+		.fog = fog
 	};
 
 	{
@@ -681,6 +724,11 @@ void FluidField::Prepass()
 
 	lastGridMin[0] = gridMin[0];
 	lastGridMin[1] = gridMin[1];
+	waterShaderData.FogEnabled = fog ? 1u : 0u;
+	waterShaderData.FogGridMin[0] = gridMin[0];
+	waterShaderData.FogGridMin[1] = gridMin[1];
+	waterShaderData.FogGridRes = settings.GridResolution;
+	waterShaderData.FogCellSize = cellSize;
 	lastPlayerTexel[0] = playerPos.x / cellSize - static_cast<float>(gridMin[0]);
 	lastPlayerTexel[1] = playerPos.y / cellSize - static_cast<float>(gridMin[1]);
 	lastHeading = player->GetAngleZ();
@@ -906,12 +954,31 @@ void FluidField::UploadObstacles(ID3D11DeviceContext* a_context, const RE::NiPoi
 
 FluidField::WaterShaderData FluidField::GetCommonBufferData() const
 {
-	if (!loaded || !settings.Enabled || !settings.WaterEnabled)
+	if (!loaded || !settings.Enabled)
 		return {};
 	WaterShaderData data = waterShaderData;
+	if (!settings.InteractiveFog)
+		data.FogEnabled = 0;
+	if (!settings.WaterEnabled) {
+		// The fog field stays; the water's fields are cleared
+		WaterShaderData fogOnly{};
+		fogOnly.FogEnabled = data.FogEnabled;
+		fogOnly.FogGridMin[0] = data.FogGridMin[0];
+		fogOnly.FogGridMin[1] = data.FogGridMin[1];
+		fogOnly.FogGridRes = data.FogGridRes;
+		fogOnly.FogCellSize = data.FogCellSize;
+		return fogOnly;
+	}
 	data.WaterTint = settings.WaterTint;
 	data.Fade = waterFade;
 	return data;
+}
+
+ID3D11ShaderResourceView* FluidField::GetFogSRV() const
+{
+	if (!loaded || !settings.Enabled || !settings.InteractiveFog || !waterShaderData.FogEnabled || !solver.HasResources())
+		return nullptr;
+	return solver.GetFogSRV();
 }
 
 void FluidField::BindWaterOutputs(ID3D11DeviceContext* a_context) const

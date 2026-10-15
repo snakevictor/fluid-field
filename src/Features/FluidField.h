@@ -1,5 +1,6 @@
 #pragma once
 
+#include "FluidField/AirSources.h"
 #include "FluidField/BedRaycasts.h"
 #include "FluidField/DepthMapView.h"
 #include "FluidField/LandscapeCache.h"
@@ -84,6 +85,9 @@ struct FluidField : OverlayFeature
 		float FoamStrength = 1.0f;           ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
 		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
+		bool InteractiveFog = true;          ///< Actors and the weather's wind move Exponential Height Fog's volumetric fog (D21)
+		float FogStir = 1.0f;                ///< How strongly moving actors push the air and part the fog
+		float FogRefillSeconds = 4.0f;       ///< Seconds for parted fog to fill back in (about two thirds of the way)
 	};
 
 	Settings settings;
@@ -122,8 +126,12 @@ struct FluidField : OverlayFeature
 		uint32_t FarGridRes = 0;
 		float FarCellSize = 0.0f;
 		uint32_t FarEnabled = 0;
-		float Fade = 0.0f;  ///< 0 to 1 over the first moments after a (re)start, so the water eases in
-		float farPad[2]{};
+		float Fade = 0.0f;        ///< 0 to 1 over the first moments after a (re)start, so the water eases in
+		uint32_t FogEnabled = 0;  ///< The fog density field (D21) is valid this frame
+		float fogPad = 0.0f;
+		int32_t FogGridMin[2]{};  ///< The fog field's placement: the wind grid
+		uint32_t FogGridRes = 0;
+		float FogCellSize = 0.0f;
 	};
 	static_assert(sizeof(WaterShaderData) % 16 == 0);
 	/** @brief This frame's water grid placement, or Enabled = 0 when the water outputs are not valid. */
@@ -175,6 +183,8 @@ private:
 	};
 	/** @brief Simulated seconds run at once when a level starts, so it begins already flowing around obstacles. */
 	static constexpr float WARMUP_SECONDS = 2.0f;
+	/** @brief Fog drift at the weather's full wind speed, world units per second. */
+	static constexpr float MAX_WEATHER_DRIFT = 150.0f;
 	/** @brief Substep length of the warm-up, as the regular step's shortest substep. */
 	static constexpr float WARMUP_SUBSTEP = 0.012f;
 	/** @brief Seconds over which the simulated water fades in after a (re)start. */
@@ -188,6 +198,14 @@ private:
 	/** @brief Near water world units per texel. */
 	float GetWaterCellSize() const { return settings.WaterSize / static_cast<float>(settings.WaterResolution); }
 	FluidFieldSim::WakeSources wakeSources;
+	FluidFieldSim::AirSources airSources;
+	FluidFieldSim::FogParams fogParams;  ///< This step's fog inputs, when the fog is on
+
+public:
+	/** @brief The fog density field for Exponential Height Fog's volumetric material pass (D21); null when off. */
+	ID3D11ShaderResourceView* GetFogSRV() const;
+
+private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
 
 	/** @brief Creates the water layer's GPU resources and shaders as needed. Returns false if it cannot run. */
