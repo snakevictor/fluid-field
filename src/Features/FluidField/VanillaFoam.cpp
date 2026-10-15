@@ -1,6 +1,7 @@
 #include "VanillaFoam.h"
 
 #include "EngineGrid.h"
+#include "Globals.h"
 #include "WaterSurfaces.h"
 
 #include <algorithm>
@@ -8,6 +9,7 @@
 #include <cctype>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace FluidFieldSim
 {
@@ -30,10 +32,26 @@ namespace FluidFieldSim
 			return model ? model->GetModel() : nullptr;
 		}
 
-		void SetHidden(RE::TESObjectREFR& a_ref, bool a_hidden)
+		/**
+		 * @brief Collects the effect parts of a mesh: every leaf not drawn with the lighting shader.
+		 * Effect meshes like FXrapidsRocks carry real, lit rock geometry beside their foam cards and
+		 * particles, and the rocks must stay.
+		 */
+		void CollectEffectParts(RE::NiAVObject* a_object, std::vector<RE::NiPointer<RE::NiAVObject>>& a_parts)
 		{
-			if (auto* root = a_ref.Get3D())
-				root->SetAppCulled(a_hidden);
+			if (!a_object)
+				return;
+			if (auto* node = a_object->AsNode()) {
+				for (auto& child : node->GetChildren())
+					CollectEffectParts(child.get(), a_parts);
+				return;
+			}
+			if (auto* geometry = a_object->AsGeometry()) {
+				const auto* shader = geometry->GetGeometryRuntimeData().shaderProperty.get();
+				if (shader && shader->GetRTTI() == globals::rtti::BSLightingShaderPropertyRTTI.get())
+					return;
+			}
+			a_parts.emplace_back(a_object);
 		}
 	}
 
@@ -50,12 +68,17 @@ namespace FluidFieldSim
 		return std::ranges::any_of(patterns, [&](std::string_view a_pattern) { return model.find(a_pattern) != std::string::npos; });
 	}
 
+	void VanillaFoam::Show(HiddenRef& a_hidden)
+	{
+		for (auto& part : a_hidden.parts)
+			part->SetAppCulled(false);
+		a_hidden.parts.clear();
+	}
+
 	void VanillaFoam::RestoreAll()
 	{
-		for (const auto& [formID, handle] : hidden) {
-			if (const auto ref = handle.get(); ref && ref->GetFormID() == formID)
-				SetHidden(*ref, false);
-		}
+		for (auto& [formID, entry] : hidden)
+			Show(entry);
 		hidden.clear();
 		updatesUntilScan = 0;
 	}
@@ -93,8 +116,15 @@ namespace FluidFieldSim
 				const uint32_t formID = a_ref->GetFormID();
 				inArea.insert(formID);
 				// Hide new ones, and hide again any whose 3D was reloaded since
-				SetHidden(*a_ref, true);
-				hidden.try_emplace(formID, a_ref->GetHandle());
+				auto& entry = hidden[formID];
+				auto* root = a_ref->Get3D();
+				if (entry.root.get() != root || entry.parts.empty()) {
+					Show(entry);
+					entry.root.reset(root);
+					CollectEffectParts(root, entry.parts);
+				}
+				for (auto& part : entry.parts)
+					part->SetAppCulled(true);
 				return RE::BSContainer::ForEachResult::kContinue;
 			});
 		};
@@ -114,8 +144,7 @@ namespace FluidFieldSim
 		// Show again whatever left the area (or unloaded)
 		for (auto it = hidden.begin(); it != hidden.end();) {
 			if (!inArea.contains(it->first)) {
-				if (const auto ref = it->second.get(); ref && ref->GetFormID() == it->first)
-					SetHidden(*ref, false);
+				Show(it->second);
 				it = hidden.erase(it);
 			} else {
 				++it;

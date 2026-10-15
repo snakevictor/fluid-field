@@ -80,9 +80,10 @@ struct FluidField : OverlayFeature
 		float RiverSpeed = 150.0f;           ///< River current at full flowmap strength, world units per second (0: test current only)
 		float CurrentPull = 0.25f;           ///< Per-second pull of the water toward the river current; lower lets obstacles shape the flow
 		float Turbulence = 0.4f;             ///< Vorticity confinement: keeps eddies behind obstacles alive (0: off)
-		float FlowDetail = 1.2f;
-		float FoamStrength = 1.0f;       ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
-		bool ReplaceVanillaFoam = true;  ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated             ///< Strength of the surface detail carried by the simulated flow
+		float FlowDetail = 1.2f;             ///< Strength of the surface detail carried by the simulated flow
+		float FoamStrength = 1.0f;           ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
+		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
+		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
 	};
 
 	Settings settings;
@@ -116,7 +117,7 @@ struct FluidField : OverlayFeature
 		float NormalStrength = 0.0f;
 		uint32_t Enabled = 0;
 		float FlowDetail = 0.0f;
-		float pad = 0.0f;
+		float WaterTint = 0.0f;   ///< Applies to all water, simulated or not
 		int32_t FarGridMin[2]{};  ///< The far level's placement; FarEnabled = 0 when it has no valid output
 		uint32_t FarGridRes = 0;
 		float FarCellSize = 0.0f;

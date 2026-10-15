@@ -662,7 +662,7 @@ WaterNormalData GetWaterNormal(PS_INPUT input, float distanceFactor, float norma
 		float worldPerPixel = length(ddx(input.WPosition.xy)) + 1e-4;
 		input.TexCoord3.xy += fluidWarp * (length(ddx(input.TexCoord3.xy)) / worldPerPixel);
 #				endif
-		normalsAmplitude.xyz *= 1.0 + fluidRoughness;
+		normalsAmplitude.xyz *= FluidField::RippleBoost(fluidRoughness, viewDirection);
 	}
 #			endif
 
@@ -791,6 +791,9 @@ WaterNormalData GetWaterNormal(PS_INPUT input, float distanceFactor, float norma
 		fluidFieldPosition.xy += parallaxOffset;
 #				endif
 		finalNormal = FluidField::ApplyWaterNormal(fluidFieldPosition, finalNormal);
+#				if !defined(UNDERWATER)
+		finalNormal = FluidField::KeepReflectionAboveHorizon(finalNormal, viewDirection, fluidFieldPosition);
+#				endif
 	}
 #			endif
 
@@ -1200,14 +1203,24 @@ PS_OUTPUT main(PS_INPUT input)
 
 	diffuseOutput.refractionDiffuseColor = dirColor + ambientColor;
 #				if defined(FLUID_FIELD)
-	// Light reaching the surface, for Fluid Field's foam (lit like any white surface)
-	float3 fluidFoamLight = dirColor + ambientColor;
+	// Light reaching the surface, for Fluid Field's foam (lit like any white surface). dirColor and
+	// ambientColor above are the water's own colour under that light, so the scene light is taken here.
+	float3 fluidAmbientLight = ShadowSampling::GetAmbientLighting();
+#					if defined(SKYLIGHTING)
+	fluidAmbientLight = Color::IrradianceToGamma(Color::IrradianceToLinear(fluidAmbientLight) * skylightingDiffuse);
+#					endif
+	float3 fluidFoamLight = ShadowSampling::GetDirectionalLighting() * dirShadow + fluidAmbientLight;
 	{
 		// Bubbles in fast, foamy water make the water body lighter and milkier
 		const float3 fluidPosition = input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz;
 		FluidField::ApplyAeration(diffuseOutput.refractionDiffuseColor, fluidPosition, fluidFoamLight, 1.0);
 		FluidField::ApplyAeration(diffuseOutput.refractionColor, fluidPosition, fluidFoamLight, 0.5);
 	}
+#					if defined(DEPTH) && !defined(VERTEX_ALPHA_DEPTH) && defined(REFRACTIONS) && !defined(UNDERWATER)
+	// All water takes on its own colour with depth, as it looks from underwater (distanceMul.w is the
+	// depth below the surface over FogParam.z)
+	diffuseOutput.refractionMul = FluidField::TintedRefractionWeight(diffuseOutput.refractionMul, distanceMul.w * FogParam.z);
+#					endif
 #				endif
 
 #				if !defined(UNDERWATER)

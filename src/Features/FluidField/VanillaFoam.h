@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace FluidFieldSim
 {
@@ -14,7 +15,8 @@ namespace FluidFieldSim
 	 * Vanilla fakes rapids foam, splashes and spray with effect meshes placed along rivers and at
 	 * waterfalls (FXRapids, FxRapidsRing, FXrapidsRocks, FXSplash...Churn, waterfall skirts, mist
 	 * blasts and spray). Their looping textures ignore the flow, so inside the simulated area their
-	 * 3D is culled (`SetAppCulled`) and Fluid Field's own foam takes over. Nothing is written to the
+	 * effect parts are culled (`SetAppCulled`) and Fluid Field's own foam takes over; lit geometry in
+	 * the same mesh (the rocks of FXrapidsRocks) stays. Nothing is written to the
 	 * save: a reference is shown again once it leaves the area, or when the option or the water is
 	 * turned off. Waterfall bodies and ambient low mist stay: falling water and atmosphere are not
 	 * something the surface simulation produces. Runs on the main thread.
@@ -40,7 +42,17 @@ namespace FluidFieldSim
 		/** @brief Updates between scans of the loaded references. */
 		static constexpr uint32_t SCAN_INTERVAL = 30;
 
-		std::unordered_map<uint32_t, RE::ObjectRefHandle> hidden;  ///< Keyed by form ID
+		/** @brief A hidden reference: the 3D its parts were found in, and the culled parts. */
+		struct HiddenRef
+		{
+			RE::NiPointer<RE::NiAVObject> root;
+			std::vector<RE::NiPointer<RE::NiAVObject>> parts;
+		};
+
+		/** @brief Shows a reference's culled parts again. */
+		static void Show(HiddenRef& a_hidden);
+
+		std::unordered_map<uint32_t, HiddenRef> hidden;  ///< Keyed by form ID
 		uint32_t updatesUntilScan = 0;
 	};
 }

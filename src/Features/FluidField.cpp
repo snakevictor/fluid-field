@@ -47,6 +47,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Turbulence,
 	FlowDetail,
 	FoamStrength,
+	WaterTint,
 	ReplaceVanillaFoam)
 
 void FluidField::DrawSettings()
@@ -234,6 +235,10 @@ void FluidField::DrawSettings()
 		ImGui::Text("%s", T(TKEY("replace_vanilla_foam_tooltip"), "Hides vanilla's placed rapids foam, splash and spray effects where the water is simulated. Waterfalls and low mist stay."));
 	}
 	ImGui::Text(T(TKEY("vanilla_foam_hidden"), "Vanilla foam effects hidden: %u"), vanillaFoam.GetHiddenCount());
+	ImGui::SliderFloat(T(TKEY("water_tint"), "Water Tint"), &settings.WaterTint, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("water_tint_tooltip"), "Tints what is seen through all water with the water's own colour, deepening with depth, as it looks from underwater. 0 keeps vanilla's clear look."));
+	}
 	if (waterShaderFailed)
 		ImGui::TextColored(Menu::GetSingleton()->GetTheme().StatusPalette.Error, "%s", T(TKEY("water_shader_failed"), "Water shaders failed to compile, so the water layer is off. Check CommunityShaders.log."));
 	if (waterResourceFailed)
@@ -418,6 +423,7 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.Turbulence = std::isfinite(a_settings.Turbulence) ? std::clamp(a_settings.Turbulence, 0.0f, 5.0f) : defaults.Turbulence;
 	a_settings.FlowDetail = std::isfinite(a_settings.FlowDetail) ? std::clamp(a_settings.FlowDetail, 0.0f, 2.0f) : defaults.FlowDetail;
 	a_settings.FoamStrength = std::isfinite(a_settings.FoamStrength) ? std::clamp(a_settings.FoamStrength, 0.0f, 3.0f) : defaults.FoamStrength;
+	a_settings.WaterTint = std::isfinite(a_settings.WaterTint) ? std::clamp(a_settings.WaterTint, 0.0f, 1.0f) : defaults.WaterTint;
 	return a_settings;
 }
 
@@ -897,7 +903,9 @@ FluidField::WaterShaderData FluidField::GetCommonBufferData() const
 {
 	if (!loaded || !settings.Enabled || !settings.WaterEnabled)
 		return {};
-	return waterShaderData;
+	WaterShaderData data = waterShaderData;
+	data.WaterTint = settings.WaterTint;
+	return data;
 }
 
 void FluidField::BindWaterOutputs(ID3D11DeviceContext* a_context) const

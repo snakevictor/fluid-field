@@ -209,6 +209,39 @@ namespace FluidField
 	/** Surface roughness at the pixel being shaded (0 calm to 1.5), set while its normal is built, for the sun glint. */
 	static float PixelRoughness = 0.0;
 
+	/** Most extra vanilla ripple amplitude, as a fraction, on the roughest water seen from above. */
+	static const float MAX_RIPPLE_BOOST = 0.6;
+
+	/**
+	 * How much vanilla's ripple amplitude is multiplied by on rough simulated water. Seen at a
+	 * grazing angle, steeper ripples tip reflections below the horizon, where they pick up the dark
+	 * lower half of the sky and the water turns black, so the boost fades out toward the horizon.
+	 * a_viewDirection points from the camera to the surface.
+	 */
+	float RippleBoost(float a_roughness, float3 a_viewDirection)
+	{
+		const float lookingDown = saturate(-a_viewDirection.z * 3.0);
+		return 1.0 + saturate(a_roughness / 1.5) * MAX_RIPPLE_BOOST * lookingDown;
+	}
+
+	/**
+	 * Tilts a water normal back toward up just enough that its reflection stays above the horizon
+	 * (at least half as high as flat water would reflect), where Fluid Field shapes the water. Vanilla's
+	 * normals were tuned for its own gentle ripples; with the simulated waves on top, grazing views
+	 * otherwise reflect the ground and the water goes black.
+	 */
+	float3 KeepReflectionAboveHorizon(float3 a_normal, float3 a_viewDirection, float3 a_worldPosition)
+	{
+		const float coverage = GetCoverage(a_worldPosition);
+		if (coverage <= 0.0)
+			return a_normal;
+		const float flatHeight = -a_viewDirection.z;  // Reflection height off flat water
+		const float height = reflect(a_viewDirection, a_normal).z;
+		const float wanted = 0.5 * flatHeight;
+		const float t = saturate((wanted - height) / max(flatHeight - height, 1e-4));
+		return normalize(lerp(a_normal, float3(0, 0, 1), t * coverage));
+	}
+
 	/**
 	 * Widens the sun's glint on rough water and narrows it on calm water: the specular exponent is
 	 * lowered with roughness (to a third at most), and the lobe rescaled so its total energy stays
@@ -222,17 +255,18 @@ namespace FluidField
 	}
 
 	/** Strongest whitening of the water body by bubbles, as a fraction of the lit foam colour. */
-	static const float MAX_AERATION = 0.3;
+	static const float MAX_AERATION = 0.35;
 
 	/**
 	 * Fast, foamy water is full of bubbles that scatter light, so rapids look lighter and milkier than
-	 * calm pools: blends a water colour toward the lit foam colour by foam and flow speed.
+	 * calm pools: blends a water colour toward the lit foam colour by foam and flow speed. a_light is
+	 * the scene light at the surface (white), not the water's colour.
 	 */
 	void ApplyAeration(inout float3 a_color, float3 a_worldPosition, float3 a_light, float a_amount)
 	{
 		const float4 flowFoam = FlowFoamAtWorld(a_worldPosition.xy);
 		const float aeration = saturate(flowFoam.z * 0.6 + length(flowFoam.xy) / 400.0) * MAX_AERATION * a_amount;
-		a_color = lerp(a_color, a_light * 0.6, aeration);
+		a_color = lerp(a_color, a_light * 0.5, aeration);
 	}
 
 	/** World units one tile of the foam's bubbly breakup pattern covers. */
@@ -258,8 +292,8 @@ namespace FluidField
 		const float p1 = length(Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase1 + 0.37, SharedData::MipBias).xy * 2.0 - 1.0);
 		const float pattern = saturate(lerp(p0, p1, abs(phase0 * 2.0 - 1.0)) * 1.4);
 		// Dense foam covers solidly; thin foam only shows in the pattern's bubbles and streaks
-		const float threshold = pattern * 0.75;
-		return smoothstep(threshold, threshold + 0.35, foam) * 0.92;
+		const float threshold = pattern * 0.5;
+		return smoothstep(threshold, threshold + 0.25, foam) * 0.95;
 	}
 
 	/**
@@ -270,8 +304,24 @@ namespace FluidField
 	{
 		const float cover = GetFoamCover(a_worldPosition);
 		if (cover > 0.0)
-			a_color = lerp(a_color, a_light * 0.85, cover);
+			a_color = lerp(a_color, a_light * 0.9, cover);
 		return cover;
+	}
+
+	/** Water depth (world units) at which the tint reaches its full strength. */
+	static const float TINT_FULL_DEPTH = 256.0;
+	/** Most of the see-through view the tint replaces with the water's own colour, at Water Tint 1. */
+	static const float MAX_TINT = 0.75;
+
+	/**
+	 * Tints all water with its own colour, as it looks from underwater: makes the water body more
+	 * opaque (vanilla's refraction weight), more so the deeper it is, so the bed fades into the water
+	 * type's colour instead of showing through clear. Shallows near the shore stay clear.
+	 */
+	float TintedRefractionWeight(float a_refractionMul, float a_waterDepth)
+	{
+		const float tint = SharedData::fluidFieldSettings.WaterTint * MAX_TINT * saturate(a_waterDepth / TINT_FULL_DEPTH);
+		return 1.0 - (1.0 - a_refractionMul) * (1.0 - tint);
 	}
 
 	/**

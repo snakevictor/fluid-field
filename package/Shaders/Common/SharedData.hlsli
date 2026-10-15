@@ -460,8 +460,8 @@ namespace SharedData
 		float NormalStrength;
 		uint Enabled;      // Water outputs are valid this frame
 		float FlowDetail;  // Strength of the surface detail carried by the simulated flow
-		float pad;
-		int2 FarGridMin;  // The far water level's placement (coarser, wider)
+		float WaterTint;   // How much the water's colour tints what is seen through it; all water, simulated or not
+		int2 FarGridMin;   // The far water level's placement (coarser, wider)
 		uint FarGridRes;
 		float FarCellSize;
 		uint FarEnabled;  // The far level has valid outputs this frame

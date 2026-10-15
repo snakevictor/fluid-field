@@ -968,6 +968,8 @@
     "feature.fluid_field.water_size": "Water Size",
     "feature.fluid_field.water_size_tooltip": "Width of the detailed water around the player, in game units: obstacles, bed detail and wakes.",
     "feature.fluid_field.water_surfaces": "Water surfaces: %u flat, %u sloped (not used yet), %u cells with water",
+    "feature.fluid_field.water_tint": "Water Tint",
+    "feature.fluid_field.water_tint_tooltip": "Tints what is seen through all water with the water's own colour, deepening with depth, as it looks from underwater. 0 keeps vanilla's clear look.",
     "feature.fluid_field.water_verify_result": "Water checked %u times: error %.2f units, plane vs bound %.2f (%u of %u samples missed)",
     "feature.fluid_field.wave_damping": "Wave Damping",
     "feature.fluid_field.wave_damping_tooltip": "How quickly waves and wakes die down. Higher values keep them close to whatever made them.",
