@@ -7,6 +7,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <format>
 #include <numeric>
 
@@ -52,25 +53,54 @@ namespace FluidFieldSim
 			return true;
 		}
 
-		/** @brief World bounds of a reference: its bound box's corners through its 3D's transform. */
+		/** @brief Half-size of the box given to a reference with no triangle geometry (particle emitters), world units. */
+		constexpr float POINT_EXTENT = 64.0f;
+
+		/**
+		 * @brief World bounds of a reference from its triangle geometry's vertices. Effect meshes carry
+		 * huge bounds for their particles (a skirt's is thousands of units tall), so their bound box is no
+		 * use; references without triangles get a small box around their position.
+		 */
 		bool WorldBounds(RE::TESObjectREFR& a_ref, float a_min[3], float a_max[3])
 		{
 			auto* root = a_ref.Get3D();
 			if (!root)
 				return false;
-			const auto boundMin = a_ref.GetBoundMin();
-			const auto boundMax = a_ref.GetBoundMax();
 			for (int k = 0; k < 3; k++) {
 				a_min[k] = FLT_MAX;
 				a_max[k] = -FLT_MAX;
 			}
-			for (int corner = 0; corner < 8; corner++) {
-				const RE::NiPoint3 local((corner & 1) ? boundMax.x : boundMin.x, (corner & 2) ? boundMax.y : boundMin.y, (corner & 4) ? boundMax.z : boundMin.z);
-				const RE::NiPoint3 world = root->world * local;
-				const float p[3] = { world.x, world.y, world.z };
+			bool any = false;
+			RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+				auto* triShape = a_geometry->AsTriShape();
+				auto* renderer = a_geometry->GetGeometryRuntimeData().rendererData;
+				if (!triShape || !renderer || !renderer->rawVertexData)
+					return RE::BSVisit::BSVisitControl::kContinue;
+				const auto& counts = triShape->GetTrishapeRuntimeData();
+				const uint32_t stride = renderer->vertexDesc.GetSize();
+				const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+				if (stride < positionOffset + 12)
+					return RE::BSVisit::BSVisitControl::kContinue;
+				const auto& transform = a_geometry->world;
+				for (uint32_t i = 0; i < counts.vertexCount; i++) {
+					float local[3];
+					std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(i) * stride + positionOffset, sizeof(local));
+					const RE::NiPoint3 world = transform * RE::NiPoint3(local[0], local[1], local[2]);
+					const float p[3] = { world.x, world.y, world.z };
+					for (int k = 0; k < 3; k++) {
+						a_min[k] = std::min(a_min[k], p[k]);
+						a_max[k] = std::max(a_max[k], p[k]);
+					}
+					any = true;
+				}
+				return RE::BSVisit::BSVisitControl::kContinue;
+			});
+			if (!any) {
+				const auto position = a_ref.GetPosition();
+				const float p[3] = { position.x, position.y, position.z };
 				for (int k = 0; k < 3; k++) {
-					a_min[k] = std::min(a_min[k], p[k]);
-					a_max[k] = std::max(a_max[k], p[k]);
+					a_min[k] = p[k] - POINT_EXTENT;
+					a_max[k] = p[k] + POINT_EXTENT;
 				}
 			}
 			return true;
@@ -363,12 +393,19 @@ namespace FluidFieldSim
 			a_screen = ImVec2(sx * display.x, (1.0f - sy) * display.y);
 			return true;
 		};
+		// Lines are split into pieces so the parts in front of the camera still draw
 		const auto line = [&](const float a[3], const float b[3], ImU32 a_color, float a_thickness) {
-			ImVec2 pa, pb;
-			if (project(a[0], a[1], a[2], pa) && project(b[0], b[1], b[2], pb))
-				a_drawList->AddLine(pa, pb, a_color, a_thickness);
+			constexpr int PIECES = 8;
+			for (int i = 0; i < PIECES; i++) {
+				const float t0 = static_cast<float>(i) / PIECES;
+				const float t1 = static_cast<float>(i + 1) / PIECES;
+				ImVec2 pa, pb;
+				if (project(a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0, a[2] + (b[2] - a[2]) * t0, pa) &&
+					project(a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1, a[2] + (b[2] - a[2]) * t1, pb))
+					a_drawList->AddLine(pa, pb, a_color, a_thickness);
+			}
 		};
-		const auto box = [&](const float a_min[3], const float a_max[3], ImU32 a_color) {
+		const auto box = [&](const float a_min[3], const float a_max[3], ImU32 a_color, float a_thickness) {
 			float c[8][3];
 			for (int i = 0; i < 8; i++) {
 				c[i][0] = (i & 1) ? a_max[0] : a_min[0];
@@ -377,14 +414,12 @@ namespace FluidFieldSim
 			}
 			static constexpr int EDGES[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
 			for (const auto& e : EDGES)
-				line(c[e[0]], c[e[1]], a_color, 1.5f);
+				line(c[e[0]], c[e[1]], a_color, a_thickness);
 		};
-		const auto rectangle = [&](float a_minX, float a_minY, float a_maxX, float a_maxY, float a_z, ImU32 a_fill, ImU32 a_outline) {
-			ImVec2 p[4];
-			if (!project(a_minX, a_minY, a_z, p[0]) || !project(a_maxX, a_minY, a_z, p[1]) || !project(a_maxX, a_maxY, a_z, p[2]) || !project(a_minX, a_maxY, a_z, p[3]))
-				return;
-			a_drawList->AddConvexPolyFilled(p, 4, a_fill);
-			a_drawList->AddPolyline(p, 4, a_outline, ImDrawFlags_Closed, 2.0f);
+		const auto rectangle = [&](float a_minX, float a_minY, float a_maxX, float a_maxY, float a_z, ImU32 a_outline) {
+			const float p[4][3] = { { a_minX, a_minY, a_z }, { a_maxX, a_minY, a_z }, { a_maxX, a_maxY, a_z }, { a_minX, a_maxY, a_z } };
+			for (int i = 0; i < 4; i++)
+				line(p[i], p[(i + 1) % 4], a_outline, 3.0f);
 		};
 
 		static constexpr std::array<ImU32, static_cast<int>(FxClass::Count)> CLASS_COLORS = {
@@ -416,7 +451,10 @@ namespace FluidFieldSim
 				continue;
 			for (const uint32_t member : site.members) {
 				const auto& ref = refs[member];
-				box(ref.min, ref.max, CLASS_COLORS[static_cast<int>(ref.cls)]);
+				// Falling water and skirts strong; mist, splashes and rapids faint
+				const bool strong = ref.cls == FxClass::Body || ref.cls == FxClass::Skirt;
+				const ImU32 color = (CLASS_COLORS[static_cast<int>(ref.cls)] & 0x00FFFFFFu) | (strong ? 0xFF000000u : 0x60000000u);
+				box(ref.min, ref.max, color, strong ? 2.0f : 1.0f);
 			}
 			// Levels: the top green, the bottom blue, tiers between teal; translucent over the footprint
 			for (std::size_t i = 0; i < site.levels.size(); i++) {
@@ -424,12 +462,12 @@ namespace FluidFieldSim
 				const bool isBottom = i + 1 == site.levels.size();
 				const ImU32 outline = isTop ? IM_COL32(80, 255, 120, 230) : isBottom ? IM_COL32(80, 140, 255, 230) :
 				                                                                       IM_COL32(80, 230, 210, 230);
-				const ImU32 fill = isTop ? IM_COL32(80, 255, 120, 40) : isBottom ? IM_COL32(80, 140, 255, 40) :
-				                                                                   IM_COL32(80, 230, 210, 40);
-				rectangle(site.min[0], site.min[1], site.max[0], site.max[1], site.levels[i], fill, outline);
+				rectangle(site.min[0], site.min[1], site.max[0], site.max[1], site.levels[i], outline);
 			}
 			ImVec2 label;
-			if (project(site.centroid[0], site.centroid[1], site.max[2] + 64.0f, label)) {
+			if (project(site.centroid[0], site.centroid[1], site.top + 48.0f, label)) {
+				label.x = std::clamp(label.x, 8.0f, display.x - 420.0f);
+				label.y = std::clamp(label.y, 8.0f, display.y - 24.0f);
 				std::string text = std::format("#{} {}  drop {:.0f}  levels {}{}  refs {}", site.id, KindName(site.kind), site.top - site.bottom,
 					site.levels.size(), site.topFromMesh ? " (top from mesh)" : "", site.members.size());
 				if (site.kind == Kind::Failed && site.failure)
