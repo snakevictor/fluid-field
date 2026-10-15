@@ -257,7 +257,7 @@ namespace FluidField
 	/** Strongest whitening of the water body by bubbles, as a fraction of the foam colour. */
 	static const float MAX_AERATION = 0.15;
 	/** How far foam's colour goes from the lit water colour toward the scene light (white). */
-	static const float FOAM_WHITENESS = 0.3;
+	static const float FOAM_WHITENESS = 0.15;
 
 	/**
 	 * Foam's colour: the lit water colour lifted toward the scene light. Foam takes on the water's
