@@ -335,11 +335,17 @@ namespace FluidFieldSim
 			planes.clear();
 			a_water.CollectPlanes(site.fallMin[0] - PAIR_MARGIN, site.fallMin[1] - PAIR_MARGIN, site.fallMax[0] + PAIR_MARGIN, site.fallMax[1] + PAIR_MARGIN, planes);
 			std::vector<float> heights;
+			site.planes.clear();
+			const float clipMin[2] = { site.fallMin[0] - PAIR_MARGIN, site.fallMin[1] - PAIR_MARGIN };
+			const float clipMax[2] = { site.fallMax[0] + PAIR_MARGIN, site.fallMax[1] + PAIR_MARGIN };
 			for (const auto& plane : planes) {
 				// Below, planes may lie well under the falling water (it runs on underwater); above, a fall's
 				// top cannot be much higher than its falling water's top
-				if (plane.height >= site.fallMin[2] - NEAR_LEVEL && plane.height <= site.fallMax[2] + NEAR_LEVEL_ABOVE)
-					heights.push_back(plane.height);
+				if (plane.height < site.fallMin[2] - NEAR_LEVEL || plane.height > site.fallMax[2] + NEAR_LEVEL_ABOVE)
+					continue;
+				heights.push_back(plane.height);
+				// Where this water is, trimmed to the area around the fall
+				site.planes.push_back({ std::max(plane.minX, clipMin[0]), std::max(plane.minY, clipMin[1]), std::min(plane.maxX, clipMax[0]), std::min(plane.maxY, clipMax[1]), plane.height });
 			}
 			std::sort(heights.begin(), heights.end(), std::greater<float>());
 			for (const float height : heights) {
@@ -532,12 +538,23 @@ namespace FluidFieldSim
 				box(ref.min, ref.max, color, strong ? 2.0f : 1.0f);
 			}
 			// Levels: the top green, the bottom blue, tiers between teal; translucent over the footprint
+			// Each level is drawn where its water is: the planes at that height, trimmed to the fall's area
 			for (std::size_t i = 0; i < site.levels.size(); i++) {
 				const bool isTop = i == 0;
 				const bool isBottom = i + 1 == site.levels.size();
 				const ImU32 outline = isTop ? IM_COL32(80, 255, 120, 230) : isBottom ? IM_COL32(80, 140, 255, 230) :
 				                                                                       IM_COL32(80, 230, 210, 230);
-				rectangle(site.fallMin[0], site.fallMin[1], site.fallMax[0], site.fallMax[1], site.levels[i], outline);
+				bool drawn = false;
+				for (const auto& plane : site.planes) {
+					if (std::abs(plane.height - site.levels[i]) > LEVEL_TOLERANCE)
+						continue;
+					rectangle(plane.min[0], plane.min[1], plane.max[0], plane.max[1], plane.height, outline);
+					drawn = true;
+				}
+				// A level from the meshes (no plane): a small mark at the falling water's top
+				if (!drawn) {
+					rectangle(site.centroid[0] - 64.0f, site.centroid[1] - 64.0f, site.centroid[0] + 64.0f, site.centroid[1] + 64.0f, site.levels[i], outline);
+				}
 			}
 			ImVec2 label;
 			if (project(site.centroid[0], site.centroid[1], site.top + 48.0f, label)) {

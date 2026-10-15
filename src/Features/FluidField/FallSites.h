@@ -67,6 +67,14 @@ namespace FluidFieldSim
 			float fallMin[3];   ///< Bounds of the falling water (all members when there is none)
 			float fallMax[3];
 			std::vector<float> levels;  ///< Distinct water heights, highest first: top, intermediate tiers, bottom
+			/** @brief A water plane paired with the site, trimmed to the area around its falling water. */
+			struct Plane
+			{
+				float min[2];
+				float max[2];
+				float height;
+			};
+			std::vector<Plane> planes;
 			float top = 0.0f;
 			float bottom = 0.0f;
 			bool topFromMesh = false;  ///< No plane near the top: the top of the meshes stands in
