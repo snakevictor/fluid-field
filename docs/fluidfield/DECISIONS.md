@@ -449,3 +449,23 @@ Entry format:
 **Consequences.** Very wide river reaches flow slower, which is also what real rivers do. Lake shores are partly open (about 0.5), so they keep a weak drift. No per-place data to maintain.
 
 **Revised (same day).** The width rule is withdrawn: neither the water map's own window nor rings out to 4096 units told the Riverwood river from the lake, and the river lost the current that was working well. Rivers are back to full flowmap current. The still-water fade stays. Steering vanilla's flowmap sample (direction and scroll speed) from the simulated flow was also withdrawn: vanilla scrolls its flow normals by the game time times the flowmap's speed and rotates them by its direction, so any change in the steered values jumps the texture by an amount that grows with the time, and the water flickered. Lakes with a flowing water type need another way to be told apart.
+
+## D21: Interactive fog extends Exponential Height Fog's volumetric fog
+
+-   Date: 2026-10-15
+-   Phase / spike: Phase 4, first slice (replaces the new renderer R4 planned)
+-   Decision: No fog renderer of our own. A 2D fog density field on the wind
+    grid, carried by the wind, refilling toward 1 and thinned where actors
+    stir the air, multiplies the extinction in Exponential Height Fog's
+    volumetric material pass (near and far grids). Its lighting, shadows,
+    integration and temporal history are reused unchanged. Actors push the
+    wind as they move; the weather's wind drifts the fog. Plan:
+    `plans/fog-slice.md`.
+-   Alternatives rejected: a camera-aligned volumetric renderer of our own
+    (Exponential Height Fog already is one); modulating the analytic fog in
+    every shader (it is one sum along the ray, so a varying density would
+    need several samples per pixel in every shader).
+-   Consequences: the effect needs volumetric fog on. The field is 2D, so it
+    changes the whole column above a point.
+-   Decided by: @Victor ("let's try the fog then")
+-   References: D11 (wind grid), D13 (fog target), D19, ROADMAP Phase 4

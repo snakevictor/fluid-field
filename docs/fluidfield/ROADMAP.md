@@ -84,6 +84,12 @@ Seven phases take Fluid Field from an empty feature to buoyancy. Each phase open
     - Research first: R6 (GPU-to-CPU readback), R7 (Havok coupling).
     - Gate: release v1.1. Objects float stably at 30 to 144 FPS, no launches or jitter in an hour of testing, and saves load cleanly.
 
+**Later, noted during the water slice (2026-10-15):**
+
+-   **Spray particles.** Vanilla's spray and splash meshes are hidden where the water is simulated (D19), and nothing replaces them yet. GPU particles spawned from the foam pass's impacts and breaking water, and from splashes.
+-   **Waterfalls drive the water.** Vanilla's waterfall particles (and bodies) should push the simulated water where they land: an impact source and a current away from the base, so the plunge pool churns and foams.
+-   **Still lakes.** Part of Lake Ilinalta uses the same flowing water type as the Riverwood rapids (D20); try scaling the current down with depth.
+
 **Optional side track:** grass bending and snow and mud trails from the same field. Any contributor can take these after Phase 2, as long as they stay within their own budgets.
 
 ## Research spikes
