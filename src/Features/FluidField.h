@@ -295,15 +295,20 @@ private:
 		float Cling;
 		float ContactWidth;
 		float Reach;
-		float WakeLength;
 		float FoamStrength;
 		float LiftMost;
 		uint32_t DebugMode;
-		float Parting;
 		float VertexPush;
 		float VertexPushMost;
+		int32_t FlowGridMin[2];
+		uint32_t FlowRes;
+		float FlowCell;
+		uint32_t FlowEnabled;
+		float FlowPeriod;
+		float Time;
+		float Pad[3];
 	};
-	static_assert(sizeof(FallGroundData) == 64);
+	static_assert(sizeof(FallGroundData) == 96);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
 	static constexpr float FALL_GROUND_CELL = 16.0f;
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
@@ -312,9 +317,7 @@ private:
 	static constexpr float FALL_GROUND_CONTACT = 6.0f;     ///< World units over which water fades where it cuts into rock
 	static constexpr float FALL_GROUND_LIFT_MOST = 24.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
 	static constexpr float FALL_REACH = 96.0f;             ///< How far above rock its push still bends the water
-	static constexpr float FALL_WAKE_LENGTH = 160.0f;      ///< World units foam trails behind rock
 	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
-	static constexpr float FALL_PARTING = 0.85f;           ///< Most the water thins where the flow parts behind rock
 	static constexpr float FALL_VERTEX_PUSH = 0.3f;        ///< How much of the push moves vertices; the texture carries it all
 	static constexpr float FALL_VERTEX_PUSH_MOST = 32.0f;  ///< World units
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
@@ -330,6 +333,29 @@ private:
 	std::vector<float> fallGroundScratch;
 	/** @brief Rebuilds the ground map when the captures change or the player moves far; unbinds stale state. */
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
+
+	/**
+	 * @brief The fall flow (D27): the water solver run on the waterfalls around the player, over the
+	 * captured rock, held to vanilla's falling-water meshes as its surface. Its velocity and foam drive
+	 * the grounded meshes' texture in the effect shader.
+	 */
+	FluidFieldSim::ShallowWaterSolver fallSolver;
+	static constexpr uint32_t FALL_FLOW_RES = 512;
+	static constexpr float FALL_FLOW_CELL = 16.0f;
+	static constexpr float FALL_FLOW_RECENTRE = 1024.0f;  ///< How far the player moves before the flow's map recentres
+	static constexpr float FALL_FLOW_LEVEL_RELAX = 2.0f;  ///< Per-second pull toward vanilla's falling-water surface
+	static constexpr float FALL_FLOW_PERIOD = 1.2f;       ///< Seconds per flowmap cycle in the effect shader
+	std::vector<float> fallFlowMap;
+	int32_t fallFlowGridMin[2]{};
+	int32_t fallFlowMapCentre[2]{};
+	uint64_t fallFlowVersion = UINT64_MAX;
+	uint32_t fallFlowWarmup = 0;
+	bool fallFlowReady = false;
+	bool fallFlowFailed = false;
+	float fallFlowTime = 0.0f;  ///< Seconds, for the fall flowmap's cycle
+	/** @brief Steps the fall flow when there is grounded falling water around the player. */
+	void StepFallFlow(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos, float a_deltaTime);
+	void ReleaseFallFlow();
 	void ReleaseFallGround();
 	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
 	int fallGroundDebug = 0;                                 ///< Debug: 1 tints grounded falling water red where rock turns it; not saved

@@ -328,7 +328,7 @@ void FluidField::DrawSettings()
 			fallGroundVersion = UINT64_MAX;  // Re-upload the constants
 		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("show_waterfall_turn_tooltip"), "Paints grounded waterfalls with the rock field: red where rock pushes the water aside, green where it foams, blue where the captured rock covers the water (black: not covered)."));
+			ImGui::Text("%s", T(TKEY("show_waterfall_turn_tooltip"), "Paints grounded waterfalls with the fall flow: red for its speed, green where it foams, blue where the captured rock covers the water (black: not covered)."));
 		}
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -548,6 +548,8 @@ void FluidField::ClearShaderCache()
 	groundFogFailed = false;
 	nearWater.solver.ReleaseShaders();
 	waterShaderFailed = false;
+	fallSolver.ReleaseShaders();
+	fallFlowFailed = false;
 }
 
 bool FluidField::EnsureSolver()
@@ -861,6 +863,8 @@ void FluidField::Prepass()
 			// Waterfall sites reconstructed from vanilla's layout (D25)
 			fallSites.SetConsoleSummary(showFallSites);
 			fallSites.Update(water);
+			StepFallFlow(context, playerPos, deltaTime);
+			fallFlowTime += deltaTime;
 			UpdateFallGround(playerPos);
 		} else {
 			waterfalls.Clear();
@@ -938,6 +942,7 @@ void FluidField::ReleaseWater()
 	waterfalls.Clear();
 	fallSites.Clear();
 	ReleaseFallGround();
+	ReleaseFallFlow();
 	waterShaderData = {};
 }
 
@@ -1437,17 +1442,19 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	constexpr float half = 0.5f * FALL_GROUND_SIZE * FALL_GROUND_CELL;
 	const float dx = a_playerPos.x - (fallGroundOrigin[0] + half);
 	const float dy = a_playerPos.y - (fallGroundOrigin[1] + half);
-	if (fallSites.GetGroundVersion() == fallGroundVersion && dx * dx + dy * dy < FALL_GROUND_RECENTRE * FALL_GROUND_RECENTRE)
-		return;
-	fallGroundVersion = fallSites.GetGroundVersion();
-	fallGroundOrigin[0] = std::floor((a_playerPos.x - half) / FALL_GROUND_CELL) * FALL_GROUND_CELL;
-	fallGroundOrigin[1] = std::floor((a_playerPos.y - half) / FALL_GROUND_CELL) * FALL_GROUND_CELL;
-	fallSites.BuildGroundMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallGroundScratch);
-	context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, fallGroundScratch.data(), FALL_GROUND_SIZE * sizeof(float), 0);
-	FluidFieldSim::FallSites::BuildRockField(fallGroundScratch, FALL_GROUND_SIZE, FALL_GROUND_CELL, fallRockScratch);
-	context->UpdateSubresource(fallRockTexture.get(), 0, nullptr, fallRockScratch.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
+	if (fallSites.GetGroundVersion() != fallGroundVersion || dx * dx + dy * dy >= FALL_GROUND_RECENTRE * FALL_GROUND_RECENTRE) {
+		fallGroundVersion = fallSites.GetGroundVersion();
+		fallGroundOrigin[0] = std::floor((a_playerPos.x - half) / FALL_GROUND_CELL) * FALL_GROUND_CELL;
+		fallGroundOrigin[1] = std::floor((a_playerPos.y - half) / FALL_GROUND_CELL) * FALL_GROUND_CELL;
+		fallSites.BuildGroundMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallGroundScratch);
+		context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, fallGroundScratch.data(), FALL_GROUND_SIZE * sizeof(float), 0);
+		FluidFieldSim::FallSites::BuildRockField(fallGroundScratch, FALL_GROUND_SIZE, FALL_GROUND_CELL, fallRockScratch);
+		context->UpdateSubresource(fallRockTexture.get(), 0, nullptr, fallRockScratch.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
+	}
+	// Every frame: the fall flow moves with the player, and its flowmap with time
 	const FallGroundData on{ { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET, FALL_GROUND_CLING, FALL_GROUND_CONTACT,
-		FALL_REACH, FALL_WAKE_LENGTH, FALL_FOAM_STRENGTH, FALL_GROUND_LIFT_MOST, static_cast<uint32_t>(fallGroundDebug), FALL_PARTING, FALL_VERTEX_PUSH, FALL_VERTEX_PUSH_MOST };
+		FALL_REACH, FALL_FOAM_STRENGTH, FALL_GROUND_LIFT_MOST, static_cast<uint32_t>(fallGroundDebug), FALL_VERTEX_PUSH, FALL_VERTEX_PUSH_MOST,
+		{ fallFlowGridMin[0], fallFlowGridMin[1] }, FALL_FLOW_RES, FALL_FLOW_CELL, fallFlowReady ? 1u : 0u, FALL_FLOW_PERIOD, fallFlowTime, {} };
 	context->UpdateSubresource(fallGroundOn.get(), 0, nullptr, &on, 0, 0);
 }
 
@@ -1464,6 +1471,8 @@ void FluidField::SetupEffectGeometry(RE::BSRenderPass* a_pass)
 		context->VSSetShaderResources(122, 1, &ground[2]);
 		context->PSSetShaderResources(120, 1, &ground[0]);
 		context->PSSetShaderResources(122, 1, &ground[2]);
+		ID3D11ShaderResourceView* flow = fallFlowReady ? fallSolver.GetFlowSRV() : nullptr;
+		context->PSSetShaderResources(123, 1, &flow);
 		ID3D11ShaderResourceView* depth = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
 		context->PSSetShaderResources(121, 1, &depth);
 		fallGroundBound = true;
@@ -1473,4 +1482,103 @@ void FluidField::SetupEffectGeometry(RE::BSRenderPass* a_pass)
 		context->PSSetConstantBuffers(13, 1, &constants);
 		fallGroundBound = false;
 	}
+}
+
+void FluidField::ReleaseFallFlow()
+{
+	fallSolver.ReleaseShaders();
+	fallSolver.ReleaseResources();
+	fallFlowMap.clear();
+	fallFlowVersion = UINT64_MAX;
+	fallFlowReady = false;
+}
+
+void FluidField::StepFallFlow(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos, float a_deltaTime)
+{
+	fallFlowReady = false;
+	if (fallFlowFailed || !settings.GroundWaterfalls || !fallSites.HasGround())
+		return;
+	if (!fallSolver.HasResources()) {
+		try {
+			fallSolver.CreateResources(globals::d3d::device, FALL_FLOW_RES, FALL_FLOW_RES, 16, [](ID3D11DeviceChild* object, const char* name) {
+				Util::SetResourceName(object, "Fall %s", name);
+			});
+		} catch (const winrt::hresult_error& e) {
+			logger::error("[Fluid Field] Failed to create the waterfall flow's GPU resources: {}", winrt::to_string(e.message()));
+			fallSolver.ReleaseResources();
+			fallFlowFailed = true;
+			return;
+		}
+		fallFlowVersion = UINT64_MAX;
+	}
+	if (!fallSolver.HasShaders()) {
+		const bool compiled = fallSolver.CompileShaders([](const wchar_t* fileName) {
+			const auto path = std::filesystem::path("Data\\Shaders\\FluidField") / fileName;
+			return reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), {}, "cs_5_0"));
+		});
+		if (!compiled) {
+			logger::error("[Fluid Field] Waterfall flow shaders failed to compile; waterfalls are not flowed");
+			fallSolver.ReleaseShaders();
+			fallFlowFailed = true;
+			return;
+		}
+	}
+	if (fallSolver.ObstaclesNeedClear())
+		fallSolver.ClearObstacles(a_context);
+
+	// The map: rebuilt when the sites' rock or meshes change, or when the player has moved far
+	const auto centreX = static_cast<int32_t>(std::floor(a_playerPos.x / FALL_FLOW_CELL));
+	const auto centreY = static_cast<int32_t>(std::floor(a_playerPos.y / FALL_FLOW_CELL));
+	const float movedX = static_cast<float>(centreX - fallFlowMapCentre[0]) * FALL_FLOW_CELL;
+	const float movedY = static_cast<float>(centreY - fallFlowMapCentre[1]) * FALL_FLOW_CELL;
+	if (fallSites.GetGroundVersion() != fallFlowVersion || movedX * movedX + movedY * movedY > FALL_FLOW_RECENTRE * FALL_FLOW_RECENTRE) {
+		const bool fresh = fallSites.GetGroundVersion() != fallFlowVersion;
+		globals::profiler->BeginPass("FluidField::Fall Flow Map");
+		fallSites.BuildFlowMap(centreX, centreY, FALL_FLOW_CELL, FALL_FLOW_RES, fallFlowMap);
+		fallSolver.UploadMap(a_context, fallFlowMap, FALL_FLOW_CELL);
+		globals::profiler->EndPass();
+		fallFlowMapCentre[0] = centreX;
+		fallFlowMapCentre[1] = centreY;
+		fallFlowVersion = fallSites.GetGroundVersion();
+		// New falls start already flowing round their rock
+		if (fresh)
+			fallFlowWarmup = static_cast<uint32_t>(WARMUP_SECONDS / WARMUP_SUBSTEP);
+	}
+	if (!fallSolver.HasMap())
+		return;
+
+	fallFlowGridMin[0] = centreX - static_cast<int32_t>(FALL_FLOW_RES / 2);
+	fallFlowGridMin[1] = centreY - static_cast<int32_t>(FALL_FLOW_RES / 2);
+	FluidFieldSim::WaterParams params;
+	params.damping = settings.WaveDamping;
+	params.edgeWidth = 24.0f;
+	params.currentRelax = 0.0f;
+	params.levelRelax = FALL_FLOW_LEVEL_RELAX;
+	params.vorticity = settings.Turbulence;
+	params.foamStrength = settings.FoamStrength;
+
+	constexpr float MAX_SUBSTEP = 0.012f;
+	const uint substeps = std::clamp(static_cast<uint>(std::ceil(a_deltaTime / MAX_SUBSTEP)), 1u, 4u);
+	const FluidFieldSim::StepParams grid{
+		.gridMin = { fallFlowGridMin[0], fallFlowGridMin[1] },
+		.cellSize = FALL_FLOW_CELL,
+		.deltaTime = a_deltaTime / static_cast<float>(substeps),
+		.velocityDecay = 1.0f,
+		.jacobiIterations = 0,
+		.emitters = {}
+	};
+	const auto noTiming = [](const char*, auto&& runPass) { runPass(); };
+	globals::profiler->BeginPass("FluidField::Fall Flow");
+	if (fallFlowWarmup > 0) {
+		auto warmup = grid;
+		warmup.deltaTime = WARMUP_SUBSTEP;
+		for (uint32_t i = 0; i < fallFlowWarmup; i++)
+			fallSolver.Step(a_context, warmup, params, {}, noTiming);
+		fallFlowWarmup = 0;
+	}
+	for (uint i = 0; i < substeps; i++)
+		fallSolver.Step(a_context, grid, params, {}, noTiming);
+	fallSolver.WriteOutputs(a_context);
+	globals::profiler->EndPass();
+	fallFlowReady = true;
 }

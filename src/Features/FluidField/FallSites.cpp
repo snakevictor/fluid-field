@@ -238,6 +238,127 @@ namespace FluidFieldSim
 		}
 	}
 
+	void FallSites::BuildFlowMap(int32_t a_centreX, int32_t a_centreY, float a_spacing, uint32_t a_size, std::vector<float>& a_map) const
+	{
+		constexpr uint32_t CHANNELS = 4;     // WaterMapBuilder::MAP_CHANNELS: bed, surface, river flow scale, unused
+		constexpr float NO_WATER = -1.0e8f;  // ShallowWaterSolver::NO_WATER
+		const auto n = static_cast<int32_t>(a_size);
+		const int32_t x0 = a_centreX - n / 2;
+		const int32_t y0 = a_centreY - n / 2;
+		const auto slot = [&](int32_t a_x, int32_t a_y) {
+			return (static_cast<std::size_t>(a_y & (n - 1)) * a_size + static_cast<std::size_t>(a_x & (n - 1))) * CHANNELS;
+		};
+		const auto window = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y - y0) * a_size + static_cast<std::size_t>(a_x - x0); };
+		const auto range = [&](float a_min, float a_max, int32_t a_origin, int32_t& a_from, int32_t& a_to) {
+			a_from = std::max(a_origin, static_cast<int32_t>(std::ceil(a_min / a_spacing)));
+			a_to = std::min(a_origin + n - 1, static_cast<int32_t>(std::floor(a_max / a_spacing)));
+		};
+		a_map.assign(static_cast<std::size_t>(a_size) * a_size * CHANNELS, 0.0f);
+
+		// The bed: captured rock, walls elsewhere
+		std::vector<float> bed(static_cast<std::size_t>(a_size) * a_size, FLOW_WALL);
+		for (const auto& [key, capture] : captures) {
+			if (!capture.IsComplete())
+				continue;
+			int32_t lx0, lx1, ly0, ly1;
+			range(capture.GetOriginX(), capture.GetOriginX() + static_cast<float>(capture.GetWidth() - 1) * FallCapture::CELL, x0, lx0, lx1);
+			range(capture.GetOriginY(), capture.GetOriginY() + static_cast<float>(capture.GetHeight() - 1) * FallCapture::CELL, y0, ly0, ly1);
+			for (int32_t y = ly0; y <= ly1; y++) {
+				for (int32_t x = lx0; x <= lx1; x++) {
+					float height;
+					if (!capture.Sample(static_cast<float>(x) * a_spacing, static_cast<float>(y) * a_spacing, height))
+						continue;
+					float& stored = bed[window(x, y)];
+					stored = stored >= FLOW_WALL ? height : std::max(stored, height);
+				}
+			}
+		}
+
+		// The surface: the falling water seen from above, the highest of its triangles over each point
+		std::vector<float> surface(static_cast<std::size_t>(a_size) * a_size, NO_WATER);
+		const auto raster = [&](const RE::NiPoint3& a, const RE::NiPoint3& b, const RE::NiPoint3& c) {
+			const float area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+			if (std::abs(area) < 1e-3f)
+				return;  // Edge-on from above: a vertical curtain adds nothing to the surface
+			int32_t lx0, lx1, ly0, ly1;
+			range(std::min({ a.x, b.x, c.x }), std::max({ a.x, b.x, c.x }), x0, lx0, lx1);
+			range(std::min({ a.y, b.y, c.y }), std::max({ a.y, b.y, c.y }), y0, ly0, ly1);
+			for (int32_t y = ly0; y <= ly1; y++) {
+				for (int32_t x = lx0; x <= lx1; x++) {
+					const float px = static_cast<float>(x) * a_spacing;
+					const float py = static_cast<float>(y) * a_spacing;
+					const float w0 = ((b.x - px) * (c.y - py) - (c.x - px) * (b.y - py)) / area;
+					const float w1 = ((c.x - px) * (a.y - py) - (a.x - px) * (c.y - py)) / area;
+					const float w2 = 1.0f - w0 - w1;
+					if (w0 < -1e-4f || w1 < -1e-4f || w2 < -1e-4f)
+						continue;
+					float& stored = surface[window(x, y)];
+					stored = std::max(stored, w0 * a.z + w1 * b.z + w2 * c.z);
+				}
+			}
+		};
+		for (const auto& site : sites) {
+			const FallCapture* capture = GetCapture(site);
+			if (!capture || !capture->IsComplete())
+				continue;
+			for (const uint32_t member : site.members) {
+				if (refs[member].cls != FxClass::Body)
+					continue;
+				auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refs[member].formID);
+				auto* root = ref ? ref->Get3D() : nullptr;
+				if (!root)
+					continue;
+				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+					auto* triShape = a_geometry->AsTriShape();
+					auto* renderer = a_geometry->GetGeometryRuntimeData().rendererData;
+					if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
+						return RE::BSVisit::BSVisitControl::kContinue;
+					const auto& counts = triShape->GetTrishapeRuntimeData();
+					const uint32_t stride = renderer->vertexDesc.GetSize();
+					const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+					if (stride < positionOffset + 12)
+						return RE::BSVisit::BSVisitControl::kContinue;
+					const auto& transform = a_geometry->world;
+					const auto vertex = [&](uint16_t a_index) {
+						float local[3];
+						std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(a_index) * stride + positionOffset, sizeof(local));
+						return transform * RE::NiPoint3(local[0], local[1], local[2]);
+					};
+					for (uint32_t t = 0; t < counts.triangleCount; t++) {
+						const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(t) * 3;
+						if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+							continue;
+						raster(vertex(index[0]), vertex(index[1]), vertex(index[2]));
+					}
+					return RE::BSVisit::BSVisitControl::kContinue;
+				});
+			}
+			// The site's pools, where they stand above the rock
+			for (const auto& plane : site.planes) {
+				int32_t lx0, lx1, ly0, ly1;
+				range(plane.min[0], plane.max[0], x0, lx0, lx1);
+				range(plane.min[1], plane.max[1], y0, ly0, ly1);
+				for (int32_t y = ly0; y <= ly1; y++) {
+					for (int32_t x = lx0; x <= lx1; x++) {
+						const std::size_t i = window(x, y);
+						if (bed[i] < plane.height)
+							surface[i] = std::max(surface[i], plane.height);
+					}
+				}
+			}
+		}
+
+		for (int32_t y = y0; y < y0 + n; y++) {
+			for (int32_t x = x0; x < x0 + n; x++) {
+				const std::size_t i = window(x, y);
+				const std::size_t s = slot(x, y);
+				a_map[s + 0] = bed[i];
+				// Water only where its surface stands above the rock: rock standing through it stays dry
+				a_map[s + 1] = bed[i] < FLOW_WALL && surface[i] > bed[i] + 1.0f ? surface[i] : NO_WATER;
+			}
+		}
+	}
+
 	void FallSites::CountCaptures(uint32_t& a_complete, uint32_t& a_total) const
 	{
 		a_complete = a_total = 0;

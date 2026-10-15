@@ -121,6 +121,18 @@ namespace FluidFieldSim
 		 * BED_RADIUS; rock more than PROMINENCE_FLOOR above it stands out, fully at PROMINENCE_FULL.
 		 */
 		static void BuildRockField(const std::vector<float>& a_heights, uint32_t a_size, float a_cell, std::vector<float>& a_field);
+
+		/**
+		 * @brief The map the fall flow solver runs on (D27), in ShallowWaterSolver's layout: a_size^2 lattice
+		 * points a_spacing apart, centred on lattice point (a_centreX, a_centreY) and stored toroidally,
+		 * WaterMapBuilder::MAP_CHANNELS floats each. The bed is the captured rock (FLOW_WALL where none is
+		 * captured); the surface the water is held to is vanilla's falling-water meshes seen from above,
+		 * and each site's pools at their levels, wherever they stand above the rock.
+		 */
+		void BuildFlowMap(int32_t a_centreX, int32_t a_centreY, float a_spacing, uint32_t a_size, std::vector<float>& a_map) const;
+		/** @brief Whether any site's falling water is grounded on captured rock, so the fall flow has something to run on. */
+		bool HasGround() const { return !grounded.empty(); }
+		static constexpr float FLOW_WALL = 100000.0f;  ///< Bed where no rock is captured: the fall flow's walls
 		static constexpr float BED_RADIUS = 128.0f;
 		static constexpr float PROMINENCE_FLOOR = 8.0f;
 		static constexpr float PROMINENCE_FULL = 48.0f;

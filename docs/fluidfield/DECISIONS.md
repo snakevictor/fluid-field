@@ -606,3 +606,27 @@ Entry format:
     some grounding to it?"; "if we can get those water meshes to interact
     with cliffs/rocks and with each other, we're golden")
 -   References: D25, `plans/waterfall-replacement.md`
+
+## D27: Waterfalls flowed by the water solver
+
+-   Date: 2026-10-15
+-   Phase / spike: D26 follow-up
+-   Decision: A third instance of the shallow-water solver runs over the
+    waterfalls around the player (512 texels of 16 units). Its bed is the
+    captured rock, walls where none is captured; the surface it relaxes
+    toward is vanilla's falling-water meshes rasterised from above, plus each
+    site's pools, and only where that surface stands above the rock, so
+    boulders through the water are dry and the water must go round them.
+    The effect shader samples its velocity and foam at each pixel of a
+    grounded mesh: the sideways velocity carries vanilla's streaks as a
+    two-phase flowmap, on top of the rock field's fixed bend, and the
+    solver's foam whitens the water. The texture warp alone (D26) did not
+    part the flow. Mesh deformation from the solver (depth and velocity
+    moving the vertices) is the next step after this.
+-   Alternatives rejected: deriving a potential flow or stream function on the
+    CPU (no wakes, more new code); the D24 approach of drawing the solver's
+    water itself (looked wrong on steep rock). Here the solver only supplies
+    velocity and foam; vanilla's meshes stay what is seen.
+-   Decided by: @Victor ("we need something like the solver for the shallow
+    water to divert it"; "use the solver to drive mesh deformation" later)
+-   References: D22, D24, D26
