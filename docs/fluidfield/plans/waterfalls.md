@@ -44,3 +44,12 @@ Cap at 4 waterfalls, nearest first, wakes first (emitters are shared, 16); near 
 | 2    | Render pass after the world, plain shading; hide vanilla bodies                          | Falls replaced, flat                        |
 | 3    | Falling-water shader: streaks speeding up, breakup, aeration, lighting                   | The look                                    |
 | 4    | Tie-ins: wind sway, plunge strength from the curtain's flow                              | Behaviour                                   |
+
+## Simulated falls (D24), replacing the curtains
+
+| Step | What                                                                                                                                                                                 | Check                                         |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------- |
+| 1    | Fall bed: rays over each fall area (16-unit lattice, time-budgeted), a near-grid bed texture; solver takes the max with its bed; fall areas keep off-vanilla water with a slow drain | Debug view shows water running down the falls |
+| 2    | Sim surface pass: heightfield mesh over fall areas where there is no vanilla water; refraction, reflection, glint, foam, breakup                                                     | The falls look like the rivers' water         |
+| 3    | Remove the traced curtains; vanilla bodies stay hidden                                                                                                                               | No double water                               |
+| 4    | Tune: lip flow, plunge strength, automatic ramps for vertical drops                                                                                                                  | Behaviour                                     |

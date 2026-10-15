@@ -522,3 +522,31 @@ Entry format:
     on sloped falls; @Victor: "conforming a bit to the mesh below").
 -   Decided by: @Victor
 -   References: D21 (render after world, camera snapshot), D22
+
+## D24: Waterfalls are simulated water, drawn by a sim surface pass
+
+-   Date: 2026-10-15
+-   Phase / spike: water slice follow-up; supersedes D23's traced curtains
+-   Decision: Waterfalls become part of the shallow-water simulation, as
+    Fluid Flux does it. Around each waterfall body, downward Havok rays map
+    the rock (a "fall bed" on the near level, toroidal like the grid); the
+    solver's bed is the higher of the map and the fall bed, so the river above
+    pours over the lip and runs down the real rock surface by gravity,
+    splitting around boulders, speeding up and foaming like the rest of the
+    simulated water. Inside fall areas, cells without vanilla water are not
+    pulled back to dry; a slow drain removes thin films instead. A new render
+    pass draws the simulated water wherever there is no vanilla water plane:
+    a heightfield mesh of bed + depth over the fall areas, shaded as water
+    (refraction of the scene behind it, sky reflection, sun glint, simulated
+    foam, white breakup where the water is steep and fast). Vanilla bodies
+    stay hidden; the traced curtains (D23) are removed.
+-   Alternatives rejected: improving the traced curtains (they stay a
+    separate effect that does not react to the simulation); a free-fall sheet
+    and particles for every fall (most of Skyrim's falls slide down rock;
+    kept as a later addition for true vertical drops).
+-   Consequences: near level only at first (8-unit cells); vertical drops
+    become one-cell steps in the heightfield (automatic ramps if needed);
+    rays over each fall area once, spread across frames.
+-   Decided by: @Victor ("yeah go ahead"), after research into FluidNinja,
+    Fluid Flux and game waterfall techniques
+-   References: D22, D23, `plans/waterfalls.md`
