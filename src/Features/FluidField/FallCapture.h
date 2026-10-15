@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace FluidFieldSim
@@ -38,6 +39,11 @@ namespace FluidFieldSim
 		uint32_t GetHeight() const { return height; }
 		float At(uint32_t a_x, uint32_t a_y) const { return heights[static_cast<std::size_t>(a_y) * width + a_x]; }
 
+		/** @brief Diagnostics: what the rays hit, by collision layer (the first hit of each attempt), and how many found nothing solid. */
+		std::string DescribeRays() const;
+		/** @brief Diagnostics: writes the heights (after cleanup) to a_path: width, height (uint32), origin x, y, cell (float), then the heights row by row. */
+		bool Dump(const std::string& a_path) const;
+
 	private:
 		void CleanUp();
 
@@ -50,5 +56,8 @@ namespace FluidFieldSim
 		std::vector<float> heights;
 		std::size_t next = 0;
 		bool complete = false;
+		uint32_t layerHits[64]{};  ///< Ray hits by collision layer, solid or passed through
+		uint32_t misses = 0;       ///< Rays that found nothing solid
+		uint32_t smoothed = 0;     ///< Texels the median moved by more than 16 units
 	};
 }

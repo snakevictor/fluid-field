@@ -328,7 +328,7 @@ void FluidField::DrawSettings()
 			fallGroundVersion = UINT64_MAX;  // Re-upload the constants
 		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("show_waterfall_turn_tooltip"), "Paints grounded waterfalls with the rock field: grey where nothing is in the way, red and green showing which way rock pushes the water, blue where rock stands out of the flow."));
+			ImGui::Text("%s", T(TKEY("show_waterfall_turn_tooltip"), "Paints grounded waterfalls with the rock field: dark blue where nothing is in the way, red where rock pushes the water aside, green where rock stands out of the flow."));
 		}
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {

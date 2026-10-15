@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <format>
+#include <fstream>
 
 namespace FluidFieldSim
 {
@@ -73,12 +75,15 @@ namespace FluidFieldSim
 					if (!output.HasHit())
 						break;
 					const float hitZ = fromZ + (bottom - fromZ) * output.hitFraction;
+					if (output.rootCollidable)
+						layerHits[static_cast<uint32_t>(output.rootCollidable->GetCollisionLayer()) & 63]++;
 					if (output.rootCollidable && IsSolidLayer(output.rootCollidable->GetCollisionLayer())) {
 						hit = hitZ;
 						break;
 					}
 					fromZ = hitZ - 1.0f;
 				}
+				misses += hit <= NONE ? 1 : 0;
 				heights[next++] = hit;
 			}
 		}
@@ -143,6 +148,7 @@ namespace FluidFieldSim
 				}
 				std::nth_element(values, values + count / 2, values + count);
 				scratch[index(x, y)] = values[count / 2];
+				smoothed += std::abs(scratch[index(x, y)] - heights[index(x, y)]) > 16.0f ? 1 : 0;
 			}
 		}
 		heights.swap(scratch);
@@ -163,5 +169,28 @@ namespace FluidFieldSim
 			return false;
 		a_height = (h00 * (1.0f - tx) + h10 * tx) * (1.0f - ty) + (h01 * (1.0f - tx) + h11 * tx) * ty;
 		return true;
+	}
+
+	std::string FallCapture::DescribeRays() const
+	{
+		std::string text = std::format("{} rays, {} found nothing solid, {} texels moved by the median; hits by layer:", heights.size(), misses, smoothed);
+		for (uint32_t layer = 0; layer < 64; layer++) {
+			if (layerHits[layer])
+				text += std::format(" {}={}", layer, layerHits[layer]);
+		}
+		return text;
+	}
+
+	bool FallCapture::Dump(const std::string& a_path) const
+	{
+		std::ofstream file(a_path, std::ios::binary);
+		if (!file)
+			return false;
+		const uint32_t size[2] = { width, height };
+		const float placement[3] = { originX, originY, CELL };
+		file.write(reinterpret_cast<const char*>(size), sizeof(size));
+		file.write(reinterpret_cast<const char*>(placement), sizeof(placement));
+		file.write(reinterpret_cast<const char*>(heights.data()), static_cast<std::streamsize>(heights.size() * sizeof(float)));
+		return static_cast<bool>(file);
 	}
 }

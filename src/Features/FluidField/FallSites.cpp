@@ -290,6 +290,13 @@ namespace FluidFieldSim
 			}
 			logger::info("[Fluid Field] Waterfall site #{} ground captured: {}x{} at {:.0f}, {:.0f}, {} holes left", site.id, capture.GetWidth(), capture.GetHeight(),
 				capture.GetOriginX(), capture.GetOriginY(), holes);
+			logger::info("[Fluid Field]   rays: {}", capture.DescribeRays());
+			// Diagnostics: the captured rock, next to the log
+			if (const auto directory = logger::log_directory()) {
+				const auto path = (*directory / std::format("FluidField_rock_site{}.bin", site.id)).string();
+				if (capture.Dump(path))
+					logger::info("[Fluid Field]   rock written to {}", path);
+			}
 			RefreshGrounded();
 			return;
 		}
