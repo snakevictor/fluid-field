@@ -35,3 +35,12 @@ Cap at 4 waterfalls, nearest first, wakes first (emitters are shared, 16); near 
 3. `Pad1` radial speed and foam rate in WaterForcesCS and WaterFoamCS.
 4. Plunge mask in WaterOutputCS, used by WaterNormal.hlsli.
 5. VanillaFoam hides base effects only under a waterfall source.
+
+## Replacing the falls (D23)
+
+| Step | What                                                                                     | Check                                       |
+| ---- | ---------------------------------------------------------------------------------------- | ------------------------------------------- |
+| 1    | Curtain shape: lip from vanilla's top band, ballistic columns, bed rays, rock conforming | Plain curtains drawn beside or over vanilla |
+| 2    | Render pass after the world, plain shading; hide vanilla bodies                          | Falls replaced, flat                        |
+| 3    | Falling-water shader: streaks speeding up, breakup, aeration, lighting                   | The look                                    |
+| 4    | Tie-ins: wind sway, plunge strength from the curtain's flow                              | Behaviour                                   |

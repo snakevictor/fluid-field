@@ -498,3 +498,27 @@ Entry format:
     the far level driven too).
 -   Decided by: @Victor
 -   References: D17 (emitters), D19 (foam), `plans/waterfalls.md`
+
+## D23: Fluid Field draws its own waterfalls in place of vanilla's
+
+-   Date: 2026-10-15
+-   Phase / spike: water slice follow-up (plan: `plans/waterfalls.md`)
+-   Decision: Vanilla's waterfall body meshes are hidden near the player
+    (runtime only) and replaced by curtains Fluid Field builds and draws. The
+    vanilla mesh is only a guide: its top band gives the lip (position, width,
+    direction), its bottom band the plunge. Each curtain is a grid of columns
+    across the lip and rows down the fall: every column follows a ballistic
+    arc from the lip (initial speed chosen so a free fall reaches vanilla's
+    plunge), and downward Havok rays find the rock under it; where the arc
+    would pass into rock, the water lies on the rock and slides down it. The
+    shape is built once per body and cached. A render pass after the world
+    (before the ground fog) draws the curtains with depth testing and alpha
+    blending, using the camera snapshot from the deferred passes, with a
+    falling-water shader (acceleration streaks, thinning and breakup, aeration
+    near the base, wind sway). Splashes, spray and mist at the base stay
+    vanilla until particles exist. Setting: Replace Waterfalls.
+-   Alternatives rejected: a new look for vanilla's meshes only (@Victor wants
+    the falls replaced); a free ballistic arc alone (it would cut through rock
+    on sloped falls; @Victor: "conforming a bit to the mesh below").
+-   Decided by: @Victor
+-   References: D21 (render after world, camera snapshot), D22
