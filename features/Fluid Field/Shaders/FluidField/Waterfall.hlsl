@@ -70,6 +70,9 @@ float ValueNoise(float2 p)
 	return lerp(lerp(Hash(i), Hash(i + float2(1, 0)), u.x), lerp(Hash(i + float2(0, 1)), Hash(i + float2(1, 1)), u.x), u.y);
 }
 
+/** How brightly the falling water is lit, as a fraction of the light around it (as the ground fog). */
+static const float BRIGHTNESS = 0.2;
+
 float4 PSMain(VSOutput input) : SV_Target
 {
 	// Streaks: narrow across the curtain, stretched down it, and scrolling down at the water's speed
@@ -77,7 +80,7 @@ float4 PSMain(VSOutput input) : SV_Target
 	const float streak = ValueNoise(float2(uv.x * 3.0, uv.y * 0.6)) * 0.6 + ValueNoise(float2(uv.x * 9.0, uv.y * 1.8)) * 0.4;
 
 	// The curtain's edges thin out; the water is solid near the lip and breaks up as it falls
-	const float edges = 1.0 - smoothstep(0.7, 1.0, abs(input.Across));
+	const float edges = (1.0 - smoothstep(0.7, 1.0, abs(input.Across))) * (1.0 - smoothstep(0.85, 1.0, input.Along));
 	const float breakup = lerp(0.95, 0.55, input.Along);
 	const float coverage = saturate(edges * smoothstep(1.0 - breakup - 0.2, 1.0 - breakup + 0.2, streak));
 	const float alpha = coverage * Opacity;
@@ -88,6 +91,7 @@ float4 PSMain(VSOutput input) : SV_Target
 	const float3 ambient = max(float3(SharedData::AmbientSHR.x, SharedData::AmbientSHG.x, SharedData::AmbientSHB.x), 0.0) * 0.886;
 	const float3 sun = SharedData::DirLightColor.xyz * 0.35;
 	const float3 water = lerp(float3(0.55, 0.65, 0.7), float3(0.9, 0.93, 0.95), saturate(input.Along * 0.8 + streak * 0.3));
-	const float3 color = water * (ambient + sun);
+	// Scaled like the ground fog: the scene's light values are far brighter than a surface's albedo
+	const float3 color = water * (ambient + sun) * BRIGHTNESS;
 	return float4(color * alpha, alpha);  // Premultiplied
 }
