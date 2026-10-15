@@ -10,11 +10,12 @@
 
 struct Emitter
 {
-	float2 Position;  // Logical texel coordinates
-	float Radius;     // Texels, Gaussian falloff
-	float DepthRate;  // World units per second added to depth at the centre
-	float2 Velocity;  // Velocity the water near the emitter is pulled toward
-	float2 Pad1;
+	float2 Position;    // Logical texel coordinates
+	float Radius;       // Texels, Gaussian falloff
+	float DepthRate;    // World units per second added to depth at the centre
+	float2 Velocity;    // Velocity the water near the emitter is pulled toward
+	float RadialSpeed;  // Speed the water spreads out from the centre, on top of Velocity (waterfalls, D22)
+	float FoamRate;     // Foam made per second at the centre (read by the foam pass)
 };
 
 Texture2D<float> DepthIn : register(t0);
@@ -152,7 +153,10 @@ float2 StirVelocity(float2 worldPos)
 			Emitter e = Emitters[i];
 			float2 d = position - e.Position;
 			float w = exp(-dot(d, d) / (e.Radius * e.Radius));
-			velocity = lerp(velocity, e.Velocity, w * saturate(DeltaTime * 8.0));
+			// Outward from the centre, strongest around its edge (a plunge spreading out)
+			float distance = length(d);
+			float2 radial = e.RadialSpeed > 0.0 ? (d / max(distance, 1e-3)) * e.RadialSpeed * saturate(distance / max(e.Radius * 0.5, 1e-3)) : 0.0;
+			velocity = lerp(velocity, e.Velocity + radial, w * saturate(DeltaTime * 8.0));
 			depth += e.DepthRate * w * DeltaTime;
 		}
 	}

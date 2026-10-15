@@ -12,11 +12,12 @@
 
 struct Emitter
 {
-	float2 Position;  // Logical texel coordinates
-	float Radius;     // Texels, Gaussian falloff
-	float DepthRate;  // World units per second added to depth at the centre (negative: a splash)
-	float2 Velocity;  // Velocity the water near the emitter is pulled toward
-	float2 Pad1;
+	float2 Position;    // Logical texel coordinates
+	float Radius;       // Texels, Gaussian falloff
+	float DepthRate;    // World units per second added to depth at the centre (negative: a splash)
+	float2 Velocity;    // Velocity the water near the emitter is pulled toward
+	float RadialSpeed;  // Speed the water spreads out from the centre (waterfalls, D22)
+	float FoamRate;     // Foam made per second at the centre
 };
 
 Texture2D<float> Depth : register(t0);
@@ -127,7 +128,7 @@ float SampleFoam(float2 position)
 		Emitter e = Emitters[i];
 		float2 d = position - e.Position;
 		float w = exp(-dot(d, d) / (e.Radius * e.Radius));
-		made += w * (WAKE_RATE * saturate(length(e.Velocity) / 300.0) + SPLASH_RATE * saturate(-e.DepthRate / 400.0));
+		made += w * (WAKE_RATE * saturate(length(e.Velocity) / 300.0) + SPLASH_RATE * saturate(-e.DepthRate / 400.0) + e.FoamRate);
 	}
 
 	foam = min(foam + made * FoamStrength * DeltaTime, FOAM_MAX);

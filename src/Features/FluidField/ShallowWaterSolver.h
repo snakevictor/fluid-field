@@ -24,7 +24,7 @@ namespace FluidFieldSim
 		float radius;       ///< Gaussian falloff radius in texels
 		float depthRate;    ///< World units per second added to depth at the centre
 		float velocity[2];  ///< Velocity the water near the emitter is pulled toward
-		float pad1[2];
+		float pad1[2];      ///< Radial speed (water spreads out from the centre) and foam rate, for waterfalls (D22); zero otherwise
 	};
 	static_assert(sizeof(WaterEmitter) == 32);
 

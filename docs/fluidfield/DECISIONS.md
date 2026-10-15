@@ -479,3 +479,22 @@ Entry format:
     exponential height fog? ... just get ground height and use the fluid
     dynamics we already have")
 -   References: D11 (wind grid), D13 (fog target), ROADMAP Phase 4
+
+## D22: Waterfalls drive the water where they land
+
+-   Date: 2026-10-15
+-   Phase / spike: water slice follow-up (plan: `plans/waterfalls.md`)
+-   Decision: Vanilla's falling water stays. Waterfall bodies (models under
+    `Effects\` with waterfallbody or waterfallthin) are found among the loaded
+    references; each one's plunge, width and fall direction come from its
+    lowest vertices (bounds as a fallback). A body whose lowest point is near
+    a water surface becomes part of a fall (bodies within 400 units merge;
+    nearest 6 kept). Each fall is a water emitter on both levels: a pulsing
+    depth push, the water spreading out from the plunge (the emitter's spare
+    floats carry a radial speed and a foam rate) and running on in the fall's
+    direction, and foam. Settings: Waterfalls, Waterfall Strength.
+-   Alternatives rejected: replacing vanilla's base effects now (@Victor:
+    "we want the water body before the fx"; later); near level only (he wants
+    the far level driven too).
+-   Decided by: @Victor
+-   References: D17 (emitters), D19 (foam), `plans/waterfalls.md`

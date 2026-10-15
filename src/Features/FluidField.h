@@ -11,6 +11,7 @@
 #include "FluidField/WakeSources.h"
 #include "FluidField/WaterMapBuilder.h"
 #include "FluidField/WaterSurfaces.h"
+#include "FluidField/WaterfallSources.h"
 #include "FluidField/WindSolver.h"
 #include "OverlayFeature.h"
 
@@ -85,6 +86,8 @@ struct FluidField : OverlayFeature
 		float FlowDetail = 1.2f;             ///< Strength of the surface detail carried by the simulated flow
 		float FoamStrength = 1.0f;           ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
 		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
+		bool Waterfalls = true;              ///< Waterfalls landing on the simulated water drive it (D22)
+		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
 		bool InteractiveFog = true;          ///< Ground fog that actors and the weather's wind move (D21)
 		float FogDensity = 0.08f;            ///< Ground fog extinction per world unit inside the layer, in its banks
@@ -263,6 +266,9 @@ private:
 public:
 private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
+	FluidFieldSim::WaterfallSources waterfalls;
+	float waterfallTime = 0.0f;                              ///< Seconds simulated, for the waterfalls' pulsing
+	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 
 	/** @brief Creates the water layer's GPU resources and shaders as needed. Returns false if it cannot run. */
 	bool EnsureWater(WaterLevel& a_level, uint32_t a_resolution, float a_size, bool a_obstacles);

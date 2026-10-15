@@ -54,7 +54,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	FogBrightness,
 	FogStir,
 	FogRefillSeconds,
-	ReplaceVanillaFoam)
+	ReplaceVanillaFoam,
+	Waterfalls,
+	WaterfallStrength)
 
 void FluidField::DrawSettings()
 {
@@ -267,6 +269,12 @@ void FluidField::DrawSettings()
 		ImGui::Text("%s", T(TKEY("replace_vanilla_foam_tooltip"), "Hides vanilla's placed rapids foam, splash and spray effects where the water is simulated. Waterfalls and low mist stay."));
 	}
 	ImGui::Text(T(TKEY("vanilla_foam_hidden"), "Vanilla foam effects hidden: %u"), vanillaFoam.GetHiddenCount());
+	ImGui::Checkbox(T(TKEY("waterfalls"), "Waterfalls"), &settings.Waterfalls);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("waterfalls_tooltip"), "Waterfalls landing on the simulated water churn it, push it out and downstream, and foam it."));
+	}
+	ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Waterfall Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::Text(T(TKEY("waterfalls_found"), "Waterfalls driving the water: %u"), static_cast<uint32_t>(waterfalls.GetFalls().size()));
 	ImGui::SliderFloat(T(TKEY("water_tint"), "Water Tint"), &settings.WaterTint, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("water_tint_tooltip"), "Tints what is seen through all water with the water's own colour, deepening with depth, as it looks from underwater. 0 keeps vanilla's clear look."));
@@ -466,6 +474,7 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.FlowDetail = std::isfinite(a_settings.FlowDetail) ? std::clamp(a_settings.FlowDetail, 0.0f, 2.0f) : defaults.FlowDetail;
 	a_settings.FoamStrength = std::isfinite(a_settings.FoamStrength) ? std::clamp(a_settings.FoamStrength, 0.0f, 3.0f) : defaults.FoamStrength;
 	a_settings.WaterTint = std::isfinite(a_settings.WaterTint) ? std::clamp(a_settings.WaterTint, 0.0f, 1.0f) : defaults.WaterTint;
+	a_settings.WaterfallStrength = std::isfinite(a_settings.WaterfallStrength) ? std::clamp(a_settings.WaterfallStrength, 0.0f, 3.0f) : defaults.WaterfallStrength;
 	a_settings.FogDensity = std::isfinite(a_settings.FogDensity) ? std::clamp(a_settings.FogDensity, 0.0f, 0.2f) : defaults.FogDensity;
 	a_settings.FogBrightness = std::isfinite(a_settings.FogBrightness) ? std::clamp(a_settings.FogBrightness, 0.0f, 2.0f) : defaults.FogBrightness;
 	a_settings.FogThickness = std::isfinite(a_settings.FogThickness) ? std::clamp(a_settings.FogThickness, 5.0f, 400.0f) : defaults.FogThickness;
@@ -815,6 +824,13 @@ void FluidField::Prepass()
 		} else if (vanillaFoam.GetHiddenCount() > 0) {
 			vanillaFoam.RestoreAll();
 		}
+		if (settings.Waterfalls) {
+			// Waterfalls over the whole simulated area, far level included
+			const float simulated = 0.5f * (settings.FarWater ? settings.WaterSize * settings.FarWaterScale : settings.WaterSize);
+			waterfalls.Update(water, playerPos.x, playerPos.y, simulated);
+		} else {
+			waterfalls.Clear();
+		}
 	} else {
 		ReleaseWater();
 	}
@@ -884,6 +900,7 @@ void FluidField::ReleaseWater()
 	}
 	wakeSources.Clear();
 	vanillaFoam.RestoreAll();
+	waterfalls.Clear();
 	waterShaderData = {};
 }
 
@@ -1207,13 +1224,21 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 		return;
 
 	// Fine bed detail, and wakes and splashes from the actors around the player (D17), near level only
-	std::span<const FluidFieldSim::WaterEmitter> emitters;
+	levelEmitters.clear();
 	if (a_near) {
 		ZoneScopedN("FluidField - Water Obstacles");
 		UploadObstacles(a_context, a_playerPos);
-		emitters = wakeSources.Update(water, a_playerPos, a_gridMin, a_cellSize, a_resolution, a_deltaTime,
+		const auto& wakes = wakeSources.Update(water, a_playerPos, a_gridMin, a_cellSize, a_resolution, a_deltaTime,
 			{ .wakeStrength = settings.WakeStrength, .splashStrength = settings.SplashStrength });
+		levelEmitters.assign(wakes.begin(), wakes.end());
 	}
+	// Waterfalls drive both levels (D22); wakes come first
+	if (settings.Waterfalls) {
+		if (a_near)
+			waterfallTime += a_deltaTime;
+		waterfalls.AppendEmitters(levelEmitters, a_gridMin, a_cellSize, a_resolution, waterfallTime, settings.WaterfallStrength, FluidFieldSim::ShallowWaterSolver::MAX_EMITTERS);
+	}
+	const std::span<const FluidFieldSim::WaterEmitter> emitters = levelEmitters;
 
 	FluidFieldSim::WaterParams params;
 	params.damping = settings.WaveDamping;
