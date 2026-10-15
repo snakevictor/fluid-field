@@ -306,7 +306,8 @@ private:
 		uint32_t FlowEnabled;
 		float FlowPeriod;
 		float Time;
-		float Pad[3];
+		float LieHeight;
+		float Pad[2];
 	};
 	static_assert(sizeof(FallGroundData) == 96);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
@@ -314,9 +315,9 @@ private:
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
 	static constexpr float FALL_GROUND_OFFSET = 6.0f;
 	static constexpr float FALL_GROUND_CLING = 24.0f;
-	static constexpr float FALL_GROUND_CONTACT = 6.0f;     ///< World units over which water fades where it cuts into rock
-	static constexpr float FALL_GROUND_LIFT_MOST = 24.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
-	static constexpr float FALL_REACH = 96.0f;             ///< How far above rock its push still bends the water
+	static constexpr float FALL_GROUND_CONTACT = 6.0f;    ///< World units over which water fades where it cuts into rock
+	static constexpr float FALL_GROUND_LIFT_MOST = 8.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
+	static constexpr float FALL_REACH = 96.0f;            ///< How far above rock its push still bends the water
 	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
 	static constexpr float FALL_VERTEX_PUSH = 0.3f;        ///< How much of the push moves vertices; the texture carries it all
 	static constexpr float FALL_VERTEX_PUSH_MOST = 32.0f;  ///< World units
@@ -343,7 +344,8 @@ private:
 	static constexpr uint32_t FALL_FLOW_RES = 512;
 	static constexpr float FALL_FLOW_CELL = 16.0f;
 	static constexpr float FALL_FLOW_RECENTRE = 1024.0f;  ///< How far the player moves before the flow's map recentres
-	static constexpr float FALL_FLOW_LEVEL_RELAX = 2.0f;  ///< Per-second pull toward vanilla's falling-water surface
+	static constexpr float FALL_FLOW_LEVEL_RELAX = 0.5f;  ///< Per-second pull toward vanilla's falling-water surface: weak, so the shadow behind rock stays open
+	static constexpr float FALL_FLOW_LIE_HEIGHT = 48.0f;  ///< Water within about this of the rock lies on it: the fall flow says where it is
 	static constexpr float FALL_FLOW_PERIOD = 1.2f;       ///< Seconds per flowmap cycle in the effect shader
 	std::vector<float> fallFlowMap;
 	int32_t fallFlowGridMin[2]{};

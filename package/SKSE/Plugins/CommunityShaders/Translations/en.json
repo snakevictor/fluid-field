@@ -965,7 +965,7 @@
     "feature.fluid_field.show_waterfall_sites": "Show Waterfall Sites",
     "feature.fluid_field.show_waterfall_sites_tooltip": "Draws the waterfall sites found in vanilla's layout: effect meshes by class (cyan falling water, blue skirts, white mist, yellow splashes, orange rapids), each site's water levels (green top, blue bottom, teal tiers) and a label. Also prints each cell's summary to the console.",
     "feature.fluid_field.show_waterfall_turn": "Show Waterfall Flow Turn",
-    "feature.fluid_field.show_waterfall_turn_tooltip": "Paints grounded waterfalls with the fall flow: red for its speed, green where it foams, blue where the captured rock covers the water (black: not covered).",
+    "feature.fluid_field.show_waterfall_turn_tooltip": "Paints grounded waterfalls with the fall flow: red for its speed, green where it foams, blue where its water is (dark: gone, as behind rock; black: no captured rock).",
     "feature.fluid_field.splash_strength": "Splash Strength",
     "feature.fluid_field.splash_strength_tooltip": "How hard jumping or falling into the water, or climbing out of it, pushes the water.",
     "feature.fluid_field.surface_normal_strength": "Surface Strength",

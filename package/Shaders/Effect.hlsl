@@ -737,9 +737,10 @@ PS_OUTPUT main(PS_INPUT input)
 	float4 baseTexColor = float4(1, 1, 1, 1);
 	float4 baseColor = float4(1, 1, 1, 1);
 #	if defined(FLUID_FIELD)
-	float4 fallRock = 0.0;  // The rock field here (FallGround::Flow), for the debug view
-	float fallFoam = 0.0;   // Foam on the falling water: where the fall flow churns, and hugging rock
-	float fallSpeed = 0.0;  // The fall flow's speed here, for the debug view
+	float4 fallRock = 0.0;     // The rock field here (FallGround::Flow), for the debug view
+	float fallFoam = 0.0;      // Foam on the falling water: where the fall flow churns, and hugging rock
+	float fallSpeed = 0.0;     // The fall flow's speed here, for the debug view
+	float fallPresence = 1.0;  // How much of the falling water is there, from the fall flow
 #	endif
 #	if !defined(TEXTURE)
 	[branch] if (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToColor || Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha)
@@ -751,7 +752,7 @@ PS_OUTPUT main(PS_INPUT input)
 		{
 			float2 uv0, uv1;
 			float blend;
-			FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, uv0, uv1, blend, fallRock, fallFoam, fallSpeed);
+			FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, uv0, uv1, blend, fallRock, fallFoam, fallSpeed, fallPresence);
 			baseTexColor = lerp(TexBaseSampler.Sample(SampBaseSampler, uv0), TexBaseSampler.Sample(SampBaseSampler, uv1), blend);
 		}
 		else
@@ -831,9 +832,9 @@ PS_OUTPUT main(PS_INPUT input)
 	// and behind it, whiter and denser; and soft where it cuts into rock
 	[branch] if (FallGround::Enabled)
 	{
-		const float brightest = max(max(baseColor.x, baseColor.y), baseColor.z);
-		baseColor.xyz = lerp(baseColor.xyz, brightest.xxx * FallGround::FoamStrength, fallFoam);
-		alpha = lerp(alpha, max(alpha, 0.9), fallFoam) * FallGround::Visibility(input.Position.xy, input.Position.z);
+		const float brightness = dot(baseColor.xyz, float3(0.3, 0.4, 0.3));
+		baseColor.xyz = lerp(baseColor.xyz, max(baseColor.xyz, brightness.xxx * FallGround::FoamStrength), fallFoam * 0.6);
+		alpha *= fallPresence * FallGround::Visibility(input.Position.xy, input.Position.z);
 	}
 #	endif
 
@@ -928,12 +929,12 @@ PS_OUTPUT main(PS_INPUT input)
 #	endif
 	psout.Diffuse = finalColor;
 #	if defined(FLUID_FIELD)
-	// Fluid Field (D26, D27) debug: the fall flow's speed as red, foam as green, blue where the rock map covers the pixel
+	// Fluid Field (D26, D27) debug: the fall flow's speed as red, foam as green, the water's presence as blue (black: no rock map)
 	[branch] if (FallGround::Enabled && FallGround::DebugMode == 1)
 	{
 		float ground;
 		const bool covered = FallGround::Height(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy, ground);
-		psout.Diffuse.xyz = float3(saturate(fallSpeed / 400.0), fallFoam, covered ? 0.6 : 0.0);
+		psout.Diffuse.xyz = float3(saturate(fallSpeed / 800.0), fallFoam, covered ? fallPresence : 0.0);
 	}
 #	endif
 #	if defined(LIGHTING) && defined(LIGHT_LIMIT_FIX) && defined(LLFDEBUG)
