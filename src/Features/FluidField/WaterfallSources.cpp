@@ -27,11 +27,11 @@ namespace FluidFieldSim
 		constexpr float MIN_WIDTH = 96.0f;
 
 		/** @brief Depth pushed in and out at the plunge, world units per second, at full strength. */
-		constexpr float PULSE_DEPTH_RATE = 80.0f;
+		constexpr float PULSE_DEPTH_RATE = 50.0f;
 		/** @brief Speed the water spreads out from the plunge, world units per second. */
-		constexpr float RADIAL_SPEED = 220.0f;
+		constexpr float RADIAL_SPEED = 110.0f;
 		/** @brief Speed the water runs on in the fall's direction, world units per second. */
-		constexpr float OUTFLOW_SPEED = 120.0f;
+		constexpr float OUTFLOW_SPEED = 60.0f;
 		/** @brief Foam made per second at the plunge. */
 		constexpr float FOAM_RATE = 1.5f;
 
