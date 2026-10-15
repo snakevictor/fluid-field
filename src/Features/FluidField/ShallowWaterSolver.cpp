@@ -258,7 +258,7 @@ namespace FluidFieldSim
 			.vorticity = params.vorticity,
 			.simTime = simTime,
 			.foamStrength = params.foamStrength,
-			.pad1 = 0.0f,
+			.foamMax = params.foamMax,
 			.seedGridMin = { params.seedGridMin[0], params.seedGridMin[1] },
 			.seedRes = params.seedFoam ? params.seedRes : 0u,
 			.seedCellSize = params.seedCellSize

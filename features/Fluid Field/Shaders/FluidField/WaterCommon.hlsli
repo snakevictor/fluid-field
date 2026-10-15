@@ -37,10 +37,10 @@ cbuffer WaterCB : register(b1)
 	float Vorticity;        // Vorticity confinement strength: keeps eddies behind obstacles alive
 	float SimTime;          // Seconds simulated since the last reset
 	float FoamStrength;     // Scales how much foam the foam pass makes (0: none)
-	float WaterPad1;
-	int2 SeedGridMin;    // Placement of the level that seeds foam for cells coming into this one
-	uint SeedRes;        // Its texels per side (0: no seed)
-	float SeedCellSize;  // Its world units per texel
+	float FoamMax;          // Most foam a cell holds
+	int2 SeedGridMin;       // Placement of the level that seeds foam for cells coming into this one
+	uint SeedRes;           // Its texels per side (0: no seed)
+	float SeedCellSize;     // Its world units per texel
 };
 
 static const float NO_WATER = -1.0e8;

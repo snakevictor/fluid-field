@@ -44,6 +44,14 @@ namespace FluidFieldSim
 		constexpr float MIN_SLIDE_SPEED = 80.0f;
 		/** @brief Rock rising more than this above the water ahead is a wall: water does not climb it. */
 		constexpr float MAX_CLIMB = 8.0f;
+		/** @brief Speed a stream keeps when a wall turns it aside. */
+		constexpr float WALL_KEEP = 0.7f;
+		/** @brief Distance between the rays that measure the rock's slope, world units. */
+		constexpr float SLOPE_PROBE = 16.0f;
+		/** @brief Streams are this much wider than their spacing at the lip, so they overlap into one sheet there. */
+		constexpr float STREAM_OVERLAP = 1.8f;
+		/** @brief Falls traced per scan, so loading many at once does not hitch. */
+		constexpr uint32_t MAX_BUILDS_PER_SCAN = 2;
 		/** @brief Water lying on rock sits this far above it, world units. */
 		constexpr float ROCK_OFFSET = 6.0f;
 		/** @brief Bed rays start this far above the arc and reach this far below it, world units. */
@@ -244,66 +252,94 @@ namespace FluidFieldSim
 		const float dy = a_body.plunge[1] - a_body.lip[1];
 		const float reach = std::sqrt(dx * dx + dy * dy);
 		const float dir[2] = { reach > 1.0f ? dx / reach : a_body.direction[0], reach > 1.0f ? dy / reach : a_body.direction[1] };
-		const float side[2] = { -dir[1], dir[0] };
-		// Where the water ends: the plunge (the water surface or the bottom of vanilla's body)
+		const float lipSide[2] = { -dir[1], dir[0] };
 		const float endZ = a_body.plunge[2];
-		const float maxTravel = reach * 1.5f + drop;
+		const float maxTravel = reach * 2.0f + drop;
+		const float halfWidth = 0.5f * a_body.lipWidth / static_cast<float>(CURTAIN_COLUMNS - 1) * STREAM_OVERLAP;
+
+		// The rock's height under a point, from just above the water down
+		const auto bedAt = [&](float a_x, float a_y, float a_fromZ, float& a_bed) { return CastDown(world, a_x, a_y, a_fromZ + RAY_ABOVE, a_fromZ - RAY_BELOW, a_bed); };
 
 		struct PathPoint
 		{
-			float x, y, z, speed, onRock, time;
+			float x, y, z, vx, vy, speed, onRock, time;
 		};
 		std::vector<PathPoint> path;
 		a_body.curtain.resize(static_cast<std::size_t>(CURTAIN_COLUMNS) * CURTAIN_ROWS);
 		for (uint32_t c = 0; c < CURTAIN_COLUMNS; c++) {
 			const float across = static_cast<float>(c) / static_cast<float>(CURTAIN_COLUMNS - 1) * 2.0f - 1.0f;
-			// Each column is traced as water: it leaves the lip at about river speed and falls; on rock
-			// it lies on the surface and slides, sped up by the slope and slowed a little by friction;
-			// where the rock drops away it falls free again. Ends where it reaches the water below.
-			float x = a_body.lip[0] + side[0] * across * 0.5f * a_body.lipWidth;
-			float y = a_body.lip[1] + side[1] * across * 0.5f * a_body.lipWidth;
+			// Each stream is traced as water: momentum and gravity, and on rock the rock's slope pulling
+			// it downhill, so it runs into channels, splits around boulders and turns along walls instead
+			// of climbing them. It falls free where the rock drops away and ends at the water below.
+			float x = a_body.lip[0] + lipSide[0] * across * 0.5f * a_body.lipWidth;
+			float y = a_body.lip[1] + lipSide[1] * across * 0.5f * a_body.lipWidth;
 			float z = a_body.lip[2];
-			float horizontal = LIP_SPEED;
+			float vx = dir[0] * LIP_SPEED;
+			float vy = dir[1] * LIP_SPEED;
 			float vz = 0.0f;
 			float travelled = 0.0f;
-			float bed = z - RAY_BELOW;
-			bool haveBed = CastDown(world, x, y, z + RAY_ABOVE, z - RAY_BELOW, bed);
-			path.clear();
 			float time = 0.0f;
-			path.push_back({ x, y, z, horizontal, 0.0f, 0.0f });
+			path.clear();
+			path.push_back({ x, y, z, vx, vy, LIP_SPEED, 0.0f, 0.0f });
 			for (uint32_t step = 0; step < MAX_TRACE_STEPS && z > endZ && travelled < maxTravel; step++) {
-				const float previousBed = bed;
-				const bool hadBed = haveBed;
-				const float nextX = x + dir[0] * horizontal * TRACE_STEP;
-				const float nextY = y + dir[1] * horizontal * TRACE_STEP;
-				float nextBed = 0.0f;
-				const bool nextHasBed = CastDown(world, nextX, nextY, z + RAY_ABOVE, z - RAY_BELOW, nextBed);
-				// Water does not climb: rock rising ahead is a wall, and the column ends against it
-				if (nextHasBed && nextBed > z + MAX_CLIMB)
-					break;
+				// Move on; a wall ahead turns the stream aside, keeping some of its speed
+				float nextX = x + vx * TRACE_STEP;
+				float nextY = y + vy * TRACE_STEP;
+				float bed = 0.0f;
+				bool hasBed = bedAt(nextX, nextY, z, bed);
+				if (hasBed && bed > z + MAX_CLIMB) {
+					bool turned = false;
+					for (const float angle : { 0.5f, -0.5f, 1.0f, -1.0f, 1.5f, -1.5f }) {
+						const float ca = std::cos(angle);
+						const float sa = std::sin(angle);
+						const float tx = (vx * ca - vy * sa) * WALL_KEEP;
+						const float ty = (vx * sa + vy * ca) * WALL_KEEP;
+						float turnedBed = 0.0f;
+						const bool turnedHas = bedAt(x + tx * TRACE_STEP, y + ty * TRACE_STEP, z, turnedBed);
+						if (!turnedHas || turnedBed <= z + MAX_CLIMB) {
+							vx = tx;
+							vy = ty;
+							nextX = x + vx * TRACE_STEP;
+							nextY = y + vy * TRACE_STEP;
+							bed = turnedBed;
+							hasBed = turnedHas;
+							turned = true;
+							break;
+						}
+					}
+					if (!turned)
+						break;  // Boxed in: the stream pools here
+				}
+				const float stepLength = std::sqrt((nextX - x) * (nextX - x) + (nextY - y) * (nextY - y));
 				x = nextX;
 				y = nextY;
-				bed = nextBed;
-				haveBed = nextHasBed;
-				travelled += horizontal * TRACE_STEP;
+				travelled += stepLength;
 				time += TRACE_STEP;
 				vz -= GRAVITY * TRACE_STEP;
-				// Never upward
-				float nextZ = std::min(z + vz * TRACE_STEP, z);
+				float nextZ = std::min(z + vz * TRACE_STEP, z);  // Never upward
 				float onRock = 0.0f;
-				if (haveBed && nextZ < bed + ROCK_OFFSET) {
-					// On the rock: follow it, sliding faster where it is steep
+				if (hasBed && nextZ < bed + ROCK_OFFSET) {
+					// On the rock: its slope pulls the water downhill, friction slows it, and it follows the surface
 					nextZ = std::min(bed + ROCK_OFFSET, z);
-					const float run = std::max(horizontal * TRACE_STEP, 1.0f);
-					const float fall = hadBed ? std::max(previousBed - bed, 0.0f) : 0.0f;
-					const float slope = fall / run;
-					const float sine = slope / std::sqrt(1.0f + slope * slope);
-					horizontal = std::max(horizontal + (GRAVITY * sine - SLIDE_FRICTION * horizontal) * TRACE_STEP, MIN_SLIDE_SPEED);
-					vz = -horizontal * slope;
+					float bedX = bed;
+					float bedY = bed;
+					const bool hasX = bedAt(x + SLOPE_PROBE, y, z, bedX);
+					const bool hasY = bedAt(x, y + SLOPE_PROBE, z, bedY);
+					const float gx = hasX ? std::clamp((bedX - bed) / SLOPE_PROBE, -4.0f, 4.0f) : 0.0f;
+					const float gy = hasY ? std::clamp((bedY - bed) / SLOPE_PROBE, -4.0f, 4.0f) : 0.0f;
+					const float steep = 1.0f + gx * gx + gy * gy;
+					vx += (-GRAVITY * gx / steep - SLIDE_FRICTION * vx) * TRACE_STEP;
+					vy += (-GRAVITY * gy / steep - SLIDE_FRICTION * vy) * TRACE_STEP;
+					const float horizontal = std::sqrt(vx * vx + vy * vy);
+					if (horizontal < MIN_SLIDE_SPEED && horizontal > 1e-3f) {
+						vx *= MIN_SLIDE_SPEED / horizontal;
+						vy *= MIN_SLIDE_SPEED / horizontal;
+					}
+					vz = vx * gx + vy * gy;  // Along the surface
 					onRock = 1.0f;
 				}
 				z = nextZ;
-				path.push_back({ x, y, z, std::sqrt(horizontal * horizontal + vz * vz), onRock, time });
+				path.push_back({ x, y, z, vx, vy, std::sqrt(vx * vx + vy * vy + vz * vz), onRock, time });
 			}
 
 			// Resample the path into evenly spaced rows by distance along it
@@ -315,24 +351,34 @@ namespace FluidFieldSim
 				distance[i] = distance[i - 1] + std::sqrt(ex * ex + ey * ey + ez * ez);
 			}
 			const float total = std::max(distance.back(), 1.0f);
-			std::size_t segment = 1;
+			const std::size_t last = path.size() - 1;
+			std::size_t segment = std::min<std::size_t>(1, last);
 			for (uint32_t r = 0; r < CURTAIN_ROWS; r++) {
 				const float wanted = total * static_cast<float>(r) / static_cast<float>(CURTAIN_ROWS - 1);
-				while (segment + 1 < path.size() && distance[segment] < wanted)
+				while (segment < last && distance[segment] < wanted)
 					segment++;
-				const auto& a = path[std::min(segment - 1, path.size() - 1)];
-				const auto& b = path[std::min(segment, path.size() - 1)];
-				const float span = distance[std::min(segment, path.size() - 1)] - distance[segment - 1];
-				const float t = span > 1e-3f ? std::clamp((wanted - distance[segment - 1]) / span, 0.0f, 1.0f) : 0.0f;
+				const std::size_t i0 = segment > 0 ? segment - 1 : 0;
+				const auto& a = path[i0];
+				const auto& b = path[segment];
+				const float span = distance[segment] - distance[i0];
+				const float t = span > 1e-3f ? std::clamp((wanted - distance[i0]) / span, 0.0f, 1.0f) : 0.0f;
 				auto& point = a_body.curtain[static_cast<std::size_t>(r) * CURTAIN_COLUMNS + c];
 				point.position[0] = a.x + (b.x - a.x) * t;
 				point.position[1] = a.y + (b.y - a.y) * t;
 				point.position[2] = a.z + (b.z - a.z) * t;
 				point.along = static_cast<float>(r) / static_cast<float>(CURTAIN_ROWS - 1);
+				// Across the stream: perpendicular to its horizontal motion (the lip's side where it falls straight down)
+				const float mvx = a.vx + (b.vx - a.vx) * t;
+				const float mvy = a.vy + (b.vy - a.vy) * t;
+				const float mv = std::sqrt(mvx * mvx + mvy * mvy);
+				point.side[0] = mv > 1.0f ? -mvy / mv : lipSide[0];
+				point.side[1] = mv > 1.0f ? mvx / mv : lipSide[1];
+				point.halfWidth = halfWidth;
 				point.speed = a.speed + (b.speed - a.speed) * t;
 				point.across = across;
 				point.onRock = a.onRock + (b.onRock - a.onRock) * t;
 				point.travelTime = a.time + (b.time - a.time) * t;
+				point.pad = 0.0f;
 			}
 		}
 	}
@@ -481,13 +527,16 @@ namespace FluidFieldSim
 			return;
 		}
 		std::vector<CurtainPoint> points;
+		uint32_t builtThisScan = 0;
 		for (const uint32_t formID : seenBodies) {
 			auto it = bodies.find(formID);
 			if (it == bodies.end())
 				continue;
 			Body& body = it->second;
-			if (body.curtain.empty())
+			if (body.curtain.empty() && builtThisScan < MAX_BUILDS_PER_SCAN) {
 				BuildCurtain(body);
+				builtThisScan++;
+			}
 			if (body.curtain.empty())
 				continue;
 			points.insert(points.end(), body.curtain.begin(), body.curtain.end());
@@ -504,7 +553,7 @@ namespace FluidFieldSim
 	}
 
 	void WaterfallSources::AppendEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_time,
-		float a_strength, uint32_t a_maxEmitters) const
+		float a_strength, uint32_t a_maxEmitters, bool a_foam) const
 	{
 		if (a_strength <= 0.0f || !(a_cellSize > 0.0f))
 			return;
@@ -519,7 +568,7 @@ namespace FluidFieldSim
 				.radius = std::max(0.5f * fall.width / a_cellSize, 1.5f),
 				.depthRate = PULSE_DEPTH_RATE * pulse * a_strength,
 				.velocity = { fall.direction[0] * OUTFLOW_SPEED * a_strength, fall.direction[1] * OUTFLOW_SPEED * a_strength },
-				.pad1 = { RADIAL_SPEED * a_strength, FOAM_RATE * a_strength } });
+				.pad1 = { RADIAL_SPEED * a_strength, a_foam ? FOAM_RATE * a_strength : 0.0f } });
 		}
 	}
 }

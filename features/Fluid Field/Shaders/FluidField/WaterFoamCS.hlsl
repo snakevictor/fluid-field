@@ -48,8 +48,6 @@ RWTexture2D<float> FoamOut : register(u0);
 
 /** Seconds for foam to fade to about a third. A steady source settles at its rate times this. */
 static const float FOAM_LIFETIME = 3.0;
-/** Most foam a cell holds (1 is fully white once drawn). */
-static const float FOAM_MAX = 1.5;
 /** Foam made per second at full strength by each source. */
 static const float SHEAR_RATE = 0.4;
 static const float IMPACT_RATE = 1.5;
@@ -154,8 +152,11 @@ float SampleFoam(float2 position)
 			made += w * (WAKE_RATE * saturate(length(e.Velocity) / 300.0) + SPLASH_RATE * saturate(-e.DepthRate / 400.0) + e.FoamRate);
 	}
 
-	foam = min(foam + made * FoamStrength * DeltaTime, FOAM_MAX);
+	foam = min(foam + made * FoamStrength * DeltaTime, FoamMax);
 	// No foam at the grid's border, so nothing piles up where the water is eased back to vanilla
-	foam *= 1.0 - EdgeWeight(logical);
+	// With a seeding (far) level behind this one, foam is kept to the edge and the water shader
+	// cross-fades it into the far level's; on its own, the level's edge hands over to vanilla
+	if (SeedRes == 0)
+		foam *= 1.0 - EdgeWeight(logical);
 	FoamOut[id] = foam;
 }

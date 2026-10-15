@@ -23,21 +23,24 @@ namespace FluidFieldSim
 	class WaterfallSources
 	{
 	public:
-		/** @brief Columns across a curtain and rows down it (D23). */
+		/** @brief Streams across a fall and points down each (D23); every stream is traced on its own. */
 		static constexpr uint32_t CURTAIN_COLUMNS = 12;
 		static constexpr uint32_t CURTAIN_ROWS = 40;
 
-		/** @brief One point of a curtain, matching `CurtainPoint` in Waterfall.hlsl. */
+		/** @brief One point of a stream, matching `CurtainPoint` in Waterfall.hlsl. */
 		struct CurtainPoint
 		{
 			float position[3];  ///< World units
 			float along;        ///< 0 at the lip to 1 at the end of the fall
-			float speed;        ///< How fast the water falls here, world units per second
-			float across;       ///< -1 at one edge of the curtain to 1 at the other
+			float side[2];      ///< Horizontal direction across the stream here (unit length)
+			float halfWidth;    ///< Half the stream's width, world units
+			float speed;        ///< How fast the water moves here, world units per second
+			float across;       ///< -1 at one edge of the fall to 1 at the other (where its stream started)
 			float onRock;       ///< 1 where the water lies on rock, 0 where it falls free
 			float travelTime;   ///< Seconds the water takes to get here from the lip
+			float pad;
 		};
-		static_assert(sizeof(CurtainPoint) == 32);
+		static_assert(sizeof(CurtainPoint) == 48);
 
 		/** @brief A waterfall landing on water. */
 		struct Fall
@@ -53,7 +56,7 @@ namespace FluidFieldSim
 		 */
 		void Update(const WaterSurfaces& a_water, float a_centreX, float a_centreY, float a_halfSize, bool a_replace);
 
-		/** @brief The curtains of the waterfalls being replaced, CURTAIN_COLUMNS x CURTAIN_ROWS points each, rows first. */
+		/** @brief The falls being replaced: CURTAIN_COLUMNS streams of CURTAIN_ROWS points each per fall, rows first. */
 		const std::vector<CurtainPoint>& GetCurtains() const { return curtainPoints; }
 		/** @brief Changes whenever the curtains do, for re-uploading. */
 		uint64_t GetCurtainVersion() const { return curtainVersion; }
@@ -66,7 +69,7 @@ namespace FluidFieldSim
 		 * @param a_strength Scales every effect (0: none).
 		 */
 		void AppendEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_time, float a_strength,
-			uint32_t a_maxEmitters) const;
+			uint32_t a_maxEmitters, bool a_foam) const;
 
 		void Clear();
 

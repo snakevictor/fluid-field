@@ -215,6 +215,9 @@ private:
 	static constexpr float FOG_GROUND_CELL = 16.0f;
 	/** @brief Fog drift at the weather's full wind speed, world units per second. */
 	static constexpr float MAX_WEATHER_DRIFT = 150.0f;
+	/** @brief The far water level's foam: a fraction of the near level's, and its most per cell. */
+	static constexpr float FAR_FOAM_SCALE = 0.25f;
+	static constexpr float FAR_FOAM_MAX = 0.5f;
 	/** @brief Most opacity of the replaced waterfalls' falling water. */
 	static constexpr float WATERFALL_OPACITY = 0.85f;
 	/** @brief Substep length of the warm-up, as the regular step's shortest substep. */

@@ -172,8 +172,9 @@ namespace FluidFieldSim
 		a_context->PSSetConstantBuffers(CAMERA_SLOT, 1, &a_camera);
 		ID3D11ShaderResourceView* srv = pointsSRV.get();
 		a_context->VSSetShaderResources(POINTS_SLOT, 1, &srv);
-		constexpr UINT vertices = (WaterfallSources::CURTAIN_COLUMNS - 1) * (WaterfallSources::CURTAIN_ROWS - 1) * 6;
-		a_context->DrawInstanced(vertices, curtainCount, 0, 0);
+		// One ribbon per stream: two triangles per row
+		constexpr UINT vertices = (WaterfallSources::CURTAIN_ROWS - 1) * 6;
+		a_context->DrawInstanced(vertices, curtainCount * WaterfallSources::CURTAIN_COLUMNS, 0, 0);
 
 		// Restore
 		ID3D11RenderTargetView* targets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];

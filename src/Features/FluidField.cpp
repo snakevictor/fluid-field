@@ -1267,7 +1267,7 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 	if (settings.Waterfalls) {
 		if (a_near)
 			waterfallTime += a_deltaTime;
-		waterfalls.AppendEmitters(levelEmitters, a_gridMin, a_cellSize, a_resolution, waterfallTime, settings.WaterfallStrength, FluidFieldSim::ShallowWaterSolver::MAX_EMITTERS);
+		waterfalls.AppendEmitters(levelEmitters, a_gridMin, a_cellSize, a_resolution, waterfallTime, settings.WaterfallStrength, FluidFieldSim::ShallowWaterSolver::MAX_EMITTERS, a_near);
 	}
 	const std::span<const FluidFieldSim::WaterEmitter> emitters = levelEmitters;
 
@@ -1277,6 +1277,12 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 	params.currentRelax = settings.CurrentPull;
 	params.vorticity = settings.Turbulence;
 	params.foamStrength = settings.FoamStrength;
+	if (!a_near) {
+		// The far level's cells are four times wider: its sources fire over much more water, so it
+		// makes far less foam and holds less, a hint that the near level's detail takes over
+		params.foamStrength *= FAR_FOAM_SCALE;
+		params.foamMax = FAR_FOAM_MAX;
+	}
 	// The near level takes over the far level's foam for cells coming into it, so foam does not
 	// drop out and rebuild as the player approaches
 	if (a_near && settings.FarWater && farWater.solver.HasMap() && waterShaderData.FarEnabled) {

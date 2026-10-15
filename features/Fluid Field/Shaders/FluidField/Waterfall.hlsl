@@ -10,10 +10,13 @@ struct CurtainPoint
 {
 	float3 Position;   // World units
 	float Along;       // 0 at the lip to 1 at the end of the fall
+	float2 Side;       // Horizontal direction across the stream here
+	float HalfWidth;   // Half the stream's width, world units
 	float Speed;       // World units per second
-	float Across;      // -1 at one edge to 1 at the other
+	float Across;      // -1 at one edge of the fall to 1 at the other (where its stream started)
 	float OnRock;      // 1 where the water lies on rock
 	float TravelTime;  // Seconds the water takes to get here from the lip
+	float Pad;
 };
 
 cbuffer WaterfallCB : register(b7)
@@ -31,28 +34,33 @@ struct VSOutput
 	float4 Position: SV_POSITION;
 	float3 WorldPosition: POSITION0;  // Camera-relative
 	float Along: TEXCOORD0;
-	float Across: TEXCOORD1;
+	float Across: TEXCOORD1;  // Across the whole fall
 	float Speed: TEXCOORD2;
 	float OnRock: TEXCOORD3;
 	float TravelTime: TEXCOORD4;  // Seconds from the lip
+	float Ribbon: TEXCOORD5;      // -1 to 1 across this stream
 };
 
 VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 {
-	// Two triangles per grid cell
+	// Each stream is a ribbon: two triangles per row, its two edges either side of the path
 	static const uint2 CORNERS[6] = { uint2(0, 0), uint2(1, 0), uint2(0, 1), uint2(0, 1), uint2(1, 0), uint2(1, 1) };
-	const uint quad = vertexID / 6;
-	const uint2 cell = uint2(quad % (Columns - 1), quad / (Columns - 1)) + CORNERS[vertexID % 6];
-	const CurtainPoint p = Points[instanceID * Columns * Rows + cell.y * Columns + cell.x];
+	const uint2 corner = CORNERS[vertexID % 6];
+	const uint row = vertexID / 6 + corner.y;
+	const uint stream = instanceID % Columns;
+	const uint fall = instanceID / Columns;
+	const CurtainPoint p = Points[fall * Columns * Rows + row * Columns + stream];
+	const float edge = corner.x == 0 ? -1.0 : 1.0;
 
 	VSOutput output;
-	output.WorldPosition = p.Position - FrameBuffer::CameraPosAdjust.xyz;
+	output.WorldPosition = p.Position + float3(p.Side * p.HalfWidth * edge, 0.0) - FrameBuffer::CameraPosAdjust.xyz;
 	output.Position = mul(FrameBuffer::CameraViewProj, float4(output.WorldPosition, 1.0));
 	output.Along = p.Along;
-	output.Across = p.Across;
+	output.Across = p.Across + edge * (1.0 / float(Columns - 1));
 	output.Speed = p.Speed;
 	output.OnRock = p.OnRock;
 	output.TravelTime = p.TravelTime;
+	output.Ribbon = edge;
 	return output;
 }
 
@@ -88,7 +96,8 @@ float4 PSMain(VSOutput input) : SV_Target
 	const float speedFactor = saturate((input.Speed - 150.0) / 500.0);
 	const float aerationWanted = saturate(0.15 + 0.6 * speedFactor + 0.25 * input.OnRock);
 	const float aeration = smoothstep(1.0 - aerationWanted - 0.15, 1.0 - aerationWanted + 0.15, fine * 0.6 + coarse * 0.4);
-	const float edges = (1.0 - smoothstep(0.6, 1.0, abs(input.Across))) * (1.0 - smoothstep(0.85, 1.0, input.Along));
+	// Soft stream edges, so overlapping streams merge and split ones read as separate flows
+	const float edges = (1.0 - smoothstep(0.35, 1.0, abs(input.Ribbon))) * (1.0 - smoothstep(0.75, 1.0, abs(input.Across))) * (1.0 - smoothstep(0.85, 1.0, input.Along));
 
 	// The surface's tilt from the curtain's own shape, for reflection and the sun's glint
 	const float3 normal = normalize(cross(ddx(input.WorldPosition), ddy(input.WorldPosition)));

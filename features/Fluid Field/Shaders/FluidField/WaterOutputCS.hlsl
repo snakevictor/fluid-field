@@ -150,5 +150,7 @@ float Swirl(int2 logical)
 		foam += 0.125 * Foam[LogicalToStorage(clamp(logical + int2(0, 1), 0, int(GridRes) - 1))];
 		foam += 0.125 * Foam[LogicalToStorage(clamp(logical + int2(0, -1), 0, int(GridRes) - 1))];
 	}
-	FlowOut[id] = float4(flow, foam * edgeFade, 0.0);
+	// The far level behind this one takes over its foam in the water shader's cross-fade, so the
+	// foam is not faded here as well (that made a dip, a visible seam)
+	FlowOut[id] = float4(flow, SeedRes != 0 ? foam : foam * edgeFade, 0.0);
 }
