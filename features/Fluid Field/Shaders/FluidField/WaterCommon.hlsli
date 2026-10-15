@@ -41,7 +41,14 @@ cbuffer WaterCB : register(b1)
 	int2 SeedGridMin;       // Placement of the level that seeds foam for cells coming into this one
 	uint SeedRes;           // Its texels per side (0: no seed)
 	float SeedCellSize;     // Its world units per texel
+	uint FallBedEnabled;    // FallBed holds rock under waterfalls (D24)
+	float3 WaterPad2;
 };
+
+// Rock under waterfalls (D24): a bed height per texel, toroidal like the grid; below NO_FALL_BED
+// where there is none. Only read when FallBedEnabled.
+Texture2D<float> FallBed : register(t9);
+static const float NO_FALL_BED = -1.0e6;
 
 static const float NO_WATER = -1.0e8;
 

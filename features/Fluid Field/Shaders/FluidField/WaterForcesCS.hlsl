@@ -24,6 +24,8 @@ Texture2D<float2> CellMapIn : register(t2);
 StructuredBuffer<Emitter> Emitters : register(t3);
 
 static const float BED_CHANGE_THRESHOLD = 2.0;
+/** World units of depth per second that drain from water running off vanilla's planes in a fall area. */
+static const float FALL_DRAIN = 1.5;
 
 RWTexture2D<float> DepthOut : register(u0);
 RWTexture2D<float2> VelocityOut : register(u1);
@@ -121,6 +123,11 @@ float2 StirVelocity(float2 worldPos)
 	float detailBed;
 	if (ObstacleRes > 0 && LoadObstacle(worldPos, detailBed))
 		bed = detailBed;
+	// Under waterfalls the rock is mapped by rays (D24): the water runs over its surface
+	const float fallBed = FallBedEnabled != 0 ? FallBed[id] : NO_FALL_BED * 2.0;
+	const bool inFall = fallBed > NO_FALL_BED;
+	if (inFall)
+		bed = max(bed, fallBed);
 	float vanillaDepth = HasWater(map.y) ? max(map.y - bed, 0.0) : 0.0;
 	CellMapOut[id] = float2(bed, vanillaDepth);
 
@@ -179,7 +186,13 @@ float2 StirVelocity(float2 worldPos)
 	}
 
 	velocity = lerp(velocity, restVelocity, saturate(CurrentRelax * DeltaTime));
-	depth = lerp(depth, vanillaDepth, saturate(LevelRelax * DeltaTime));
+	if (inFall && !vanillaWet) {
+		// Falling water off vanilla's planes is the simulation's own: it runs on by gravity and only
+		// thin films drain away, instead of being pulled back to dry
+		depth = max(depth - FALL_DRAIN * DeltaTime, 0.0);
+	} else {
+		depth = lerp(depth, vanillaDepth, saturate(LevelRelax * DeltaTime));
+	}
 
 	// Absorbing border: the pull toward calm vanilla water grows quadratically toward the edge and is
 	// a per-second rate, so waves fade into it instead of bouncing off an abrupt change

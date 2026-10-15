@@ -55,6 +55,9 @@ namespace FluidFieldSim
 		std::int32_t seedGridMin[2]{};
 		std::uint32_t seedRes = 0;
 		float seedCellSize = 0.0f;
+		/// Rock under waterfalls (D24): a bed height per texel of this level (toroidal like it), or
+		/// below NO_FALL_BED where there is none; the solver's bed is the higher of the two there
+		ID3D11ShaderResourceView* fallBed = nullptr;
 	};
 
 	/** @brief Colour scales for the water debug view: a value of 1/scale maps to full intensity. */
@@ -141,6 +144,10 @@ namespace FluidFieldSim
 		ID3D11ShaderResourceView* GetSurfaceSRV() const { return surface.srv.get(); }
 		/** @brief Cell-centred velocity (xy) and foam (z, 0 to about 1.5) per texel, in storage order. */
 		ID3D11ShaderResourceView* GetFlowSRV() const { return flow.srv.get(); }
+		/** @brief Water depth per texel, in storage order (the latest step). */
+		ID3D11ShaderResourceView* GetDepthSRV() const { return depth[currentDepth].srv.get(); }
+		/** @brief (bed height, vanilla depth) per texel, in storage order (the latest step). */
+		ID3D11ShaderResourceView* GetCellMapSRV() const { return cellMap[currentCellMap].srv.get(); }
 
 		static constexpr std::array<const char*, 3> DEBUG_VIEW_NAMES = { "Water Depth", "Water Flow", "Waves" };
 		ID3D11ShaderResourceView* GetDebugViewSRV(std::size_t index) const { return debugViews[index].srv.get(); }
@@ -196,8 +203,10 @@ namespace FluidFieldSim
 			std::int32_t seedGridMin[2];
 			std::uint32_t seedRes;
 			float seedCellSize;
+			std::uint32_t fallBedEnabled;
+			float pad2[3];
 		};
-		static_assert(sizeof(WaterConstants) == 112);
+		static_assert(sizeof(WaterConstants) == 128);
 
 		// Matches WaterDebugCB in WaterDebugViewCS.hlsl
 		struct alignas(16) DebugConstants
@@ -224,6 +233,7 @@ namespace FluidFieldSim
 
 		std::uint32_t resolution = 0;
 		ID3D11ShaderResourceView* seedFoamSRV = nullptr;  ///< This step's seed foam (not owned)
+		ID3D11ShaderResourceView* fallBedSRV = nullptr;   ///< This step's fall bed (not owned)
 		std::uint32_t mapResolution = 0;
 		float mapSpacing = 64.0f;
 		bool mapUploaded = false;

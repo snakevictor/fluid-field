@@ -3,15 +3,16 @@
 #include "FluidField/AirSources.h"
 #include "FluidField/BedRaycasts.h"
 #include "FluidField/DepthMapView.h"
+#include "FluidField/FallBed.h"
 #include "FluidField/GroundHeightMap.h"
 #include "FluidField/LandscapeCache.h"
 #include "FluidField/MeshCut.h"
 #include "FluidField/ShallowWaterSolver.h"
+#include "FluidField/SimSurfaceRenderer.h"
 #include "FluidField/VanillaFoam.h"
 #include "FluidField/WakeSources.h"
 #include "FluidField/WaterMapBuilder.h"
 #include "FluidField/WaterSurfaces.h"
-#include "FluidField/WaterfallRenderer.h"
 #include "FluidField/WaterfallSources.h"
 #include "FluidField/WindSolver.h"
 #include "OverlayFeature.h"
@@ -218,8 +219,10 @@ private:
 	/** @brief The far water level's foam: a fraction of the near level's, and its most per cell. */
 	static constexpr float FAR_FOAM_SCALE = 0.25f;
 	static constexpr float FAR_FOAM_MAX = 0.5f;
-	/** @brief Most opacity of the replaced waterfalls' falling water. */
-	static constexpr float WATERFALL_OPACITY = 0.85f;
+	/** @brief How brightly the simulated water's reflection and white water are lit (as the ground fog). */
+	static constexpr float SIM_SURFACE_BRIGHTNESS = 0.2f;
+	/** @brief Time per frame for mapping the rock under waterfalls, milliseconds. */
+	static constexpr double FALL_BED_BUDGET_MS = 0.4;
 	/** @brief Substep length of the warm-up, as the regular step's shortest substep. */
 	static constexpr float WARMUP_SUBSTEP = 0.012f;
 	/** @brief Seconds over which the simulated water fades in after a (re)start. */
@@ -274,7 +277,8 @@ public:
 private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
 	FluidFieldSim::WaterfallSources waterfalls;
-	FluidFieldSim::WaterfallRenderer waterfallRenderer;
+	FluidFieldSim::FallBed fallBed;
+	FluidFieldSim::SimSurfaceRenderer simSurface;
 	float waterfallTime = 0.0f;                              ///< Seconds simulated, for the waterfalls' pulsing
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 

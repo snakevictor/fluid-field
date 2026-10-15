@@ -1,5 +1,6 @@
 #pragma once
 
+#include "FallBed.h"
 #include "ShallowWaterSolver.h"
 
 #include <cstdint>
@@ -23,25 +24,6 @@ namespace FluidFieldSim
 	class WaterfallSources
 	{
 	public:
-		/** @brief Streams across a fall and points down each (D23); every stream is traced on its own. */
-		static constexpr uint32_t CURTAIN_COLUMNS = 12;
-		static constexpr uint32_t CURTAIN_ROWS = 40;
-
-		/** @brief One point of a stream, matching `CurtainPoint` in Waterfall.hlsl. */
-		struct CurtainPoint
-		{
-			float position[3];  ///< World units
-			float along;        ///< 0 at the lip to 1 at the end of the fall
-			float side[2];      ///< Horizontal direction across the stream here (unit length)
-			float halfWidth;    ///< Half the stream's width, world units
-			float speed;        ///< How fast the water moves here, world units per second
-			float across;       ///< -1 at one edge of the fall to 1 at the other (where its stream started)
-			float onRock;       ///< 1 where the water lies on rock, 0 where it falls free
-			float travelTime;   ///< Seconds the water takes to get here from the lip
-			float pad;
-		};
-		static_assert(sizeof(CurtainPoint) == 48);
-
 		/** @brief A waterfall landing on water. */
 		struct Fall
 		{
@@ -52,14 +34,12 @@ namespace FluidFieldSim
 
 		/**
 		 * @brief Rescans the loaded waterfalls around a point every few updates.
-		 * @param a_replace Hide vanilla's bodies and build curtains for them (D23).
+		 * @param a_replace Hide vanilla's bodies and simulate their water instead (D24).
 		 */
 		void Update(const WaterSurfaces& a_water, float a_centreX, float a_centreY, float a_halfSize, bool a_replace);
 
-		/** @brief The falls being replaced: CURTAIN_COLUMNS streams of CURTAIN_ROWS points each per fall, rows first. */
-		const std::vector<CurtainPoint>& GetCurtains() const { return curtainPoints; }
-		/** @brief Changes whenever the curtains do, for re-uploading. */
-		uint64_t GetCurtainVersion() const { return curtainVersion; }
+		/** @brief The areas of the falls being replaced, for mapping the rock under them (D24). */
+		const std::vector<FallBed::Area>& GetAreas() const { return areas; }
 		/** @brief Shows vanilla's hidden bodies again. */
 		void RestoreBodies();
 
@@ -85,7 +65,6 @@ namespace FluidFieldSim
 			float lowest = 0.0f;  ///< Lowest point of the body, world units
 			float lip[3]{};       ///< Centre of the top edge, where the water leaves the lip
 			float lipWidth = 0.0f;
-			std::vector<CurtainPoint> curtain;  ///< Built once (D23); empty if it could not be
 			RE::ObjectRefHandle handle;
 			bool hidden = false;
 		};
@@ -96,11 +75,7 @@ namespace FluidFieldSim
 		static constexpr std::size_t MAX_FALLS = 6;
 
 		static bool ReadBody(RE::TESObjectREFR& a_ref, Body& a_body);
-		/** @brief The curtain's shape: ballistic columns from the lip that lie on the rock where they meet it. */
-		static void BuildCurtain(Body& a_body);
-
-		std::vector<CurtainPoint> curtainPoints;
-		uint64_t curtainVersion = 0;
+		std::vector<FallBed::Area> areas;
 
 		std::unordered_map<uint32_t, Body> bodies;  ///< Keyed by form ID
 		std::vector<Fall> falls;
