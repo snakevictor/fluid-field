@@ -308,6 +308,22 @@ namespace FluidField
 		return cover;
 	}
 
+	/**
+	 * Draws foam over water that is blended over the scene with a_opacity (the see-through case):
+	 * the result must equal the water's blend with foam laid on top, so colour and opacity change
+	 * together. Lerping the colour alone is wrong where vanilla has divided the colour by a small
+	 * opacity, and shows as bright rims of water colour around rocks.
+	 */
+	void ApplyFoamBlended(inout float3 a_color, inout float a_opacity, float3 a_worldPosition, float3 a_light)
+	{
+		const float cover = GetFoamCover(a_worldPosition);
+		if (cover <= 0.0)
+			return;
+		const float opacity = lerp(a_opacity, 1.0, cover);
+		a_color = (a_color * (a_opacity * (1.0 - cover)) + a_light * (0.9 * cover)) / max(opacity, 1e-3);
+		a_opacity = opacity;
+	}
+
 	/** Water depth (world units) at which the tint reaches its full strength. */
 	static const float TINT_FULL_DEPTH = 256.0;
 	/** Most of the see-through view the tint replaces with the water's own colour, at Water Tint 1. */

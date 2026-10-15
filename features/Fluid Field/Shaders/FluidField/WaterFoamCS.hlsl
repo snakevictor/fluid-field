@@ -27,17 +27,17 @@ Texture2D<float> FoamIn : register(t7);
 
 RWTexture2D<float> FoamOut : register(u0);
 
-/** Seconds for foam to fade to about a third. */
-static const float FOAM_LIFETIME = 4.0;
+/** Seconds for foam to fade to about a third. A steady source settles at its rate times this. */
+static const float FOAM_LIFETIME = 3.0;
 /** Most foam a cell holds (1 is fully white once drawn). */
 static const float FOAM_MAX = 1.5;
 /** Foam made per second at full strength by each source. */
-static const float SHEAR_RATE = 2.0;
-static const float IMPACT_RATE = 5.0;
-static const float WALL_RATE = 1.5;
-static const float BREAKING_RATE = 1.5;
-static const float WAKE_RATE = 3.0;
-static const float SPLASH_RATE = 8.0;
+static const float SHEAR_RATE = 0.4;
+static const float IMPACT_RATE = 1.5;
+static const float WALL_RATE = 0.3;
+static const float BREAKING_RATE = 0.15;
+static const float WAKE_RATE = 1.5;
+static const float SPLASH_RATE = 6.0;
 
 /** The eight neighbour directions, for finding obstacles around a cell. */
 static const int2 NEIGHBOURS[8] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1), int2(1, 1), int2(-1, 1), int2(1, -1), int2(-1, -1) };
@@ -112,13 +112,15 @@ float SampleFoam(float2 position)
 		}
 	}
 	// Fast water rushing along a rock or bank churns white as well, but only well past a calm river's speed
-	float wallRush = saturate(walls) * saturate((speed - 100.0) / 200.0);
+	float wallRush = saturate(walls) * saturate((speed - 200.0) / 200.0);
 
 	// Breaking: fast, shallow water; Froude number = speed / sqrt(g * depth)
 	float froude = speed / sqrt(Gravity * max(depth, 1.0));
 
-	float made = SHEAR_RATE * saturate((shear - 0.25) * 0.8) + IMPACT_RATE * saturate((impact - 10.0) / 80.0) +
-	             WALL_RATE * wallRush + BREAKING_RATE * saturate((froude - 0.5) * 2.0);
+	// Thresholds sit above what an ordinary river does on this grid: at 150 units/s over 20 units of
+	// depth the Froude number is already about 1.3, and eddies shear at 1 to 2 per second
+	float made = SHEAR_RATE * saturate((shear - 2.0) / 4.0) + IMPACT_RATE * saturate((impact - 30.0) / 120.0) +
+	             WALL_RATE * wallRush + BREAKING_RATE * saturate((froude - 1.5) / 1.5);
 
 	// Actors: a wake whitens the water behind the actor, a splash much more
 	for (uint i = 0; i < EmitterCount; i++) {
