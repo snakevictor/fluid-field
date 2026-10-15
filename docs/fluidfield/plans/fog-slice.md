@@ -5,7 +5,7 @@ Goal: ground fog that actors and the weather's wind push around, so it parts and
 ## How it fits together
 
 -   **Wind (exists).** The wind solver: 2D, incompressible, 256 cells over 4096 units around the player, toroidal. So far only the test puff drives it.
--   **Fog density (new).** A 2D multiplier on the fog's density, on the wind grid. Carried along by the wind (semi-Lagrangian, like the water's foam), drawn back to 1 over some seconds (fog refills), and thinned where the air is stirred (actors mix clear air into it). Starts at 1 everywhere, so with nothing moving the fog is exactly vanilla's.
+-   **Fog layer (new).** How much fog lies on each cell of the wind grid (0 to 1). Carried along by the wind (semi-Lagrangian, like the water's foam), carved where actors pass, thinned where the air is stirred, and refilling over some seconds toward a resting pattern of banks and clearings.
 -   **Drivers (new).**
     -   Actors: each moving actor near the player pushes the air along its velocity, like wakes push the water (reuse `WakeSources`' actor scan). This carves trails and swirls.
     -   Weather wind: the current weather's wind speed and direction carry the fog as a uniform drift.

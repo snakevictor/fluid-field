@@ -1029,6 +1029,9 @@ void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderRe
 	ID3D11Buffer* cb = groundFogCB.get();
 	ID3D11ShaderResourceView* srvs[] = { a_depth, solver.GetFogSRV(), groundHeight.GetSRV() };
 	context->CSSetConstantBuffers(0, 1, &cb);
+	// The camera (FrameBuffer, b12): the deferred composite unbinds it when it finishes
+	ID3D11Buffer* perFrame = *globals::game::perFrame;
+	context->CSSetConstantBuffers(12, 1, &perFrame);
 	context->CSSetShaderResources(0, 3, srvs);
 	context->CSSetUnorderedAccessViews(0, 1, &a_main, nullptr);
 	context->CSSetShader(groundFogCS.get(), nullptr, 0);
@@ -1041,6 +1044,7 @@ void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderRe
 	context->CSSetShaderResources(0, 3, nullSRVs);
 	context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
 	context->CSSetConstantBuffers(0, 1, &nullCB);
+	context->CSSetConstantBuffers(12, 1, &nullCB);
 	context->CSSetShader(nullptr, nullptr, 0);
 	globals::profiler->EndPass();
 }
