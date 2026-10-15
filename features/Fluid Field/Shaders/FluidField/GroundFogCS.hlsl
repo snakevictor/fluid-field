@@ -62,6 +62,27 @@ static const float BILLOW_SIZE = 220.0;
 static const float BILLOW_HEIGHT = 0.35;
 /** How strongly the fog above a point shades it from the sky: the layer's base is darker than its top. */
 static const float SELF_SHADING = 1.0;
+/** Length of the first step from the ground end of a ray, world units: finer than the layer is thick. */
+static const float FIRST_STEP = 4.0;
+
+/** Growth factor r for which `count` steps starting at 1 cover `ratio` (1 + r + ... + r^(count-1) = ratio). */
+float StepGrowth(float ratio, uint count)
+{
+	if (ratio <= float(count))
+		return 1.0;
+	// A few Newton iterations on r^count - ratio * (r - 1) - 1 = 0, from a safe start above 1
+	float r = 1.0 + 2.0 * (ratio - count) / (ratio * count);
+	r = max(r, 1.001);
+	[unroll] for (int k = 0; k < 8; k++)
+	{
+		const float rn = pow(r, count);
+		const float f = rn - ratio * (r - 1.0) - 1.0;
+		const float df = count * rn / r - ratio;
+		r = max(r - f / df, 1.0001);
+	}
+	return r;
+}
+
 /** Fastest the wisps drift, world units per second, so fast gusts do not smear them. */
 static const float WISP_MAX_DRIFT = 200.0;
 /** Ground below this is unknown land: no fog there. */
@@ -156,23 +177,33 @@ float HenyeyGreenstein(float cosTheta, float g)
 	const float3 direction = surface / max(surfaceDistance, 1e-3);
 	const float rayLength = min(depth >= 1.0 ? MaxDistance : surfaceDistance, MaxDistance);
 
-	// Skip rays that stay above the fog
+	// Clip the ray to the fog's band where it starts and where it ends: the layer is thin, so the
+	// band is taken from the ground under the camera and under the ray's end, not the highest
+	// ground around (which is a mountain and would leave the whole ray to march)
 	const float3 camera = FrameBuffer::CameraPosAdjust.xyz;
-	const float bandTop = MaxHeight + Thickness * (1.0 + PILE_RISE) * (1.0 + LIFT) * (1.0 + BILLOW_HEIGHT);
-	const float lowestZ = camera.z + min(0.0, direction.z * rayLength);
-	if (lowestZ > bandTop || rayLength <= 0.0)
+	const float maxTop = Thickness * (1.0 + PILE_RISE) * (1.0 + LIFT) * (1.0 + BILLOW_HEIGHT);
+	float fadeA, fadeB;
+	const float3 endPoint = camera + direction * rayLength;
+	const float bandTop = max(SampleGround(camera.xy, fadeA), SampleGround(endPoint.xy, fadeB)) + maxTop;
+	if (rayLength <= 0.0 || min(camera.z, endPoint.z) > bandTop)
 		return;
-	// Only march where the ray is inside the fog's band: from where it comes down into it, if the
-	// camera is above it, to where it climbs out of it or hits the scene
 	float rayStart = 0.0;
 	float rayEnd = rayLength;
 	if (camera.z > bandTop)
 		rayStart = (camera.z - bandTop) / max(-direction.z, 1e-4);
-	else if (direction.z > 1e-4)
-		rayEnd = min(rayEnd, (bandTop - camera.z) / direction.z);
+	if (endPoint.z > bandTop)
+		rayEnd = (bandTop - camera.z) / max(direction.z, 1e-4);
+	rayStart = clamp(rayStart, 0.0, rayLength);
+	rayEnd = clamp(rayEnd, 0.0, rayLength);
 	if (rayEnd <= rayStart)
 		return;
 	const float span = rayEnd - rayStart;
+	// March from the ground end of the ray, where the fog is densest: back from the surface the ray
+	// hits, or out from the camera when it is the camera that is down in the fog
+	const bool fromEnd = endPoint.z <= camera.z;
+	// Steps grow geometrically from FIRST_STEP so StepCount of them cover the span
+	const float firstStep = min(FIRST_STEP, span / StepCount);
+	const float growth = StepGrowth(span / firstStep, StepCount);
 
 	const float jitter = Random::InterleavedGradientNoise(float2(dispatchID.xy), SharedData::FrameCount);
 
@@ -183,18 +214,21 @@ float HenyeyGreenstein(float cosTheta, float g)
 
 	float transmittance = 1.0;
 	float3 inscattering = 0.0;
-	[loop] for (uint i = 0; i < StepCount; i++)
+	float travelled = 0.0;
+	float stepLength = firstStep;
+	[loop] for (uint i = 0; i < StepCount && travelled < span; i++)
 	{
-		// Samples packed toward the start of the span (near the camera), where detail shows most
-		const float u = (i + jitter) / StepCount;
-		const float stepLength = span * 2.0 * u / StepCount;
-		const float3 position = camera + direction * (rayStart + span * u * u);
+		const float segment = min(stepLength, span - travelled);
+		const float along = travelled + segment * jitter;
+		travelled += segment;
+		stepLength *= growth;
+		const float3 position = camera + direction * (fromEnd ? rayEnd - along : rayStart + along);
 		float areaFade;
 		const float ground = SampleGround(position.xy, areaFade);
 		const float fog = SampleFog(position.xy) * areaFade;
 		// A layer on the ground with a soft top: taller where fog is packed, lifted where the air churns
 		const float height = position.z - ground;
-		if (fog <= 0.0 || height > Thickness * 4.0)
+		if (fog <= 0.0 || height > maxTop)
 			continue;
 		const float2 wind = SampleWind(position.xy);
 		const float churn = saturate(length(wind) / LIFT_SPEED);
@@ -209,10 +243,16 @@ float HenyeyGreenstein(float cosTheta, float g)
 		// Light reaching this point from above passes through the fog over it: the base is darker
 		const float above = max(top - height, 0.0);
 		const float shading = exp(-SELF_SHADING * Density * fog * above);
-		const float stepTransmittance = exp(-extinction * stepLength);
-		inscattering += transmittance * (1.0 - stepTransmittance) * light * shading;
+		const float stepTransmittance = exp(-extinction * segment);
+		const float3 scattered = (1.0 - stepTransmittance) * light * shading;
+		if (fromEnd) {
+			// Back to front: this step sits in front of everything marched so far
+			inscattering = inscattering * stepTransmittance + scattered;
+		} else {
+			inscattering += transmittance * scattered;
+		}
 		transmittance *= stepTransmittance;
-		if (transmittance < 0.01)
+		if (!fromEnd && transmittance < 0.01)
 			break;
 	}
 
