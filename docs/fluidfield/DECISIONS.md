@@ -550,3 +550,22 @@ Entry format:
 -   Decided by: @Victor ("yeah go ahead"), after research into FluidNinja,
     Fluid Flux and game waterfall techniques
 -   References: D22, D23, `plans/waterfalls.md`
+
+## D25: Waterfalls reconstructed from vanilla's layout; the SWE never carries free fall
+
+-   Date: 2026-10-15
+-   Phase / spike: water slice follow-up; supersedes D24 (and D23's curtains)
+-   Decision: Adopt @Victor's design (`plans/waterfall-replacement.md`):
+    sites are reconstructed from vanilla's water planes and waterfall meshes
+    (inventory, clustering, level pairing and tiers), the rock is captured,
+    lips are extracted at the top level, the fall is traced once per site
+    (ballistic, clinging, ledge re-entry), drawn as custom translucent sheets
+    with physically derived thickness and aeration, and coupled to the SWE at
+    impact with mass balanced at the lip. The SWE stays confined to vanilla's
+    water regions and is never used for free fall. Every stage gets an in-game
+    debug view before the next starts; milestones M1 to M6 as in the plan.
+-   Alternatives rejected: D24 (the SWE running down the rock): a heightfield
+    cannot hold near-vertical drops, so it overflowed, spiked at lips and
+    spread over the rock; tuning could not fix that.
+-   Decided by: @Victor ("Yeah go on full speed ahead")
+-   References: D22, D23, D24, `plans/waterfall-replacement.md`
