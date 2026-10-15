@@ -56,8 +56,9 @@ namespace FluidFieldSim
 			float cellSize;
 			float time;
 			float brightness;
+			int32_t stride;
 			float screenRcp[2];
-			float pad[2];
+			float pad;
 		};
 		static_assert(sizeof(Constants) == 48);
 

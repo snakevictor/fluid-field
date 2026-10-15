@@ -104,6 +104,11 @@ namespace FluidFieldSim
 		}
 	}
 
+	std::size_t FallBed::CountHits() const
+	{
+		return static_cast<std::size_t>(std::count_if(samples.begin(), samples.end(), [](const auto& a_sample) { return a_sample.second > NONE; }));
+	}
+
 	bool FallBed::InAnyArea(float a_x, float a_y) const
 	{
 		for (const auto& area : areas) {

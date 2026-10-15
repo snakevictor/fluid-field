@@ -15,6 +15,8 @@ namespace FluidFieldSim
 		constexpr UINT CAMERA_SLOT = 12;
 		/** @brief Most vertices across an area's grid (it is clipped to the level anyway). */
 		constexpr int32_t MAX_SIDE = 1024;
+		/** @brief Cells between vertices of the surface mesh. */
+		constexpr int32_t VERTEX_STRIDE = 2;
 	}
 
 	void SimSurfaceRenderer::Release()
@@ -191,12 +193,13 @@ namespace FluidFieldSim
 			const int32_t y0 = std::max(static_cast<int32_t>(std::floor(area.min[1] / a_level.cellSize)), a_level.gridMin[1] + 1);
 			const int32_t x1 = std::min(static_cast<int32_t>(std::ceil(area.max[0] / a_level.cellSize)), gridMax0);
 			const int32_t y1 = std::min(static_cast<int32_t>(std::ceil(area.max[1] / a_level.cellSize)), gridMax1);
-			const int32_t across = std::min(x1 - x0 + 1, MAX_SIDE);
-			const int32_t down = std::min(y1 - y0 + 1, MAX_SIDE);
+			// A vertex every VERTEX_STRIDE cells
+			const int32_t across = std::min((x1 - x0) / VERTEX_STRIDE + 1, MAX_SIDE);
+			const int32_t down = std::min((y1 - y0) / VERTEX_STRIDE + 1, MAX_SIDE);
 			if (across < 2 || down < 2)
 				continue;
-			const Constants data{ { x0, y0 }, { across, down }, a_level.resolution, a_level.cellSize, a_time, a_brightness,
-				{ 1.0f / static_cast<float>(targetDesc.Width), 1.0f / static_cast<float>(targetDesc.Height) }, {} };
+			const Constants data{ { x0, y0 }, { across, down }, a_level.resolution, a_level.cellSize, a_time, a_brightness, VERTEX_STRIDE,
+				{ 1.0f / static_cast<float>(targetDesc.Width), 1.0f / static_cast<float>(targetDesc.Height) }, 0.0f };
 			D3D11_MAPPED_SUBRESOURCE mapped{};
 			if (FAILED(a_context->Map(constants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
 				continue;

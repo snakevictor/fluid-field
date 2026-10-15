@@ -15,8 +15,9 @@ cbuffer SimSurfaceCB : register(b7)
 	float CellSize;  // World units per cell
 	float Time;      // Seconds
 	float Brightness;
+	int Stride;        // Cells between vertices
 	float2 ScreenRcp;  // 1 / render target size
-	float2 SurfacePad;
+	float SurfacePad;
 };
 
 Texture2D<float> Depth : register(t100);
@@ -62,7 +63,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 {
 	static const int2 CORNERS[6] = { int2(0, 0), int2(1, 0), int2(0, 1), int2(0, 1), int2(1, 0), int2(1, 1) };
 	const uint quad = vertexID / 6;
-	const int2 cell = CellMin + int2(quad % uint(CellCount.x - 1), quad / uint(CellCount.x - 1)) + CORNERS[vertexID % 6];
+	const int2 cell = CellMin + (int2(quad % uint(CellCount.x - 1), quad / uint(CellCount.x - 1)) + CORNERS[vertexID % 6]) * Stride;
 
 	bool visible;
 	const float height = SurfaceAt(cell, visible);

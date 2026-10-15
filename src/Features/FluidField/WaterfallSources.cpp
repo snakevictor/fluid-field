@@ -340,6 +340,27 @@ namespace FluidFieldSim
 				body.hidden = true;
 			}
 		}
+		// A wide fall is several overlapping meshes: overlapping areas become one
+		for (bool merged = true; merged;) {
+			merged = false;
+			for (std::size_t i = 0; i < areas.size() && !merged; i++) {
+				for (std::size_t j = i + 1; j < areas.size(); j++) {
+					auto& a = areas[i];
+					const auto& b = areas[j];
+					if (a.min[0] > b.max[0] || b.min[0] > a.max[0] || a.min[1] > b.max[1] || b.min[1] > a.max[1])
+						continue;
+					a.min[0] = std::min(a.min[0], b.min[0]);
+					a.min[1] = std::min(a.min[1], b.min[1]);
+					a.max[0] = std::max(a.max[0], b.max[0]);
+					a.max[1] = std::max(a.max[1], b.max[1]);
+					a.top = std::max(a.top, b.top);
+					a.bottom = std::min(a.bottom, b.bottom);
+					areas.erase(areas.begin() + static_cast<std::ptrdiff_t>(j));
+					merged = true;
+					break;
+				}
+			}
+		}
 		std::sort(areas.begin(), areas.end(), [](const FallBed::Area& a, const FallBed::Area& b) {
 			return a.min[0] != b.min[0] ? a.min[0] < b.min[0] : a.min[1] < b.min[1];
 		});

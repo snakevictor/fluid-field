@@ -280,6 +280,8 @@ void FluidField::DrawSettings()
 		ImGui::Text("%s", T(TKEY("replace_waterfalls_tooltip"), "Simulates the water of waterfalls in place of vanilla's: the river pours over the lip and runs down the real rock, splitting, speeding up and foaming like the rest of the water. Splashes and mist stay vanilla."));
 	}
 	ImGui::Text(T(TKEY("waterfalls_found"), "Waterfalls driving the water: %u"), static_cast<uint32_t>(waterfalls.GetFalls().size()));
+	ImGui::Text(T(TKEY("fall_bed_stats"), "Fall areas: %u; rock points cast: %u (hit %u), queued: %u"), static_cast<uint32_t>(fallBed.GetAreas().size()),
+		static_cast<uint32_t>(fallBed.GetSampleCount()), static_cast<uint32_t>(fallBed.CountHits()), static_cast<uint32_t>(fallBed.GetPendingCount()));
 	ImGui::SliderFloat(T(TKEY("water_tint"), "Water Tint"), &settings.WaterTint, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("water_tint_tooltip"), "Tints what is seen through all water with the water's own colour, deepening with depth, as it looks from underwater. 0 keeps vanilla's clear look."));

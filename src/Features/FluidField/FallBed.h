@@ -53,6 +53,9 @@ namespace FluidFieldSim
 		ID3D11ShaderResourceView* GetSRV() const { return areas.empty() ? nullptr : srv.get(); }
 		const std::vector<Area>& GetAreas() const { return areas; }
 		std::size_t GetPendingCount() const { return pending.size(); }
+		std::size_t GetSampleCount() const { return samples.size(); }
+		/** @brief Lattice points whose ray found rock or ground. Walks every sample, so for display only. */
+		std::size_t CountHits() const;
 
 	private:
 		static uint64_t Key(int32_t a_x, int32_t a_y) { return (static_cast<uint64_t>(static_cast<uint32_t>(a_x)) << 32) | static_cast<uint32_t>(a_y); }

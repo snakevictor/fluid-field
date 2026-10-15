@@ -869,6 +869,7 @@
     "feature.fluid_field.description": "A real-time fluid simulation around the player that drives interactive water, fog and smoke.",
     "feature.fluid_field.enabled": "Enabled",
     "feature.fluid_field.enabled_tooltip": "Runs the fluid simulation. It has no visible effect yet.",
+    "feature.fluid_field.fall_bed_stats": "Fall areas: %u; rock points cast: %u (hit %u), queued: %u",
     "feature.fluid_field.far_water": "Far Water",
     "feature.fluid_field.far_water_scale": "Far Water Scale",
     "feature.fluid_field.far_water_scale_tooltip": "How much wider the far water is than the detailed water, at the same resolution.",
