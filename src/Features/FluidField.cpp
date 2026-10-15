@@ -51,6 +51,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	InteractiveFog,
 	FogDensity,
 	FogThickness,
+	FogBrightness,
 	FogStir,
 	FogRefillSeconds,
 	ReplaceVanillaFoam)
@@ -113,6 +114,10 @@ void FluidField::DrawSettings()
 	ImGui::SliderFloat(T(TKEY("fog_density"), "Fog Density"), &settings.FogDensity, 0.0f, 0.05f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("fog_density_tooltip"), "How thick the fog is inside its layer, in its banks."));
+	}
+	ImGui::SliderFloat(T(TKEY("fog_brightness"), "Fog Brightness"), &settings.FogBrightness, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("fog_brightness_tooltip"), "How brightly the fog is lit by the sky and the sun."));
 	}
 	ImGui::SliderFloat(T(TKEY("fog_thickness"), "Fog Thickness"), &settings.FogThickness, 10.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -452,6 +457,7 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.FoamStrength = std::isfinite(a_settings.FoamStrength) ? std::clamp(a_settings.FoamStrength, 0.0f, 3.0f) : defaults.FoamStrength;
 	a_settings.WaterTint = std::isfinite(a_settings.WaterTint) ? std::clamp(a_settings.WaterTint, 0.0f, 1.0f) : defaults.WaterTint;
 	a_settings.FogDensity = std::isfinite(a_settings.FogDensity) ? std::clamp(a_settings.FogDensity, 0.0f, 0.05f) : defaults.FogDensity;
+	a_settings.FogBrightness = std::isfinite(a_settings.FogBrightness) ? std::clamp(a_settings.FogBrightness, 0.0f, 2.0f) : defaults.FogBrightness;
 	a_settings.FogThickness = std::isfinite(a_settings.FogThickness) ? std::clamp(a_settings.FogThickness, 10.0f, 400.0f) : defaults.FogThickness;
 	a_settings.FogStir = std::isfinite(a_settings.FogStir) ? std::clamp(a_settings.FogStir, 0.0f, 3.0f) : defaults.FogStir;
 	a_settings.FogRefillSeconds = std::isfinite(a_settings.FogRefillSeconds) ? std::clamp(a_settings.FogRefillSeconds, 0.5f, 30.0f) : defaults.FogRefillSeconds;
@@ -1016,7 +1022,7 @@ void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderRe
 		.thickness = settings.FogThickness,
 		.maxHeight = groundHeight.GetMaxHeight(),
 		.stepCount = GROUND_FOG_STEPS,
-		.albedo = { 0.9f, 0.92f, 0.95f },
+		.albedo = { 0.9f * settings.FogBrightness, 0.92f * settings.FogBrightness, 0.95f * settings.FogBrightness },
 		.maxDistance = 0.5f * cellSize * static_cast<float>(settings.GridResolution)
 	};
 	D3D11_MAPPED_SUBRESOURCE mapped{};

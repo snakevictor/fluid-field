@@ -21,7 +21,7 @@ cbuffer GroundFogCB : register(b0)
 	float Thickness;    // Height of the layer's top above the ground where the field is 1
 	float MaxHeight;    // Highest ground in the grid, world units
 	uint StepCount;     // Samples along each ray
-	float3 Albedo;      // Colour of the fog's scattering
+	float3 Albedo;      // Colour of the fog's scattering, times its brightness
 	float MaxDistance;  // Rays stop here, world units (inside the field)
 };
 
@@ -35,7 +35,7 @@ static const float EDGE_FADE = 0.2;
 /** Forward-scattering anisotropy (Henyey-Greenstein g): mist glows a little toward the sun. */
 static const float PHASE_G = 0.25;
 /** Share of the sun in the fog's light; ground fog sits low and is mostly lit by the sky. */
-static const float SUN_SHARE = 0.35;
+static const float SUN_SHARE = 0.15;
 /** Fraction of the layer's height over which its top softens into clear air. */
 static const float TOP_SOFTNESS = 0.5;
 /** Ground below this is unknown land: no fog there. */

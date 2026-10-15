@@ -88,6 +88,7 @@ struct FluidField : OverlayFeature
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
 		bool InteractiveFog = true;          ///< Ground fog that actors and the weather's wind move (D21)
 		float FogDensity = 0.012f;           ///< Ground fog extinction per world unit inside the layer, in its banks
+		float FogBrightness = 0.35f;         ///< How brightly the ground fog is lit, as a fraction of the light around it
 		float FogThickness = 60.0f;          ///< Height of the ground fog layer's top above the ground, in its banks, world units
 		float FogStir = 1.0f;                ///< How strongly moving actors push the air and part the fog
 		float FogRefillSeconds = 6.0f;       ///< Seconds for parted fog to fill back in (about two thirds of the way)
