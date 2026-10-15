@@ -129,36 +129,6 @@ namespace FluidField
 		return FlowFoamAtWorld(a_worldXY).xy;
 	}
 
-	/** World units one flowmap texel covers (64 texels per 4096-unit cell). */
-	static const float FLOWMAP_TEXEL = 64.0;
-	/** Simulated flow speed (world units per second) at which vanilla's flow normals scroll at full speed. */
-	static const float FLOWMAP_FULL_SPEED = 150.0;
-
-	/**
-	 * Vanilla's flowmap sample with its direction (RG, world axes as * 2 - 1) and scroll speed (A)
-	 * taken from the simulated flow where Fluid Field covers the water (D20). The flowmap is a
-	 * fixed, generated field: it can point straight out of an island or along a lake that is still,
-	 * while the simulated flow goes around obstacles and stops where the water spreads out.
-	 */
-	float4 SteerFlowmap(float4 a_color, float3 a_worldPosition, float2 a_uvShift)
-	{
-		float4 surface;
-		if (!SampleSurface(a_worldPosition, surface))
-			return a_color;
-		const float coverage = saturate(surface.w);
-		// One direction per flowmap texel (64 world units), taken at that texel's centre like the
-		// flowmap itself: vanilla's four-tap blend hides the steps between texels, but a direction
-		// changing within a texel twists its texture and the ripples stretch
-		const float2 shift = float2(sign(a_uvShift.x), -sign(a_uvShift.y)) * (0.5 * FLOWMAP_TEXEL);
-		const float2 texelCentre = (floor((a_worldPosition.xy + shift) / FLOWMAP_TEXEL) + 0.5) * FLOWMAP_TEXEL;
-		const float2 flow = FlowAtWorld(texelCentre);
-		const float speed = length(flow);
-		const float2 direction = flow / max(speed, 1e-3);
-		a_color.xy = lerp(a_color.xy, direction * 0.5 + 0.5, coverage * smoothstep(2.0, 15.0, speed));
-		a_color.w = lerp(a_color.w, saturate(speed / FLOWMAP_FULL_SPEED), coverage);
-		return a_color;
-	}
-
 	/** How much vanilla's flow normals show (1) rather than its still-water ripples (0): none on still simulated water. */
 	float FlowmapWeight(float3 a_worldPosition)
 	{
@@ -363,10 +333,7 @@ namespace FluidField
 		const float2 drift = flow * FOAM_PERIOD / FOAM_TILE;
 		const float p0 = length(Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase0, SharedData::MipBias).xy * 2.0 - 1.0);
 		const float p1 = length(Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase1 + 0.37, SharedData::MipBias).xy * 2.0 - 1.0);
-		// Blended so the pattern keeps its contrast mid-fade; a plain lerp evens it out, and the foam pulses
-		const float w = abs(phase0 * 2.0 - 1.0);
-		const float mean = 0.5;
-		const float pattern = saturate((((p0 - mean) * (1.0 - w) + (p1 - mean) * w) / sqrt(w * w + (1.0 - w) * (1.0 - w)) + mean) * 1.4);
+		const float pattern = saturate(lerp(p0, p1, abs(phase0 * 2.0 - 1.0)) * 1.4);
 		// Dense foam covers solidly; thin foam only shows in the pattern's bubbles and streaks
 		const float threshold = pattern * 0.5;
 		return smoothstep(threshold, threshold + 0.25, foam) * 0.95;

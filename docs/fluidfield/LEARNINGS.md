@@ -60,6 +60,9 @@ about it.
 -   **Steeper water normals turn grazing views black** (2026-10-14). Raising vanilla's ripple amplitude (up to 2.5x on rough simulated water) tipped reflections below the horizon at low view angles, where the water reflects the dark lower half of the sky. A live A/B with Surface Normal and Flow Detail at 0 stayed dark, which pointed at the amplitude boost. Keep reflections at least half as high as flat water would give them, and fade any boost out toward the horizon.
 -   **Vanilla effect meshes can carry real geometry** (2026-10-14). `FXrapidsRocks01` holds lit rocks beside its foam. Hide only the leaves that are not drawn with `BSLightingShaderProperty`, not the reference's root.
 
+-   **Vanilla's flowmap normals cannot be steered per frame** (2026-10-14). `GetFlowmapNormal` offsets its lookup by the game time times the flowmap's alpha, along the flowmap's direction, and rotates the whole coordinate by that direction. It is stable only because the flowmap never changes. Feeding it a changing direction or speed shifts the texture by time times the change, which is large after a while in game, and the water flickers. Blending the flow normals out (a weight) is safe.
+-   **A contrast-preserving two-phase blend needs the pattern's true mean** (2026-10-14). Dividing by sqrt(w^2 + (1 - w)^2) around an assumed mean of 0.5 made the foam pattern (lengths of normal-map xy, mean well below 0.5) swell mid-fade and pulse harder. It is right for normal-map xy, whose mean is 0.
+
 ## Repository conventions
 
 -   **There is no `AI-INSTRUCTIONS.md`** (2026-10-13, Phase 0). `AGENTS.md` fills that role and points to `.claude/CLAUDE.md`. `.github/copilot-instructions.md` still mentions `AI-INSTRUCTIONS.md`; that is upstream text and we left it alone.

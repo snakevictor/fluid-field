@@ -443,10 +443,6 @@ FlowmapData GetFlowmapDataTextureSpace(PS_INPUT input, float2 uvShift)
 {
 	FlowmapData data;
 	data.color = FlowMapTex.SampleLevel(FlowMapSampler, input.TexCoord2.zw + uvShift, 0);
-#				if defined(FLUID_FIELD)
-	// Where Fluid Field simulates the water, the flow normals follow its flow (D20)
-	data.color = FluidField::SteerFlowmap(data.color, input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, uvShift);
-#				endif
 	data.flowVector = (64 * input.TexCoord3.xy) * sqrt(1.01 - data.color.z);
 	// NOTE: flowVector is NOT transformed yet - this is the raw vector before rotation matrix
 	return data;
