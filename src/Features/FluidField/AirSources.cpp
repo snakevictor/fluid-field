@@ -11,8 +11,10 @@ namespace FluidFieldSim
 		constexpr float MIN_SPEED = 20.0f;
 		/** @brief Faster than this between two steps is a teleport, not movement. */
 		constexpr float MAX_SPEED = 1500.0f;
-		/** @brief Smallest radius an actor stirs, world units, so small creatures still part the fog. */
-		constexpr float MIN_RADIUS = 24.0f;
+		/** @brief Smallest radius an actor shoves the fog over, world units, so small creatures still part it. */
+		constexpr float MIN_RADIUS = 32.0f;
+		/** @brief The fog is shoved over this many times the actor's half-width: a clear patch a little wider than the body. */
+		constexpr float RADIUS_SCALE = 1.6f;
 		/** @brief Per-second rate at which an actor drags the air around it toward its own velocity. */
 		constexpr float PUSH_RATE = 6.0f;
 
@@ -65,11 +67,14 @@ namespace FluidFieldSim
 			if (!hasPrevious || emitters.size() >= a_maxEmitters)
 				continue;
 
-			const float vx = (position.x - previous.x) / a_deltaTime;
-			const float vy = (position.y - previous.y) / a_deltaTime;
+			float vx = (position.x - previous.x) / a_deltaTime;
+			float vy = (position.y - previous.y) / a_deltaTime;
 			const float speed = std::sqrt(vx * vx + vy * vy);
-			if (speed < MIN_SPEED || speed > MAX_SPEED)
+			if (speed > MAX_SPEED)
 				continue;
+			// A standing actor still holds the fog off its feet; only a moving one pushes the air
+			if (speed < MIN_SPEED)
+				vx = vy = 0.0f;
 
 			// The air over about the actor's width is dragged toward its velocity; the solver adds
 			// each emitter's velocity once per step, so the impulse is the rate times the step
@@ -79,7 +84,7 @@ namespace FluidFieldSim
 			const float halfWidth = 0.5f * std::max(boundMax.x - boundMin.x, boundMax.y - boundMin.y) * scale;
 			const float push = std::min(PUSH_RATE * a_deltaTime, 1.0f) * a_strength;
 			emitters.push_back({ .position = { position.x / a_cellSize - static_cast<float>(a_gridMin[0]), position.y / a_cellSize - static_cast<float>(a_gridMin[1]) },
-				.radius = std::max(halfWidth, MIN_RADIUS) / a_cellSize,
+				.radius = std::max(halfWidth * RADIUS_SCALE, MIN_RADIUS) / a_cellSize,
 				.pad0 = 0.0f,
 				.velocity = { vx * push, vy * push },
 				.pad1 = {} });

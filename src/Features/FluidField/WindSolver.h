@@ -27,12 +27,13 @@ namespace FluidFieldSim
 	/** @brief Inputs for the fog layer (D21), matching FogCB in FogCS.hlsl. */
 	struct FogParams
 	{
-		float drift[2]{};          ///< Weather wind carrying the fog, world units per second
-		float refillRate = 0.25f;  ///< Per-second rate at which thinned fog fills back in
-		float stirRate = 4.0f;     ///< Per-second rate at which fully stirred air clears the fog
-		float stirSpeed = 60.0f;   ///< Wind speed counted as fully stirred, world units per second
-		float carveRate = 6.0f;    ///< Per-second rate at which a moving actor clears the fog it passes through
-		float pad[2]{};
+		float drift[2]{};              ///< Weather wind carrying the fog, world units per second
+		float refillRate = 0.25f;      ///< Per-second rate at which displaced fog settles back
+		float stirRate = 0.5f;         ///< Per-second rate at which fully stirred air thins the fog
+		float stirSpeed = 120.0f;      ///< Wind speed counted as fully stirred, world units per second
+		float displaceSpeed = 150.0f;  ///< Speed at which an actor's body shoves the fog outward, world units per second
+		float maxFog = 2.0f;           ///< Most fog a cell can be packed to, as a multiple of the resting amount
+		float pad = 0.0f;
 	};
 	static_assert(sizeof(FogParams) == 32);
 

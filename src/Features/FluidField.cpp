@@ -125,11 +125,11 @@ void FluidField::DrawSettings()
 	}
 	ImGui::SliderFloat(T(TKEY("fog_stir"), "Fog Stirring"), &settings.FogStir, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("fog_stir_tooltip"), "How strongly moving actors push the air, parting the fog around them."));
+		ImGui::Text("%s", T(TKEY("fog_stir_tooltip"), "How hard actors shove the fog aside and push the air, piling it around them and swirling it behind them."));
 	}
 	ImGui::SliderFloat(T(TKEY("fog_refill"), "Fog Refill"), &settings.FogRefillSeconds, 0.5f, 30.0f, "%.1f s", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("fog_refill_tooltip"), "How long parted fog takes to fill back in."));
+		ImGui::Text("%s", T(TKEY("fog_refill_tooltip"), "How long shoved fog takes to settle back."));
 	}
 
 	ImGui::SeparatorText(T(TKEY("test_emitter"), "Test Emitter"));
@@ -709,7 +709,7 @@ void FluidField::Prepass()
 		fogParams = {};
 		fogParams.refillRate = 1.0f / settings.FogRefillSeconds;
 		fogParams.stirRate *= settings.FogStir;
-		fogParams.carveRate *= settings.FogStir;
+		fogParams.displaceSpeed *= settings.FogStir;
 		if (const auto* sky = RE::Sky::GetSingleton(); sky && sky->currentWeather) {
 			// Wind speed and direction are stored as 0-255; direction 0 blows from the north
 			const float speed = static_cast<float>(sky->currentWeather->data.windSpeed) / 255.0f * MAX_WEATHER_DRIFT;
@@ -1033,21 +1033,21 @@ void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderRe
 
 	globals::profiler->BeginPass("FluidField::Ground Fog");
 	ID3D11Buffer* cb = groundFogCB.get();
-	ID3D11ShaderResourceView* srvs[] = { a_depth, solver.GetFogSRV(), groundHeight.GetSRV() };
+	ID3D11ShaderResourceView* srvs[] = { a_depth, solver.GetFogSRV(), groundHeight.GetSRV(), solver.GetVelocitySRV() };
 	context->CSSetConstantBuffers(0, 1, &cb);
 	// The camera (FrameBuffer, b12): the deferred composite unbinds it when it finishes
 	ID3D11Buffer* perFrame = *globals::game::perFrame;
 	context->CSSetConstantBuffers(12, 1, &perFrame);
-	context->CSSetShaderResources(0, 3, srvs);
+	context->CSSetShaderResources(0, 4, srvs);
 	context->CSSetUnorderedAccessViews(0, 1, &a_main, nullptr);
 	context->CSSetShader(groundFogCS.get(), nullptr, 0);
 	const auto dispatch = Util::GetScreenDispatchCount(true);
 	context->Dispatch(dispatch.x, dispatch.y, 1);
 
-	ID3D11ShaderResourceView* nullSRVs[3]{};
+	ID3D11ShaderResourceView* nullSRVs[4]{};
 	ID3D11UnorderedAccessView* nullUAV = nullptr;
 	ID3D11Buffer* nullCB = nullptr;
-	context->CSSetShaderResources(0, 3, nullSRVs);
+	context->CSSetShaderResources(0, 4, nullSRVs);
 	context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
 	context->CSSetConstantBuffers(0, 1, &nullCB);
 	context->CSSetConstantBuffers(12, 1, &nullCB);

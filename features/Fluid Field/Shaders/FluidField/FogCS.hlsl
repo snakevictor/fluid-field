@@ -1,22 +1,25 @@
 // Fluid Field fog (D21): how much ground fog lies on each cell of the wind grid, drawn by the
 // ground fog pass (GroundFogCS). 1 is full fog, 0 clear air.
 //
-// Each step the fog is carried along by the wind and the weather's drift, fills back in over a few
-// seconds toward a resting pattern of banks and clearings, and thins where the air is stirred: an
-// actor walking or running through it pushes it aside and drags clear air down into it, so it
-// parts behind them and swirls in their wake before closing.
+// Each step the fog is carried along by the wind and the weather's drift and settles back over a
+// few seconds toward a resting pattern of banks and clearings. Fog is thick and slow: an actor's
+// body shoves it aside rather than clearing it, so it piles into a raised rim around them (up to
+// MaxFog, twice the resting amount) and leaves a clear patch at their feet; walking drags the
+// displaced fog along and the air they push curls it into swirls behind them. Strong stirring
+// thins it a little, mixing in clear air.
 // Cells that scrolled into the grid since the last step, and every cell after a reset, start at rest.
 
 #include "FluidField/Common.hlsli"
 
 cbuffer FogCB : register(b1)
 {
-	float2 Drift;      // Weather wind carrying the fog, world units per second
-	float RefillRate;  // Per-second rate at which thinned fog fills back in toward 1
-	float StirRate;    // Per-second rate at which fully stirred air clears the fog
-	float StirSpeed;   // Wind speed (world units per second) that counts as fully stirred
-	float CarveRate;   // Per-second rate at which a moving actor clears the fog it moves through
-	float2 FogPad;
+	float2 Drift;         // Weather wind carrying the fog, world units per second
+	float RefillRate;     // Per-second rate at which thinned fog fills back in toward 1
+	float StirRate;       // Per-second rate at which fully stirred air clears the fog
+	float StirSpeed;      // Wind speed (world units per second) that counts as fully stirred
+	float DisplaceSpeed;  // Speed (world units per second) at which an actor's body shoves the fog outward
+	float MaxFog;         // Most fog a cell can be packed to, as a multiple of the resting amount
+	float FogPad;
 };
 
 struct Emitter
@@ -77,6 +80,25 @@ float SampleFog(float2 position)
 	return lerp(lerp(LoadFog(i), LoadFog(i + int2(1, 0)), t.x), lerp(LoadFog(i + int2(0, 1)), LoadFog(i + int2(1, 1)), t.x), t.y);
 }
 
+/**
+ * How actors' bodies shove the fog at a logical position, world units per second: outward from
+ * each actor, zero at its centre, strongest around its edge and gone a little beyond, so the fog
+ * clears at the feet and packs into a rim.
+ */
+float2 Displacement(float2 position)
+{
+	float2 shove = 0.0;
+	for (uint i = 0; i < EmitterCount; i++) {
+		Emitter e = Emitters[i];
+		float2 d = position - e.Position;
+		float distance = length(d);
+		float r = max(e.Radius, 0.5);
+		// d/r * exp(-(d/r)^2) peaks at 1/sqrt(2) of the radius; scaled so the peak is DisplaceSpeed
+		shove += (d / max(distance, 1e-3)) * DisplaceSpeed * 2.33 * (distance / r) * exp(-dot(d, d) / (r * r));
+	}
+	return shove;
+}
+
 [numthreads(FLUIDFIELD_GROUP_SIZE, FLUIDFIELD_GROUP_SIZE, 1)] void main(uint2 id : SV_DispatchThreadID) {
 	if (any(id >= GridRes))
 		return;
@@ -84,17 +106,16 @@ float SampleFog(float2 position)
 	int2 logical = StorageToLogical(id);
 	float2 wind = Velocity[id];
 
-	// Carried along by the wind and the weather's drift
-	float2 source = float2(logical) + 0.5 - DeltaTime * (wind + Drift) / CellSize;
-	float fog = SampleFog(source);
-
-	// Pushed out of the space a moving actor passes through
+	// Carried along by the wind, the weather's drift and the shove of actors' bodies; where that
+	// shove spreads out the fog thins, where it converges (just outside the body) the fog packs up
 	float2 position = float2(logical) + 0.5;
-	for (uint i = 0; i < EmitterCount; i++) {
-		Emitter e = Emitters[i];
-		float2 d = position - e.Position;
-		fog *= exp(-CarveRate * exp(-dot(d, d) / (e.Radius * e.Radius)) * DeltaTime);
-	}
+	float2 shove = Displacement(position);
+	float2 source = position - DeltaTime * (wind + Drift + shove) / CellSize;
+	float fog = SampleFog(source);
+	float divergence = (Displacement(position + float2(1, 0)).x - Displacement(position - float2(1, 0)).x +
+						   Displacement(position + float2(0, 1)).y - Displacement(position - float2(0, 1)).y) /
+	                   (2.0 * CellSize);
+	fog *= exp(-divergence * DeltaTime);
 
 	// Thinned where the air is stirred, then filling back in
 	float stirred = saturate(length(wind) / max(StirSpeed, 1.0));
@@ -102,5 +123,5 @@ float SampleFog(float2 position)
 	const float resting = RestingFog((float2(GridMin + logical) + 0.5) * CellSize);
 	fog = resting + (fog - resting) * exp(-RefillRate * DeltaTime);
 
-	FogOut[id] = saturate(fog);
+	FogOut[id] = clamp(fog, 0.0, MaxFog);
 }

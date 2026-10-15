@@ -28,6 +28,7 @@ cbuffer GroundFogCB : register(b0)
 Texture2D<float> DepthTexture : register(t0);
 Texture2D<float> FogField : register(t1);
 Texture2D<float> GroundHeight : register(t2);
+Texture2D<float2> Wind : register(t3);
 RWTexture2D<float4> MainRW : register(u0);
 
 /** Fraction of the field's width over which the fog fades out toward its edge. */
@@ -38,6 +39,18 @@ static const float PHASE_G = 0.25;
 static const float SUN_SHARE = 0.15;
 /** Fraction of the layer's height over which its top softens into clear air. */
 static const float TOP_SOFTNESS = 0.5;
+/** How much taller fog packed to twice its resting amount stands. */
+static const float PILE_RISE = 0.8;
+/** How much higher churning air lifts the fog's top, at LIFT_SPEED. */
+static const float LIFT = 0.6;
+static const float LIFT_SPEED = 150.0;
+/** World units across one wisp in the fog, and how much the wisps vary its density. */
+static const float WISP_SIZE = 140.0;
+static const float WISP_CONTRAST = 0.45;
+/** Seconds between restarts of each of the wisps' two phases as the wind carries them. */
+static const float WISP_PERIOD = 2.0;
+/** Fastest the wisps drift, world units per second, so fast gusts do not smear them. */
+static const float WISP_MAX_DRIFT = 200.0;
 /** Ground below this is unknown land: no fog there. */
 static const float NO_GROUND = -1.0e6;
 
@@ -65,6 +78,46 @@ void SampleField(float2 worldXY, out float fog, out float ground)
 	fog *= smoothstep(0.0, 1.0, fromEdge / (EDGE_FADE * GridRes));
 }
 
+/** The wind at an absolute world position, bilinear; zero outside the grid. */
+float2 SampleWind(float2 worldXY)
+{
+	const float2 cellPosition = worldXY / CellSize - 0.5;
+	const int2 c = int2(floor(cellPosition));
+	const float2 t = cellPosition - float2(c);
+	const int mask = int(GridRes) - 1;
+	return lerp(lerp(Wind.Load(int3(c & mask, 0)), Wind.Load(int3((c + int2(1, 0)) & mask, 0)), t.x),
+		lerp(Wind.Load(int3((c + int2(0, 1)) & mask, 0)), Wind.Load(int3((c + int2(1, 1)) & mask, 0)), t.x), t.y);
+}
+
+float Hash(float2 p)
+{
+	return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+}
+
+float ValueNoise(float2 p)
+{
+	const float2 i = floor(p);
+	const float2 f = p - i;
+	const float2 u = f * f * (3.0 - 2.0 * f);
+	return lerp(lerp(Hash(i), Hash(i + float2(1, 0)), u.x), lerp(Hash(i + float2(0, 1)), Hash(i + float2(1, 1)), u.x), u.y);
+}
+
+/**
+ * Wisps inside the fog, carried by the wind (two phases restarted half a period apart, cross-faded
+ * so neither restart shows): the fog's density varies around its mean, so its churning shows.
+ */
+float Wisps(float3 position, float2 wind)
+{
+	const float2 drift = wind * min(1.0, WISP_MAX_DRIFT / max(length(wind), 1e-3)) * WISP_PERIOD / WISP_SIZE;
+	const float time = SharedData::Timer / WISP_PERIOD;
+	const float phase0 = frac(time);
+	const float phase1 = frac(time + 0.5);
+	const float2 uv = position.xy / WISP_SIZE + position.z / (WISP_SIZE * 1.5);
+	const float n0 = ValueNoise(uv - drift * phase0) * 0.6 + ValueNoise(uv * 2.3 - drift * phase0 * 2.3) * 0.4;
+	const float n1 = ValueNoise(uv - drift * phase1 + 7.1) * 0.6 + ValueNoise(uv * 2.3 - drift * phase1 * 2.3 + 3.7) * 0.4;
+	return lerp(n0, n1, abs(phase0 * 2.0 - 1.0));
+}
+
 float HenyeyGreenstein(float cosTheta, float g)
 {
 	const float g2 = g * g;
@@ -89,7 +142,7 @@ float HenyeyGreenstein(float cosTheta, float g)
 	// Skip rays that stay above the fog
 	const float3 camera = FrameBuffer::CameraPosAdjust.xyz;
 	const float lowestZ = camera.z + min(0.0, direction.z * rayLength);
-	if (lowestZ > MaxHeight + Thickness || rayLength <= 0.0)
+	if (lowestZ > MaxHeight + Thickness * (1.0 + PILE_RISE) * (1.0 + LIFT) || rayLength <= 0.0)
 		return;
 
 	const float stepLength = rayLength / StepCount;
@@ -107,10 +160,15 @@ float HenyeyGreenstein(float cosTheta, float g)
 		const float3 position = camera + direction * ((i + jitter) * stepLength);
 		float fog, ground;
 		SampleField(position.xy, fog, ground);
-		// A layer on the ground with a soft top, whose height follows the amount of fog
+		// A layer on the ground with a soft top: taller where fog is packed, lifted where the air churns
 		const float height = position.z - ground;
-		const float top = Thickness * lerp(0.4, 1.0, saturate(fog));
-		const float extinction = Density * fog * (1.0 - smoothstep(top * (1.0 - TOP_SOFTNESS), top, height));
+		if (fog <= 0.0 || height > Thickness * 4.0)
+			continue;
+		const float2 wind = SampleWind(position.xy);
+		const float churn = saturate(length(wind) / LIFT_SPEED);
+		const float top = Thickness * lerp(0.4, 1.0, saturate(fog)) * (1.0 + PILE_RISE * saturate(fog - 1.0)) * (1.0 + LIFT * churn);
+		const float wisps = lerp(1.0 - WISP_CONTRAST, 1.0 + WISP_CONTRAST, Wisps(position, wind));
+		const float extinction = Density * fog * wisps * (1.0 - smoothstep(top * (1.0 - TOP_SOFTNESS), top, height));
 		if (extinction <= 0.0)
 			continue;
 		const float stepTransmittance = exp(-extinction * stepLength);
