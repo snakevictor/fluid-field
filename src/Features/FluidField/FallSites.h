@@ -131,6 +131,11 @@ namespace FluidFieldSim
 		 * comes in (the top FLOW_SOURCE_BAND of each mesh, and the pools); elsewhere it is free.
 		 */
 		void BuildFlowMap(int32_t a_centreX, int32_t a_centreY, float a_spacing, uint32_t a_size, std::vector<float>& a_map) const;
+		/**
+		 * @brief Debug: hides vanilla's mist, skirt and splash meshes at every site, so the falling water
+		 * can be judged alone. Shown again when turned off, and on Clear.
+		 */
+		void SetHideEffects(bool a_hide);
 		/** @brief Whether any site's falling water is grounded on captured rock, so the fall flow has something to run on. */
 		bool HasGround() const { return !grounded.empty(); }
 		static constexpr float FLOW_WALL = 100000.0f;     ///< Bed where no rock is captured: the fall flow's walls
@@ -181,6 +186,9 @@ namespace FluidFieldSim
 		std::unordered_map<uint64_t, std::string> cellSummaries;  ///< Last summary logged per cell
 		std::unordered_map<uint64_t, FallCapture> captures;       ///< By Site::captureKey
 		std::unordered_set<const RE::BSGeometry*> grounded;
+		bool hideEffects = false;
+		std::unordered_map<uint32_t, RE::NiPointer<RE::NiAVObject>> hiddenEffects;  ///< By form ID: the 3D culled
+		void RefreshHiddenEffects();
 		uint64_t groundVersion = 0;
 	};
 }

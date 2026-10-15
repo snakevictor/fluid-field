@@ -739,7 +739,7 @@ PS_OUTPUT main(PS_INPUT input)
 #	if defined(FLUID_FIELD)
 	float4 fallRock = 0.0;     // The rock field here (FallGround::Flow), for the debug view
 	float fallFoam = 0.0;      // Foam on the falling water: where the fall flow churns, and hugging rock
-	float fallSpeed = 0.0;     // The fall flow's speed here, for the debug view
+	float4 fallFlow = 0.0;     // The fall flow here (velocity, foam, depth), for the debug views
 	float fallPresence = 1.0;  // How much of the falling water is there, from the fall flow
 #	endif
 #	if !defined(TEXTURE)
@@ -752,7 +752,7 @@ PS_OUTPUT main(PS_INPUT input)
 		{
 			float2 uv0, uv1;
 			float blend;
-			FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, uv0, uv1, blend, fallRock, fallFoam, fallSpeed, fallPresence);
+			FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, uv0, uv1, blend, fallRock, fallFoam, fallFlow, fallPresence);
 			baseTexColor = lerp(TexBaseSampler.Sample(SampBaseSampler, uv0), TexBaseSampler.Sample(SampBaseSampler, uv1), blend);
 		}
 		else
@@ -929,12 +929,22 @@ PS_OUTPUT main(PS_INPUT input)
 #	endif
 	psout.Diffuse = finalColor;
 #	if defined(FLUID_FIELD)
-	// Fluid Field (D26, D27) debug: the fall flow's speed as red, foam as green, the water's presence as blue (black: no rock map)
+	// Fluid Field (D26, D27) debug 1: the fall flow's speed as red, foam as green, the water's presence as blue (black: no rock map)
 	[branch] if (FallGround::Enabled && FallGround::DebugMode == 1)
 	{
 		float ground;
 		const bool covered = FallGround::Height(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy, ground);
-		psout.Diffuse.xyz = float3(saturate(fallSpeed / 800.0), fallFoam, covered ? fallPresence : 0.0);
+		psout.Diffuse.xyz = float3(saturate(length(fallFlow.xy) / 800.0), fallFoam, covered ? fallPresence : 0.0);
+	}
+	// Debug 2: the fall flow alone, opaque: direction as hue, speed as brightness, foam as white, black where it has no water
+	[branch] if (FallGround::Enabled && FallGround::DebugMode == 2)
+	{
+		const float speed = length(fallFlow.xy);
+		const float hue = atan2(fallFlow.y, fallFlow.x) / 6.2831853 + 0.5;
+		const float3 rgb = saturate(abs(frac(hue + float3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0);
+		const float wet = smoothstep(0.5, 3.0, fallFlow.w);
+		const float3 color = lerp(rgb * saturate(0.25 + speed / 500.0), 1.0, saturate(fallFlow.z) * 0.6) * wet;
+		psout.Diffuse = float4(color, 1.0);
 	}
 #	endif
 #	if defined(LIGHTING) && defined(LIGHT_LIMIT_FIX) && defined(LLFDEBUG)

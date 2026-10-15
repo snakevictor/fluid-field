@@ -322,13 +322,14 @@ void FluidField::DrawSettings()
 	ImGui::Checkbox(T(TKEY("show_layer_overlay"), "Show Layer Overlay"), &showDebugOverlay);
 	ImGui::Checkbox(T(TKEY("show_waterfall_sites"), "Show Waterfall Sites"), &showFallSites);
 	{
-		bool showTurn = fallGroundDebug == 1;
-		if (ImGui::Checkbox(T(TKEY("show_waterfall_turn"), "Show Waterfall Flow Turn"), &showTurn)) {
-			fallGroundDebug = showTurn ? 1 : 0;
-			fallGroundVersion = UINT64_MAX;  // Re-upload the constants
+		const char* fallDebugModes[] = { T(TKEY("waterfall_debug_off"), "Off"), T(TKEY("waterfall_debug_fields"), "Speed, Foam, Presence"), T(TKEY("waterfall_debug_solver"), "Solver Only") };
+		ImGui::Combo(T(TKEY("waterfall_debug"), "Waterfall Debug"), &fallGroundDebug, fallDebugModes, IM_ARRAYSIZE(fallDebugModes));
+		ImGui::Checkbox(T(TKEY("hide_waterfall_effects"), "Hide Waterfall Effects"), &hideFallEffects);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("%s", T(TKEY("hide_waterfall_effects_tooltip"), "Hides vanilla's mist, skirt and splash meshes at the waterfalls, so the falling water can be judged alone."));
 		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("show_waterfall_turn_tooltip"), "Paints grounded waterfalls with the fall flow: red for its speed, green where it foams, blue where its water is (dark: gone, as behind rock; black: no captured rock)."));
+			ImGui::Text("%s", T(TKEY("waterfall_debug_tooltip"), "Paints grounded waterfalls with the fall flow. Speed, Foam, Presence: red for its speed, green where it foams, blue where its water is (dark: gone, as behind rock; black: no captured rock). Solver Only: the fall flow alone, opaque: colour for the way it flows, brightness for its speed, white for foam, black where it has no water."));
 		}
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -862,6 +863,7 @@ void FluidField::Prepass()
 			waterfalls.Update(water, playerPos.x, playerPos.y, simulated);
 			// Waterfall sites reconstructed from vanilla's layout (D25)
 			fallSites.SetConsoleSummary(showFallSites);
+			fallSites.SetHideEffects(hideFallEffects);
 			fallSites.Update(water);
 			StepFallFlow(context, playerPos, deltaTime);
 			fallFlowTime += deltaTime;

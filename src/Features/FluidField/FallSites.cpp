@@ -144,8 +144,40 @@ namespace FluidFieldSim
 		}
 	}
 
+	void FallSites::SetHideEffects(bool a_hide)
+	{
+		if (a_hide == hideEffects)
+			return;
+		hideEffects = a_hide;
+		RefreshHiddenEffects();
+	}
+
+	void FallSites::RefreshHiddenEffects()
+	{
+		std::unordered_map<uint32_t, RE::NiPointer<RE::NiAVObject>> wanted;
+		if (hideEffects) {
+			for (const auto& ref : refs) {
+				if (ref.cls != FxClass::Mist && ref.cls != FxClass::Skirt && ref.cls != FxClass::Splash)
+					continue;
+				auto* object = RE::TESForm::LookupByID<RE::TESObjectREFR>(ref.formID);
+				if (auto* root = object ? object->Get3D() : nullptr)
+					wanted.emplace(ref.formID, RE::NiPointer<RE::NiAVObject>(root));
+			}
+		}
+		for (auto& [formID, root] : hiddenEffects) {
+			const auto it = wanted.find(formID);
+			if ((it == wanted.end() || it->second != root) && root)
+				root->SetAppCulled(false);
+		}
+		for (auto& [formID, root] : wanted)
+			root->SetAppCulled(true);
+		hiddenEffects.swap(wanted);
+	}
+
 	void FallSites::Clear()
 	{
+		hideEffects = false;
+		RefreshHiddenEffects();
 		grounded.clear();
 		groundVersion++;
 		refs.clear();
@@ -720,6 +752,7 @@ namespace FluidFieldSim
 		}
 		captures.swap(kept);
 		RefreshGrounded();
+		RefreshHiddenEffects();
 	}
 
 	void FallSites::BuildGroundMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const

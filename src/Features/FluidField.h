@@ -343,7 +343,7 @@ private:
 	 */
 	FluidFieldSim::ShallowWaterSolver fallSolver;
 	static constexpr uint32_t FALL_FLOW_RES = 512;
-	static constexpr float FALL_FLOW_CELL = 16.0f;
+	static constexpr float FALL_FLOW_CELL = 8.0f;              ///< Fine enough that a boulder casts a shadow several cells long
 	static constexpr float FALL_FLOW_RECENTRE = 1024.0f;       ///< How far the player moves before the flow's map recentres
 	static constexpr float FALL_FLOW_LEVEL_RELAX = 4.0f;       ///< Per-second pull toward vanilla's surface where the falls' water comes in (their tops and pools)
 	static constexpr float FALL_FLOW_WARMUP = 5.0f;            ///< Seconds run at once when the falls' map changes, so their water has flowed down
@@ -365,6 +365,7 @@ private:
 	void ReleaseFallFlow();
 	void ReleaseFallGround();
 	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
+	bool hideFallEffects = true;                             ///< Debug: hides vanilla's mist, skirt and splash meshes at the falls; not saved
 	int fallGroundDebug = 0;                                 ///< Debug: 1 tints grounded falling water red where rock turns it; not saved
 	float waterfallTime = 0.0f;                              ///< Seconds simulated, for the waterfalls' pulsing
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls

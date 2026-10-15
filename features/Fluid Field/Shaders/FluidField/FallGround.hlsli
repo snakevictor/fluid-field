@@ -22,7 +22,7 @@ namespace FallGround
 		float Reach;           // How far above rock its push still bends the water
 		float FoamStrength;    // How white the foam is
 		float LiftMost;        // Water deeper than this inside rock is left there (a boulder hides it); shallower is lifted onto it
-		uint DebugMode;        // 0 off, 1: the fall flow's speed as red, foam as green, presence as blue
+		uint DebugMode;        // 0 off; 1: the fall flow's speed as red, foam as green, presence as blue; 2: the fall flow alone (direction as hue, speed as brightness, black where it has no water)
 		float VertexPush;      // How much of the push moves the mesh's vertices
 		float VertexPushMost;  // World units
 		int2 FlowGridMin;      // The fall flow's grid (D27): world cell of its logical texel (0, 0)
@@ -171,10 +171,10 @@ namespace FallGround
 	 * @param a_uv0, a_uv1 Texture coordinates to sample, blended by a_blend.
 	 * @param a_rock The rock field here, for the debug view.
 	 * @param a_foam How much foam is here, 0 to 1.
-	 * @param a_speed The fall flow's speed here, for the debug view.
+	 * @param a_flow The fall flow here (velocity, foam, depth), for the debug views.
 	 * @param a_presence How much of the water is there, 0 to 1: the fall flow's coverage where it lies on rock.
 	 */
-	void Flow(float2 a_uv, float3 a_position, out float2 a_uv0, out float2 a_uv1, out float a_blend, out float4 a_rock, out float a_foam, out float a_speed, out float a_presence)
+	void Flow(float2 a_uv, float3 a_position, out float2 a_uv0, out float2 a_uv1, out float a_blend, out float4 a_rock, out float a_foam, out float4 a_flow, out float a_presence)
 	{
 		a_presence = 1.0;
 		a_uv0 = a_uv;
@@ -182,7 +182,7 @@ namespace FallGround
 		a_blend = 0.0;
 		a_rock = 0.0;
 		a_foam = 0.0;
-		a_speed = 0.0;
+		a_flow = 0.0;
 
 		// The world's change across the texture: d(position)/du and d(position)/dv
 		const float3 dPdx = ddx(a_position);
@@ -216,7 +216,7 @@ namespace FallGround
 		float ground;
 		const float lying = Height(a_position.xy, ground) ? saturate(1.0 - (a_position.z - ground - LieHeight) / LieHeight) : 0.0;
 		a_presence = lerp(1.0, Presence(a_position.xy, flow.w), lying);
-		a_speed = length(flow.xy);
+		a_flow = flow;
 		float3 velocity = float3(flow.xy, 0.0);
 		velocity -= down * dot(velocity, down);
 		const float uRate = dot(velocity, dPdu) * uScale * FlowGain;  // Texture u per second
