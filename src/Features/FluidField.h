@@ -307,7 +307,8 @@ private:
 		float FlowPeriod;
 		float Time;
 		float LieHeight;
-		float Pad[2];
+		float FlowGain;
+		float PresenceRadius;
 	};
 	static_assert(sizeof(FallGroundData) == 96);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
@@ -343,11 +344,14 @@ private:
 	FluidFieldSim::ShallowWaterSolver fallSolver;
 	static constexpr uint32_t FALL_FLOW_RES = 512;
 	static constexpr float FALL_FLOW_CELL = 16.0f;
-	static constexpr float FALL_FLOW_RECENTRE = 1024.0f;  ///< How far the player moves before the flow's map recentres
-	static constexpr float FALL_FLOW_LEVEL_RELAX = 4.0f;  ///< Per-second pull toward vanilla's surface where the falls' water comes in (their tops and pools)
-	static constexpr float FALL_FLOW_WARMUP = 5.0f;       ///< Seconds run at once when the falls' map changes, so their water has flowed down
-	static constexpr float FALL_FLOW_LIE_HEIGHT = 48.0f;  ///< Water within about this of the rock lies on it: the fall flow says where it is
-	static constexpr float FALL_FLOW_PERIOD = 1.2f;       ///< Seconds per flowmap cycle in the effect shader
+	static constexpr float FALL_FLOW_RECENTRE = 1024.0f;       ///< How far the player moves before the flow's map recentres
+	static constexpr float FALL_FLOW_LEVEL_RELAX = 4.0f;       ///< Per-second pull toward vanilla's surface where the falls' water comes in (their tops and pools)
+	static constexpr float FALL_FLOW_WARMUP = 5.0f;            ///< Seconds run at once when the falls' map changes, so their water has flowed down
+	static constexpr float FALL_FLOW_GAIN = 2.0f;              ///< How far the fall flow's sideways velocity carries the streaks
+	static constexpr float FALL_FLOW_PRESENCE_RADIUS = 64.0f;  ///< World units around each point its depth is compared with
+	static constexpr float FALL_FLOW_TURBULENCE = 2.0f;        ///< Vorticity confinement in the falls: water swirls where it runs into rock
+	static constexpr float FALL_FLOW_LIE_HEIGHT = 48.0f;       ///< Water within about this of the rock lies on it: the fall flow says where it is
+	static constexpr float FALL_FLOW_PERIOD = 1.2f;            ///< Seconds per flowmap cycle in the effect shader
 	std::vector<float> fallFlowMap;
 	int32_t fallFlowGridMin[2]{};
 	int32_t fallFlowMapCentre[2]{};

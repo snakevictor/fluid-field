@@ -1454,7 +1454,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	// Every frame: the fall flow moves with the player, and its flowmap with time
 	const FallGroundData on{ { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET, FALL_GROUND_CLING, FALL_GROUND_CONTACT,
 		FALL_REACH, FALL_FOAM_STRENGTH, FALL_GROUND_LIFT_MOST, static_cast<uint32_t>(fallGroundDebug), FALL_VERTEX_PUSH, FALL_VERTEX_PUSH_MOST,
-		{ fallFlowGridMin[0], fallFlowGridMin[1] }, FALL_FLOW_RES, FALL_FLOW_CELL, fallFlowReady ? 1u : 0u, FALL_FLOW_PERIOD, fallFlowTime, FALL_FLOW_LIE_HEIGHT, {} };
+		{ fallFlowGridMin[0], fallFlowGridMin[1] }, FALL_FLOW_RES, FALL_FLOW_CELL, fallFlowReady ? 1u : 0u, FALL_FLOW_PERIOD, fallFlowTime, FALL_FLOW_LIE_HEIGHT, FALL_FLOW_GAIN, FALL_FLOW_PRESENCE_RADIUS };
 	context->UpdateSubresource(fallGroundOn.get(), 0, nullptr, &on, 0, 0);
 }
 
@@ -1471,8 +1471,8 @@ void FluidField::SetupEffectGeometry(RE::BSRenderPass* a_pass)
 		context->VSSetShaderResources(122, 1, &ground[2]);
 		context->PSSetShaderResources(120, 1, &ground[0]);
 		context->PSSetShaderResources(122, 1, &ground[2]);
-		ID3D11ShaderResourceView* flow[] = { fallFlowReady ? fallSolver.GetFlowSRV() : nullptr, fallFlowReady ? fallSolver.GetSurfaceSRV() : nullptr };
-		context->PSSetShaderResources(123, 2, flow);
+		ID3D11ShaderResourceView* flow = fallFlowReady ? fallSolver.GetFlowSRV() : nullptr;
+		context->PSSetShaderResources(123, 1, &flow);
 		ID3D11ShaderResourceView* depth = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
 		context->PSSetShaderResources(121, 1, &depth);
 		fallGroundBound = true;
@@ -1554,7 +1554,7 @@ void FluidField::StepFallFlow(ID3D11DeviceContext* a_context, const RE::NiPoint3
 	params.edgeWidth = 24.0f;
 	params.currentRelax = 0.0f;
 	params.levelRelax = FALL_FLOW_LEVEL_RELAX;
-	params.vorticity = settings.Turbulence;
+	params.vorticity = FALL_FLOW_TURBULENCE;
 	params.foamStrength = settings.FoamStrength;
 
 	constexpr float MAX_SUBSTEP = 0.012f;

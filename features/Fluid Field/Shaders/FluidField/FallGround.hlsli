@@ -32,14 +32,14 @@ namespace FallGround
 		float FlowPeriod;      // Seconds per flowmap cycle
 		float Time;            // Seconds
 		float LieHeight;       // Water within about this of the rock lies on it: the fall flow says where it is
-		float2 Pad;
+		float FlowGain;        // How far the fall flow's sideways velocity carries the streaks, as a multiple of its speed
+		float PresenceRadius;  // World units around each point its depth is compared with
 	};
 
 	Texture2D<float> Heights : register(t120);
 	Texture2D<float> SceneDepth : register(t121);
-	Texture2D<float4> Rock : register(t122);         // Push x, y (world units), presence, prominence
-	Texture2D<float4> FallFlow : register(t123);     // The fall flow's output: velocity x, y, foam
-	Texture2D<float4> FallSurface : register(t124);  // The fall flow's surface output: slope x, y, height, coverage
+	Texture2D<float4> Rock : register(t122);      // Push x, y (world units), presence, prominence
+	Texture2D<float4> FallFlow : register(t123);  // The fall flow's output: velocity x, y, foam, depth
 
 	static const float NONE = -1.0e6;  // Below this, no ground is captured
 
@@ -114,8 +114,7 @@ namespace FallGround
 
 	/**
 	 * The fall flow (D27) at a world position, bilinear: velocity x, y (world units per second), foam,
-	 * and coverage (0 where its water is absent, as in the shadow behind rock). False outside its grid
-	 * or when it is not running.
+	 * and depth. False outside its grid or when it is not running.
 	 */
 	bool FallFlowAt(float2 a_position, out float4 a_flow)
 	{
@@ -128,16 +127,37 @@ namespace FallGround
 			return false;
 		const float2 t = cell - float2(base);
 		const int mask = int(FlowRes) - 1;
-		const int3 i00 = int3(base & mask, 0);
-		const int3 i10 = int3((base + int2(1, 0)) & mask, 0);
-		const int3 i01 = int3((base + int2(0, 1)) & mask, 0);
-		const int3 i11 = int3((base + int2(1, 1)) & mask, 0);
-		const float4 f00 = float4(FallFlow.Load(i00).xyz, FallSurface.Load(i00).w);
-		const float4 f10 = float4(FallFlow.Load(i10).xyz, FallSurface.Load(i10).w);
-		const float4 f01 = float4(FallFlow.Load(i01).xyz, FallSurface.Load(i01).w);
-		const float4 f11 = float4(FallFlow.Load(i11).xyz, FallSurface.Load(i11).w);
+		const float4 f00 = FallFlow.Load(int3(base & mask, 0));
+		const float4 f10 = FallFlow.Load(int3((base + int2(1, 0)) & mask, 0));
+		const float4 f01 = FallFlow.Load(int3((base + int2(0, 1)) & mask, 0));
+		const float4 f11 = FallFlow.Load(int3((base + int2(1, 1)) & mask, 0));
 		a_flow = lerp(lerp(f00, f10, t.x), lerp(f01, f11, t.x), t.y);
 		return true;
+	}
+
+	/**
+	 * How much of the fall flow's water is at a world position, 0 to 1: its depth against the depth
+	 * around it, so a sheet that is thin everywhere (fast water on steep rock) stays whole, and the
+	 * shallow shadow behind a boulder, or a dry patch, thins away.
+	 */
+	float Presence(float2 a_position, float a_depth)
+	{
+		float4 around;
+		float sum = 0.0, count = 0.0;
+		[unroll] for (int i = 0; i < 4; i++)
+		{
+			const float2 offset = float2(i == 0 ? 1 : i == 1 ? -1 :
+															   0,
+									  i == 2 ? 1 : i == 3 ? -1 :
+															0) *
+			                      PresenceRadius;
+			if (FallFlowAt(a_position + offset, around)) {
+				sum += around.w;
+				count += 1.0;
+			}
+		}
+		const float mean = count > 0.0 ? sum / count : a_depth;
+		return smoothstep(0.15, 0.6, a_depth / max(mean, 1.0));
 	}
 
 	/**
@@ -146,8 +166,8 @@ namespace FallGround
 	 * shift that bends each streak round the rock and back behind it; and the fall flow's own sideways
 	 * velocity, carried as a two-phase flowmap, so the streaks travel round the rock as the solved water
 	 * does. Foam comes from the fall flow (shear and impacts), with a little hugging the rock. Where
-	 * the water lies on the rock, the fall flow also says where it is: in the shadow behind a boulder,
-	 * where its water is gone, the mesh thins away, so the flow visibly splits round the rock.
+	 * the water lies on the rock, the fall flow also says where it is (Presence): in the shallow
+	 * shadow behind a boulder the mesh thins away, so the flow visibly splits round the rock.
 	 * @param a_uv0, a_uv1 Texture coordinates to sample, blended by a_blend.
 	 * @param a_rock The rock field here, for the debug view.
 	 * @param a_foam How much foam is here, 0 to 1.
@@ -195,11 +215,11 @@ namespace FallGround
 		// The fall flow speaks for water lying on the rock; free-falling water well above it is left be
 		float ground;
 		const float lying = Height(a_position.xy, ground) ? saturate(1.0 - (a_position.z - ground - LieHeight) / LieHeight) : 0.0;
-		a_presence = lerp(1.0, smoothstep(0.1, 0.6, flow.w), lying);
+		a_presence = lerp(1.0, Presence(a_position.xy, flow.w), lying);
 		a_speed = length(flow.xy);
 		float3 velocity = float3(flow.xy, 0.0);
 		velocity -= down * dot(velocity, down);
-		const float uRate = dot(velocity, dPdu) * uScale;  // Texture u per second
+		const float uRate = dot(velocity, dPdu) * uScale * FlowGain;  // Texture u per second
 		const float phase0 = frac(Time / FlowPeriod);
 		const float phase1 = frac(Time / FlowPeriod + 0.5);
 		a_uv0.x -= uRate * FlowPeriod * (phase0 - 0.5);

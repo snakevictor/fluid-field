@@ -1,5 +1,5 @@
 // Fluid Field water, pass 5: what other shaders read. Surface is (slope x, slope y, height above
-// the vanilla surface, coverage), and Flow is the cell-centred velocity. Coverage is 0 on dry cells
+// the vanilla surface, coverage), and Flow is the cell-centred velocity, foam and depth. Coverage is 0 on dry cells
 // and fades to 0 toward the grid edge, so consumers blend back to vanilla there.
 
 #include "FluidField/WaterCommon.hlsli"
@@ -152,5 +152,6 @@ float Swirl(int2 logical)
 	}
 	// The far level behind this one takes over its foam in the water shader's cross-fade, so the
 	// foam is not faded here as well (that made a dip, a visible seam)
-	FlowOut[id] = float4(flow, SeedRes != 0 ? foam : foam * edgeFade, 0.0);
+	// w: the water's depth, for the waterfalls (D27), which thin it where the water is shallower than around it
+	FlowOut[id] = float4(flow, SeedRes != 0 ? foam : foam * edgeFade, wet ? Depth[id] : 0.0);
 }
