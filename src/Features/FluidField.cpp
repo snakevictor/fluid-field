@@ -619,6 +619,9 @@ void FluidField::Prepass()
 			level->awaitingMap = true;
 		}
 		wakeSources.Clear();
+		waterFade = 0.0f;
+		waterShaderData.Enabled = 0;
+		waterShaderData.FarEnabled = 0;
 		globals::profiler->EndPass();
 	}
 
@@ -688,6 +691,8 @@ void FluidField::Prepass()
 		ZoneScopedN("FluidField - Water Step");
 		TracyD3D11Zone(state->tracyCtx, "FluidField - Water Step");
 		StepWater(context, nearWater, true, settings.WaterResolution, settings.WaterSize, playerPos, deltaTime);
+		// Ease the simulated water in once it has outputs, rather than switching from vanilla at once
+		waterFade = waterShaderData.Enabled ? std::min(1.0f, waterFade + deltaTime / FADE_IN_SECONDS) : 0.0f;
 		if (settings.FarWater) {
 			StepWater(context, farWater, false, settings.WaterResolution, settings.WaterSize * settings.FarWaterScale, playerPos, deltaTime);
 		} else if (farWater.solver.HasResources()) {
@@ -905,6 +910,7 @@ FluidField::WaterShaderData FluidField::GetCommonBufferData() const
 		return {};
 	WaterShaderData data = waterShaderData;
 	data.WaterTint = settings.WaterTint;
+	data.Fade = waterFade;
 	return data;
 }
 
@@ -950,6 +956,10 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 			const bool settled = !(settings.RaycastBed && bedRays.IsRefilling());
 			if (!a_level.awaitingMap || settled) {
 				levelSolver.UploadMap(a_context, map.GetData(), FluidFieldSim::WaterMapBuilder::MAP_SPACING);
+				// A fresh start runs a couple of seconds at once, so the river is already flowing
+				// around its obstacles when it first shows instead of building up on screen
+				if (a_level.awaitingMap)
+					a_level.warmupSubsteps = static_cast<uint32_t>(WARMUP_SECONDS / WARMUP_SUBSTEP);
 				a_level.awaitingMap = false;
 			} else {
 				map.Clear();  // Built too early; rebuild once the inputs settle
@@ -1009,6 +1019,17 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 		runPass();
 		globals::profiler->EndPass();
 	};
+	if (a_level.warmupSubsteps > 0) {
+		ZoneScopedN("FluidField - Water Warm-up");
+		auto warmup = grid;
+		warmup.deltaTime = WARMUP_SUBSTEP;
+		const auto noTiming = [](const char*, auto&& runPass) { runPass(); };
+		globals::profiler->BeginPass(a_near ? "FluidField::Water Warm-up" : "FluidField::Far Water Warm-up");
+		for (uint32_t i = 0; i < a_level.warmupSubsteps; i++)
+			levelSolver.Step(a_context, warmup, params, {}, noTiming);
+		globals::profiler->EndPass();
+		a_level.warmupSubsteps = 0;
+	}
 	for (uint i = 0; i < substeps; i++)
 		levelSolver.Step(a_context, grid, params, emitters, wrap);
 

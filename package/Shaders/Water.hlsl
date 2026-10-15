@@ -445,7 +445,7 @@ FlowmapData GetFlowmapDataTextureSpace(PS_INPUT input, float2 uvShift)
 	data.color = FlowMapTex.SampleLevel(FlowMapSampler, input.TexCoord2.zw + uvShift, 0);
 #				if defined(FLUID_FIELD)
 	// Where Fluid Field simulates the water, the flow normals follow its flow (D20)
-	data.color = FluidField::SteerFlowmap(data.color, input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
+	data.color = FluidField::SteerFlowmap(data.color, input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, uvShift);
 #				endif
 	data.flowVector = (64 * input.TexCoord3.xy) * sqrt(1.01 - data.color.z);
 	// NOTE: flowVector is NOT transformed yet - this is the raw vector before rotation matrix
@@ -1221,7 +1221,9 @@ PS_OUTPUT main(PS_INPUT input)
 #					if defined(SKYLIGHTING)
 	fluidAmbientLight = Color::IrradianceToGamma(Color::IrradianceToLinear(fluidAmbientLight) * skylightingDiffuse);
 #					endif
-	const float3 fluidFoamLight = FluidField::FoamColor(dirColor + ambientColor, ShadowSampling::GetDirectionalLighting() * dirShadow + fluidAmbientLight);
+	// Foam lies on the surface, so it takes the surface's shadow, not the refracted point's under the
+	// water: that one moves with every ripple and makes the foam flicker in sunlight
+	const float3 fluidFoamLight = FluidField::FoamColor(dirColor + ambientColor, ShadowSampling::GetDirectionalLighting() * surfaceShadow + fluidAmbientLight);
 	{
 		// Bubbles in fast, foamy water make the water body lighter and milkier
 		const float3 fluidPosition = input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz;
@@ -1301,6 +1303,14 @@ PS_OUTPUT main(PS_INPUT input)
 #				else
 
 	float3 sunColor = GetSunColor(normal, viewDirection, input.WPosition.xyz) * surfaceShadow;
+#					if defined(FLUID_FIELD)
+	{
+		// Foam is matte: no sun glint and a dull reflection where it is dense
+		const float fluidMatte = FluidField::FoamMatte(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
+		sunColor *= 1.0 - 0.9 * fluidMatte;
+		specularColor *= 1.0 - 0.5 * fluidMatte;
+	}
+#					endif
 
 	// Reflection and sun weights. On refracting water vanilla fades both with refractionMul, which only
 	// reaches 1 once the water is deep enough to fog, so shallow water lost its reflections.

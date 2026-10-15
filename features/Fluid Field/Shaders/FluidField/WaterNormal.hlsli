@@ -15,8 +15,10 @@ namespace FluidField
 
 	/** World units one tile of the flow-carried detail normals covers. */
 	static const float FLOW_DETAIL_TILE = 384.0;
-	/** Seconds between restarts of each of the two detail phases. */
-	static const float FLOW_DETAIL_PERIOD = 1.0;
+	/** Seconds between restarts of each of the two detail phases: short, so the detail never stretches far. */
+	static const float FLOW_DETAIL_PERIOD = 0.6;
+	/** Fastest the flow-carried detail drifts, world units per second. */
+	static const float FLOW_DETAIL_MAX_DRIFT = 120.0;
 	/** Flow speed (world units per second) at which the detail reaches full strength. */
 	static const float FLOW_DETAIL_FULL_SPEED = 160.0;
 	/** Fraction of the near level's width over which it hands over to the far level (as WaterOutputCS fades). */
@@ -102,7 +104,8 @@ namespace FluidField
 		const float4 nearSurface = inNear ? BilinearSurface(WaterSurfaceTex, nearLevel, nearCell) : 0;
 		const float4 farSurface = inFar ? BilinearSurface(FarSurfaceTex, farLevel, farCell) : 0;
 		const float weight = inNear ? (inFar ? NearWeight(nearLevel, a_worldPosition.xy) : 1.0) : 0.0;
-		a_surface = lerp(farSurface, nearSurface, weight);
+		// Eased in after a (re)start: slopes, height and coverage all grow from vanilla's flat water
+		a_surface = lerp(farSurface, nearSurface, weight) * SharedData::fluidFieldSettings.Fade;
 		return true;
 	}
 
@@ -117,7 +120,7 @@ namespace FluidField
 		const float4 nearFlow = inNear ? BilinearFlow(WaterFlowTex, nearLevel, nearCell) : 0;
 		const float4 farFlow = inFar ? BilinearFlow(FarFlowTex, farLevel, farCell) : 0;
 		const float weight = inNear ? (inFar ? NearWeight(nearLevel, a_worldXY) : 1.0) : 0.0;
-		return lerp(farFlow, nearFlow, weight);
+		return lerp(farFlow, nearFlow, weight) * SharedData::fluidFieldSettings.Fade;
 	}
 
 	/** The simulated flow at a world position, world units per second. */
@@ -126,6 +129,8 @@ namespace FluidField
 		return FlowFoamAtWorld(a_worldXY).xy;
 	}
 
+	/** World units one flowmap texel covers (64 texels per 4096-unit cell). */
+	static const float FLOWMAP_TEXEL = 64.0;
 	/** Simulated flow speed (world units per second) at which vanilla's flow normals scroll at full speed. */
 	static const float FLOWMAP_FULL_SPEED = 150.0;
 
@@ -135,13 +140,18 @@ namespace FluidField
 	 * fixed, generated field: it can point straight out of an island or along a lake that is still,
 	 * while the simulated flow goes around obstacles and stops where the water spreads out.
 	 */
-	float4 SteerFlowmap(float4 a_color, float3 a_worldPosition)
+	float4 SteerFlowmap(float4 a_color, float3 a_worldPosition, float2 a_uvShift)
 	{
 		float4 surface;
 		if (!SampleSurface(a_worldPosition, surface))
 			return a_color;
 		const float coverage = saturate(surface.w);
-		const float2 flow = FlowAtWorld(a_worldPosition.xy);
+		// One direction per flowmap texel (64 world units), taken at that texel's centre like the
+		// flowmap itself: vanilla's four-tap blend hides the steps between texels, but a direction
+		// changing within a texel twists its texture and the ripples stretch
+		const float2 shift = float2(sign(a_uvShift.x), -sign(a_uvShift.y)) * (0.5 * FLOWMAP_TEXEL);
+		const float2 texelCentre = (floor((a_worldPosition.xy + shift) / FLOWMAP_TEXEL) + 0.5) * FLOWMAP_TEXEL;
+		const float2 flow = FlowAtWorld(texelCentre);
 		const float speed = length(flow);
 		const float2 direction = flow / max(speed, 1e-3);
 		a_color.xy = lerp(a_color.xy, direction * 0.5 + 0.5, coverage * smoothstep(2.0, 15.0, speed));
@@ -200,11 +210,14 @@ namespace FluidField
 		const float phase0 = frac(time);
 		const float phase1 = frac(time + 0.5);
 		const float2 uv = a_worldPosition.xy / FLOW_DETAIL_TILE;
-		const float2 drift = a_flow * FLOW_DETAIL_PERIOD / FLOW_DETAIL_TILE;
+		const float2 flow = a_flow * min(1.0, FLOW_DETAIL_MAX_DRIFT / max(length(a_flow), 1e-3));
+		const float2 drift = flow * FLOW_DETAIL_PERIOD / FLOW_DETAIL_TILE;
 		const float3 n0 = Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase0, SharedData::MipBias).xyz * 2.0 - 1.0;
 		const float3 n1 = Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase1 + 0.5, SharedData::MipBias).xyz * 2.0 - 1.0;
 		const float w = abs(phase0 * 2.0 - 1.0);  // 1 when phase 0 restarts, so it is hidden then
-		return normalize(lerp(n0, n1, w));
+		// Blended so the ripples keep their strength mid-fade; a plain lerp flattens them twice a period
+		const float2 slope = (n0.xy * (1.0 - w) + n1.xy * w) / sqrt(w * w + (1.0 - w) * (1.0 - w));
+		return normalize(float3(slope, max(lerp(n0.z, n1.z, w), 0.2)));
 	}
 
 	/** How much Fluid Field simulates the water here: 0 outside both levels, on dry cells and at the outer edge. */
@@ -289,7 +302,7 @@ namespace FluidField
 	/** Strongest whitening of the water body by bubbles, as a fraction of the foam colour. */
 	static const float MAX_AERATION = 0.15;
 	/** How far foam's colour goes from the lit water colour toward the scene light (white). */
-	static const float FOAM_WHITENESS = 0.15;
+	static const float FOAM_WHITENESS = 0.1;
 
 	/**
 	 * Foam's colour: the lit water colour lifted toward the scene light. Foam takes on the water's
@@ -310,6 +323,15 @@ namespace FluidField
 		const float4 flowFoam = FlowFoamAtWorld(a_worldPosition.xy);
 		const float aeration = saturate(flowFoam.z * 0.6 + length(flowFoam.xy) / 600.0) * MAX_AERATION * a_amount;
 		a_color = lerp(a_color, a_foamColor, aeration);
+	}
+
+	/**
+	 * How much foam dulls the surface's reflection at a world position (0 to 1): foam is a rough,
+	 * matte layer, so the sun's glint and the mirror reflection fade where it is dense.
+	 */
+	float FoamMatte(float3 a_worldPosition)
+	{
+		return saturate(FlowFoamAtWorld(a_worldPosition.xy).z * 1.5);
 	}
 
 	/** World units one tile of the foam's bubbly breakup pattern covers. */
@@ -341,7 +363,10 @@ namespace FluidField
 		const float2 drift = flow * FOAM_PERIOD / FOAM_TILE;
 		const float p0 = length(Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase0, SharedData::MipBias).xy * 2.0 - 1.0);
 		const float p1 = length(Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase1 + 0.37, SharedData::MipBias).xy * 2.0 - 1.0);
-		const float pattern = saturate(lerp(p0, p1, abs(phase0 * 2.0 - 1.0)) * 1.4);
+		// Blended so the pattern keeps its contrast mid-fade; a plain lerp evens it out, and the foam pulses
+		const float w = abs(phase0 * 2.0 - 1.0);
+		const float mean = 0.5;
+		const float pattern = saturate((((p0 - mean) * (1.0 - w) + (p1 - mean) * w) / sqrt(w * w + (1.0 - w) * (1.0 - w)) + mean) * 1.4);
 		// Dense foam covers solidly; thin foam only shows in the pattern's bubbles and streaks
 		const float threshold = pattern * 0.5;
 		return smoothstep(threshold, threshold + 0.25, foam) * 0.95;

@@ -122,7 +122,8 @@ struct FluidField : OverlayFeature
 		uint32_t FarGridRes = 0;
 		float FarCellSize = 0.0f;
 		uint32_t FarEnabled = 0;
-		float farPad[3]{};
+		float Fade = 0.0f;  ///< 0 to 1 over the first moments after a (re)start, so the water eases in
+		float farPad[2]{};
 	};
 	static_assert(sizeof(WaterShaderData) % 16 == 0);
 	/** @brief This frame's water grid placement, or Enabled = 0 when the water outputs are not valid. */
@@ -166,11 +167,20 @@ private:
 	{
 		FluidFieldSim::ShallowWaterSolver solver;
 		FluidFieldSim::WaterMapBuilder map;
-		bool awaitingMap = true;    ///< After a reset, wait for a map built from settled inputs
-		float lastCellSize = 0.0f;  ///< A change invalidates the level's contents
-		int32_t gridMin[2]{};       ///< World cell of logical texel (0, 0) this step
+		bool awaitingMap = true;      ///< After a reset, wait for a map built from settled inputs
+		uint32_t warmupSubsteps = 0;  ///< Substeps still to run at once, so the water starts already flowing
+		float lastCellSize = 0.0f;    ///< A change invalidates the level's contents
+		int32_t gridMin[2]{};         ///< World cell of logical texel (0, 0) this step
 		bool resourceFailed = false;
 	};
+	/** @brief Simulated seconds run at once when a level starts, so it begins already flowing around obstacles. */
+	static constexpr float WARMUP_SECONDS = 2.0f;
+	/** @brief Substep length of the warm-up, as the regular step's shortest substep. */
+	static constexpr float WARMUP_SUBSTEP = 0.012f;
+	/** @brief Seconds over which the simulated water fades in after a (re)start. */
+	static constexpr float FADE_IN_SECONDS = 1.5f;
+	float waterFade = 0.0f;  ///< Current fade-in, 0 to 1
+
 	WaterLevel nearWater;  ///< Full detail around the player: obstacles, bed detail, wakes
 	WaterLevel farWater;   ///< Coarser and wider: river flow and turbulence further out
 	bool waterShaderFailed = false;
