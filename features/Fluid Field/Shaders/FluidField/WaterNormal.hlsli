@@ -126,6 +126,38 @@ namespace FluidField
 		return FlowFoamAtWorld(a_worldXY).xy;
 	}
 
+	/** Simulated flow speed (world units per second) at which vanilla's flow normals scroll at full speed. */
+	static const float FLOWMAP_FULL_SPEED = 150.0;
+
+	/**
+	 * Vanilla's flowmap sample with its direction (RG, world axes as * 2 - 1) and scroll speed (A)
+	 * taken from the simulated flow where Fluid Field covers the water (D20). The flowmap is a
+	 * fixed, generated field: it can point straight out of an island or along a lake that is still,
+	 * while the simulated flow goes around obstacles and stops where the water spreads out.
+	 */
+	float4 SteerFlowmap(float4 a_color, float3 a_worldPosition)
+	{
+		float4 surface;
+		if (!SampleSurface(a_worldPosition, surface))
+			return a_color;
+		const float coverage = saturate(surface.w);
+		const float2 flow = FlowAtWorld(a_worldPosition.xy);
+		const float speed = length(flow);
+		const float2 direction = flow / max(speed, 1e-3);
+		a_color.xy = lerp(a_color.xy, direction * 0.5 + 0.5, coverage * smoothstep(2.0, 15.0, speed));
+		a_color.w = lerp(a_color.w, saturate(speed / FLOWMAP_FULL_SPEED), coverage);
+		return a_color;
+	}
+
+	/** How much vanilla's flow normals show (1) rather than its still-water ripples (0): none on still simulated water. */
+	float FlowmapWeight(float3 a_worldPosition)
+	{
+		float4 surface;
+		if (!SampleSurface(a_worldPosition, surface))
+			return 1.0;
+		return lerp(1.0, smoothstep(5.0, 40.0, length(FlowAtWorld(a_worldPosition.xy))), saturate(surface.w));
+	}
+
 	/**
 	 * The simulated flow smoothed over about nine near cells, for dragging detail along: the raw
 	 * flow twists the texture in tight eddies, which reads as an oil film rather than water.

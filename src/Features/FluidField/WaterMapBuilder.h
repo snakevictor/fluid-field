@@ -21,7 +21,7 @@ namespace FluidFieldSim
 	class WaterMapBuilder
 	{
 	public:
-		/** @brief Floats per map texel: bed height, vanilla surface (NO_WATER where none), river flow scale, unused. */
+		/** @brief Floats per map texel: bed height, vanilla surface (NO_WATER where none), river flow scale (0 still to 1, fading where the water opens out), unused. */
 		static constexpr uint32_t MAP_CHANNELS = 4;
 		static constexpr float MAP_SPACING = 64.0f;  ///< Matches the default bed ray spacing
 		static constexpr uint32_t SLICES = 8;        ///< Calls one rebuild is spread over
@@ -43,6 +43,9 @@ namespace FluidFieldSim
 		std::span<const float> GetData() const { return data; }
 
 	private:
+		/** @brief Fades the flow scale where the water spreads out (lakes), keeping it in channels (rivers). */
+		static void ApplyWidthFactor(std::vector<float>& a_map, uint32_t a_resolution, const int32_t a_origin[2]);
+
 		std::vector<float> data;   ///< Last completed map
 		std::vector<float> build;  ///< Map being built
 		uint32_t resolution = 0;

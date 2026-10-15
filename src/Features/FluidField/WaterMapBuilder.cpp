@@ -1,5 +1,6 @@
 #include "WaterMapBuilder.h"
 
+#include <algorithm>
 #include <bit>
 
 #include "BedRaycasts.h"
@@ -13,6 +14,56 @@ namespace FluidFieldSim
 	{
 		/** @brief Bed assumed under water where neither landscape nor a ray says otherwise. */
 		constexpr float UNKNOWN_BED_DEPTH = 1024.0f;
+
+		/** @brief Half-width of the square over which a texel's openness (how much of it is water) is measured. */
+		constexpr float OPENNESS_RADIUS = 2048.0f;
+		/** @brief Openness up to which water keeps its full river current: a channel between banks. */
+		constexpr float OPENNESS_FULL_FLOW = 0.3f;
+		/** @brief Openness from which water is still: a lake or the sea, spreading in every direction. */
+		constexpr float OPENNESS_STILL = 0.6f;
+	}
+
+	void WaterMapBuilder::ApplyWidthFactor(std::vector<float>& a_map, uint32_t a_resolution, const int32_t a_origin[2])
+	{
+		// Water slows where it spreads out, as a river does when it opens into a lake: the current
+		// fades with the fraction of water around each texel. Unified Water's flowmap is as strong
+		// under Lake Ilinalta as under the rapids, and some lake water types are marked as flowing,
+		// so this is what tells the two apart. Summed-area table over the lattice, counting only
+		// texels inside the map.
+		const uint32_t n = a_resolution;
+		const uint32_t mask = n - 1;
+		const auto texel = [&](uint32_t a_column, uint32_t a_row) {
+			const auto tx = static_cast<uint32_t>(a_origin[0] + static_cast<int32_t>(a_column)) & mask;
+			const auto ty = static_cast<uint32_t>(a_origin[1] + static_cast<int32_t>(a_row)) & mask;
+			return (static_cast<std::size_t>(ty) * n + tx) * MAP_CHANNELS;
+		};
+		std::vector<uint32_t> wet(static_cast<std::size_t>(n + 1) * (n + 1), 0);
+		for (uint32_t row = 0; row < n; row++) {
+			uint32_t rowSum = 0;
+			for (uint32_t column = 0; column < n; column++) {
+				const std::size_t index = texel(column, row);
+				const float surface = a_map[index + 1];
+				rowSum += (surface != ShallowWaterSolver::NO_WATER && surface > a_map[index]) ? 1u : 0u;
+				wet[static_cast<std::size_t>(row + 1) * (n + 1) + column + 1] = wet[static_cast<std::size_t>(row) * (n + 1) + column + 1] + rowSum;
+			}
+		}
+		const auto radius = static_cast<int32_t>(OPENNESS_RADIUS / MAP_SPACING);
+		for (uint32_t row = 0; row < n; row++) {
+			const auto r0 = static_cast<uint32_t>(std::max(0, static_cast<int32_t>(row) - radius));
+			const auto r1 = static_cast<uint32_t>(std::min(static_cast<int32_t>(n), static_cast<int32_t>(row) + radius + 1));
+			for (uint32_t column = 0; column < n; column++) {
+				const std::size_t index = texel(column, row);
+				if (a_map[index + 2] <= 0.0f)
+					continue;
+				const auto c0 = static_cast<uint32_t>(std::max(0, static_cast<int32_t>(column) - radius));
+				const auto c1 = static_cast<uint32_t>(std::min(static_cast<int32_t>(n), static_cast<int32_t>(column) + radius + 1));
+				const auto at = [&](uint32_t a_r, uint32_t a_c) { return wet[static_cast<std::size_t>(a_r) * (n + 1) + a_c]; };
+				const uint32_t count = at(r1, c1) - at(r0, c1) - at(r1, c0) + at(r0, c0);
+				const float openness = static_cast<float>(count) / static_cast<float>((r1 - r0) * (c1 - c0));
+				const float t = std::clamp((OPENNESS_STILL - openness) / (OPENNESS_STILL - OPENNESS_FULL_FLOW), 0.0f, 1.0f);
+				a_map[index + 2] *= t * t * (3.0f - 2.0f * t);
+			}
+		}
 	}
 
 	uint32_t WaterMapBuilder::ResolutionFor(float a_gridSize)
@@ -93,6 +144,7 @@ namespace FluidFieldSim
 
 		if (nextRow < n)
 			return false;
+		ApplyWidthFactor(build, n, originLattice);
 		data.swap(build);
 		nextRow = 0;
 		builtOrigin[0] = originLattice[0];

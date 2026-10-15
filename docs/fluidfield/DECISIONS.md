@@ -439,3 +439,11 @@ Entry format:
 -   Decided by: @Victor ("Objective A) remove vanilla foam and splashes;
     objective B) add procedural foam derived from our simulation")
 -   References: D17, D18
+
+## D20: Rivers flow, lakes don't: width decides, and the simulation steers vanilla's flow normals (2026-10-14)
+
+**Context.** Part of Lake Ilinalta uses a water type with `kEnableFlowmap`, and Unified Water's generated flowmap is as strong under the lake (intensity 0.84) as under the Riverwood rapids (0.84 to 0.92). The lake ran at full River Speed: foam everywhere, and splashes swept away. Vanilla's flowmap normals also kept scrolling out of an island where the simulated water was still.
+
+**Decision (the user chose width-based).** The water map scales each texel's flow by its openness, the fraction of water in the 4096-unit square around it: full current up to 0.3 (a channel between banks), still from 0.6 (water spreading in every direction), smoothstep between. Where Fluid Field covers the water, vanilla's flowmap sample takes its direction and scroll speed from the simulated flow, and its flow normals fade to vanilla's still-water ripples where the simulated water is still.
+
+**Consequences.** Very wide river reaches flow slower, which is also what real rivers do. Lake shores are partly open (about 0.5), so they keep a weak drift. No per-place data to maintain.

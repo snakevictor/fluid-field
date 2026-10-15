@@ -400,6 +400,14 @@ float GetWaterFogFade()
 	return PosAdjust.w;
 }
 
+#			if defined(LOD)
+#				undef FLUID_FIELD
+#			endif
+
+#			if defined(FLUID_FIELD)
+#				include "FluidField/WaterNormal.hlsli"
+#			endif
+
 #			if defined(FLOWMAP)
 
 /**
@@ -435,6 +443,10 @@ FlowmapData GetFlowmapDataTextureSpace(PS_INPUT input, float2 uvShift)
 {
 	FlowmapData data;
 	data.color = FlowMapTex.SampleLevel(FlowMapSampler, input.TexCoord2.zw + uvShift, 0);
+#				if defined(FLUID_FIELD)
+	// Where Fluid Field simulates the water, the flow normals follow its flow (D20)
+	data.color = FluidField::SteerFlowmap(data.color, input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
+#				endif
 	data.flowVector = (64 * input.TexCoord3.xy) * sqrt(1.01 - data.color.z);
 	// NOTE: flowVector is NOT transformed yet - this is the raw vector before rotation matrix
 	return data;
@@ -618,14 +630,6 @@ FlowmapData GetFlowmapDataWorldSpace(FlowmapData textureSpaceData)
 #				include "WetnessEffects/WetnessEffects.hlsli"
 #			endif
 
-#			if defined(LOD)
-#				undef FLUID_FIELD
-#			endif
-
-#			if defined(FLUID_FIELD)
-#				include "FluidField/WaterNormal.hlsli"
-#			endif
-
 // Structure to return both normal and ripple/splash color information
 struct WaterNormalData
 {
@@ -737,7 +741,11 @@ WaterNormalData GetWaterNormal(PS_INPUT input, float distanceFactor, float norma
 	float3 finalNormal = normalize(normals1 + float3(0, 0, 1));
 #				else
 	// FLOWMAP NORMALS ENABLED: Blending flow-based normals with base normals
+#					if defined(FLUID_FIELD)
+	float3 finalNormal = normalize(lerp(normals1 + float3(0, 0, 1), flowmapNormal, distanceFactor * FluidField::FlowmapWeight(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz)));
+#					else
 	float3 finalNormal = normalize(lerp(normals1 + float3(0, 0, 1), flowmapNormal, distanceFactor));
+#					endif
 #				endif
 #			elif !defined(LOD)
 
@@ -761,6 +769,10 @@ WaterNormalData GetWaterNormal(PS_INPUT input, float distanceFactor, float norma
 	float normalBlendFactor =
 		normalMul.y * ((1 - normalMul.x) * flowmapNormal3.z + normalMul.x * flowmapNormal2.z) +
 		(1 - normalMul.y) * (normalMul.x * flowmapNormal1.z + (1 - normalMul.x) * flowmapNormal0.z);
+#					if defined(FLUID_FIELD)
+	// Still simulated water keeps vanilla's wind ripples instead of flow normals
+	normalBlendFactor *= FluidField::FlowmapWeight(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
+#					endif
 	finalNormal = normalize(lerp(normals1 + float3(0, 0, 1), normalize(lerp(finalNormal, flowmapNormal, normalBlendFactor)), distanceFactor));
 #				endif
 #			else
