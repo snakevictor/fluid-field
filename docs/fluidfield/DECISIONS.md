@@ -450,22 +450,32 @@ Entry format:
 
 **Revised (same day).** The width rule is withdrawn: neither the water map's own window nor rings out to 4096 units told the Riverwood river from the lake, and the river lost the current that was working well. Rivers are back to full flowmap current. The still-water fade stays. Steering vanilla's flowmap sample (direction and scroll speed) from the simulated flow was also withdrawn: vanilla scrolls its flow normals by the game time times the flowmap's speed and rotates them by its direction, so any change in the steered values jumps the texture by an amount that grows with the time, and the water flickered. Lakes with a flowing water type need another way to be told apart.
 
-## D21: Interactive fog extends Exponential Height Fog's volumetric fog
+## D21: Interactive ground fog, drawn by Fluid Field itself
 
 -   Date: 2026-10-15
 -   Phase / spike: Phase 4, first slice (replaces the new renderer R4 planned)
--   Decision: No fog renderer of our own. A 2D fog density field on the wind
-    grid, carried by the wind, refilling toward 1 and thinned where actors
-    stir the air, multiplies the extinction in Exponential Height Fog's
-    volumetric material pass (near and far grids). Its lighting, shadows,
-    integration and temporal history are reused unchanged. Actors push the
-    wind as they move; the weather's wind drifts the fog. Plan:
-    `plans/fog-slice.md`.
--   Alternatives rejected: a camera-aligned volumetric renderer of our own
-    (Exponential Height Fog already is one); modulating the analytic fog in
-    every shader (it is one sum along the ray, so a varying density would
-    need several samples per pixel in every shader).
--   Consequences: the effect needs volumetric fog on. The field is 2D, so it
-    changes the whole column above a point.
--   Decided by: @Victor ("let's try the fog then")
--   References: D11 (wind grid), D13 (fog target), D19, ROADMAP Phase 4
+-   Decision: A fog layer on the wind grid (how much fog lies on each cell)
+    is carried by the wind and the weather's wind, carved where moving
+    actors pass, thinned where they stir the air, and refills toward a
+    resting pattern of banks and clearings. Actors push the wind as they
+    move. Fluid Field draws it itself: after the deferred composite (before
+    water and effects) a compute pass marches each pixel's view ray up to
+    the scene depth through fog lying on the ground (ground height from the
+    landscape cache under the wind grid, density falling off with height),
+    lit by the sun (forward scattering) and the ambient light. Settings:
+    Ground Fog, Fog Density, Fog Thickness, Fog Stirring, Fog Refill.
+    Plan: `plans/fog-slice.md`.
+-   Alternatives rejected: feeding Exponential Height Fog's volumetric fog
+    (built first, then withdrawn the same day at @Victor's request: it ties
+    the effect to that feature's volumetric mode, which he keeps off, and
+    toggling it at runtime crashed the game once while shaders swapped); a
+    camera-aligned froxel renderer of our own (more than a ground layer
+    needs).
+-   Consequences: the fog is drawn before water, so it is not drawn over
+    water surfaces yet; it is not shadowed by the sun yet; the wind ignores
+    walls, so fog can be pushed through buildings. Needs one call from
+    `Deferred::DeferredPasses`.
+-   Decided by: @Victor ("can we try something that isnt based of
+    exponential height fog? ... just get ground height and use the fluid
+    dynamics we already have")
+-   References: D11 (wind grid), D13 (fog target), ROADMAP Phase 4

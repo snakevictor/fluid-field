@@ -290,7 +290,7 @@ namespace FluidFieldSim
 		ID3D11Buffer* cb = fogConstants.get();
 		context->CSSetConstantBuffers(1, 1, &cb);
 
-		ID3D11ShaderResourceView* srvs[] = { velocity[current].srv.get(), fog[currentFog].srv.get() };
+		ID3D11ShaderResourceView* srvs[] = { velocity[current].srv.get(), fog[currentFog].srv.get(), emitterSRV.get() };
 		Dispatch(context, fogCS.get(), srvs, fog[currentFog ^ 1].uav.get());
 		currentFog ^= 1;
 

@@ -4,7 +4,6 @@
 #include "Effects11.h"
 #include "Effects11/SettingManager.h"
 #include "Features/CloudShadows.h"
-#include "Features/FluidField.h"
 #include "Features/IBL.h"
 #include "Features/LightLimitFix.h"
 #include "Features/Skylighting.h"
@@ -562,9 +561,7 @@ ID3D11ShaderResourceView* ExponentialHeightFog::UpdateEngineLocalShadowData()
 ID3D11ComputeShader* ExponentialHeightFog::GetMaterialSetupCS()
 {
 	if (!materialSetupCS)
-		// Fluid Field's fog density (D21) is read only when that feature is installed
-		materialSetupCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\ExponentialHeightFog\\VolumetricFogMaterialCS.hlsl",
-			globals::features::fluidField.loaded ? std::vector<std::pair<const char*, const char*>>{ { "FLUID_FIELD", "" } } : std::vector<std::pair<const char*, const char*>>{}, "cs_5_0"));
+		materialSetupCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\ExponentialHeightFog\\VolumetricFogMaterialCS.hlsl", {}, "cs_5_0"));
 	return materialSetupCS;
 }
 
@@ -615,8 +612,7 @@ ID3D11ComputeShader* ExponentialHeightFog::GetFarLightScatteringCS()
 ID3D11ComputeShader* ExponentialHeightFog::GetFarMaterialSetupCS()
 {
 	if (!farMaterialSetupCS)
-		farMaterialSetupCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\ExponentialHeightFog\\VolumetricFogMaterialCS.hlsl",
-			globals::features::fluidField.loaded ? std::vector<std::pair<const char*, const char*>>{ { "VOLUMETRIC_FOG_FAR_GRID", "" }, { "FLUID_FIELD", "" } } : std::vector<std::pair<const char*, const char*>>{ { "VOLUMETRIC_FOG_FAR_GRID", "" } }, "cs_5_0"));
+		farMaterialSetupCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\ExponentialHeightFog\\VolumetricFogMaterialCS.hlsl", { { "VOLUMETRIC_FOG_FAR_GRID", "" } }, "cs_5_0"));
 	return farMaterialSetupCS;
 }
 
@@ -851,9 +847,6 @@ void ExponentialHeightFog::Prepass()
 
 		{
 			ID3D11UnorderedAccessView* uavs[1]{ p.vBuffer->uav.get() };
-			// Fluid Field's fog density (D21), when it is running; the shader ignores it otherwise
-			ID3D11ShaderResourceView* fluidFieldFog = globals::features::fluidField.loaded ? globals::features::fluidField.GetFogSRV() : nullptr;
-			context->CSSetShaderResources(6, 1, &fluidFieldFog);
 			context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
 			context->CSSetShader(p.materialSetupCS, nullptr, 0);
 			globals::profiler->BeginPass(p.name);
@@ -861,8 +854,6 @@ void ExponentialHeightFog::Prepass()
 			globals::profiler->EndPass();
 			uavs[0] = nullptr;
 			context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
-			fluidFieldFog = nullptr;
-			context->CSSetShaderResources(6, 1, &fluidFieldFog);
 		}
 
 		{

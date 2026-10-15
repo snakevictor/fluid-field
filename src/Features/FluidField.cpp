@@ -49,6 +49,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	FoamStrength,
 	WaterTint,
 	InteractiveFog,
+	FogDensity,
+	FogThickness,
 	FogStir,
 	FogRefillSeconds,
 	ReplaceVanillaFoam)
@@ -100,9 +102,21 @@ void FluidField::DrawSettings()
 		ImGui::Text("%s", T(TKEY("wind_damping_tooltip"), "How quickly wind dies down. Higher values calm it sooner."));
 	}
 
-	ImGui::Checkbox(T(TKEY("interactive_fog"), "Interactive Fog"), &settings.InteractiveFog);
+	if (ImGui::Button(T(TKEY("reset_field"), "Reset Field")))
+		queuedReset = true;
+
+	ImGui::SeparatorText(T(TKEY("fog"), "Fog"));
+	ImGui::Checkbox(T(TKEY("interactive_fog"), "Ground Fog"), &settings.InteractiveFog);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("interactive_fog_tooltip"), "Ground fog parts and swirls around moving actors and drifts with the weather's wind. Needs Exponential Height Fog with volumetric fog on."));
+		ImGui::Text("%s", T(TKEY("interactive_fog_tooltip"), "Fog lying on the ground around you, in banks and clearings. It parts and swirls around moving actors and drifts with the weather's wind."));
+	}
+	ImGui::SliderFloat(T(TKEY("fog_density"), "Fog Density"), &settings.FogDensity, 0.0f, 0.02f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("fog_density_tooltip"), "How thick the fog is at the ground, in its banks."));
+	}
+	ImGui::SliderFloat(T(TKEY("fog_thickness"), "Fog Thickness"), &settings.FogThickness, 10.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("fog_thickness_tooltip"), "How high the fog reaches above the ground before thinning out, in world units."));
 	}
 	ImGui::SliderFloat(T(TKEY("fog_stir"), "Fog Stirring"), &settings.FogStir, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -112,9 +126,6 @@ void FluidField::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("fog_refill_tooltip"), "How long parted fog takes to fill back in."));
 	}
-
-	if (ImGui::Button(T(TKEY("reset_field"), "Reset Field")))
-		queuedReset = true;
 
 	ImGui::SeparatorText(T(TKEY("test_emitter"), "Test Emitter"));
 
@@ -440,6 +451,8 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.FlowDetail = std::isfinite(a_settings.FlowDetail) ? std::clamp(a_settings.FlowDetail, 0.0f, 2.0f) : defaults.FlowDetail;
 	a_settings.FoamStrength = std::isfinite(a_settings.FoamStrength) ? std::clamp(a_settings.FoamStrength, 0.0f, 3.0f) : defaults.FoamStrength;
 	a_settings.WaterTint = std::isfinite(a_settings.WaterTint) ? std::clamp(a_settings.WaterTint, 0.0f, 1.0f) : defaults.WaterTint;
+	a_settings.FogDensity = std::isfinite(a_settings.FogDensity) ? std::clamp(a_settings.FogDensity, 0.0f, 0.02f) : defaults.FogDensity;
+	a_settings.FogThickness = std::isfinite(a_settings.FogThickness) ? std::clamp(a_settings.FogThickness, 10.0f, 400.0f) : defaults.FogThickness;
 	a_settings.FogStir = std::isfinite(a_settings.FogStir) ? std::clamp(a_settings.FogStir, 0.0f, 3.0f) : defaults.FogStir;
 	a_settings.FogRefillSeconds = std::isfinite(a_settings.FogRefillSeconds) ? std::clamp(a_settings.FogRefillSeconds, 0.5f, 30.0f) : defaults.FogRefillSeconds;
 	return a_settings;
@@ -476,6 +489,8 @@ void FluidField::ClearShaderCache()
 {
 	solver.ReleaseShaders();
 	shaderCompileFailed = false;
+	groundFogCS = nullptr;
+	groundFogFailed = false;
 	nearWater.solver.ReleaseShaders();
 	waterShaderFailed = false;
 }
@@ -558,7 +573,7 @@ void FluidField::Prepass()
 	if (!player)
 		return;
 
-	if (settings.DepthMapEnabled || settings.WaterEnabled) {
+	if (settings.DepthMapEnabled || settings.WaterEnabled || settings.InteractiveFog) {
 		if (queuedLandscapeClear.exchange(false)) {
 			landscape.Clear();
 			water.Clear();
@@ -687,6 +702,8 @@ void FluidField::Prepass()
 	if (settings.InteractiveFog) {
 		fogParams = {};
 		fogParams.refillRate = 1.0f / settings.FogRefillSeconds;
+		fogParams.stirRate *= settings.FogStir;
+		fogParams.carveRate *= settings.FogStir;
 		if (const auto* sky = RE::Sky::GetSingleton(); sky && sky->currentWeather) {
 			// Wind speed and direction are stored as 0-255; direction 0 blows from the north
 			const float speed = static_cast<float>(sky->currentWeather->data.windSpeed) / 255.0f * MAX_WEATHER_DRIFT;
@@ -724,11 +741,17 @@ void FluidField::Prepass()
 
 	lastGridMin[0] = gridMin[0];
 	lastGridMin[1] = gridMin[1];
-	waterShaderData.FogEnabled = fog ? 1u : 0u;
-	waterShaderData.FogGridMin[0] = gridMin[0];
-	waterShaderData.FogGridMin[1] = gridMin[1];
-	waterShaderData.FogGridRes = settings.GridResolution;
-	waterShaderData.FogCellSize = cellSize;
+	fogReady = false;
+	if (fog) {
+		// The ground the fog lies on, under the wind grid
+		globals::profiler->BeginPass("FluidField::Fog Ground");
+		fogReady = groundHeight.Update(globals::d3d::device, context, landscape, gridMin, settings.GridResolution, cellSize);
+		globals::profiler->EndPass();
+		fogGridMin[0] = gridMin[0];
+		fogGridMin[1] = gridMin[1];
+	} else {
+		groundHeight.Release();
+	}
 	lastPlayerTexel[0] = playerPos.x / cellSize - static_cast<float>(gridMin[0]);
 	lastPlayerTexel[1] = playerPos.y / cellSize - static_cast<float>(gridMin[1]);
 	lastHeading = player->GetAngleZ();
@@ -956,29 +979,70 @@ FluidField::WaterShaderData FluidField::GetCommonBufferData() const
 {
 	if (!loaded || !settings.Enabled)
 		return {};
+	if (!settings.WaterEnabled)
+		return {};
 	WaterShaderData data = waterShaderData;
-	if (!settings.InteractiveFog)
-		data.FogEnabled = 0;
-	if (!settings.WaterEnabled) {
-		// The fog field stays; the water's fields are cleared
-		WaterShaderData fogOnly{};
-		fogOnly.FogEnabled = data.FogEnabled;
-		fogOnly.FogGridMin[0] = data.FogGridMin[0];
-		fogOnly.FogGridMin[1] = data.FogGridMin[1];
-		fogOnly.FogGridRes = data.FogGridRes;
-		fogOnly.FogCellSize = data.FogCellSize;
-		return fogOnly;
-	}
 	data.WaterTint = settings.WaterTint;
 	data.Fade = waterFade;
 	return data;
 }
 
-ID3D11ShaderResourceView* FluidField::GetFogSRV() const
+void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderResourceView* a_depth)
 {
-	if (!loaded || !settings.Enabled || !settings.InteractiveFog || !waterShaderData.FogEnabled || !solver.HasResources())
-		return nullptr;
-	return solver.GetFogSRV();
+	if (!loaded || !settings.Enabled || !settings.InteractiveFog || !fogReady || settings.FogDensity <= 0.0f || !a_main || !a_depth || groundFogFailed)
+		return;
+	if (Util::IsInterior() || !solver.HasResources() || !groundHeight.GetSRV())
+		return;
+
+	auto* context = globals::d3d::context;
+	if (!groundFogCS) {
+		groundFogCS.attach(reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\GroundFogCS.hlsl", {}, "cs_5_0")));
+		D3D11_BUFFER_DESC desc{ .ByteWidth = sizeof(GroundFogConstants), .Usage = D3D11_USAGE_DYNAMIC, .BindFlags = D3D11_BIND_CONSTANT_BUFFER, .CPUAccessFlags = D3D11_CPU_ACCESS_WRITE, .MiscFlags = 0, .StructureByteStride = 0 };
+		if (!groundFogCS || FAILED(globals::d3d::device->CreateBuffer(&desc, nullptr, groundFogCB.put()))) {
+			logger::error("[Fluid Field] Ground fog shader failed to compile; the ground fog stays off");
+			groundFogCS = nullptr;
+			groundFogFailed = true;
+			return;
+		}
+		Util::SetResourceName(groundFogCB.get(), "FluidField::GroundFogConstants");
+	}
+
+	const float cellSize = GetCellSize();
+	const GroundFogConstants constants{
+		.gridMin = { fogGridMin[0], fogGridMin[1] },
+		.gridRes = settings.GridResolution,
+		.cellSize = cellSize,
+		.density = settings.FogDensity,
+		.thickness = settings.FogThickness,
+		.maxHeight = groundHeight.GetMaxHeight(),
+		.stepCount = GROUND_FOG_STEPS,
+		.albedo = { 0.9f, 0.92f, 0.95f },
+		.maxDistance = 0.5f * cellSize * static_cast<float>(settings.GridResolution)
+	};
+	D3D11_MAPPED_SUBRESOURCE mapped{};
+	if (FAILED(context->Map(groundFogCB.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+		return;
+	std::memcpy(mapped.pData, &constants, sizeof(constants));
+	context->Unmap(groundFogCB.get(), 0);
+
+	globals::profiler->BeginPass("FluidField::Ground Fog");
+	ID3D11Buffer* cb = groundFogCB.get();
+	ID3D11ShaderResourceView* srvs[] = { a_depth, solver.GetFogSRV(), groundHeight.GetSRV() };
+	context->CSSetConstantBuffers(0, 1, &cb);
+	context->CSSetShaderResources(0, 3, srvs);
+	context->CSSetUnorderedAccessViews(0, 1, &a_main, nullptr);
+	context->CSSetShader(groundFogCS.get(), nullptr, 0);
+	const auto dispatch = Util::GetScreenDispatchCount(true);
+	context->Dispatch(dispatch.x, dispatch.y, 1);
+
+	ID3D11ShaderResourceView* nullSRVs[3]{};
+	ID3D11UnorderedAccessView* nullUAV = nullptr;
+	ID3D11Buffer* nullCB = nullptr;
+	context->CSSetShaderResources(0, 3, nullSRVs);
+	context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
+	context->CSSetConstantBuffers(0, 1, &nullCB);
+	context->CSSetShader(nullptr, nullptr, 0);
+	globals::profiler->EndPass();
 }
 
 void FluidField::BindWaterOutputs(ID3D11DeviceContext* a_context) const

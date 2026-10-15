@@ -14,7 +14,7 @@ namespace FluidFieldSim
 		/** @brief Smallest radius an actor stirs, world units, so small creatures still part the fog. */
 		constexpr float MIN_RADIUS = 24.0f;
 		/** @brief Per-second rate at which an actor drags the air around it toward its own velocity. */
-		constexpr float PUSH_RATE = 3.0f;
+		constexpr float PUSH_RATE = 6.0f;
 
 		struct Candidate
 		{

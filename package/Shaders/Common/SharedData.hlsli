@@ -466,11 +466,7 @@ namespace SharedData
 		float FarCellSize;
 		uint FarEnabled;  // The far level has valid outputs this frame
 		float Fade;       // 0 to 1 over the first moments after a (re)start, so the water eases in
-		uint FogEnabled;  // The fog density field (D21) is valid this frame
-		float fogPad;
-		int2 FogGridMin;  // The fog field's placement: the wind grid
-		uint FogGridRes;
-		float FogCellSize;
+		float2 farPad;
 	};
 
 	cbuffer FeatureData : register(b6)

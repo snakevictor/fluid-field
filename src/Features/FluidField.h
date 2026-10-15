@@ -3,6 +3,7 @@
 #include "FluidField/AirSources.h"
 #include "FluidField/BedRaycasts.h"
 #include "FluidField/DepthMapView.h"
+#include "FluidField/GroundHeightMap.h"
 #include "FluidField/LandscapeCache.h"
 #include "FluidField/MeshCut.h"
 #include "FluidField/ShallowWaterSolver.h"
@@ -85,9 +86,11 @@ struct FluidField : OverlayFeature
 		float FoamStrength = 1.0f;           ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
 		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
-		bool InteractiveFog = true;          ///< Actors and the weather's wind move Exponential Height Fog's volumetric fog (D21)
+		bool InteractiveFog = true;          ///< Ground fog that actors and the weather's wind move (D21)
+		float FogDensity = 0.003f;           ///< Ground fog extinction per world unit at the ground, in its banks
+		float FogThickness = 80.0f;          ///< Height over which the ground fog thins to about a third, world units
 		float FogStir = 1.0f;                ///< How strongly moving actors push the air and part the fog
-		float FogRefillSeconds = 4.0f;       ///< Seconds for parted fog to fill back in (about two thirds of the way)
+		float FogRefillSeconds = 6.0f;       ///< Seconds for parted fog to fill back in (about two thirds of the way)
 	};
 
 	Settings settings;
@@ -126,12 +129,8 @@ struct FluidField : OverlayFeature
 		uint32_t FarGridRes = 0;
 		float FarCellSize = 0.0f;
 		uint32_t FarEnabled = 0;
-		float Fade = 0.0f;        ///< 0 to 1 over the first moments after a (re)start, so the water eases in
-		uint32_t FogEnabled = 0;  ///< The fog density field (D21) is valid this frame
-		float fogPad = 0.0f;
-		int32_t FogGridMin[2]{};  ///< The fog field's placement: the wind grid
-		uint32_t FogGridRes = 0;
-		float FogCellSize = 0.0f;
+		float Fade = 0.0f;  ///< 0 to 1 over the first moments after a (re)start, so the water eases in
+		float farPad[2]{};
 	};
 	static_assert(sizeof(WaterShaderData) % 16 == 0);
 	/** @brief This frame's water grid placement, or Enabled = 0 when the water outputs are not valid. */
@@ -183,6 +182,22 @@ private:
 	};
 	/** @brief Simulated seconds run at once when a level starts, so it begins already flowing around obstacles. */
 	static constexpr float WARMUP_SECONDS = 2.0f;
+	/** @brief Samples along each pixel's ray through the ground fog. */
+	static constexpr uint32_t GROUND_FOG_STEPS = 24;
+	/** @brief Matches GroundFogCB in GroundFogCS.hlsl. */
+	struct alignas(16) GroundFogConstants
+	{
+		int32_t gridMin[2];
+		uint32_t gridRes;
+		float cellSize;
+		float density;
+		float thickness;
+		float maxHeight;
+		uint32_t stepCount;
+		float albedo[3];
+		float maxDistance;
+	};
+	static_assert(sizeof(GroundFogConstants) == 48);
 	/** @brief Fog drift at the weather's full wind speed, world units per second. */
 	static constexpr float MAX_WEATHER_DRIFT = 150.0f;
 	/** @brief Substep length of the warm-up, as the regular step's shortest substep. */
@@ -201,9 +216,19 @@ private:
 	FluidFieldSim::AirSources airSources;
 	FluidFieldSim::FogParams fogParams;  ///< This step's fog inputs, when the fog is on
 
+	FluidFieldSim::GroundHeightMap groundHeight;
+	winrt::com_ptr<ID3D11ComputeShader> groundFogCS;
+	winrt::com_ptr<ID3D11Buffer> groundFogCB;
+	bool groundFogFailed = false;
+	int32_t fogGridMin[2]{};  ///< The wind grid's placement this frame, for the fog pass
+	bool fogReady = false;    ///< The fog layer and ground height are valid this frame
+
 public:
-	/** @brief The fog density field for Exponential Height Fog's volumetric material pass (D21); null when off. */
-	ID3D11ShaderResourceView* GetFogSRV() const;
+	/**
+	 * @brief Draws the ground fog into the lit scene (D21), after the deferred composite and before
+	 * water and effects. Called from Deferred::DeferredPasses.
+	 */
+	void DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderResourceView* a_depth);
 
 private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
