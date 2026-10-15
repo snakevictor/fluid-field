@@ -16,8 +16,10 @@ namespace FluidFieldSim
 	 * `plans/waterfall-replacement.md`).
 	 *
 	 * S1, inventory: the loaded references whose model is a waterfall or rapids effect, classified by
-	 * model path, with world bounds. S2, clustering: references whose bounds come within
-	 * CLUSTER_RADIUS of each other are one site (union-find). S3, pairing: the water planes around a
+	 * model path, with world bounds from their triangles. S2, clustering (union-find): falling water
+	 * and skirts within CLUSTER_RADIUS of each other are one site; mist, splashes and rapids join the
+	 * nearest fall within CLUSTER_RADIUS, or else cluster among themselves within
+	 * RAPIDS_CLUSTER_RADIUS (rivers are lined with them, so a wider radius links whole gorges). S3, pairing: the water planes around a
 	 * site give its levels; the highest near its top is the top level, the lowest near its bottom the
 	 * bottom level, and more than two distinct heights make a cascade of tiers. A drop under
 	 * RAPIDS_THRESHOLD is rapids. Rebuilt when the loaded references or water change. Runs on the
@@ -90,6 +92,7 @@ namespace FluidFieldSim
 		void SetConsoleSummary(bool a_print) { consoleSummary = a_print; }
 
 		static constexpr float CLUSTER_RADIUS = 512.0f;
+		static constexpr float RAPIDS_CLUSTER_RADIUS = 128.0f;  ///< Rapids and splashes away from any fall cluster only this close
 		static constexpr float PAIR_MARGIN = 256.0f;
 		static constexpr float NEAR_LEVEL = 256.0f;  ///< How far a plane may lie outside a site's height range and still pair
 		static constexpr float LEVEL_TOLERANCE = 16.0f;

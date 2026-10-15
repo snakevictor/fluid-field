@@ -248,9 +248,40 @@ namespace FluidFieldSim
 			}
 			return a_i;
 		};
+		// Rivers are lined with rapids and splash meshes in an unbroken chain, which would link a whole
+		// gorge into one site. So falls (falling water and skirts) cluster among themselves; the other
+		// effects join the nearest fall within CLUSTER_RADIUS, and those left over form rapids sites
+		// among themselves at a tighter radius.
+		const auto isFall = [&](std::size_t a_i) { return refs[a_i].cls == FxClass::Body || refs[a_i].cls == FxClass::Skirt; };
 		for (std::size_t i = 0; i < n; i++) {
 			for (std::size_t j = i + 1; j < n; j++) {
-				if (BoxGap(refs[i].min, refs[i].max, refs[j].min, refs[j].max) <= CLUSTER_RADIUS)
+				if (isFall(i) && isFall(j) && BoxGap(refs[i].min, refs[i].max, refs[j].min, refs[j].max) <= CLUSTER_RADIUS)
+					parent[find(i)] = find(j);
+			}
+		}
+		std::vector<bool> attached(n, false);
+		for (std::size_t i = 0; i < n; i++) {
+			if (isFall(i))
+				continue;
+			float best = CLUSTER_RADIUS;
+			std::size_t bestFall = n;
+			for (std::size_t j = 0; j < n; j++) {
+				if (!isFall(j))
+					continue;
+				const float gap = BoxGap(refs[i].min, refs[i].max, refs[j].min, refs[j].max);
+				if (gap <= best) {
+					best = gap;
+					bestFall = j;
+				}
+			}
+			if (bestFall < n) {
+				parent[find(i)] = find(bestFall);
+				attached[i] = true;
+			}
+		}
+		for (std::size_t i = 0; i < n; i++) {
+			for (std::size_t j = i + 1; j < n; j++) {
+				if (!isFall(i) && !isFall(j) && !attached[i] && !attached[j] && BoxGap(refs[i].min, refs[i].max, refs[j].min, refs[j].max) <= RAPIDS_CLUSTER_RADIUS)
 					parent[find(i)] = find(j);
 			}
 		}
