@@ -148,7 +148,7 @@ float4 PSMain(VSOutput input) : SV_Target
 	const float3 water = refracted * (1.0 - fresnel) + (ambient * fresnel + sun * glint * 0.8) * Brightness;
 
 	// White water: the simulation's foam, and air beaten into steep, fast water, broken up by the flow
-	const float aerated = saturate(input.Foam * 0.7 + steep * 1.5 * saturate((speed - 120.0) / 250.0));
+	const float aerated = saturate(input.Foam * 0.4 + steep * 0.8 * saturate((speed - 200.0) / 300.0));
 	const float breakup = Breakup(input.WorldXY, input.Velocity);
 	const float white = smoothstep(1.0 - aerated - 0.1, 1.0 - aerated + 0.25, breakup) * saturate(aerated * 2.0);
 	const float3 whiteWater = float3(0.85, 0.88, 0.9) * (ambient + sun * 0.4) * Brightness;

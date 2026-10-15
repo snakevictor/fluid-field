@@ -39,7 +39,7 @@ namespace FluidFieldSim
 		constexpr float AREA_BELOW = 512.0f;
 
 		/** @brief Depth added per second at a replaced fall's lip, and the speed the water leaves it at (D24). */
-		constexpr float LIP_DEPTH_RATE = 120.0f;
+		constexpr float LIP_DEPTH_RATE = 20.0f;
 		constexpr float LIP_SPEED = 150.0f;
 		/** @brief Foam made per second at the plunge. */
 		constexpr float FOAM_RATE = 0.6f;

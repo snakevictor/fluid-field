@@ -25,7 +25,9 @@ StructuredBuffer<Emitter> Emitters : register(t3);
 
 static const float BED_CHANGE_THRESHOLD = 2.0;
 /** World units of depth per second that drain from water running off vanilla's planes in a fall area. */
-static const float FALL_DRAIN = 1.5;
+static const float FALL_DRAIN = 4.0;
+/** Deepest water running off vanilla's planes in a fall area: a sheet over the rock, not a pond. */
+static const float MAX_FALL_DEPTH = 24.0;
 
 RWTexture2D<float> DepthOut : register(u0);
 RWTexture2D<float2> VelocityOut : register(u1);
@@ -197,7 +199,7 @@ float2 StirVelocity(float2 worldPos)
 	if (inFall && !vanillaWet) {
 		// Falling water off vanilla's planes is the simulation's own: it runs on by gravity and only
 		// thin films drain away, instead of being pulled back to dry
-		depth = max(depth - FALL_DRAIN * DeltaTime, 0.0);
+		depth = min(max(depth - FALL_DRAIN * DeltaTime, 0.0), MAX_FALL_DEPTH);
 	} else {
 		depth = lerp(depth, vanillaDepth, saturate(LevelRelax * DeltaTime));
 	}
