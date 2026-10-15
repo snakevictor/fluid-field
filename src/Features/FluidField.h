@@ -284,7 +284,10 @@ private:
 	FluidFieldSim::WaterfallSources waterfalls;
 	FluidFieldSim::FallSites fallSites;
 
-	/** @brief D26: the captured ground around the player, for bending vanilla's falling water onto the rock. */
+	/**
+	 * @brief D26 and D28: the captured ground around the player, for bending vanilla's falling water
+	 * onto the rock, and the falls' steady flow, whose streamlines vanilla's streaks follow.
+	 */
 	struct alignas(16) FallGroundData
 	{
 		float Origin[2];
@@ -294,79 +297,39 @@ private:
 		float Offset;
 		float Cling;
 		float ContactWidth;
-		float Reach;
-		float FoamStrength;
 		float LiftMost;
+		float FoamStrength;
 		uint32_t DebugMode;
-		float VertexPush;
-		float VertexPushMost;
-		int32_t FlowGridMin[2];
-		uint32_t FlowRes;
-		float FlowCell;
-		uint32_t FlowEnabled;
-		float FlowPeriod;
-		float Time;
-		float LieHeight;
-		float FlowGain;
-		float PresenceRadius;
+		float UScale;
 	};
-	static_assert(sizeof(FallGroundData) == 96);
+	static_assert(sizeof(FallGroundData) == 48);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
-	static constexpr float FALL_GROUND_CELL = 16.0f;
+	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must be FallCapture::CELL: the flows are copied texel for texel
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
 	static constexpr float FALL_GROUND_OFFSET = 6.0f;
 	static constexpr float FALL_GROUND_CLING = 24.0f;
 	static constexpr float FALL_GROUND_CONTACT = 6.0f;    ///< World units over which water fades where it cuts into rock
 	static constexpr float FALL_GROUND_LIFT_MOST = 8.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
-	static constexpr float FALL_REACH = 96.0f;            ///< How far above rock its push still bends the water
 	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
-	static constexpr float FALL_VERTEX_PUSH = 0.3f;        ///< How much of the push moves vertices; the texture carries it all
-	static constexpr float FALL_VERTEX_PUSH_MOST = 32.0f;  ///< World units
+	static constexpr float FALL_STREAM_U_SCALE = 192.0f;  ///< World units across the flow per repeat of vanilla's texture
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> fallGroundSRV;
-	winrt::com_ptr<ID3D11Texture2D> fallRockTexture;  ///< FallSites::BuildRockField over the ground map: push x, y, presence, prominence
-	winrt::com_ptr<ID3D11ShaderResourceView> fallRockSRV;
-	std::vector<float> fallRockScratch;
+	winrt::com_ptr<ID3D11Texture2D> fallStreamTexture;  ///< FallSites::BuildStreamMap: stream function, speed, foam, water
+	winrt::com_ptr<ID3D11ShaderResourceView> fallStreamSRV;
+	std::vector<float> fallStreamScratch;
 	winrt::com_ptr<ID3D11Buffer> fallGroundOn;   ///< Constants for grounded draws
 	winrt::com_ptr<ID3D11Buffer> fallGroundOff;  ///< Enabled = 0, for every other effect draw
 	float fallGroundOrigin[2]{};
 	uint64_t fallGroundVersion = UINT64_MAX;
+	int fallGroundDebugUploaded = -1;
 	bool fallGroundBound = false;  ///< The last effect draw bound the grounding
 	std::vector<float> fallGroundScratch;
-	/** @brief Rebuilds the ground map when the captures change or the player moves far; unbinds stale state. */
+	/** @brief Rebuilds the ground and flow maps when the sites change or the player moves far; uploads the constants. */
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
-
-	/**
-	 * @brief The fall flow (D27): the water solver run on the waterfalls around the player, over the
-	 * captured rock, held to vanilla's falling-water meshes as its surface. Its velocity and foam drive
-	 * the grounded meshes' texture in the effect shader.
-	 */
-	FluidFieldSim::ShallowWaterSolver fallSolver;
-	static constexpr uint32_t FALL_FLOW_RES = 512;
-	static constexpr float FALL_FLOW_CELL = 8.0f;              ///< Fine enough that a boulder casts a shadow several cells long
-	static constexpr float FALL_FLOW_RECENTRE = 1024.0f;       ///< How far the player moves before the flow's map recentres
-	static constexpr float FALL_FLOW_LEVEL_RELAX = 4.0f;       ///< Per-second pull toward vanilla's surface where the falls' water comes in (their tops and pools)
-	static constexpr float FALL_FLOW_WARMUP = 5.0f;            ///< Seconds run at once when the falls' map changes, so their water has flowed down
-	static constexpr float FALL_FLOW_GAIN = 2.0f;              ///< How far the fall flow's sideways velocity carries the streaks
-	static constexpr float FALL_FLOW_PRESENCE_RADIUS = 64.0f;  ///< World units around each point its depth is compared with
-	static constexpr float FALL_FLOW_TURBULENCE = 2.0f;        ///< Vorticity confinement in the falls: water swirls where it runs into rock
-	static constexpr float FALL_FLOW_LIE_HEIGHT = 48.0f;       ///< Water within about this of the rock lies on it: the fall flow says where it is
-	static constexpr float FALL_FLOW_PERIOD = 1.2f;            ///< Seconds per flowmap cycle in the effect shader
-	std::vector<float> fallFlowMap;
-	int32_t fallFlowGridMin[2]{};
-	int32_t fallFlowMapCentre[2]{};
-	uint64_t fallFlowVersion = UINT64_MAX;
-	uint32_t fallFlowWarmup = 0;
-	bool fallFlowReady = false;
-	bool fallFlowFailed = false;
-	float fallFlowTime = 0.0f;  ///< Seconds, for the fall flowmap's cycle
-	/** @brief Steps the fall flow when there is grounded falling water around the player. */
-	void StepFallFlow(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos, float a_deltaTime);
-	void ReleaseFallFlow();
 	void ReleaseFallGround();
 	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
-	bool hideFallEffects = true;                             ///< Debug: hides vanilla's mist, skirt and splash meshes at the falls; not saved
-	int fallGroundDebug = 0;                                 ///< Debug: 1 tints grounded falling water red where rock turns it; not saved
+	bool hideFallEffects = true;                             ///< Debug: hides vanilla's mist, skirt, splash and rapids meshes; not saved
+	int fallGroundDebug = 0;                                 ///< Debug: 1 the flow's speed, foam and water; 2 its streamlines alone; not saved
 	float waterfallTime = 0.0f;                              ///< Seconds simulated, for the waterfalls' pulsing
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 

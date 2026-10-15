@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <format>
@@ -157,7 +158,7 @@ namespace FluidFieldSim
 		std::unordered_map<uint32_t, RE::NiPointer<RE::NiAVObject>> wanted;
 		if (hideEffects) {
 			for (const auto& ref : refs) {
-				if (ref.cls != FxClass::Mist && ref.cls != FxClass::Skirt && ref.cls != FxClass::Splash)
+				if (ref.cls == FxClass::Body)
 					continue;
 				auto* object = RE::TESForm::LookupByID<RE::TESObjectREFR>(ref.formID);
 				if (auto* root = object ? object->Get3D() : nullptr)
@@ -195,209 +196,182 @@ namespace FluidFieldSim
 		return it != captures.end() ? &it->second : nullptr;
 	}
 
-	namespace
+	void FallSites::RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface) const
 	{
-		/** @brief A box blur of the known values (weight 1) over a_radius texels, both axes; unknown texels stay unknown (weight 0). */
-		void BoxBlur(std::vector<float>& a_values, std::vector<float>& a_weights, uint32_t a_size, int32_t a_radius)
-		{
-			const auto n = static_cast<int32_t>(a_size);
-			std::vector<double> sum(static_cast<std::size_t>(n) + 1), weight(static_cast<std::size_t>(n) + 1);
-			std::vector<float> values(a_values.size()), weights(a_weights.size());
-			for (int pass = 0; pass < 2; pass++) {
-				const bool rows = pass == 0;
-				for (int32_t line = 0; line < n; line++) {
-					const auto at = [&](int32_t i) { return rows ? static_cast<std::size_t>(line) * n + i : static_cast<std::size_t>(i) * n + line; };
-					sum[0] = weight[0] = 0.0;
-					for (int32_t i = 0; i < n; i++) {
-						const float w = a_weights[at(i)];
-						sum[i + 1] = sum[i] + static_cast<double>(a_values[at(i)]) * w;
-						weight[i + 1] = weight[i] + w;
-					}
-					for (int32_t i = 0; i < n; i++) {
-						const int32_t lo = std::max(0, i - a_radius);
-						const int32_t hi = std::min(n, i + a_radius + 1);
-						const double w = weight[hi] - weight[lo];
-						values[at(i)] = w > 0.0 ? static_cast<float>((sum[hi] - sum[lo]) / w) : 0.0f;
-						weights[at(i)] = static_cast<float>(w / (hi - lo));
-					}
-				}
-				a_values.swap(values);
-				a_weights.swap(weights);
-			}
-		}
-	}
-
-	void FallSites::BuildRockField(const std::vector<float>& a_heights, uint32_t a_size, float a_cell, std::vector<float>& a_field)
-	{
-		const std::size_t count = static_cast<std::size_t>(a_size) * a_size;
-		a_field.assign(count * 4, 0.0f);
-		// The bed: the ground blurred wide
-		std::vector<float> bed(count), known(count);
-		for (std::size_t i = 0; i < count; i++) {
-			const bool isKnown = a_heights[i] > FallCapture::NONE;
-			bed[i] = isKnown ? a_heights[i] : 0.0f;
-			known[i] = isKnown ? 1.0f : 0.0f;
-		}
-		std::vector<float> bedWeight = known;
-		BoxBlur(bed, bedWeight, a_size, static_cast<int32_t>(std::lround(BED_RADIUS / a_cell)));
-		// Rock standing out of it, then smoothed so its presence falls off round it
-		std::vector<float> presence(count), presenceWeight(count, 1.0f);
-		for (std::size_t i = 0; i < count; i++) {
-			const float prominence = known[i] > 0.0f ? std::clamp((a_heights[i] - bed[i] - PROMINENCE_FLOOR) / (PROMINENCE_FULL - PROMINENCE_FLOOR), 0.0f, 1.0f) : 0.0f;
-			presence[i] = prominence;
-			a_field[i * 4 + 3] = prominence;
-		}
-		const auto radius = static_cast<int32_t>(std::lround(OBSTACLE_RADIUS / a_cell));
-		BoxBlur(presence, presenceWeight, a_size, radius);
-		presenceWeight.assign(count, 1.0f);
-		BoxBlur(presence, presenceWeight, a_size, radius);
-		// The push: away from the rock, down its presence's slope
-		const auto n = static_cast<int32_t>(a_size);
-		for (int32_t y = 1; y + 1 < n; y++) {
-			for (int32_t x = 1; x + 1 < n; x++) {
-				const std::size_t i = static_cast<std::size_t>(y) * n + x;
-				float px = -(presence[i + 1] - presence[i - 1]) * 0.5f * PUSH;
-				float py = -(presence[i + n] - presence[i - n]) * 0.5f * PUSH;
-				const float length = std::sqrt(px * px + py * py);
-				if (length > PUSH_MOST) {
-					px *= PUSH_MOST / length;
-					py *= PUSH_MOST / length;
-				}
-				a_field[i * 4 + 0] = px;
-				a_field[i * 4 + 1] = py;
-				a_field[i * 4 + 2] = presence[i];
-			}
-		}
-	}
-
-	void FallSites::BuildFlowMap(int32_t a_centreX, int32_t a_centreY, float a_spacing, uint32_t a_size, std::vector<float>& a_map) const
-	{
-		constexpr uint32_t CHANNELS = 4;     // WaterMapBuilder::MAP_CHANNELS: bed, surface, river flow scale, free water
-		constexpr float NO_WATER = -1.0e8f;  // ShallowWaterSolver::NO_WATER
-		const auto n = static_cast<int32_t>(a_size);
-		const int32_t x0 = a_centreX - n / 2;
-		const int32_t y0 = a_centreY - n / 2;
-		const auto slot = [&](int32_t a_x, int32_t a_y) {
-			return (static_cast<std::size_t>(a_y & (n - 1)) * a_size + static_cast<std::size_t>(a_x & (n - 1))) * CHANNELS;
+		a_surface.assign(static_cast<std::size_t>(a_width) * a_height, NO_SURFACE);
+		const auto window = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * a_width + a_x; };
+		const auto range = [&](float a_min, float a_max, float a_origin, int32_t a_count, int32_t& a_from, int32_t& a_to) {
+			a_from = std::max(0, static_cast<int32_t>(std::ceil((a_min - a_origin) / a_spacing)));
+			a_to = std::min(a_count - 1, static_cast<int32_t>(std::floor((a_max - a_origin) / a_spacing)));
 		};
-		const auto window = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y - y0) * a_size + static_cast<std::size_t>(a_x - x0); };
-		const auto range = [&](float a_min, float a_max, int32_t a_origin, int32_t& a_from, int32_t& a_to) {
-			a_from = std::max(a_origin, static_cast<int32_t>(std::ceil(a_min / a_spacing)));
-			a_to = std::min(a_origin + n - 1, static_cast<int32_t>(std::floor(a_max / a_spacing)));
-		};
-		a_map.assign(static_cast<std::size_t>(a_size) * a_size * CHANNELS, 0.0f);
-
-		// The bed: captured rock, walls elsewhere
-		std::vector<float> bed(static_cast<std::size_t>(a_size) * a_size, FLOW_WALL);
-		for (const auto& [key, capture] : captures) {
-			if (!capture.IsComplete())
-				continue;
-			int32_t lx0, lx1, ly0, ly1;
-			range(capture.GetOriginX(), capture.GetOriginX() + static_cast<float>(capture.GetWidth() - 1) * FallCapture::CELL, x0, lx0, lx1);
-			range(capture.GetOriginY(), capture.GetOriginY() + static_cast<float>(capture.GetHeight() - 1) * FallCapture::CELL, y0, ly0, ly1);
-			for (int32_t y = ly0; y <= ly1; y++) {
-				for (int32_t x = lx0; x <= lx1; x++) {
-					float height;
-					if (!capture.Sample(static_cast<float>(x) * a_spacing, static_cast<float>(y) * a_spacing, height))
-						continue;
-					float& stored = bed[window(x, y)];
-					stored = stored >= FLOW_WALL ? height : std::max(stored, height);
-				}
-			}
-		}
-
-		// The surface: the falling water seen from above, the highest of its triangles over each point
-		std::vector<float> surface(static_cast<std::size_t>(a_size) * a_size, NO_WATER);
-		// Where the water comes in: the tops of the falls, and the pools. Everywhere else it is free to
-		// flow (and to leave the shadow behind rock empty)
-		std::vector<uint8_t> source(static_cast<std::size_t>(a_size) * a_size, 0);
-		float meshTop = 0.0f;
+		// The falling water seen from above: the highest of its triangles over each point
 		const auto raster = [&](const RE::NiPoint3& a, const RE::NiPoint3& b, const RE::NiPoint3& c) {
 			const float area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
 			if (std::abs(area) < 1e-3f)
 				return;  // Edge-on from above: a vertical curtain adds nothing to the surface
-			int32_t lx0, lx1, ly0, ly1;
-			range(std::min({ a.x, b.x, c.x }), std::max({ a.x, b.x, c.x }), x0, lx0, lx1);
-			range(std::min({ a.y, b.y, c.y }), std::max({ a.y, b.y, c.y }), y0, ly0, ly1);
-			for (int32_t y = ly0; y <= ly1; y++) {
-				for (int32_t x = lx0; x <= lx1; x++) {
-					const float px = static_cast<float>(x) * a_spacing;
-					const float py = static_cast<float>(y) * a_spacing;
+			int32_t x0, x1, y0, y1;
+			range(std::min({ a.x, b.x, c.x }), std::max({ a.x, b.x, c.x }), a_originX, a_width, x0, x1);
+			range(std::min({ a.y, b.y, c.y }), std::max({ a.y, b.y, c.y }), a_originY, a_height, y0, y1);
+			for (int32_t y = y0; y <= y1; y++) {
+				for (int32_t x = x0; x <= x1; x++) {
+					const float px = a_originX + static_cast<float>(x) * a_spacing;
+					const float py = a_originY + static_cast<float>(y) * a_spacing;
 					const float w0 = ((b.x - px) * (c.y - py) - (c.x - px) * (b.y - py)) / area;
 					const float w1 = ((c.x - px) * (a.y - py) - (a.x - px) * (c.y - py)) / area;
 					const float w2 = 1.0f - w0 - w1;
 					if (w0 < -1e-4f || w1 < -1e-4f || w2 < -1e-4f)
 						continue;
-					const float z = w0 * a.z + w1 * b.z + w2 * c.z;
-					float& stored = surface[window(x, y)];
-					stored = std::max(stored, z);
-					if (z >= meshTop - FLOW_SOURCE_BAND)
-						source[window(x, y)] = 1;
+					float& stored = a_surface[window(x, y)];
+					stored = std::max(stored, w0 * a.z + w1 * b.z + w2 * c.z);
 				}
 			}
 		};
-		for (const auto& site : sites) {
-			const FallCapture* capture = GetCapture(site);
-			if (!capture || !capture->IsComplete())
+		for (const uint32_t member : a_site.members) {
+			if (refs[member].cls != FxClass::Body)
 				continue;
-			for (const uint32_t member : site.members) {
-				if (refs[member].cls != FxClass::Body)
-					continue;
-				auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refs[member].formID);
-				auto* root = ref ? ref->Get3D() : nullptr;
-				if (!root)
-					continue;
-				meshTop = refs[member].max[2];
-				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-					auto* triShape = a_geometry->AsTriShape();
-					auto* renderer = a_geometry->GetGeometryRuntimeData().rendererData;
-					if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
-						return RE::BSVisit::BSVisitControl::kContinue;
-					const auto& counts = triShape->GetTrishapeRuntimeData();
-					const uint32_t stride = renderer->vertexDesc.GetSize();
-					const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-					if (stride < positionOffset + 12)
-						return RE::BSVisit::BSVisitControl::kContinue;
-					const auto& transform = a_geometry->world;
-					const auto vertex = [&](uint16_t a_index) {
-						float local[3];
-						std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(a_index) * stride + positionOffset, sizeof(local));
-						return transform * RE::NiPoint3(local[0], local[1], local[2]);
-					};
-					for (uint32_t t = 0; t < counts.triangleCount; t++) {
-						const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(t) * 3;
-						if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
-							continue;
-						raster(vertex(index[0]), vertex(index[1]), vertex(index[2]));
-					}
+			auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refs[member].formID);
+			auto* root = ref ? ref->Get3D() : nullptr;
+			if (!root)
+				continue;
+			RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+				auto* triShape = a_geometry->AsTriShape();
+				auto* renderer = a_geometry->GetGeometryRuntimeData().rendererData;
+				if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
 					return RE::BSVisit::BSVisitControl::kContinue;
-				});
-			}
-			// The site's pools, where they stand above the rock
-			for (const auto& plane : site.planes) {
-				int32_t lx0, lx1, ly0, ly1;
-				range(plane.min[0], plane.max[0], x0, lx0, lx1);
-				range(plane.min[1], plane.max[1], y0, ly0, ly1);
-				for (int32_t y = ly0; y <= ly1; y++) {
-					for (int32_t x = lx0; x <= lx1; x++) {
-						const std::size_t i = window(x, y);
-						if (bed[i] < plane.height) {
-							surface[i] = std::max(surface[i], plane.height);
-							source[i] = 1;
-						}
-					}
+				const auto& counts = triShape->GetTrishapeRuntimeData();
+				const uint32_t stride = renderer->vertexDesc.GetSize();
+				const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+				if (stride < positionOffset + 12)
+					return RE::BSVisit::BSVisitControl::kContinue;
+				const auto& transform = a_geometry->world;
+				const auto vertex = [&](uint16_t a_index) {
+					float local[3];
+					std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(a_index) * stride + positionOffset, sizeof(local));
+					return transform * RE::NiPoint3(local[0], local[1], local[2]);
+				};
+				for (uint32_t t = 0; t < counts.triangleCount; t++) {
+					const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(t) * 3;
+					if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+						continue;
+					raster(vertex(index[0]), vertex(index[1]), vertex(index[2]));
+				}
+				return RE::BSVisit::BSVisitControl::kContinue;
+			});
+		}
+		// The site's pools
+		for (const auto& plane : a_site.planes) {
+			int32_t x0, x1, y0, y1;
+			range(plane.min[0], plane.max[0], a_originX, a_width, x0, x1);
+			range(plane.min[1], plane.max[1], a_originY, a_height, y0, y1);
+			for (int32_t y = y0; y <= y1; y++) {
+				for (int32_t x = x0; x <= x1; x++) {
+					float& stored = a_surface[window(x, y)];
+					stored = std::max(stored, plane.height);
 				}
 			}
 		}
+	}
 
-		for (int32_t y = y0; y < y0 + n; y++) {
-			for (int32_t x = x0; x < x0 + n; x++) {
-				const std::size_t i = window(x, y);
-				const std::size_t s = slot(x, y);
-				a_map[s + 0] = bed[i];
-				// Water only where its surface stands above the rock: rock standing through it stays dry
-				a_map[s + 1] = bed[i] < FLOW_WALL && surface[i] > bed[i] + 1.0f ? surface[i] : NO_WATER;
-				a_map[s + 3] = source[i] ? 0.0f : 1.0f;
+	void FallSites::StartStream(const Site& a_site, const FallCapture& a_capture)
+	{
+		FallStream::Input input;
+		input.width = a_capture.GetWidth();
+		input.height = a_capture.GetHeight();
+		input.cell = FallCapture::CELL;
+		RasterSurface(a_site, a_capture.GetOriginX(), a_capture.GetOriginY(), FallCapture::CELL, static_cast<int32_t>(input.width), static_cast<int32_t>(input.height), input.surface);
+		input.kind.assign(input.surface.size(), FallStream::Wall);
+		uint32_t water = 0, inflow = 0, outflow = 0;
+		for (uint32_t y = 0; y < input.height; y++) {
+			for (uint32_t x = 0; x < input.width; x++) {
+				const std::size_t i = static_cast<std::size_t>(y) * input.width + x;
+				const float bed = a_capture.At(x, y);
+				const float surface = input.surface[i];
+				// Water only where its surface stands above the rock: rock standing through it is a wall
+				if (bed <= FallCapture::NONE || surface <= NO_SURFACE || surface < bed + STREAM_MIN_DEPTH)
+					continue;
+				if (surface >= a_site.top - STREAM_INFLOW_BAND) {
+					input.kind[i] = FallStream::Inflow;
+					inflow++;
+				} else if (surface <= a_site.bottom + STREAM_OUTFLOW_BAND) {
+					input.kind[i] = FallStream::Outflow;
+					outflow++;
+				} else {
+					input.kind[i] = FallStream::Water;
+					water++;
+				}
+			}
+		}
+		logger::info("[Fluid Field] Waterfall site #{} flow: solving {}x{}, {} water, {} inflow, {} outflow cells", a_site.id, input.width, input.height, water, inflow, outflow);
+		auto& stream = streams[a_site.captureKey];
+		stream.originX = a_capture.GetOriginX();
+		stream.originY = a_capture.GetOriginY();
+		stream.siteId = a_site.id;
+		stream.ready = false;
+		stream.pending = std::async(std::launch::async, [input = std::move(input)]() { return FallStream::Solve(input); });
+	}
+
+	void FallSites::PollStreams()
+	{
+		// Retired solves finish on their own; let them go once done
+		std::erase_if(retired, [](std::future<FallStream::Result>& a_future) { return a_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; });
+		bool changed = false;
+		for (const auto& site : sites) {
+			if (!site.captureKey)
+				continue;
+			const FallCapture* capture = GetCapture(site);
+			if (!capture || !capture->IsComplete())
+				continue;
+			auto it = streams.find(site.captureKey);
+			if (it == streams.end()) {
+				StartStream(site, *capture);
+				continue;
+			}
+			auto& stream = it->second;
+			if (stream.ready || !stream.pending.valid() || stream.pending.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+				continue;
+			stream.result = stream.pending.get();
+			stream.ready = true;
+			changed = true;
+			float speed = 0.0f, foam = 0.0f;
+			uint32_t water = 0;
+			for (std::size_t i = 0; i < stream.result.water.size(); i++) {
+				if (!stream.result.water[i])
+					continue;
+				speed += stream.result.speed[i];
+				foam += stream.result.foam[i] > 0.5f ? 1.0f : 0.0f;
+				water++;
+			}
+			logger::info("[Fluid Field] Waterfall site #{} flow: solved in {} sweeps (last change {:.3f}), mean speed {:.2f}, {:.0f} foam cells of {}", stream.siteId,
+				stream.result.iterations, stream.result.residual, water ? speed / static_cast<float>(water) : 0.0f, foam, water);
+		}
+		if (changed)
+			groundVersion++;
+	}
+
+	void FallSites::BuildStreamMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
+	{
+		a_field.assign(static_cast<std::size_t>(a_size) * a_size * 4, 0.0f);
+		const auto n = static_cast<int32_t>(a_size);
+		for (const auto& [key, stream] : streams) {
+			if (!stream.ready)
+				continue;
+			const auto& result = stream.result;
+			const auto w = static_cast<int32_t>(result.width);
+			const auto h = static_cast<int32_t>(result.height);
+			// Both grids sit on the same world lattice, a_cell (FallCapture::CELL) apart
+			const auto offsetX = static_cast<int32_t>(std::lround((stream.originX - a_originX) / a_cell));
+			const auto offsetY = static_cast<int32_t>(std::lround((stream.originY - a_originY) / a_cell));
+			for (int32_t y = std::max(0, -offsetY); y < h && y + offsetY < n; y++) {
+				for (int32_t x = std::max(0, -offsetX); x < w && x + offsetX < n; x++) {
+					const std::size_t from = static_cast<std::size_t>(y) * w + x;
+					const std::size_t to = (static_cast<std::size_t>(y + offsetY) * a_size + static_cast<std::size_t>(x + offsetX)) * 4;
+					if (!result.water[from] || a_field[to + 3] > 0.0f)
+						continue;
+					a_field[to + 0] = result.psi[from];
+					a_field[to + 1] = result.speed[from];
+					a_field[to + 2] = result.foam[from];
+					a_field[to + 3] = 1.0f;
+				}
 			}
 		}
 	}
@@ -474,6 +448,7 @@ namespace FluidFieldSim
 	void FallSites::Update(const WaterSurfaces& a_water)
 	{
 		CaptureStep();
+		PollStreams();
 		if (updatesUntilScan > 0) {
 			updatesUntilScan--;
 			return;
@@ -751,6 +726,16 @@ namespace FluidFieldSim
 			capture.Begin(site.fallMin, site.fallMax, site.top, site.bottom);
 		}
 		captures.swap(kept);
+		// Flows of sites that are gone; a solve still running finishes in the background
+		for (auto it = streams.begin(); it != streams.end();) {
+			if (captures.contains(it->first)) {
+				++it;
+				continue;
+			}
+			if (it->second.pending.valid())
+				retired.push_back(std::move(it->second.pending));
+			it = streams.erase(it);
+		}
 		RefreshGrounded();
 		RefreshHiddenEffects();
 	}

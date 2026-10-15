@@ -1,8 +1,10 @@
 #pragma once
 
 #include "FallCapture.h"
+#include "FallStream.h"
 
 #include <cstdint>
+#include <future>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -115,37 +117,21 @@ namespace FluidFieldSim
 		void BuildGroundMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const;
 
 		/**
-		 * @brief The rock in falling water's way, from a ground map (BuildGroundMap's): per texel the push
-		 * away from rock that stands out of its bed (world units, x and y), how much rock is there (0 to
-		 * 1, smoothed), and how far it stands out (0 to 1). The bed is the ground blurred over
-		 * BED_RADIUS; rock more than PROMINENCE_FLOOR above it stands out, fully at PROMINENCE_FULL.
+		 * @brief The steady flow of every site whose flow is solved (D28), on a ground map's lattice
+		 * (a_cell must be FallCapture::CELL): per texel the stream function (world units across the flow),
+		 * the speed (1 for free flow), foam (0 to 1), and 1 where there is water; zeros elsewhere.
 		 */
-		static void BuildRockField(const std::vector<float>& a_heights, uint32_t a_size, float a_cell, std::vector<float>& a_field);
+		void BuildStreamMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
 
 		/**
-		 * @brief The map the fall flow solver runs on (D27), in ShallowWaterSolver's layout: a_size^2 lattice
-		 * points a_spacing apart, centred on lattice point (a_centreX, a_centreY) and stored toroidally,
-		 * WaterMapBuilder::MAP_CHANNELS floats each. The bed is the captured rock (FLOW_WALL where none is
-		 * captured); the surface is vanilla's falling-water meshes seen from above, and each site's pools
-		 * at their levels, wherever they stand above the rock. The water is held to it only where it
-		 * comes in (the top FLOW_SOURCE_BAND of each mesh, and the pools); elsewhere it is free.
-		 */
-		void BuildFlowMap(int32_t a_centreX, int32_t a_centreY, float a_spacing, uint32_t a_size, std::vector<float>& a_map) const;
-		/**
-		 * @brief Debug: hides vanilla's mist, skirt and splash meshes at every site, so the falling water
+		 * @brief Debug: hides vanilla's mist, skirt, splash and rapids meshes, so the falling water
 		 * can be judged alone. Shown again when turned off, and on Clear.
 		 */
 		void SetHideEffects(bool a_hide);
-		/** @brief Whether any site's falling water is grounded on captured rock, so the fall flow has something to run on. */
-		bool HasGround() const { return !grounded.empty(); }
-		static constexpr float FLOW_WALL = 100000.0f;     ///< Bed where no rock is captured: the fall flow's walls
-		static constexpr float FLOW_SOURCE_BAND = 48.0f;  ///< The top this deep of each falling-water mesh feeds the fall flow
-		static constexpr float BED_RADIUS = 128.0f;
-		static constexpr float PROMINENCE_FLOOR = 8.0f;
-		static constexpr float PROMINENCE_FULL = 48.0f;
-		static constexpr float OBSTACLE_RADIUS = 96.0f;  ///< How far round rock its presence is smoothed (twice): it reaches about twice this
-		static constexpr float PUSH = 1536.0f;           ///< Push per unit of presence change per texel: PUSH_MOST at the rock's edge
-		static constexpr float PUSH_MOST = 128.0f;       ///< World units
+		static constexpr float STREAM_MIN_DEPTH = 4.0f;      ///< Water must stand this far above the rock to flow there
+		static constexpr float STREAM_INFLOW_BAND = 64.0f;   ///< Water within this of the site's top comes in there
+		static constexpr float STREAM_OUTFLOW_BAND = 32.0f;  ///< Water within this of the site's bottom leaves there
+		static constexpr float NO_SURFACE = -1.0e7f;
 
 		/** @brief Counts for the menu: sites by kind. */
 		uint32_t CountKind(Kind a_kind) const;
@@ -186,6 +172,24 @@ namespace FluidFieldSim
 		std::unordered_map<uint64_t, std::string> cellSummaries;  ///< Last summary logged per cell
 		std::unordered_map<uint64_t, FallCapture> captures;       ///< By Site::captureKey
 		std::unordered_set<const RE::BSGeometry*> grounded;
+
+		/** @brief A site's steady flow, solved on its capture's lattice on a worker thread. */
+		struct Stream
+		{
+			std::future<FallStream::Result> pending;
+			FallStream::Result result;
+			float originX = 0.0f;
+			float originY = 0.0f;
+			uint32_t siteId = 0;
+			bool ready = false;
+		};
+		std::unordered_map<uint64_t, Stream> streams;          ///< By Site::captureKey
+		std::vector<std::future<FallStream::Result>> retired;  ///< Solves of sites that went away, left to finish
+		/** @brief Vanilla's falling-water meshes of a site seen from above, and its pools, on a lattice; NO_SURFACE where none. */
+		void RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface) const;
+		void StartStream(const Site& a_site, const FallCapture& a_capture);
+		/** @brief Starts the flows of newly captured sites and collects finished ones. */
+		void PollStreams();
 		bool hideEffects = false;
 		std::unordered_map<uint32_t, RE::NiPointer<RE::NiAVObject>> hiddenEffects;  ///< By form ID: the 3D culled
 		void RefreshHiddenEffects();

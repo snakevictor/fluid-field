@@ -630,3 +630,31 @@ Entry format:
 -   Decided by: @Victor ("we need something like the solver for the shallow
     water to divert it"; "use the solver to drive mesh deformation" later)
 -   References: D22, D24, D26
+
+## D28: Waterfalls follow a steady flow, solved once per site
+
+-   Date: 2026-10-15
+-   Phase / spike: replaces D27
+-   Decision: The falls' shallow-water solver is removed. Each waterfall site
+    gets a steady flow, solved once on a worker thread on its capture's
+    16-unit lattice: the drive is the unit downhill direction of vanilla's
+    falling water seen from above (weaker where nearly flat), made
+    divergence-free and tangent to the rock by a pressure projection (rock
+    standing out of the water is a wall; water near the site's top comes in,
+    near its bottom leaves). Its stream function replaces the across
+    coordinate (u) of vanilla's falling-water texture, so every streak follows
+    a streamline: it parts round a boulder, cannot cross it, closes up behind
+    it, and crowds through gaps. Foam marks where the flow stalls beside rock
+    (piling up, eddying behind) and where it squeezes past. The debug
+    Streamlines view draws the stream function as bands.
+-   Alternatives rejected: D27's time-stepped shallow-water solver on the
+    falls. It assumes nearly level water (depth measured vertically), so
+    steep and vertical falls are outside it; falling water exceeds its
+    stability speed cap, so speed saturates and swirl amplifies noise (its
+    debug view showed a chaotic velocity field); and a velocity field only
+    bends vanilla's streaks sideways, it cannot make them become streamlines.
+    It stays for rivers and pools, where it works.
+-   Decided by: @Victor ("Take a good look at the solver and if it's at all
+    applicable to this situation, if it can be improved or outright
+    replaced"; "yeah lets try that")
+-   References: D26, D27, `plans/waterfall-replacement.md`
