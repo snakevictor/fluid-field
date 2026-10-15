@@ -142,11 +142,32 @@ namespace FluidFieldSim
 		if (!tes)
 			return;
 		std::vector<FxRef> found;
+		// Only the loaded grid: its water is known there, so sites elsewhere cannot be paired
+		float gridMin[2] = { FLT_MAX, FLT_MAX };
+		float gridMax[2] = { -FLT_MAX, -FLT_MAX };
+		if (!tes->interiorCell && tes->gridCells) {
+			auto* grid = tes->gridCells;
+			for (uint32_t gx = 0; gx < grid->length; gx++) {
+				for (uint32_t gy = 0; gy < grid->length; gy++) {
+					auto* cell = GetGridCell(grid, gx, gy);
+					const auto* coordinates = cell && cell->IsAttached() ? cell->GetCoordinates() : nullptr;
+					if (!coordinates)
+						continue;
+					gridMin[0] = std::min(gridMin[0], coordinates->cellX * 4096.0f);
+					gridMin[1] = std::min(gridMin[1], coordinates->cellY * 4096.0f);
+					gridMax[0] = std::max(gridMax[0], (coordinates->cellX + 1) * 4096.0f);
+					gridMax[1] = std::max(gridMax[1], (coordinates->cellY + 1) * 4096.0f);
+				}
+			}
+		}
+		const auto inGrid = [&](const RE::NiPoint3& a_position) {
+			return tes->interiorCell || (a_position.x >= gridMin[0] && a_position.x <= gridMax[0] && a_position.y >= gridMin[1] && a_position.y <= gridMax[1]);
+		};
 		const auto visitCell = [&](RE::TESObjectCELL* a_cell, bool a_requireAttached) {
 			if (!a_cell || (a_requireAttached && !a_cell->IsAttached()))
 				return;
 			a_cell->ForEachReference([&](RE::TESObjectREFR* a_ref) {
-				if (!a_ref || a_ref->IsDisabled() || a_ref->IsDeleted() || !a_ref->Get3D())
+				if (!a_ref || a_ref->IsDisabled() || a_ref->IsDeleted() || !a_ref->Get3D() || !inGrid(a_ref->GetPosition()))
 					return RE::BSContainer::ForEachResult::kContinue;
 				FxClass cls;
 				if (!Classify(ModelOf(a_ref->GetBaseObject()), cls))
