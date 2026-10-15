@@ -736,11 +736,25 @@ PS_OUTPUT main(PS_INPUT input)
 
 	float4 baseTexColor = float4(1, 1, 1, 1);
 	float4 baseColor = float4(1, 1, 1, 1);
+#	if defined(FLUID_FIELD)
+	float fallTurn = 0.0;  // How hard rock turns the falling water here, for its wake's foam
+#	endif
 #	if !defined(TEXTURE)
 	[branch] if (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToColor || Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha)
 #	endif
 	{
-		baseTexColor = TexBaseSampler.Sample(SampBaseSampler, input.TexCoord0.xy);
+#	if defined(FLUID_FIELD)
+		// Fluid Field (D26): falling water flowed around the rock in its way
+		[branch] if (FallGround::Enabled)
+		{
+			float2 uv0, uv1;
+			float blend;
+			FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, SharedData::Timer, uv0, uv1, blend, fallTurn);
+			baseTexColor = lerp(TexBaseSampler.Sample(SampBaseSampler, uv0), TexBaseSampler.Sample(SampBaseSampler, uv1), blend);
+		}
+		else
+#	endif
+			baseTexColor = TexBaseSampler.Sample(SampBaseSampler, input.TexCoord0.xy);
 		baseTexColor.xyz = Color::Effect(baseTexColor.xyz);
 		baseColor *= baseTexColor;
 		if (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::IgnoreTexAlpha || Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha) {
@@ -773,6 +787,7 @@ PS_OUTPUT main(PS_INPUT input)
 	{
 		float visibility, foam;
 		FallGround::Contact(input.Position.xy, input.Position.z, visibility, foam);
+		foam = saturate(foam + fallTurn * 0.5);
 		const float brightness = dot(baseColor.rgb, 1.0 / 3.0);
 		baseColor.rgb = lerp(baseColor.rgb, max(baseColor.rgb, brightness.xxx * 1.3), foam * 0.6);
 		baseColor.w = saturate(baseColor.w + foam * 0.35) * visibility;

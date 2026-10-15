@@ -3,8 +3,6 @@
 #include "FluidField/AirSources.h"
 #include "FluidField/BedRaycasts.h"
 #include "FluidField/DepthMapView.h"
-#include "FluidField/FallBed.h"
-#include "FluidField/FallSheetRenderer.h"
 #include "FluidField/FallSites.h"
 #include "FluidField/GroundHeightMap.h"
 #include "FluidField/LandscapeCache.h"
@@ -90,7 +88,7 @@ struct FluidField : OverlayFeature
 		float FoamStrength = 1.0f;           ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
 		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
 		bool Waterfalls = true;              ///< Waterfalls landing on the simulated water drive it (D22)
-		bool ReplaceWaterfalls = false;      ///< Draw Fluid Field's own traced sheets in place of vanilla's waterfall bodies (D25, experimental)
+		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
 		bool InteractiveFog = true;          ///< Ground fog that actors and the weather's wind move (D21)
@@ -219,7 +217,6 @@ private:
 	static constexpr float MAX_WEATHER_DRIFT = 150.0f;
 	/** @brief Distance within which the waterfall sites' debug view is drawn, world units. */
 	static constexpr float FALL_SITES_DEBUG_RANGE = 12000.0f;
-	static constexpr float FALL_SHEET_OPACITY = 1.0f;
 	/** @brief The far water level's foam: a fraction of the near level's, and its most per cell. */
 	static constexpr float FAR_FOAM_SCALE = 0.25f;
 	static constexpr float FAR_FOAM_MAX = 0.5f;
@@ -286,7 +283,6 @@ private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
 	FluidFieldSim::WaterfallSources waterfalls;
 	FluidFieldSim::FallSites fallSites;
-	FluidFieldSim::FallSheetRenderer fallSheets;
 
 	/** @brief D26: the captured ground around the player, for bending vanilla's falling water onto the rock. */
 	struct alignas(16) FallGroundData
@@ -298,13 +294,22 @@ private:
 		float Offset;
 		float Cling;
 		float ContactWidth;
+		float FlowDistance;
+		float FlowPeriod;
+		float ReachAbove;
+		float ReachWidth;
 	};
+	static_assert(sizeof(FallGroundData) == 48);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
 	static constexpr float FALL_GROUND_CELL = 16.0f;
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
 	static constexpr float FALL_GROUND_OFFSET = 4.0f;
 	static constexpr float FALL_GROUND_CLING = 24.0f;
 	static constexpr float FALL_GROUND_CONTACT = 48.0f;
+	static constexpr float FALL_FLOW_DISTANCE = 48.0f;  ///< World units the texture is carried round a rock per cycle
+	static constexpr float FALL_FLOW_PERIOD = 1.0f;
+	static constexpr float FALL_REACH_ABOVE = 32.0f;
+	static constexpr float FALL_REACH_WIDTH = 24.0f;
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> fallGroundSRV;
 	winrt::com_ptr<ID3D11Buffer> fallGroundOn;   ///< Constants for grounded draws
@@ -316,8 +321,7 @@ private:
 	/** @brief Rebuilds the ground map when the captures change or the player moves far; unbinds stale state. */
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
 	void ReleaseFallGround();
-	bool showFallSites = false;  ///< Debug: draws the waterfall sites (D25) in the world; not saved
-	FluidFieldSim::FallBed fallBed;
+	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
 	float waterfallTime = 0.0f;                              ///< Seconds simulated, for the waterfalls' pulsing
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 

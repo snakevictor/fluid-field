@@ -61,7 +61,7 @@ namespace FluidFieldSim
 		 * huge bounds for their particles (a skirt's is thousands of units tall), so their bound box is no
 		 * use; references without triangles get a small box around their position.
 		 */
-		bool WorldBounds(RE::TESObjectREFR& a_ref, float a_min[3], float a_max[3], std::vector<std::array<float, 2>>& a_topEdge, float a_bottomCentre[2])
+		bool WorldBounds(RE::TESObjectREFR& a_ref, float a_min[3], float a_max[3])
 		{
 			auto* root = a_ref.Get3D();
 			if (!root)
@@ -71,7 +71,6 @@ namespace FluidFieldSim
 				a_max[k] = -FLT_MAX;
 			}
 			bool any = false;
-			std::vector<RE::NiPoint3> points;
 			RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
 				auto* triShape = a_geometry->AsTriShape();
 				auto* renderer = a_geometry->GetGeometryRuntimeData().rendererData;
@@ -92,7 +91,6 @@ namespace FluidFieldSim
 						a_min[k] = std::min(a_min[k], p[k]);
 						a_max[k] = std::max(a_max[k], p[k]);
 					}
-					points.push_back(world);
 					any = true;
 				}
 				return RE::BSVisit::BSVisitControl::kContinue;
@@ -105,21 +103,6 @@ namespace FluidFieldSim
 					a_max[k] = p[k] + POINT_EXTENT;
 				}
 			}
-			// The top edge: the vertices where the falling water goes over
-			a_topEdge.clear();
-			float bottomSum[2] = { 0.0f, 0.0f };
-			uint32_t bottomCount = 0;
-			for (const auto& point : points) {
-				if (point.z >= a_max[2] - FallSites::TOP_EDGE)
-					a_topEdge.push_back({ point.x, point.y });
-				if (point.z <= a_min[2] + FallSites::TOP_EDGE) {
-					bottomSum[0] += point.x;
-					bottomSum[1] += point.y;
-					bottomCount++;
-				}
-			}
-			a_bottomCentre[0] = bottomCount ? bottomSum[0] / static_cast<float>(bottomCount) : 0.5f * (a_min[0] + a_max[0]);
-			a_bottomCentre[1] = bottomCount ? bottomSum[1] / static_cast<float>(bottomCount) : 0.5f * (a_min[1] + a_max[1]);
 			return true;
 		}
 
@@ -163,9 +146,6 @@ namespace FluidFieldSim
 
 	void FallSites::Clear()
 	{
-		ShowAll();
-		sheets.clear();
-		sheetVersion++;
 		grounded.clear();
 		groundVersion++;
 		refs.clear();
@@ -183,24 +163,37 @@ namespace FluidFieldSim
 		return it != captures.end() ? &it->second : nullptr;
 	}
 
-	void FallSites::CountCaptures(uint32_t& a_complete, uint32_t& a_total, uint32_t& a_lips) const
+	void FallSites::CountCaptures(uint32_t& a_complete, uint32_t& a_total) const
 	{
-		a_complete = a_total = a_lips = 0;
+		a_complete = a_total = 0;
 		for (const auto& [key, capture] : captures) {
 			a_total++;
-			if (capture.IsComplete()) {
-				a_complete++;
-				a_lips += static_cast<uint32_t>(capture.GetLips().size());
-			}
+			a_complete += capture.IsComplete() ? 1 : 0;
 		}
 	}
 
-	std::vector<float> FallSites::LipLevels(const Site& a_site)
+	void FallSites::RefreshGrounded()
 	{
-		std::vector<float> levels = a_site.levels;
-		if (a_site.kind == Kind::NoBottom)
-			levels.push_back(a_site.bottom);
-		return levels;
+		// D26: the falling-water meshes of every site with captured ground are grounded on it
+		grounded.clear();
+		for (const auto& site : sites) {
+			const FallCapture* capture = GetCapture(site);
+			if (!capture || !capture->IsComplete())
+				continue;
+			for (const uint32_t member : site.members) {
+				if (refs[member].cls != FxClass::Body)
+					continue;
+				auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refs[member].formID);
+				auto* root = ref ? ref->Get3D() : nullptr;
+				if (!root)
+					continue;
+				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+					grounded.insert(a_geometry);
+					return RE::BSVisit::BSVisitControl::kContinue;
+				});
+			}
+		}
+		groundVersion++;
 	}
 
 	void FallSites::CaptureStep()
@@ -215,35 +208,14 @@ namespace FluidFieldSim
 			auto& capture = it->second;
 			if (!capture.Cast(CAPTURE_BUDGET_MS))
 				return;
-			std::vector<FallCapture::FallEdge> falls;
-			for (const uint32_t member : site.members) {
-				const auto& ref = refs[member];
-				if (ref.cls == FxClass::Body)
-					falls.push_back({ ref.topEdge, ref.max[2], { ref.bottomCentre[0], ref.bottomCentre[1] } });
-			}
-			capture.ExtractLips(LipLevels(site), falls);
-			capture.TraceStreams(LipLevels(site));
 			uint32_t holes = 0;
 			for (uint32_t y = 0; y < capture.GetHeight(); y++) {
 				for (uint32_t x = 0; x < capture.GetWidth(); x++)
 					holes += capture.At(x, y) <= FallCapture::NONE ? 1 : 0;
 			}
-			std::string lips;
-			for (const auto& lip : capture.GetLips())
-				lips += std::format(" {:.0f}:{:.0f}u/{}pt{}", lip.level, lip.length, lip.points.size(), lip.fromMesh ? "(mesh)" : "");
-			logger::info("[Fluid Field] Waterfall site #{} ground captured: {}x{} at {:.0f}, {:.0f}, {} holes left; {} lips (level:length/points){}", site.id,
-				capture.GetWidth(), capture.GetHeight(), capture.GetOriginX(), capture.GetOriginY(), holes, capture.GetLips().size(), lips);
-			const uint32_t* ends = capture.GetStreamEnds();
-			uint32_t replaced = 0;
-			for (const bool withLip : capture.GetFallsWithLips())
-				replaced += withLip ? 1 : 0;
-			logger::info("[Fluid Field] Waterfall site #{} streams: {} drawn; ended in a pool {}, stalled {}, left the capture {}; {} of {} falling-water meshes replaced", site.id,
-				capture.GetStreamCount(), ends[0], ends[1], ends[2], replaced, falls.size());
-			RefreshSheets();
-			if (consoleSummary) {
-				if (auto* console = RE::ConsoleLog::GetSingleton())
-					console->Print("[Fluid Field] site #%u: %zu lips", site.id, capture.GetLips().size());
-			}
+			logger::info("[Fluid Field] Waterfall site #{} ground captured: {}x{} at {:.0f}, {:.0f}, {} holes left", site.id, capture.GetWidth(), capture.GetHeight(),
+				capture.GetOriginX(), capture.GetOriginY(), holes);
+			RefreshGrounded();
 			return;
 		}
 	}
@@ -297,8 +269,8 @@ namespace FluidFieldSim
 				FxClass cls;
 				if (!Classify(ModelOf(a_ref->GetBaseObject()), cls))
 					return RE::BSContainer::ForEachResult::kContinue;
-				FxRef ref{ a_ref->GetFormID(), cls, {}, {}, {}, {} };
-				if (WorldBounds(*a_ref, ref.min, ref.max, ref.topEdge, ref.bottomCentre))
+				FxRef ref{ a_ref->GetFormID(), cls, {}, {} };
+				if (WorldBounds(*a_ref, ref.min, ref.max))
 					found.push_back(ref);
 				return RE::BSContainer::ForEachResult::kContinue;
 			});
@@ -507,7 +479,7 @@ namespace FluidFieldSim
 				site.kind = site.levels.size() > 2 ? Kind::Cascade : Kind::Fall;
 		}
 
-		// S4 and S5: a capture per site with a drop, kept across rebuilds while the site is the same
+		// S4: a capture per site with a drop, kept across rebuilds while the site is the same
 		std::unordered_map<uint64_t, FallCapture> kept;
 		for (auto& site : sites) {
 			if (site.kind != Kind::Fall && site.kind != Kind::Cascade && site.kind != Kind::NoBottom)
@@ -518,8 +490,9 @@ namespace FluidFieldSim
 				mix(site.fallMin[k]);
 				mix(site.fallMax[k]);
 			}
-			for (const float level : LipLevels(site))
+			for (const float level : site.levels)
 				mix(level);
+			mix(site.bottom);
 			key = key ? key : 1;
 			site.captureKey = key;
 			if (kept.contains(key))
@@ -532,15 +505,7 @@ namespace FluidFieldSim
 			capture.Begin(site.fallMin, site.fallMax, site.top, site.bottom);
 		}
 		captures.swap(kept);
-		RefreshSheets();
-	}
-
-	void FallSites::SetReplace(bool a_replace)
-	{
-		if (a_replace == replace)
-			return;
-		replace = a_replace;
-		RefreshSheets();
+		RefreshGrounded();
 	}
 
 	void FallSites::BuildGroundMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const
@@ -566,84 +531,6 @@ namespace FluidFieldSim
 					stored = std::max(stored, height);
 				}
 			}
-		}
-	}
-
-	void FallSites::ShowAll()
-	{
-		for (auto& [formID, root] : hidden) {
-			if (root)
-				root->SetAppCulled(false);
-		}
-		hidden.clear();
-	}
-
-	void FallSites::RefreshSheets()
-	{
-		sheets.clear();
-		std::unordered_map<uint32_t, bool> replaced;  // Form IDs of falling water a drawn lip stands in for
-		for (const auto& site : sites) {
-			const FallCapture* capture = GetCapture(site);
-			if (!capture || !capture->IsComplete() || capture->GetStreamCount() == 0)
-				continue;
-			sheets.insert(sheets.end(), capture->GetStreams().begin(), capture->GetStreams().end());
-			// The falling-water members in the order CaptureStep gave them to ExtractLips
-			const auto& withLips = capture->GetFallsWithLips();
-			std::size_t index = 0;
-			for (const uint32_t member : site.members) {
-				if (refs[member].cls != FxClass::Body)
-					continue;
-				if (index < withLips.size() && withLips[index])
-					replaced[refs[member].formID] = true;
-				index++;
-			}
-		}
-		sheetVersion++;
-
-		// D26: the falling-water meshes of every site with captured ground are grounded on it
-		grounded.clear();
-		for (const auto& site : sites) {
-			const FallCapture* capture = GetCapture(site);
-			if (!capture || !capture->IsComplete())
-				continue;
-			for (const uint32_t member : site.members) {
-				if (refs[member].cls != FxClass::Body)
-					continue;
-				auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refs[member].formID);
-				auto* root = ref ? ref->Get3D() : nullptr;
-				if (!root)
-					continue;
-				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-					grounded.insert(a_geometry);
-					return RE::BSVisit::BSVisitControl::kContinue;
-				});
-			}
-		}
-		groundVersion++;
-
-		// S10: hide what is replaced, show again what no longer is
-		for (auto it = hidden.begin(); it != hidden.end();) {
-			if (replace && replaced.contains(it->first)) {
-				++it;
-				continue;
-			}
-			if (it->second)
-				it->second->SetAppCulled(false);
-			it = hidden.erase(it);
-		}
-		if (!replace)
-			return;
-		for (const auto& [formID, unused] : replaced) {
-			auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(formID);
-			auto* root = ref ? ref->Get3D() : nullptr;
-			if (!root)
-				continue;
-			// Its 3D may have been reloaded since it was hidden
-			auto& entry = hidden[formID];
-			if (entry.get() == root)
-				continue;
-			root->SetAppCulled(true);
-			entry.reset(root);
 		}
 	}
 
@@ -809,36 +696,7 @@ namespace FluidFieldSim
 					rectangle(site.centroid[0] - 64.0f, site.centroid[1] - 64.0f, site.centroid[0] + 64.0f, site.centroid[1] + 64.0f, site.levels[i], outline);
 				}
 			}
-			// S4 and S5: each level's shoreline on the captured ground, thin; lips thick red, with ticks the
-			// way the water falls
 			const FallCapture* capture = GetCapture(site);
-			if (capture && capture->IsComplete()) {
-				const auto segment = [&](float ax, float ay, float bx, float by, float z, ImU32 a_color, float a_thickness) {
-					ImVec2 pa, pb;
-					if (project(ax, ay, z, pa) && project(bx, by, z, pb))
-						a_drawList->AddLine(pa, pb, a_color, a_thickness);
-				};
-				for (const auto& edge : capture->GetEdges()) {
-					if (edge.lip)
-						continue;
-					const bool isTop = std::abs(edge.z - site.top) <= LEVEL_TOLERANCE;
-					const bool isBottom = std::abs(edge.z - site.bottom) <= LEVEL_TOLERANCE;
-					const ImU32 color = isTop ? IM_COL32(80, 255, 120, 150) : isBottom ? IM_COL32(80, 140, 255, 150) :
-					                                                                     IM_COL32(80, 230, 210, 150);
-					segment(edge.a[0], edge.a[1], edge.b[0], edge.b[1], edge.z + 2.0f, color, 1.5f);
-				}
-				for (const auto& lip : capture->GetLips()) {
-					for (std::size_t i = 0; i < lip.points.size(); i++) {
-						const auto& p = lip.points[i];
-						if (i > 0) {
-							const auto& q = lip.points[i - 1];
-							segment(q.position[0], q.position[1], p.position[0], p.position[1], lip.level + 2.0f, IM_COL32(255, 50, 50, 255), 4.0f);
-						}
-						if (i % 4 == 0)
-							segment(p.position[0], p.position[1], p.position[0] + p.normal[0] * 32.0f, p.position[1] + p.normal[1] * 32.0f, lip.level + 2.0f, IM_COL32(255, 200, 200, 255), 2.0f);
-					}
-				}
-			}
 			ImVec2 label;
 			if (project(site.centroid[0], site.centroid[1], site.top + 48.0f, label)) {
 				label.x = std::clamp(label.x, 8.0f, display.x - 420.0f);
@@ -848,7 +706,7 @@ namespace FluidFieldSim
 				if (site.kind == Kind::Failed && site.failure)
 					text += std::format("  [{}]", site.failure);
 				if (capture)
-					text += capture->IsComplete() ? std::format("  lips {}", capture->GetLips().size()) : std::format("  capturing {:.0f}%", capture->GetProgress() * 100.0f);
+					text += capture->IsComplete() ? std::string("  grounded") : std::format("  capturing {:.0f}%", capture->GetProgress() * 100.0f);
 				a_drawList->AddText(ImVec2(label.x + 1, label.y + 1), IM_COL32(0, 0, 0, 220), text.c_str());
 				a_drawList->AddText(label, kindColor(site.kind), text.c_str());
 			}

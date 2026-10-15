@@ -581,13 +581,20 @@ Entry format:
     constants at b13, ground at t120), bends their vertices onto the rock
     (out of rock sideways off steep faces, else up; eased down where they
     hover just above it), and softens them into the rock with foam along the
-    contact using the post-z-prepass depth copy (t121). Next: blending where
-    two falling-water meshes meet, then a surface simulation in each mesh's
-    texture space driving its flow and vertices.
+    contact using the post-z-prepass depth copy (t121). The pixel shader also
+    flows the texture around rock in the way: the mesh's flow direction comes
+    from its texture coordinates (down the fall along v), rock near the
+    surface turns it aside, and a two-phase flowmap carries the turn, with
+    foam in the wake. Ground Waterfalls toggles it for A/B against vanilla.
+    Next: blending where two falling-water meshes meet, then a surface
+    simulation in each mesh's texture space driving its flow and vertices;
+    later, vanilla's waterfall mist made volumetric through the ground fog.
 -   Alternatives rejected: D25's own traced sheets (ribbons per stream): they
     read as flat paper with combs at the lips and strands across the rock;
     shading invented from scratch looks painted next to vanilla's authored
-    falls. Kept behind Replace Waterfalls (off by default) as an experiment.
+    falls. Removed: the sheet renderer, lip finding and stream tracing (S5 to
+    S7), mesh hiding (S10), Replace Waterfalls, and D24's FallBed; git history
+    keeps them.
 -   Decided by: @Victor ("why cant we base it off the existing meshes but add
     some grounding to it?"; "if we can get those water meshes to interact
     with cliffs/rocks and with each other, we're golden")

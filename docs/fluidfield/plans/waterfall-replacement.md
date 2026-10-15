@@ -278,3 +278,12 @@ Agreed with @Victor when this design replaced D24 (simulated water down the rock
 -   **M6 caching** stays last and may be optional; the rays over the White River falls took a few seconds.
 -   **Removed with D25:** the D24 lip sources, the fall bed overriding the solver's bed, and the `SimSurface` pass. Vanilla falls stay visible until M4 replaces them.
 -   **Debug overlays** are drawn in the world through ImGui's background draw list, projected with the player's NiCamera.
+
+## D26: grounding instead of replacement
+
+S7 (custom sheets) and S10 (hiding vanilla) were dropped: the traced sheets looked painted next to vanilla's authored falls. Vanilla's falling-water meshes stay and are grounded on S4's captured rock in CS's effect shader: vertices bent onto the rock, the texture flowed around rock in the way, and the water softened into the rock with foam at the contact. S5 (lips) and S6 (tracing) were removed with the sheets. Open items:
+
+-   Blending where two falling-water meshes meet (the upper one pouring into the lower one, not a hard seam).
+-   A surface simulation in each mesh's texture space driving its flow and vertex displacement.
+-   S8 coupling from where each fall really lands.
+-   Vanilla's waterfall mist made volumetric through the ground fog (D21).

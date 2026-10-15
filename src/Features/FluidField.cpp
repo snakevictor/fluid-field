@@ -57,7 +57,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ReplaceVanillaFoam,
 	Waterfalls,
 	WaterfallStrength,
-	ReplaceWaterfalls)
+	GroundWaterfalls)
 
 void FluidField::DrawSettings()
 {
@@ -275,19 +275,18 @@ void FluidField::DrawSettings()
 		ImGui::Text("%s", T(TKEY("waterfalls_tooltip"), "Waterfalls landing on the simulated water churn it, push it out and downstream, and foam it."));
 	}
 	ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Waterfall Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-	ImGui::Checkbox(T(TKEY("replace_waterfalls"), "Replace Waterfalls"), &settings.ReplaceWaterfalls);
+	ImGui::Checkbox(T(TKEY("ground_waterfalls"), "Ground Waterfalls"), &settings.GroundWaterfalls);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("%s", T(TKEY("replace_waterfalls_tooltip"), "Draws Fluid Field's own falling water, traced over the rock from each waterfall's lip, in place of vanilla's waterfall meshes. Vanilla's mist and splashes stay."));
+		ImGui::Text("%s", T(TKEY("ground_waterfalls_tooltip"), "Bends vanilla's waterfall meshes onto the rock they run over, flows them around rocks in their way, and softens them into the rock with foam where they meet it. Off shows vanilla's waterfalls unchanged."));
 	}
-	ImGui::Text(T(TKEY("waterfalls_replaced"), "Vanilla waterfall meshes replaced: %u"), fallSites.GetHiddenCount());
 	ImGui::Text(T(TKEY("waterfall_sites"), "Waterfall sites: %u falls, %u cascades, %u rapids, %u no bottom, %u failed"),
 		fallSites.CountKind(FluidFieldSim::FallSites::Kind::Fall), fallSites.CountKind(FluidFieldSim::FallSites::Kind::Cascade),
 		fallSites.CountKind(FluidFieldSim::FallSites::Kind::Rapids), fallSites.CountKind(FluidFieldSim::FallSites::Kind::NoBottom),
 		fallSites.CountKind(FluidFieldSim::FallSites::Kind::Failed));
 	{
-		uint32_t captured, captures, lips;
-		fallSites.CountCaptures(captured, captures, lips);
-		ImGui::Text(T(TKEY("waterfall_captures"), "Waterfall ground captured: %u of %u, %u lips"), captured, captures, lips);
+		uint32_t captured, captures;
+		fallSites.CountCaptures(captured, captures);
+		ImGui::Text(T(TKEY("waterfall_captures"), "Waterfall ground captured: %u of %u"), captured, captures);
 	}
 	ImGui::Text(T(TKEY("waterfalls_found"), "Waterfalls driving the water: %u"), static_cast<uint32_t>(waterfalls.GetFalls().size()));
 	ImGui::SliderFloat(T(TKEY("water_tint"), "Water Tint"), &settings.WaterTint, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -539,7 +538,6 @@ void FluidField::ClearShaderCache()
 	groundFogFailed = false;
 	nearWater.solver.ReleaseShaders();
 	waterShaderFailed = false;
-	fallSheets.ReleaseShaders();
 }
 
 bool FluidField::EnsureSolver()
@@ -852,7 +850,6 @@ void FluidField::Prepass()
 			waterfalls.Update(water, playerPos.x, playerPos.y, simulated);
 			// Waterfall sites reconstructed from vanilla's layout (D25)
 			fallSites.SetConsoleSummary(showFallSites);
-			fallSites.SetReplace(settings.ReplaceWaterfalls);
 			fallSites.Update(water);
 			UpdateFallGround(playerPos);
 		} else {
@@ -930,8 +927,6 @@ void FluidField::ReleaseWater()
 	vanillaFoam.RestoreAll();
 	waterfalls.Clear();
 	fallSites.Clear();
-	fallBed.Clear();
-	fallSheets.Release();
 	ReleaseFallGround();
 	waterShaderData = {};
 }
@@ -1077,22 +1072,6 @@ void FluidField::DrawGroundFogAfterWorld()
 	auto* renderer = globals::game::renderer;
 	if (!renderer)
 		return;
-
-	// Waterfall sheets first (D25), so the ground fog lies over their base
-	if (settings.WaterEnabled && settings.Waterfalls && settings.ReplaceWaterfalls && cameraSnapshot) {
-		fallSheets.Upload(globals::d3d::device, globals::d3d::context, fallSites.GetSheets(), fallSites.GetSheetVersion());
-		const auto& shadow = globals::game::shadowState->GetRuntimeData();
-		const auto colorIndex = static_cast<uint32_t>(shadow.renderTargets[0]);
-		const auto depthIndex = shadow.depthStencil;
-		if (fallSheets.HasSheets() && colorIndex < RE::RENDER_TARGET::kTOTAL && depthIndex < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
-			auto& target = renderer->GetRuntimeData().renderTargets[colorIndex];
-			auto& depth = renderer->GetDepthStencilData().depthStencils[depthIndex];
-			globals::profiler->BeginPass("FluidField::FallSheets");
-			fallSheets.Draw(globals::d3d::device, globals::d3d::context, target.RTV, target.texture, depth.readOnlyViews[0], cameraSnapshot.get(),
-				globals::state->sharedDataCB->CB(), globals::state->featureDataCB->CB(), waterfallTime, FALL_SHEET_OPACITY);
-			globals::profiler->EndPass();
-		}
-	}
 
 	if (!settings.InteractiveFog || !fogReady)
 		return;
@@ -1448,20 +1427,22 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	fallGroundOrigin[1] = std::floor((a_playerPos.y - half) / FALL_GROUND_CELL) * FALL_GROUND_CELL;
 	fallSites.BuildGroundMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallGroundScratch);
 	context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, fallGroundScratch.data(), FALL_GROUND_SIZE * sizeof(float), 0);
-	const FallGroundData on{ { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET, FALL_GROUND_CLING, FALL_GROUND_CONTACT };
+	const FallGroundData on{ { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET, FALL_GROUND_CLING, FALL_GROUND_CONTACT,
+		FALL_FLOW_DISTANCE, FALL_FLOW_PERIOD, FALL_REACH_ABOVE, FALL_REACH_WIDTH };
 	context->UpdateSubresource(fallGroundOn.get(), 0, nullptr, &on, 0, 0);
 }
 
 void FluidField::SetupEffectGeometry(RE::BSRenderPass* a_pass)
 {
 	auto* context = globals::d3d::context;
-	const bool grounded = fallGroundSRV && settings.Enabled && settings.WaterEnabled && settings.Waterfalls && a_pass && a_pass->geometry && fallSites.IsGrounded(a_pass->geometry);
+	const bool grounded = fallGroundSRV && settings.Enabled && settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && a_pass && a_pass->geometry && fallSites.IsGrounded(a_pass->geometry);
 	if (grounded) {
 		ID3D11Buffer* constants = fallGroundOn.get();
 		context->VSSetConstantBuffers(13, 1, &constants);
 		context->PSSetConstantBuffers(13, 1, &constants);
 		ID3D11ShaderResourceView* heights = fallGroundSRV.get();
 		context->VSSetShaderResources(120, 1, &heights);
+		context->PSSetShaderResources(120, 1, &heights);
 		ID3D11ShaderResourceView* depth = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
 		context->PSSetShaderResources(121, 1, &depth);
 		fallGroundBound = true;

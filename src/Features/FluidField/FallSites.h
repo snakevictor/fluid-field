@@ -2,7 +2,6 @@
 
 #include "FallCapture.h"
 
-#include <array>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -26,9 +25,10 @@ namespace FluidFieldSim
 	 * RAPIDS_CLUSTER_RADIUS (rivers are lined with them, so a wider radius links whole gorges). S3, pairing: the water planes around a
 	 * site give its levels; the highest near its top is the top level, the lowest near its bottom the
 	 * bottom level, and more than two distinct heights make a cascade of tiers. A drop under
-	 * RAPIDS_THRESHOLD is rapids. Rebuilt when the loaded references or water change. S4 and S5 (the
-	 * ground under each fall, cascade and fall without a bottom, and its lips) are FallCapture's, cast
-	 * a little every update and kept while the site stays the same. Runs on the main thread.
+	 * RAPIDS_THRESHOLD is rapids. Rebuilt when the loaded references or water change. S4, the rock
+	 * under each fall, cascade and fall without a bottom, is FallCapture's, cast a little every update
+	 * and kept while the site stays the same; D26 grounds the site's falling-water meshes on it. Runs on
+	 * the main thread.
 	 */
 	class FallSites
 	{
@@ -50,8 +50,6 @@ namespace FluidFieldSim
 			FxClass cls;
 			float min[3];  ///< World bounds
 			float max[3];
-			std::vector<std::array<float, 2>> topEdge;  ///< Its vertices within TOP_EDGE of its top, across: where its water goes over
-			float bottomCentre[2];                      ///< Across, the middle of its vertices within TOP_EDGE of its bottom: where its water goes
 		};
 
 		enum class Kind : uint8_t
@@ -97,21 +95,10 @@ namespace FluidFieldSim
 
 		const std::vector<FxRef>& GetRefs() const { return refs; }
 		const std::vector<Site>& GetSites() const { return sites; }
-		/** @brief A site's ground capture and lips; null for rapids and failed sites. */
+		/** @brief A site's ground capture; null for rapids and failed sites. */
 		const FallCapture* GetCapture(const Site& a_site) const;
-		/** @brief Counts for the menu: captures complete and in all, and lips found. */
-		void CountCaptures(uint32_t& a_complete, uint32_t& a_total, uint32_t& a_lips) const;
-
-		/**
-		 * @brief S7 and S10: whether sites with traced streams draw Fluid Field's sheets in place of
-		 * vanilla's falling water. When on, the falling-water meshes a lip was found for are hidden;
-		 * when off, or when a site goes, they are shown again.
-		 */
-		void SetReplace(bool a_replace);
-		/** @brief Every traced stream of every site, FallCapture::STREAM_ROWS points each; changes with GetSheetVersion. */
-		const std::vector<FallCapture::StreamPoint>& GetSheets() const { return sheets; }
-		uint64_t GetSheetVersion() const { return sheetVersion; }
-		uint32_t GetHiddenCount() const { return static_cast<uint32_t>(hidden.size()); }
+		/** @brief Counts for the menu: ground captures complete, and in all. */
+		void CountCaptures(uint32_t& a_complete, uint32_t& a_total) const;
 
 		/**
 		 * @brief Grounding (D26): whether a geometry is part of a vanilla falling-water mesh at a site
@@ -146,7 +133,6 @@ namespace FluidFieldSim
 		static constexpr float NEAR_LEVEL_ABOVE = 64.0f;  ///< How far above its falling water's top a plane may lie and still pair
 		static constexpr float LEVEL_TOLERANCE = 16.0f;
 		static constexpr float RAPIDS_THRESHOLD = 64.0f;
-		static constexpr float TOP_EDGE = 48.0f;
 		static constexpr double CAPTURE_BUDGET_MS = 1.0;  ///< Ray casting per update
 
 	private:
@@ -155,11 +141,8 @@ namespace FluidFieldSim
 		void Rebuild(const WaterSurfaces& a_water);
 		void Summarise();
 		void CaptureStep();
-		/** @brief Gathers the streams and hides or shows vanilla's falling water to match. */
-		void RefreshSheets();
-		void ShowAll();
-		/** @brief The levels a site's lips are found at: its levels, and the ground it ends on when it has no bottom. */
-		static std::vector<float> LipLevels(const Site& a_site);
+		/** @brief Collects the geometry of the falling-water meshes at sites with captured ground. */
+		void RefreshGrounded();
 
 		std::vector<FxRef> refs;
 		std::vector<Site> sites;
@@ -169,10 +152,6 @@ namespace FluidFieldSim
 		bool consoleSummary = false;
 		std::unordered_map<uint64_t, std::string> cellSummaries;  ///< Last summary logged per cell
 		std::unordered_map<uint64_t, FallCapture> captures;       ///< By Site::captureKey
-		std::vector<FallCapture::StreamPoint> sheets;
-		uint64_t sheetVersion = 0;
-		bool replace = false;
-		std::unordered_map<uint32_t, RE::NiPointer<RE::NiAVObject>> hidden;  ///< Vanilla falling water hidden, by form ID: the 3D culled
 		std::unordered_set<const RE::BSGeometry*> grounded;
 		uint64_t groundVersion = 0;
 	};
