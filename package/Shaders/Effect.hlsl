@@ -925,9 +925,13 @@ PS_OUTPUT main(PS_INPUT input)
 #	endif
 	psout.Diffuse = finalColor;
 #	if defined(FLUID_FIELD)
-	// Fluid Field (D26) debug: the rock field over dark blue, push strength as red, rock presence as green
+	// Fluid Field (D26) debug: push strength as red, rock presence as green, blue where the rock map covers the pixel
 	[branch] if (FallGround::Enabled && FallGround::DebugMode == 1)
-		psout.Diffuse.xyz = float3(saturate(length(fallRock.xy) / 64.0), saturate(fallRock.z), 0.3);
+	{
+		float ground;
+		const bool covered = FallGround::Height(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy, ground);
+		psout.Diffuse.xyz = float3(saturate(length(fallRock.xy) / 64.0), saturate(fallRock.z), covered ? 0.6 : 0.0);
+	}
 #	endif
 #	if defined(LIGHTING) && defined(LIGHT_LIMIT_FIX) && defined(LLFDEBUG)
 	if (SharedData::lightLimitFixSettings.EnableLightsVisualisation) {
