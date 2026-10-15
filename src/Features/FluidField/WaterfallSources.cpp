@@ -42,10 +42,12 @@ namespace FluidFieldSim
 		/** @brief Per-second slowing of water sliding on rock, and the slowest it slides. */
 		constexpr float SLIDE_FRICTION = 0.6f;
 		constexpr float MIN_SLIDE_SPEED = 80.0f;
+		/** @brief Rock rising more than this above the water ahead is a wall: water does not climb it. */
+		constexpr float MAX_CLIMB = 8.0f;
 		/** @brief Water lying on rock sits this far above it, world units. */
 		constexpr float ROCK_OFFSET = 6.0f;
 		/** @brief Bed rays start this far above the arc and reach this far below it, world units. */
-		constexpr float RAY_ABOVE = 96.0f;
+		constexpr float RAY_ABOVE = 12.0f;
 		constexpr float RAY_BELOW = 2048.0f;
 
 		bool IsSolidLayer(RE::COL_LAYER a_layer)
@@ -249,7 +251,7 @@ namespace FluidFieldSim
 
 		struct PathPoint
 		{
-			float x, y, z, speed, onRock;
+			float x, y, z, speed, onRock, time;
 		};
 		std::vector<PathPoint> path;
 		a_body.curtain.resize(static_cast<std::size_t>(CURTAIN_COLUMNS) * CURTAIN_ROWS);
@@ -267,20 +269,31 @@ namespace FluidFieldSim
 			float bed = z - RAY_BELOW;
 			bool haveBed = CastDown(world, x, y, z + RAY_ABOVE, z - RAY_BELOW, bed);
 			path.clear();
-			path.push_back({ x, y, z, horizontal, 0.0f });
+			float time = 0.0f;
+			path.push_back({ x, y, z, horizontal, 0.0f, 0.0f });
 			for (uint32_t step = 0; step < MAX_TRACE_STEPS && z > endZ && travelled < maxTravel; step++) {
 				const float previousBed = bed;
 				const bool hadBed = haveBed;
-				x += dir[0] * horizontal * TRACE_STEP;
-				y += dir[1] * horizontal * TRACE_STEP;
+				const float nextX = x + dir[0] * horizontal * TRACE_STEP;
+				const float nextY = y + dir[1] * horizontal * TRACE_STEP;
+				float nextBed = 0.0f;
+				const bool nextHasBed = CastDown(world, nextX, nextY, z + RAY_ABOVE, z - RAY_BELOW, nextBed);
+				// Water does not climb: rock rising ahead is a wall, and the column ends against it
+				if (nextHasBed && nextBed > z + MAX_CLIMB)
+					break;
+				x = nextX;
+				y = nextY;
+				bed = nextBed;
+				haveBed = nextHasBed;
 				travelled += horizontal * TRACE_STEP;
-				haveBed = CastDown(world, x, y, z + RAY_ABOVE, z - RAY_BELOW, bed);
+				time += TRACE_STEP;
 				vz -= GRAVITY * TRACE_STEP;
-				float nextZ = z + vz * TRACE_STEP;
+				// Never upward
+				float nextZ = std::min(z + vz * TRACE_STEP, z);
 				float onRock = 0.0f;
 				if (haveBed && nextZ < bed + ROCK_OFFSET) {
 					// On the rock: follow it, sliding faster where it is steep
-					nextZ = bed + ROCK_OFFSET;
+					nextZ = std::min(bed + ROCK_OFFSET, z);
 					const float run = std::max(horizontal * TRACE_STEP, 1.0f);
 					const float fall = hadBed ? std::max(previousBed - bed, 0.0f) : 0.0f;
 					const float slope = fall / run;
@@ -290,7 +303,7 @@ namespace FluidFieldSim
 					onRock = 1.0f;
 				}
 				z = nextZ;
-				path.push_back({ x, y, z, std::sqrt(horizontal * horizontal + vz * vz), onRock });
+				path.push_back({ x, y, z, std::sqrt(horizontal * horizontal + vz * vz), onRock, time });
 			}
 
 			// Resample the path into evenly spaced rows by distance along it
@@ -319,7 +332,7 @@ namespace FluidFieldSim
 				point.speed = a.speed + (b.speed - a.speed) * t;
 				point.across = across;
 				point.onRock = a.onRock + (b.onRock - a.onRock) * t;
-				point.distance = wanted;
+				point.travelTime = a.time + (b.time - a.time) * t;
 			}
 		}
 	}
