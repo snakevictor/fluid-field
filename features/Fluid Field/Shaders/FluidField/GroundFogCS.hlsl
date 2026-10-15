@@ -11,18 +11,24 @@
 #include "Common/Math.hlsli"
 #include "Common/Random.hlsli"
 #include "Common/SharedData.hlsli"
+#include "FluidField/FogPattern.hlsli"
 
 cbuffer GroundFogCB : register(b0)
 {
-	int2 GridMin;       // World cell of the field's logical texel (0, 0)
-	uint GridRes;       // Texels per side, a power of two
-	float CellSize;     // World units per texel
-	float Density;      // Extinction per world unit at the ground where the field is 1
-	float Thickness;    // Height of the layer's top above the ground where the field is 1
-	float MaxHeight;    // Highest ground in the grid, world units
-	uint StepCount;     // Samples along each ray
-	float3 Albedo;      // Colour of the fog's scattering, times its brightness
-	float MaxDistance;  // Rays stop here, world units (inside the field)
+	int2 GridMin;          // World cell of the field's logical texel (0, 0)
+	uint GridRes;          // Texels per side, a power of two
+	float CellSize;        // World units per texel
+	float Density;         // Extinction per world unit at the ground where the field is 1
+	float Thickness;       // Height of the layer's top above the ground where the field is 1
+	float MaxHeight;       // Highest ground in the grid, world units
+	uint StepCount;        // Samples along each ray
+	float3 Albedo;         // Colour of the fog's scattering, times its brightness
+	float MaxDistance;     // Rays stop here, world units (inside the ground map)
+	int2 GroundMin;        // World cell (of GroundCellSize) of the ground map's texel (0, 0); it covers the whole fog area
+	uint GroundRes;        // Ground map texels per side, a power of two
+	float GroundCellSize;  // World units per ground map texel
+	float2 PatternOffset;  // How far the resting pattern has drifted with the weather's wind, world units
+	float2 FogPad;
 };
 
 Texture2D<float> DepthTexture : register(t0);
@@ -31,8 +37,10 @@ Texture2D<float> GroundHeight : register(t2);
 Texture2D<float2> Wind : register(t3);
 RWTexture2D<float4> MainRW : register(u0);
 
-/** Fraction of the field's width over which the fog fades out toward its edge. */
+/** Fraction of the simulated area's width over which it hands over to the resting fog beyond it. */
 static const float EDGE_FADE = 0.2;
+/** Fraction of the ground map's width over which the fog fades out at the edge of the fog area. */
+static const float AREA_FADE = 0.15;
 /** Forward-scattering anisotropy (Henyey-Greenstein g): mist glows a little toward the sun. */
 static const float PHASE_G = 0.25;
 /** Share of the sun in the fog's light; ground fog sits low and is mostly lit by the sky. */
@@ -59,52 +67,56 @@ static const float WISP_MAX_DRIFT = 200.0;
 /** Ground below this is unknown land: no fog there. */
 static const float NO_GROUND = -1.0e6;
 
-/** Field value and ground height at an absolute world position, bilinear; fog fades to 0 at the grid edge. */
-void SampleField(float2 worldXY, out float fog, out float ground)
+/** Bilinear ground height from the ground map; very low (no fog) where unknown or outside it. */
+float SampleGround(float2 worldXY, out float areaFade)
 {
+	const float2 cellPosition = worldXY / GroundCellSize - 0.5;
+	const float2 logical = cellPosition - float2(GroundMin);
+	const float fromEdge = min(min(logical.x, logical.y), min(GroundRes - 1 - logical.x, GroundRes - 1 - logical.y));
+	areaFade = smoothstep(0.0, 1.0, fromEdge / (AREA_FADE * GroundRes));
+	if (fromEdge <= 0.0)
+		return NO_GROUND * 10.0;
+	const int2 c = int2(floor(cellPosition));
+	const float2 t = cellPosition - float2(c);
+	const int mask = int(GroundRes) - 1;
+	const float4 g = float4(GroundHeight.Load(int3(c & mask, 0)), GroundHeight.Load(int3((c + int2(1, 0)) & mask, 0)),
+		GroundHeight.Load(int3((c + int2(0, 1)) & mask, 0)), GroundHeight.Load(int3((c + int2(1, 1)) & mask, 0)));
+	// Unknown ground at any corner keeps the fog away rather than smearing a fake slope
+	return any(g < NO_GROUND) ? NO_GROUND * 10.0 : lerp(lerp(g.x, g.y, t.x), lerp(g.z, g.w, t.x), t.y);
+}
+
+/**
+ * How much fog lies at an absolute world position: the simulation inside the simulated area,
+ * the resting pattern beyond it, handed over smoothly near its edge.
+ */
+float SampleFog(float2 worldXY)
+{
+	const float resting = FogPattern::Resting(worldXY, PatternOffset);
 	const float2 cellPosition = worldXY / CellSize - 0.5;
 	const float2 logical = cellPosition - float2(GridMin);
 	const float fromEdge = min(min(logical.x, logical.y), min(GridRes - 1 - logical.x, GridRes - 1 - logical.y));
-	fog = 0.0;
-	ground = NO_GROUND * 10.0;
 	if (fromEdge <= 0.0)
-		return;
+		return resting;
 	const int2 c = int2(floor(cellPosition));
 	const float2 t = cellPosition - float2(c);
 	const int mask = int(GridRes) - 1;
-	const int3 c00 = int3(c & mask, 0);
-	const int3 c10 = int3((c + int2(1, 0)) & mask, 0);
-	const int3 c01 = int3((c + int2(0, 1)) & mask, 0);
-	const int3 c11 = int3((c + int2(1, 1)) & mask, 0);
-	fog = lerp(lerp(FogField.Load(c00), FogField.Load(c10), t.x), lerp(FogField.Load(c01), FogField.Load(c11), t.x), t.y);
-	const float4 g = float4(GroundHeight.Load(c00), GroundHeight.Load(c10), GroundHeight.Load(c01), GroundHeight.Load(c11));
-	// Unknown ground at any corner keeps the fog away rather than smearing a fake slope
-	ground = any(g < NO_GROUND) ? NO_GROUND * 10.0 : lerp(lerp(g.x, g.y, t.x), lerp(g.z, g.w, t.x), t.y);
-	fog *= smoothstep(0.0, 1.0, fromEdge / (EDGE_FADE * GridRes));
+	const float simulated = lerp(lerp(FogField.Load(int3(c & mask, 0)), FogField.Load(int3((c + int2(1, 0)) & mask, 0)), t.x),
+		lerp(FogField.Load(int3((c + int2(0, 1)) & mask, 0)), FogField.Load(int3((c + int2(1, 1)) & mask, 0)), t.x), t.y);
+	return lerp(resting, simulated, smoothstep(0.0, 1.0, fromEdge / (EDGE_FADE * GridRes)));
 }
 
 /** The wind at an absolute world position, bilinear; zero outside the grid. */
 float2 SampleWind(float2 worldXY)
 {
 	const float2 cellPosition = worldXY / CellSize - 0.5;
+	const float2 logical = cellPosition - float2(GridMin);
+	if (any(logical < 0.0) || any(logical >= float(GridRes) - 1.0))
+		return 0.0;
 	const int2 c = int2(floor(cellPosition));
 	const float2 t = cellPosition - float2(c);
 	const int mask = int(GridRes) - 1;
 	return lerp(lerp(Wind.Load(int3(c & mask, 0)), Wind.Load(int3((c + int2(1, 0)) & mask, 0)), t.x),
 		lerp(Wind.Load(int3((c + int2(0, 1)) & mask, 0)), Wind.Load(int3((c + int2(1, 1)) & mask, 0)), t.x), t.y);
-}
-
-float Hash(float2 p)
-{
-	return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
-}
-
-float ValueNoise(float2 p)
-{
-	const float2 i = floor(p);
-	const float2 f = p - i;
-	const float2 u = f * f * (3.0 - 2.0 * f);
-	return lerp(lerp(Hash(i), Hash(i + float2(1, 0)), u.x), lerp(Hash(i + float2(0, 1)), Hash(i + float2(1, 1)), u.x), u.y);
 }
 
 /**
@@ -118,8 +130,8 @@ float Wisps(float3 position, float2 wind)
 	const float phase0 = frac(time);
 	const float phase1 = frac(time + 0.5);
 	const float2 uv = position.xy / WISP_SIZE + position.z / (WISP_SIZE * 1.5);
-	const float n0 = ValueNoise(uv - drift * phase0) * 0.5 + ValueNoise(uv * 2.3 - drift * phase0 * 2.3) * 0.3 + ValueNoise(uv * 5.1 - drift * phase0 * 5.1 + 1.9) * 0.2;
-	const float n1 = ValueNoise(uv - drift * phase1 + 7.1) * 0.5 + ValueNoise(uv * 2.3 - drift * phase1 * 2.3 + 3.7) * 0.3 + ValueNoise(uv * 5.1 - drift * phase1 * 5.1 + 9.2) * 0.2;
+	const float n0 = FogPattern::ValueNoise(uv - drift * phase0) * 0.5 + FogPattern::ValueNoise(uv * 2.3 - drift * phase0 * 2.3) * 0.3 + FogPattern::ValueNoise(uv * 5.1 - drift * phase0 * 5.1 + 1.9) * 0.2;
+	const float n1 = FogPattern::ValueNoise(uv - drift * phase1 + 7.1) * 0.5 + FogPattern::ValueNoise(uv * 2.3 - drift * phase1 * 2.3 + 3.7) * 0.3 + FogPattern::ValueNoise(uv * 5.1 - drift * phase1 * 5.1 + 9.2) * 0.2;
 	return lerp(n0, n1, abs(phase0 * 2.0 - 1.0));
 }
 
@@ -163,8 +175,9 @@ float HenyeyGreenstein(float cosTheta, float g)
 	[loop] for (uint i = 0; i < StepCount; i++)
 	{
 		const float3 position = camera + direction * ((i + jitter) * stepLength);
-		float fog, ground;
-		SampleField(position.xy, fog, ground);
+		float areaFade;
+		const float ground = SampleGround(position.xy, areaFade);
+		const float fog = SampleFog(position.xy) * areaFade;
 		// A layer on the ground with a soft top: taller where fog is packed, lifted where the air churns
 		const float height = position.z - ground;
 		if (fog <= 0.0 || height > Thickness * 4.0)

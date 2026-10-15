@@ -9,9 +9,11 @@
 namespace FluidFieldSim
 {
 	class LandscapeCache;
+	class WaterSurfaces;
 
 	/**
-	 * @brief Ground height under the wind grid, for the ground fog (D21).
+	 * @brief Ground height under the wind grid, for the ground fog (D21): the landscape, or the water
+	 * surface where there is water over it, so fog lies on rivers and lakes as mist.
 	 *
 	 * A float texture on the wind grid, stored toroidally like the field: world cell c lives in
 	 * texel c & (res - 1). As the grid scrolls only the cells that came into it are sampled from
@@ -29,7 +31,8 @@ namespace FluidFieldSim
 		 * @brief Brings the map up to date with the grid's placement and uploads what changed.
 		 * @return False if the texture could not be created.
 		 */
-		bool Update(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const LandscapeCache& a_landscape, const int32_t a_gridMin[2], uint32_t a_resolution, float a_cellSize);
+		bool Update(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const int32_t a_gridMin[2],
+			uint32_t a_resolution, float a_cellSize);
 
 		void Release();
 

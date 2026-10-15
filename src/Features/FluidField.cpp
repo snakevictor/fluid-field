@@ -710,6 +710,10 @@ void FluidField::Prepass()
 		fogParams.refillRate = 1.0f / settings.FogRefillSeconds;
 		fogParams.stirRate *= settings.FogStir;
 		fogParams.displaceSpeed *= settings.FogStir;
+		fogPatternOffset[0] += fogParams.drift[0] * deltaTime;
+		fogPatternOffset[1] += fogParams.drift[1] * deltaTime;
+		fogParams.patternOffset[0] = fogPatternOffset[0];
+		fogParams.patternOffset[1] = fogPatternOffset[1];
 		if (const auto* sky = RE::Sky::GetSingleton(); sky && sky->currentWeather) {
 			// Wind speed and direction are stored as 0-255; direction 0 blows from the north
 			const float speed = static_cast<float>(sky->currentWeather->data.windSpeed) / 255.0f * MAX_WEATHER_DRIFT;
@@ -751,7 +755,11 @@ void FluidField::Prepass()
 	if (fog) {
 		// The ground the fog lies on, under the wind grid
 		globals::profiler->BeginPass("FluidField::Fog Ground");
-		fogReady = groundHeight.Update(globals::d3d::device, context, landscape, gridMin, settings.GridResolution, cellSize);
+		// The ground under the whole fog area, wider than the simulated one
+		const int32_t groundHalf = static_cast<int32_t>(FOG_GROUND_RESOLUTION / 2);
+		fogGroundMin[0] = static_cast<int32_t>(std::floor(playerPos.x / FOG_GROUND_CELL)) - groundHalf;
+		fogGroundMin[1] = static_cast<int32_t>(std::floor(playerPos.y / FOG_GROUND_CELL)) - groundHalf;
+		fogReady = groundHeight.Update(globals::d3d::device, context, landscape, water, fogGroundMin, FOG_GROUND_RESOLUTION, FOG_GROUND_CELL);
 		globals::profiler->EndPass();
 		fogGridMin[0] = gridMin[0];
 		fogGridMin[1] = gridMin[1];
@@ -993,6 +1001,24 @@ FluidField::WaterShaderData FluidField::GetCommonBufferData() const
 	return data;
 }
 
+void FluidField::DrawGroundFogAfterWorld()
+{
+	if (!loaded || !settings.Enabled || !settings.InteractiveFog || !fogReady || !globals::state->inWorld)
+		return;
+	auto* renderer = globals::game::renderer;
+	if (!renderer)
+		return;
+	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+	if (!main.UAV || !depth.depthSRV)
+		return;
+
+	// The live depth holds the water surfaces; it can only be read once it is no longer bound
+	globals::d3d::context->OMSetRenderTargets(0, nullptr, nullptr);
+	DrawGroundFog(main.UAV, depth.depthSRV);
+	globals::game::shadowState->GetRuntimeData().stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
+}
+
 void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderResourceView* a_depth)
 {
 	if (!loaded || !settings.Enabled || !settings.InteractiveFog || !fogReady || settings.FogDensity <= 0.0f || !a_main || !a_depth || groundFogFailed)
@@ -1023,7 +1049,12 @@ void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderRe
 		.maxHeight = groundHeight.GetMaxHeight(),
 		.stepCount = GROUND_FOG_STEPS,
 		.albedo = { 0.9f * settings.FogBrightness, 0.92f * settings.FogBrightness, 0.95f * settings.FogBrightness },
-		.maxDistance = 0.5f * cellSize * static_cast<float>(settings.GridResolution)
+		.maxDistance = 0.5f * FOG_GROUND_CELL * static_cast<float>(FOG_GROUND_RESOLUTION),
+		.groundMin = { fogGroundMin[0], fogGroundMin[1] },
+		.groundRes = FOG_GROUND_RESOLUTION,
+		.groundCellSize = FOG_GROUND_CELL,
+		.patternOffset = { fogPatternOffset[0], fogPatternOffset[1] },
+		.pad = {}
 	};
 	D3D11_MAPPED_SUBRESOURCE mapped{};
 	if (FAILED(context->Map(groundFogCB.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))

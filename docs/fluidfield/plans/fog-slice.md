@@ -7,9 +7,10 @@ Goal: ground fog that actors and the weather's wind push around, so it parts and
 -   **Wind (exists).** The wind solver: 2D, incompressible, 256 cells over 4096 units around the player, toroidal. So far only the test puff drives it.
 -   **Fog layer (new).** How much fog lies on each cell of the wind grid (0 to 1). Carried along by the wind (semi-Lagrangian, like the water's foam), carved where actors pass, thinned where the air is stirred, and refilling over some seconds toward a resting pattern of banks and clearings.
 -   **Drivers (new).**
-    -   Actors: each moving actor near the player pushes the air along its velocity, like wakes push the water (reuse `WakeSources`' actor scan). This carves trails and swirls.
+    -   Actors: each moving foot, lower leg and hip (from the skeleton, not the collision capsule; the whole body for creatures) pushes the air along its velocity and ploughs the fog aside by its speed. Standing still pushes nothing, so the fog settles back. The wind keeps the swirls alive with vorticity confinement.
     -   Weather wind: the current weather's wind speed and direction carry the fog as a uniform drift.
--   **Rendering (Fluid Field's own pass).** After the deferred composite, a compute pass marches each pixel's ray up to the scene depth through fog lying on the ground: density = Fog Density x the fog layer x exp(-height above ground / Fog Thickness), ground height from the landscape cache under the wind grid. Lit by the sun (Henyey-Greenstein forward scattering) and the ambient light; jittered for TAA.
+-   **Area.** The fog is drawn over 8192 units around the player (the ground map, 512 texels of 16 units); only the wind grid's area is simulated, and beyond it the fog lies in its resting pattern (`FogPattern.hlsli`, shared with the simulation), drifting with the weather's wind.
+-   **Rendering (Fluid Field's own pass).** Runs after the world is rendered (water and transparents included), before first person, TAA, upscaling and tonemapping, reading the live depth; over water the fog lies on the water surface. After the deferred composite, a compute pass marches each pixel's ray up to the scene depth through fog lying on the ground: density = Fog Density x the fog layer x exp(-height above ground / Fog Thickness), ground height from the landscape cache under the wind grid. Lit by the sun (Henyey-Greenstein forward scattering) and the ambient light; jittered for TAA.
 
 ## Steps
 
@@ -20,7 +21,6 @@ Goal: ground fog that actors and the weather's wind push around, so it parts and
 
 ## Limits of the slice
 
--   Drawn before water: no fog over water surfaces yet.
 -   Not shadowed by the sun yet.
 -   Ground height is the landscape only: fog lies under rocks and floors of buildings it should sit on.
 -   The wind ignores terrain and buildings: fog can be pushed through walls. Obstacles for the wind are a later step (the water already has an obstacle map).

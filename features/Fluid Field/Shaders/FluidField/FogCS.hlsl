@@ -10,6 +10,7 @@
 // Cells that scrolled into the grid since the last step, and every cell after a reset, start at rest.
 
 #include "FluidField/Common.hlsli"
+#include "FluidField/FogPattern.hlsli"
 
 cbuffer FogCB : register(b1)
 {
@@ -20,6 +21,8 @@ cbuffer FogCB : register(b1)
 	float DisplaceSpeed;  // Speed (world units per second) at which an actor's body shoves the fog outward
 	float MaxFog;         // Most fog a cell can be packed to, as a multiple of the resting amount
 	float FogPad;
+	float2 PatternOffset;  // How far the resting pattern has drifted with the weather's wind, world units
+	float2 FogPad2;
 };
 
 struct Emitter
@@ -39,39 +42,12 @@ Texture2D<float> FogIn : register(t1);
 StructuredBuffer<Emitter> Emitters : register(t2);
 RWTexture2D<float> FogOut : register(u0);
 
-/** World units across one patch of the resting fog: fog lies in banks and clearings, not as a sheet. */
-static const float PATCH_SIZE = 900.0;
-/** Fog left in the clearings between banks, as a fraction of the banks'. */
-static const float PATCH_FLOOR = 0.3;
-
-float Hash(float2 p)
-{
-	return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
-}
-
-/** Smooth value noise, 0 to 1. */
-float ValueNoise(float2 p)
-{
-	const float2 i = floor(p);
-	const float2 f = p - i;
-	const float2 u = f * f * (3.0 - 2.0 * f);
-	return lerp(lerp(Hash(i), Hash(i + float2(1, 0)), u.x), lerp(Hash(i + float2(0, 1)), Hash(i + float2(1, 1)), u.x), u.y);
-}
-
-/** How much fog rests at a world position when nothing disturbs it. */
-float RestingFog(float2 worldXY)
-{
-	const float2 p = worldXY / PATCH_SIZE;
-	const float n = ValueNoise(p) * 0.65 + ValueNoise(p * 2.7 + 17.3) * 0.35;
-	return lerp(PATCH_FLOOR, 1.0, smoothstep(0.3, 0.7, n));
-}
-
 /** Last step's fog at a logical cell; 1 for cells that were not in the grid then (or after a reset). */
 float LoadFog(int2 logical)
 {
 	int2 cell = GridMin + logical;
 	bool kept = HistoryValid != 0 && all(cell >= PrevGridMin) && all(cell < PrevGridMin + int(GridRes));
-	return kept ? FogIn[LogicalToStorage(clamp(logical, 0, int(GridRes) - 1))] : RestingFog((float2(cell) + 0.5) * CellSize);
+	return kept ? FogIn[LogicalToStorage(clamp(logical, 0, int(GridRes) - 1))] : FogPattern::Resting((float2(cell) + 0.5) * CellSize, PatternOffset);
 }
 
 /** Last step's fog at a logical position (texel centres at +0.5), bilinear. */
@@ -131,7 +107,7 @@ float2 Displacement(float2 position)
 	// Thinned where the air is stirred, then filling back in
 	float stirred = saturate(length(wind) / max(StirSpeed, 1.0));
 	fog *= exp(-StirRate * stirred * DeltaTime);
-	const float resting = RestingFog((float2(GridMin + logical) + 0.5) * CellSize);
+	const float resting = FogPattern::Resting((float2(GridMin + logical) + 0.5) * CellSize, PatternOffset);
 	fog = resting + (fog - resting) * exp(-RefillRate * DeltaTime);
 
 	FogOut[id] = clamp(fog, 0.0, MaxFog);

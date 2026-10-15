@@ -9,12 +9,13 @@
 namespace FluidFieldSim
 {
 	/**
-	 * @brief Wind emitters from the actors moving around the player (D21).
+	 * @brief Wind and fog emitters from the actors moving around the player (D21).
 	 *
-	 * Each moving actor (the player and the actors in the high process) drags the air along its
-	 * velocity over about its own width, so it stirs the fog as it walks or runs through it and
-	 * leaves a swirling wake behind. Nearest actors first, up to the wind solver's limit less the
-	 * slots kept for other emitters. Runs on the main thread.
+	 * Follows the body, not the collision capsule: each moving foot, lower leg and hip of a humanoid
+	 * skeleton (the whole body for creatures without one) drags the air along its own velocity over
+	 * about its own size and ploughs the ground fog, so legs kick through the fog as they swing.
+	 * Parts high above the feet, above the fog, are left out. Nearest actors first, up to the wind
+	 * solver's limit. Runs on the main thread.
 	 */
 	class AirSources
 	{
@@ -42,7 +43,7 @@ namespace FluidFieldSim
 		/** @brief Updates between sightings after which an actor's history is dropped. */
 		static constexpr uint32_t FORGET_AFTER = 120;
 
-		std::unordered_map<uint32_t, History> history;  ///< Keyed by actor form ID
+		std::unordered_map<uint64_t, History> history;  ///< Keyed by actor form ID (high bits) and body part (low byte)
 		std::vector<Emitter> emitters;
 		uint32_t updateCounter = 0;
 	};

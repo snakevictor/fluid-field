@@ -415,9 +415,6 @@ void Deferred::DeferredPasses()
 
 	if (globals::features::effects11.loaded)
 		globals::features::effects11.DrawVolumetricRays();
-
-	if (globals::features::fluidField.loaded)
-		globals::features::fluidField.DrawGroundFog(main.UAV, Util::GetCurrentSceneDepthSRV(false));
 }
 
 void Deferred::EndDeferred()
@@ -665,6 +662,10 @@ void Deferred::Hooks::Main_RenderWorld::thunk(bool a1)
 	state->permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::InWorld);
 	state->inWorld = true;
 	func(a1);
+
+	// Fluid Field's ground fog goes over the finished world, water included (D21)
+	if (globals::features::fluidField.loaded)
+		globals::features::fluidField.DrawGroundFogAfterWorld();
 
 	state->inWorld = false;
 	state->permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::InWorld);

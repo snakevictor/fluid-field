@@ -197,8 +197,16 @@ private:
 		uint32_t stepCount;
 		float albedo[3];
 		float maxDistance;
+		int32_t groundMin[2];
+		uint32_t groundRes;
+		float groundCellSize;
+		float patternOffset[2];
+		float pad[2];
 	};
-	static_assert(sizeof(GroundFogConstants) == 48);
+	static_assert(sizeof(GroundFogConstants) == 80);
+	/** @brief The fog area: the ground map's texels per side and their size; twice the wind grid's width, around the player. */
+	static constexpr uint32_t FOG_GROUND_RESOLUTION = 512;
+	static constexpr float FOG_GROUND_CELL = 16.0f;
 	/** @brief Fog drift at the weather's full wind speed, world units per second. */
 	static constexpr float MAX_WEATHER_DRIFT = 150.0f;
 	/** @brief Substep length of the warm-up, as the regular step's shortest substep. */
@@ -221,16 +229,23 @@ private:
 	winrt::com_ptr<ID3D11ComputeShader> groundFogCS;
 	winrt::com_ptr<ID3D11Buffer> groundFogCB;
 	bool groundFogFailed = false;
-	int32_t fogGridMin[2]{};  ///< The wind grid's placement this frame, for the fog pass
-	bool fogReady = false;    ///< The fog layer and ground height are valid this frame
+	int32_t fogGridMin[2]{};      ///< The wind grid's placement this frame, for the fog pass
+	int32_t fogGroundMin[2]{};    ///< The ground map's placement this frame
+	float fogPatternOffset[2]{};  ///< How far the resting fog has drifted with the weather's wind
+	bool fogReady = false;        ///< The fog layer and ground height are valid this frame
 
 public:
 	/**
-	 * @brief Draws the ground fog into the lit scene (D21), after the deferred composite and before
-	 * water and effects. Called from Deferred::DeferredPasses.
+	 * @brief Draws the ground fog into the scene (D21) once the world is rendered, water and
+	 * transparent geometry included, before first person, TAA, upscaling and tonemapping. Called
+	 * from Deferred's Main_RenderWorld hook.
 	 */
+	void DrawGroundFogAfterWorld();
+
+private:
 	void DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderResourceView* a_depth);
 
+public:
 private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
 

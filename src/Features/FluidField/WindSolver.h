@@ -34,8 +34,10 @@ namespace FluidFieldSim
 		float displaceSpeed = 150.0f;  ///< Speed at which an actor's body shoves the fog outward, world units per second
 		float maxFog = 2.0f;           ///< Most fog a cell can be packed to, as a multiple of the resting amount
 		float pad = 0.0f;
+		float patternOffset[2]{};  ///< How far the resting pattern has drifted with the weather's wind, world units
+		float pad2[2]{};
 	};
-	static_assert(sizeof(FogParams) == 32);
+	static_assert(sizeof(FogParams) == 48);
 
 	/** @brief Inputs for one simulation step. */
 	struct StepParams
@@ -66,7 +68,7 @@ namespace FluidFieldSim
 	class WindSolver
 	{
 	public:
-		static constexpr std::uint32_t MAX_EMITTERS = 16;
+		static constexpr std::uint32_t MAX_EMITTERS = 64;
 
 		/** @brief Names a D3D11 object for RenderDoc. */
 		using NameFn = std::function<void(ID3D11DeviceChild*, const char*)>;

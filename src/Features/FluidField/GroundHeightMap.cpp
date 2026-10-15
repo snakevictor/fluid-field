@@ -1,6 +1,7 @@
 #include "GroundHeightMap.h"
 
 #include "LandscapeCache.h"
+#include "WaterSurfaces.h"
 
 #include <algorithm>
 
@@ -16,7 +17,8 @@ namespace FluidFieldSim
 		maxHeight = NO_GROUND;
 	}
 
-	bool GroundHeightMap::Update(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const LandscapeCache& a_landscape, const int32_t a_gridMin[2], uint32_t a_resolution, float a_cellSize)
+	bool GroundHeightMap::Update(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const int32_t a_gridMin[2],
+		uint32_t a_resolution, float a_cellSize)
 	{
 		if (a_resolution != resolution || a_cellSize != cellSize || !texture) {
 			Release();
@@ -53,16 +55,26 @@ namespace FluidFieldSim
 		// time), and on a retry the ones still over unloaded land
 		for (int32_t y = 0; y < n; y++) {
 			const int32_t cellY = a_gridMin[1] + y;
+			const bool rowWasInGrid = filled && cellY >= filledMin[1] && cellY < filledMin[1] + n;
 			for (int32_t x = 0; x < n; x++) {
 				const int32_t cellX = a_gridMin[0] + x;
-				const bool wasInGrid = filled && cellX >= filledMin[0] && cellX < filledMin[0] + n && cellY >= filledMin[1] && cellY < filledMin[1] + n;
+				// Rows already in the grid: skip straight past the columns that were too, unless retrying
+				if (rowWasInGrid && !retry && cellX >= filledMin[0] && cellX < filledMin[0] + n) {
+					x = filledMin[0] + n - a_gridMin[0] - 1;
+					continue;
+				}
+				const bool wasInGrid = rowWasInGrid && cellX >= filledMin[0] && cellX < filledMin[0] + n;
 				float& height = heights[static_cast<std::size_t>(cellY & mask) * n + (cellX & mask)];
 				if (wasInGrid && !(retry && height == NO_GROUND))
 					continue;
 				float ground = 0.0f;
 				const float worldX = (static_cast<float>(cellX) + 0.5f) * cellSize;
 				const float worldY = (static_cast<float>(cellY) + 0.5f) * cellSize;
-				const float value = a_landscape.SampleHeight(worldX, worldY, ground) ? ground : NO_GROUND;
+				float value = a_landscape.SampleHeight(worldX, worldY, ground) ? ground : NO_GROUND;
+				// Fog lies on water where there is water over the ground
+				float surface = 0.0f;
+				if (value != NO_GROUND && a_water.SampleHeight(worldX, worldY, surface) != WaterSurfaces::Source::None && surface > value)
+					value = surface;
 				if (value != height) {
 					height = value;
 					changed = true;
