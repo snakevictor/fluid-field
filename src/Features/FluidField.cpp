@@ -275,6 +275,11 @@ void FluidField::DrawSettings()
 		ImGui::Text("%s", T(TKEY("waterfalls_tooltip"), "Waterfalls landing on the simulated water churn it, push it out and downstream, and foam it."));
 	}
 	ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Waterfall Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::Checkbox(T(TKEY("replace_waterfalls"), "Replace Waterfalls"), &settings.ReplaceWaterfalls);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("replace_waterfalls_tooltip"), "Draws Fluid Field's own falling water, traced over the rock from each waterfall's lip, in place of vanilla's waterfall meshes. Vanilla's mist and splashes stay."));
+	}
+	ImGui::Text(T(TKEY("waterfalls_replaced"), "Vanilla waterfall meshes replaced: %u"), fallSites.GetHiddenCount());
 	ImGui::Text(T(TKEY("waterfall_sites"), "Waterfall sites: %u falls, %u cascades, %u rapids, %u no bottom, %u failed"),
 		fallSites.CountKind(FluidFieldSim::FallSites::Kind::Fall), fallSites.CountKind(FluidFieldSim::FallSites::Kind::Cascade),
 		fallSites.CountKind(FluidFieldSim::FallSites::Kind::Rapids), fallSites.CountKind(FluidFieldSim::FallSites::Kind::NoBottom),
@@ -534,6 +539,7 @@ void FluidField::ClearShaderCache()
 	groundFogFailed = false;
 	nearWater.solver.ReleaseShaders();
 	waterShaderFailed = false;
+	fallSheets.ReleaseShaders();
 }
 
 bool FluidField::EnsureSolver()
@@ -846,6 +852,7 @@ void FluidField::Prepass()
 			waterfalls.Update(water, playerPos.x, playerPos.y, simulated);
 			// Waterfall sites reconstructed from vanilla's layout (D25)
 			fallSites.SetConsoleSummary(showFallSites);
+			fallSites.SetReplace(settings.ReplaceWaterfalls);
 			fallSites.Update(water);
 		} else {
 			waterfalls.Clear();
@@ -923,6 +930,7 @@ void FluidField::ReleaseWater()
 	waterfalls.Clear();
 	fallSites.Clear();
 	fallBed.Clear();
+	fallSheets.Release();
 	waterShaderData = {};
 }
 
@@ -1067,6 +1075,22 @@ void FluidField::DrawGroundFogAfterWorld()
 	auto* renderer = globals::game::renderer;
 	if (!renderer)
 		return;
+
+	// Waterfall sheets first (D25), so the ground fog lies over their base
+	if (settings.WaterEnabled && settings.Waterfalls && settings.ReplaceWaterfalls && cameraSnapshot) {
+		fallSheets.Upload(globals::d3d::device, globals::d3d::context, fallSites.GetSheets(), fallSites.GetSheetVersion());
+		const auto& shadow = globals::game::shadowState->GetRuntimeData();
+		const auto colorIndex = static_cast<uint32_t>(shadow.renderTargets[0]);
+		const auto depthIndex = shadow.depthStencil;
+		if (fallSheets.HasSheets() && colorIndex < RE::RENDER_TARGET::kTOTAL && depthIndex < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
+			auto& target = renderer->GetRuntimeData().renderTargets[colorIndex];
+			auto& depth = renderer->GetDepthStencilData().depthStencils[depthIndex];
+			globals::profiler->BeginPass("FluidField::FallSheets");
+			fallSheets.Draw(globals::d3d::device, globals::d3d::context, target.RTV, target.texture, depth.readOnlyViews[0], cameraSnapshot.get(),
+				globals::state->sharedDataCB->CB(), globals::state->featureDataCB->CB(), waterfallTime, FALL_SHEET_OPACITY);
+			globals::profiler->EndPass();
+		}
+	}
 
 	if (!settings.InteractiveFog || !fogReady)
 		return;

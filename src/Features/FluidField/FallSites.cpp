@@ -61,7 +61,7 @@ namespace FluidFieldSim
 		 * huge bounds for their particles (a skirt's is thousands of units tall), so their bound box is no
 		 * use; references without triangles get a small box around their position.
 		 */
-		bool WorldBounds(RE::TESObjectREFR& a_ref, float a_min[3], float a_max[3])
+		bool WorldBounds(RE::TESObjectREFR& a_ref, float a_min[3], float a_max[3], std::vector<std::array<float, 2>>& a_topEdge)
 		{
 			auto* root = a_ref.Get3D();
 			if (!root)
@@ -71,6 +71,7 @@ namespace FluidFieldSim
 				a_max[k] = -FLT_MAX;
 			}
 			bool any = false;
+			std::vector<RE::NiPoint3> points;
 			RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
 				auto* triShape = a_geometry->AsTriShape();
 				auto* renderer = a_geometry->GetGeometryRuntimeData().rendererData;
@@ -91,6 +92,7 @@ namespace FluidFieldSim
 						a_min[k] = std::min(a_min[k], p[k]);
 						a_max[k] = std::max(a_max[k], p[k]);
 					}
+					points.push_back(world);
 					any = true;
 				}
 				return RE::BSVisit::BSVisitControl::kContinue;
@@ -102,6 +104,12 @@ namespace FluidFieldSim
 					a_min[k] = p[k] - POINT_EXTENT;
 					a_max[k] = p[k] + POINT_EXTENT;
 				}
+			}
+			// The top edge: the vertices where the falling water goes over
+			a_topEdge.clear();
+			for (const auto& point : points) {
+				if (point.z >= a_max[2] - FallSites::TOP_EDGE)
+					a_topEdge.push_back({ point.x, point.y });
 			}
 			return true;
 		}
@@ -146,6 +154,9 @@ namespace FluidFieldSim
 
 	void FallSites::Clear()
 	{
+		ShowAll();
+		sheets.clear();
+		sheetVersion++;
 		refs.clear();
 		sites.clear();
 		refSignature = 0;
@@ -193,7 +204,14 @@ namespace FluidFieldSim
 			auto& capture = it->second;
 			if (!capture.Cast(CAPTURE_BUDGET_MS))
 				return;
-			capture.ExtractLips(LipLevels(site));
+			std::vector<FallCapture::FallEdge> falls;
+			for (const uint32_t member : site.members) {
+				const auto& ref = refs[member];
+				if (ref.cls == FxClass::Body)
+					falls.push_back({ ref.topEdge, ref.max[2] });
+			}
+			capture.ExtractLips(LipLevels(site), falls);
+			capture.TraceStreams(LipLevels(site));
 			uint32_t holes = 0;
 			for (uint32_t y = 0; y < capture.GetHeight(); y++) {
 				for (uint32_t x = 0; x < capture.GetWidth(); x++)
@@ -204,6 +222,13 @@ namespace FluidFieldSim
 				lips += std::format(" {:.0f}:{:.0f}u/{}pt", lip.level, lip.length, lip.points.size());
 			logger::info("[Fluid Field] Waterfall site #{} ground captured: {}x{} at {:.0f}, {:.0f}, {} holes left; {} lips (level:length/points){}", site.id,
 				capture.GetWidth(), capture.GetHeight(), capture.GetOriginX(), capture.GetOriginY(), holes, capture.GetLips().size(), lips);
+			const uint32_t* ends = capture.GetStreamEnds();
+			uint32_t replaced = 0;
+			for (const bool withLip : capture.GetFallsWithLips())
+				replaced += withLip ? 1 : 0;
+			logger::info("[Fluid Field] Waterfall site #{} streams: {} drawn; ended in a pool {}, stalled {}, left the capture {}; {} of {} falling-water meshes replaced", site.id,
+				capture.GetStreamCount(), ends[0], ends[1], ends[2], replaced, falls.size());
+			RefreshSheets();
 			if (consoleSummary) {
 				if (auto* console = RE::ConsoleLog::GetSingleton())
 					console->Print("[Fluid Field] site #%u: %zu lips", site.id, capture.GetLips().size());
@@ -261,8 +286,8 @@ namespace FluidFieldSim
 				FxClass cls;
 				if (!Classify(ModelOf(a_ref->GetBaseObject()), cls))
 					return RE::BSContainer::ForEachResult::kContinue;
-				FxRef ref{ a_ref->GetFormID(), cls, {}, {} };
-				if (WorldBounds(*a_ref, ref.min, ref.max))
+				FxRef ref{ a_ref->GetFormID(), cls, {}, {}, {} };
+				if (WorldBounds(*a_ref, ref.min, ref.max, ref.topEdge))
 					found.push_back(ref);
 				return RE::BSContainer::ForEachResult::kContinue;
 			});
@@ -496,6 +521,72 @@ namespace FluidFieldSim
 			capture.Begin(site.fallMin, site.fallMax, site.top, site.bottom);
 		}
 		captures.swap(kept);
+		RefreshSheets();
+	}
+
+	void FallSites::SetReplace(bool a_replace)
+	{
+		if (a_replace == replace)
+			return;
+		replace = a_replace;
+		RefreshSheets();
+	}
+
+	void FallSites::ShowAll()
+	{
+		for (auto& [formID, root] : hidden) {
+			if (root)
+				root->SetAppCulled(false);
+		}
+		hidden.clear();
+	}
+
+	void FallSites::RefreshSheets()
+	{
+		sheets.clear();
+		std::unordered_map<uint32_t, bool> replaced;  // Form IDs of falling water a drawn lip stands in for
+		for (const auto& site : sites) {
+			const FallCapture* capture = GetCapture(site);
+			if (!capture || !capture->IsComplete() || capture->GetStreamCount() == 0)
+				continue;
+			sheets.insert(sheets.end(), capture->GetStreams().begin(), capture->GetStreams().end());
+			// The falling-water members in the order CaptureStep gave them to ExtractLips
+			const auto& withLips = capture->GetFallsWithLips();
+			std::size_t index = 0;
+			for (const uint32_t member : site.members) {
+				if (refs[member].cls != FxClass::Body)
+					continue;
+				if (index < withLips.size() && withLips[index])
+					replaced[refs[member].formID] = true;
+				index++;
+			}
+		}
+		sheetVersion++;
+
+		// S10: hide what is replaced, show again what no longer is
+		for (auto it = hidden.begin(); it != hidden.end();) {
+			if (replace && replaced.contains(it->first)) {
+				++it;
+				continue;
+			}
+			if (it->second)
+				it->second->SetAppCulled(false);
+			it = hidden.erase(it);
+		}
+		if (!replace)
+			return;
+		for (const auto& [formID, unused] : replaced) {
+			auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(formID);
+			auto* root = ref ? ref->Get3D() : nullptr;
+			if (!root)
+				continue;
+			// Its 3D may have been reloaded since it was hidden
+			auto& entry = hidden[formID];
+			if (entry.get() == root)
+				continue;
+			root->SetAppCulled(true);
+			entry.reset(root);
+		}
 	}
 
 	void FallSites::Summarise()

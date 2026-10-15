@@ -4,6 +4,7 @@
 #include "FluidField/BedRaycasts.h"
 #include "FluidField/DepthMapView.h"
 #include "FluidField/FallBed.h"
+#include "FluidField/FallSheetRenderer.h"
 #include "FluidField/FallSites.h"
 #include "FluidField/GroundHeightMap.h"
 #include "FluidField/LandscapeCache.h"
@@ -89,7 +90,7 @@ struct FluidField : OverlayFeature
 		float FoamStrength = 1.0f;           ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
 		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
 		bool Waterfalls = true;              ///< Waterfalls landing on the simulated water drive it (D22)
-		bool ReplaceWaterfalls = true;       ///< Draw Fluid Field's own falling water in place of vanilla's waterfall bodies (D23)
+		bool ReplaceWaterfalls = true;       ///< Draw Fluid Field's own falling water in place of vanilla's waterfall bodies (D25)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
 		bool InteractiveFog = true;          ///< Ground fog that actors and the weather's wind move (D21)
@@ -218,6 +219,7 @@ private:
 	static constexpr float MAX_WEATHER_DRIFT = 150.0f;
 	/** @brief Distance within which the waterfall sites' debug view is drawn, world units. */
 	static constexpr float FALL_SITES_DEBUG_RANGE = 12000.0f;
+	static constexpr float FALL_SHEET_OPACITY = 1.0f;
 	/** @brief The far water level's foam: a fraction of the near level's, and its most per cell. */
 	static constexpr float FAR_FOAM_SCALE = 0.25f;
 	static constexpr float FAR_FOAM_MAX = 0.5f;
@@ -278,6 +280,7 @@ private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
 	FluidFieldSim::WaterfallSources waterfalls;
 	FluidFieldSim::FallSites fallSites;
+	FluidFieldSim::FallSheetRenderer fallSheets;
 	bool showFallSites = false;  ///< Debug: draws the waterfall sites (D25) in the world; not saved
 	FluidFieldSim::FallBed fallBed;
 	float waterfallTime = 0.0f;                              ///< Seconds simulated, for the waterfalls' pulsing

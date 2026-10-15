@@ -2,6 +2,7 @@
 
 #include "FallCapture.h"
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -48,6 +49,7 @@ namespace FluidFieldSim
 			FxClass cls;
 			float min[3];  ///< World bounds
 			float max[3];
+			std::vector<std::array<float, 2>> topEdge;  ///< Its vertices within TOP_EDGE of its top, across: where its water goes over
 		};
 
 		enum class Kind : uint8_t
@@ -98,6 +100,17 @@ namespace FluidFieldSim
 		/** @brief Counts for the menu: captures complete and in all, and lips found. */
 		void CountCaptures(uint32_t& a_complete, uint32_t& a_total, uint32_t& a_lips) const;
 
+		/**
+		 * @brief S7 and S10: whether sites with traced streams draw Fluid Field's sheets in place of
+		 * vanilla's falling water. When on, the falling-water meshes a lip was found for are hidden;
+		 * when off, or when a site goes, they are shown again.
+		 */
+		void SetReplace(bool a_replace);
+		/** @brief Every traced stream of every site, FallCapture::STREAM_ROWS points each; changes with GetSheetVersion. */
+		const std::vector<FallCapture::StreamPoint>& GetSheets() const { return sheets; }
+		uint64_t GetSheetVersion() const { return sheetVersion; }
+		uint32_t GetHiddenCount() const { return static_cast<uint32_t>(hidden.size()); }
+
 		/** @brief Counts for the menu: sites by kind. */
 		uint32_t CountKind(Kind a_kind) const;
 
@@ -117,6 +130,7 @@ namespace FluidFieldSim
 		static constexpr float NEAR_LEVEL_ABOVE = 64.0f;  ///< How far above its falling water's top a plane may lie and still pair
 		static constexpr float LEVEL_TOLERANCE = 16.0f;
 		static constexpr float RAPIDS_THRESHOLD = 64.0f;
+		static constexpr float TOP_EDGE = 48.0f;
 		static constexpr double CAPTURE_BUDGET_MS = 1.0;  ///< Ray casting per update
 
 	private:
@@ -125,6 +139,9 @@ namespace FluidFieldSim
 		void Rebuild(const WaterSurfaces& a_water);
 		void Summarise();
 		void CaptureStep();
+		/** @brief Gathers the streams and hides or shows vanilla's falling water to match. */
+		void RefreshSheets();
+		void ShowAll();
 		/** @brief The levels a site's lips are found at: its levels, and the ground it ends on when it has no bottom. */
 		static std::vector<float> LipLevels(const Site& a_site);
 
@@ -136,5 +153,9 @@ namespace FluidFieldSim
 		bool consoleSummary = false;
 		std::unordered_map<uint64_t, std::string> cellSummaries;  ///< Last summary logged per cell
 		std::unordered_map<uint64_t, FallCapture> captures;       ///< By Site::captureKey
+		std::vector<FallCapture::StreamPoint> sheets;
+		uint64_t sheetVersion = 0;
+		bool replace = false;
+		std::unordered_map<uint32_t, RE::NiPointer<RE::NiAVObject>> hidden;  ///< Vanilla falling water hidden, by form ID: the 3D culled
 	};
 }
