@@ -885,6 +885,7 @@
     "feature.fluid_field.fog_debug_before_water": "Draw before water",
     "feature.fluid_field.fog_debug_fixed": "Fixed sample offsets",
     "feature.fluid_field.fog_debug_heights": "Show world height",
+    "feature.fluid_field.fog_debug_live_camera": "Live camera (no snapshot)",
     "feature.fluid_field.fog_debug_normal": "Normal",
     "feature.fluid_field.fog_debug_prewater": "Pre-water depth",
     "feature.fluid_field.fog_debug_resting": "Resting fog only",

@@ -240,6 +240,8 @@ private:
 	int fogDebugMode = 0;  ///< Debug: isolates parts of the ground fog to find visual problems; not saved
 	static constexpr int FOG_DEBUG_PREWATER_DEPTH = 5;
 	static constexpr int FOG_DEBUG_BEFORE_WATER = 6;
+	static constexpr int FOG_DEBUG_LIVE_CAMERA = 8;
+	winrt::com_ptr<ID3D11Buffer> cameraSnapshot;  ///< The main camera's per-frame constants, copied during the deferred passes
 
 public:
 	/**
@@ -249,7 +251,10 @@ public:
 	 */
 	void DrawGroundFogAfterWorld();
 
-	/** @brief Debug: draws the ground fog from the deferred passes (before water), as an earlier build did. */
+	/**
+	 * @brief Called from the deferred passes: snapshots the main camera for the ground fog drawn
+	 * after the world, and (debug) draws the fog there instead.
+	 */
 	void DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main);
 
 private:

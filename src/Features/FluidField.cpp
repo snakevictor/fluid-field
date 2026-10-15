@@ -289,7 +289,8 @@ void FluidField::DrawSettings()
 	{
 		const char* fogDebugModes[] = { T(TKEY("fog_debug_normal"), "Normal"), T(TKEY("fog_debug_static"), "Static shape (no wind)"),
 			T(TKEY("fog_debug_resting"), "Resting fog only"), T(TKEY("fog_debug_fixed"), "Fixed sample offsets"), T(TKEY("fog_debug_bare"), "All of the above"),
-			T(TKEY("fog_debug_prewater"), "Pre-water depth"), T(TKEY("fog_debug_before_water"), "Draw before water"), T(TKEY("fog_debug_heights"), "Show world height") };
+			T(TKEY("fog_debug_prewater"), "Pre-water depth"), T(TKEY("fog_debug_before_water"), "Draw before water"), T(TKEY("fog_debug_heights"), "Show world height"),
+			T(TKEY("fog_debug_live_camera"), "Live camera (no snapshot)") };
 		ImGui::Combo(T(TKEY("fog_debug"), "Fog Debug"), &fogDebugMode, fogDebugModes, IM_ARRAYSIZE(fogDebugModes));
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("fog_debug_tooltip"), "Isolates parts of the ground fog to find visual problems. Not saved."));
@@ -1052,9 +1053,29 @@ void FluidField::DrawGroundFogAfterWorld()
 
 void FluidField::DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main)
 {
-	if (fogDebugMode != FOG_DEBUG_BEFORE_WATER || !loaded || !settings.Enabled || !settings.InteractiveFog || !fogReady)
+	if (!loaded || !settings.Enabled || !settings.InteractiveFog || !fogReady)
 		return;
-	DrawGroundFog(a_main, Util::GetCurrentSceneDepthSRV(false));
+	// Snapshot the main camera while it is still bound: by the time the world has finished
+	// drawing, the engine's per-frame buffer can hold another view's camera, and the fog drawn
+	// with it after the world jumped about from frame to frame
+	auto* perFrame = *globals::game::perFrame;
+	if (perFrame) {
+		D3D11_BUFFER_DESC source{};
+		perFrame->GetDesc(&source);
+		D3D11_BUFFER_DESC existing{};
+		if (cameraSnapshot)
+			cameraSnapshot->GetDesc(&existing);
+		if (!cameraSnapshot || existing.ByteWidth != source.ByteWidth) {
+			cameraSnapshot = nullptr;
+			D3D11_BUFFER_DESC desc{ .ByteWidth = source.ByteWidth, .Usage = D3D11_USAGE_DEFAULT, .BindFlags = D3D11_BIND_CONSTANT_BUFFER, .CPUAccessFlags = 0, .MiscFlags = 0, .StructureByteStride = 0 };
+			if (SUCCEEDED(globals::d3d::device->CreateBuffer(&desc, nullptr, cameraSnapshot.put())))
+				Util::SetResourceName(cameraSnapshot.get(), "FluidField::CameraSnapshot");
+		}
+		if (cameraSnapshot)
+			globals::d3d::context->CopyResource(cameraSnapshot.get(), perFrame);
+	}
+	if (fogDebugMode == FOG_DEBUG_BEFORE_WATER)
+		DrawGroundFog(a_main, Util::GetCurrentSceneDepthSRV(false));
 }
 
 void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderResourceView* a_depth)
@@ -1108,7 +1129,7 @@ void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderRe
 	// The camera (FrameBuffer, b12) and the shared and feature data (b5, b6) are bound here rather
 	// than relied on: other passes unbind or replace them before this one runs, and the fog then
 	// read an empty screen size or camera and drew nothing that frame
-	ID3D11Buffer* perFrame = *globals::game::perFrame;
+	ID3D11Buffer* perFrame = cameraSnapshot && fogDebugMode != FOG_DEBUG_LIVE_CAMERA ? cameraSnapshot.get() : *globals::game::perFrame;
 	context->CSSetConstantBuffers(12, 1, &perFrame);
 	ID3D11Buffer* sharedBuffers[2]{ globals::state->sharedDataCB->CB(), globals::state->featureDataCB->CB() };
 	context->CSSetConstantBuffers(5, 2, sharedBuffers);

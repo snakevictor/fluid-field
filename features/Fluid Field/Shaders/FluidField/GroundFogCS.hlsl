@@ -165,6 +165,69 @@ float HenyeyGreenstein(float cosTheta, float g)
 	return (1.0 - g2) / (4.0 * Math::PI * pow(max(1.0 + g2 - 2.0 * g * cosTheta, 1e-4), 1.5));
 }
 
+/**
+ * Fog extinction at a world position, per world unit, and how much of the sky's light reaches it
+ * through the fog above it (the base of the layer is darker than its top).
+ */
+float FogAt(float3 position, float maxTop, out float shading)
+{
+	shading = 1.0;
+	float areaFade;
+	const float ground = SampleGround(position.xy, areaFade);
+	const float fog = SampleFog(position.xy) * areaFade;
+	// A layer on the ground with a soft top: taller where fog is packed, lifted where the air churns.
+	// Nothing below the ground (or the water surface the fog lies on)
+	const float height = position.z - ground;
+	if (fog <= 0.0 || height > maxTop || height < 0.0)
+		return 0.0;
+	const float2 wind = (DebugMode == 1 || DebugMode == 4) ? 0.0 : SampleWind(position.xy);
+	const float churn = saturate(length(wind) / LIFT_SPEED);
+	// Billows: the top rises and falls, drifting with the wind, so the layer is not a flat sheet
+	const float billow = Wisps(float3(position.xy * (WISP_SIZE / BILLOW_SIZE), 0.0), wind);
+	const float top = Thickness * lerp(0.4, 1.0, saturate(fog)) * (1.0 + PILE_RISE * saturate(fog - 1.0)) * (1.0 + LIFT * churn) *
+	                  lerp(1.0 - BILLOW_HEIGHT, 1.0 + BILLOW_HEIGHT, billow);
+	const float wisps = lerp(1.0 - WISP_CONTRAST, 1.0 + WISP_CONTRAST, Wisps(position, wind));
+	shading = exp(-SELF_SHADING * Density * fog * max(top - height, 0.0));
+	return Density * fog * wisps * (1.0 - smoothstep(top * (1.0 - TOP_SOFTNESS), top, height));
+}
+
+/**
+ * Marches the ray between two distances with half of StepCount steps, growing from FIRST_STEP at
+ * the starting end (the far end when a_fromEnd). Returns the light scattered toward the camera
+ * (rgb) and the transmittance (a) of that stretch.
+ */
+float4 MarchHalf(float3 camera, float3 direction, float from, float to, bool a_fromEnd, float jitter, float3 light, float maxTop)
+{
+	const float span = to - from;
+	const uint count = max(StepCount / 2, 1u);
+	if (span <= 0.0)
+		return float4(0.0, 0.0, 0.0, 1.0);
+	const float firstStep = min(FIRST_STEP, span / count);
+	const float growth = StepGrowth(span / firstStep, count);
+	float transmittance = 1.0;
+	float3 inscattering = 0.0;
+	float travelled = 0.0;
+	float stepLength = firstStep;
+	[loop] for (uint i = 0; i < count && travelled < span; i++)
+	{
+		const float segment = min(stepLength, span - travelled);
+		const float along = travelled + segment * jitter;
+		travelled += segment;
+		stepLength *= growth;
+		const float3 position = camera + direction * (a_fromEnd ? to - along : from + along);
+		float shading;
+		const float extinction = FogAt(position, maxTop, shading);
+		if (extinction <= 0.0)
+			continue;
+		const float stepTransmittance = exp(-extinction * segment);
+		const float3 scattered = (1.0 - stepTransmittance) * light * shading;
+		// Marching back to front, each step sits in front of everything marched so far
+		inscattering = a_fromEnd ? inscattering * stepTransmittance + scattered : inscattering + transmittance * scattered;
+		transmittance *= stepTransmittance;
+	}
+	return float4(inscattering, transmittance);
+}
+
 [numthreads(8, 8, 1)] void main(uint3 dispatchID : SV_DispatchThreadID) {
 	if (any(dispatchID.xy >= uint2(SharedData::BufferDim.xy)))
 		return;
@@ -210,12 +273,6 @@ float HenyeyGreenstein(float cosTheta, float g)
 	if (rayEnd <= rayStart)
 		return;
 	const float span = rayEnd - rayStart;
-	// March from the ground end of the ray, where the fog is densest: back from the surface the ray
-	// hits, or out from the camera when it is the camera that is down in the fog
-	const bool fromEnd = endPoint.z <= camera.z;
-	// Steps grow geometrically from FIRST_STEP so StepCount of them cover the span
-	const float firstStep = min(FIRST_STEP, span / StepCount);
-	const float growth = StepGrowth(span / firstStep, StepCount);
 
 	const float jitter = (DebugMode == 3 || DebugMode == 4) ? 0.5 : Random::InterleavedGradientNoise(float2(dispatchID.xy), SharedData::FrameCount);
 
@@ -224,50 +281,14 @@ float HenyeyGreenstein(float cosTheta, float g)
 	const float3 ambient = max(float3(SharedData::AmbientSHR.x, SharedData::AmbientSHG.x, SharedData::AmbientSHB.x), 0.0) * 0.886;
 	const float3 light = Albedo * (sun * SUN_SHARE * (1.0 - SharedData::InInterior) + ambient);
 
-	float transmittance = 1.0;
-	float3 inscattering = 0.0;
-	float travelled = 0.0;
-	float stepLength = firstStep;
-	[loop] for (uint i = 0; i < StepCount && travelled < span; i++)
-	{
-		const float segment = min(stepLength, span - travelled);
-		const float along = travelled + segment * jitter;
-		travelled += segment;
-		stepLength *= growth;
-		const float3 position = camera + direction * (fromEnd ? rayEnd - along : rayStart + along);
-		float areaFade;
-		const float ground = SampleGround(position.xy, areaFade);
-		const float fog = SampleFog(position.xy) * areaFade;
-		// A layer on the ground with a soft top: taller where fog is packed, lifted where the air churns
-		const float height = position.z - ground;
-		// Nothing below the ground (or the water surface the fog lies on)
-		if (fog <= 0.0 || height > maxTop || height < 0.0)
-			continue;
-		const float2 wind = (DebugMode == 1 || DebugMode == 4) ? 0.0 : SampleWind(position.xy);
-		const float churn = saturate(length(wind) / LIFT_SPEED);
-		// Billows: the top rises and falls, drifting with the wind, so the layer is not a flat sheet
-		const float billow = Wisps(float3(position.xy * (WISP_SIZE / BILLOW_SIZE), 0.0), wind);
-		const float top = Thickness * lerp(0.4, 1.0, saturate(fog)) * (1.0 + PILE_RISE * saturate(fog - 1.0)) * (1.0 + LIFT * churn) *
-		                  lerp(1.0 - BILLOW_HEIGHT, 1.0 + BILLOW_HEIGHT, billow);
-		const float wisps = lerp(1.0 - WISP_CONTRAST, 1.0 + WISP_CONTRAST, Wisps(position, wind));
-		const float extinction = Density * fog * wisps * (1.0 - smoothstep(top * (1.0 - TOP_SOFTNESS), top, height));
-		if (extinction <= 0.0)
-			continue;
-		// Light reaching this point from above passes through the fog over it: the base is darker
-		const float above = max(top - height, 0.0);
-		const float shading = exp(-SELF_SHADING * Density * fog * above);
-		const float stepTransmittance = exp(-extinction * segment);
-		const float3 scattered = (1.0 - stepTransmittance) * light * shading;
-		if (fromEnd) {
-			// Back to front: this step sits in front of everything marched so far
-			inscattering = inscattering * stepTransmittance + scattered;
-		} else {
-			inscattering += transmittance * scattered;
-		}
-		transmittance *= stepTransmittance;
-		if (!fromEnd && transmittance < 0.01)
-			break;
-	}
+	// Both ends of the ray can be in the fog (the camera standing in it, the ground the ray hits),
+	// so each half is marched from its own end with steps growing from FIRST_STEP: the near half out
+	// from the camera, the far half back from the ray's end. The near half lies in front.
+	const float middle = rayStart + 0.5 * span;
+	const float4 nearHalf = MarchHalf(camera, direction, rayStart, middle, false, jitter, light, maxTop);
+	const float4 farHalf = MarchHalf(camera, direction, middle, rayEnd, true, jitter, light, maxTop);
+	const float3 inscattering = nearHalf.rgb + nearHalf.a * farHalf.rgb;
+	const float transmittance = nearHalf.a * farHalf.a;
 
 	if (transmittance >= 0.999)
 		return;
