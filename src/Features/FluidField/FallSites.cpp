@@ -371,6 +371,17 @@ namespace FluidFieldSim
 				continue;
 			last = line;
 			logger::info("{}", line);
+			// Each site in the cell, for checking the stages against the world
+			for (const auto& site : sites) {
+				if (MakeCellKey(static_cast<int32_t>(std::floor(site.centroid[0] / 4096.0f)), static_cast<int32_t>(std::floor(site.centroid[1] / 4096.0f))) != key)
+					continue;
+				std::string levels;
+				for (const float level : site.levels)
+					levels += std::format(" {:.0f}", level);
+				logger::info("[Fluid Field]   site #{} {}: {} refs (fall {}, skirt {}, mist {}, splash {}, rapids {}), x {:.0f}..{:.0f}, y {:.0f}..{:.0f}, z {:.0f}..{:.0f}, levels{}{}",
+					site.id, KindName(site.kind), site.members.size(), site.classCounts[0], site.classCounts[1], site.classCounts[2], site.classCounts[3], site.classCounts[4],
+					site.min[0], site.max[0], site.min[1], site.max[1], site.min[2], site.max[2], levels, site.topFromMesh ? " (top from mesh)" : "");
+			}
 			if (consoleSummary) {
 				if (auto* console = RE::ConsoleLog::GetSingleton())
 					console->Print("%s", line.c_str());
