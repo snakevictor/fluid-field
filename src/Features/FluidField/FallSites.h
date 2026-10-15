@@ -96,7 +96,8 @@ namespace FluidFieldSim
 		static constexpr float CLUSTER_RADIUS = 512.0f;
 		static constexpr float RAPIDS_CLUSTER_RADIUS = 128.0f;  ///< Rapids and splashes away from any fall cluster only this close
 		static constexpr float PAIR_MARGIN = 256.0f;
-		static constexpr float NEAR_LEVEL = 256.0f;  ///< How far a plane may lie outside a site's height range and still pair
+		static constexpr float NEAR_LEVEL = 256.0f;       ///< How far below its falling water a plane may lie and still pair
+		static constexpr float NEAR_LEVEL_ABOVE = 64.0f;  ///< How far above its falling water's top a plane may lie and still pair
 		static constexpr float LEVEL_TOLERANCE = 16.0f;
 		static constexpr float RAPIDS_THRESHOLD = 64.0f;
 

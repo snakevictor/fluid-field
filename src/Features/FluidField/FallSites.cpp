@@ -336,7 +336,9 @@ namespace FluidFieldSim
 			a_water.CollectPlanes(site.fallMin[0] - PAIR_MARGIN, site.fallMin[1] - PAIR_MARGIN, site.fallMax[0] + PAIR_MARGIN, site.fallMax[1] + PAIR_MARGIN, planes);
 			std::vector<float> heights;
 			for (const auto& plane : planes) {
-				if (plane.height >= site.fallMin[2] - NEAR_LEVEL && plane.height <= site.fallMax[2] + NEAR_LEVEL)
+				// Below, planes may lie well under the falling water (it runs on underwater); above, a fall's
+				// top cannot be much higher than its falling water's top
+				if (plane.height >= site.fallMin[2] - NEAR_LEVEL && plane.height <= site.fallMax[2] + NEAR_LEVEL_ABOVE)
 					heights.push_back(plane.height);
 			}
 			std::sort(heights.begin(), heights.end(), std::greater<float>());
@@ -524,8 +526,8 @@ namespace FluidFieldSim
 				continue;
 			for (const uint32_t member : site.members) {
 				const auto& ref = refs[member];
-				// Falling water and skirts strong; mist, splashes and rapids faint
-				const bool strong = ref.cls == FxClass::Body || ref.cls == FxClass::Skirt;
+				// Falling water strong; skirts, mist, splashes and rapids faint
+				const bool strong = ref.cls == FxClass::Body;
 				const ImU32 color = (CLASS_COLORS[static_cast<int>(ref.cls)] & 0x00FFFFFFu) | (strong ? 0xFF000000u : 0x60000000u);
 				box(ref.min, ref.max, color, strong ? 2.0f : 1.0f);
 			}
