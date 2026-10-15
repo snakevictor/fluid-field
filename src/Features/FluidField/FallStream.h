@@ -51,7 +51,8 @@ namespace FluidFieldSim
 			float residual = 0.0f;  ///< Largest pressure change in the last sweep, world units
 		};
 
-		static constexpr uint32_t MAX_ITERATIONS = 4000;
+		static constexpr uint32_t MAX_ITERATIONS = 12000;
+		static constexpr uint32_t PSI_SWEEPS = 400;    ///< Least-squares sweeps over the stream function after integrating it
 		static constexpr float TOLERANCE = 0.01f;      ///< Stop once the pressure moves less than this per sweep
 		static constexpr float SOR = 1.9f;             ///< Over-relaxation
 		static constexpr int32_t SMOOTH_CELLS = 3;     ///< The surface is smoothed over this many cells before its slope is taken

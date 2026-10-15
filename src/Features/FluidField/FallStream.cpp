@@ -157,6 +157,43 @@ namespace FluidFieldSim
 			}
 		}
 
+		// The integration above follows one path to each corner, so wherever the flux is not exactly
+		// divergence-free (an unconverged solve, the open boundaries) psi differs by path and shows as
+		// zigzags. Relax it toward the least-squares fit of every edge's difference, starting from there
+		const auto edgeDifference = [&](int32_t a_a, int32_t a_b, int k) {
+			// psi(neighbour) - psi(here) across the edge in direction k: 0 up, 1 down, 2 right, 3 left
+			switch (k) {
+			case 0:
+				return fx[static_cast<std::size_t>(a_b) * (w + 1) + a_a] * cell;
+			case 1:
+				return -fx[static_cast<std::size_t>(a_b - 1) * (w + 1) + a_a] * cell;
+			case 2:
+				return -fy[static_cast<std::size_t>(a_b) * w + a_a] * cell;
+			default:
+				return fy[static_cast<std::size_t>(a_b) * w + a_a - 1] * cell;
+			}
+		};
+		for (uint32_t sweep = 0; sweep < PSI_SWEEPS; sweep++) {
+			for (int32_t b = 0; b < ch; b++) {
+				for (int32_t a = 0; a < cw; a++) {
+					float sum = 0.0f;
+					int32_t neighbours = 0;
+					static constexpr int32_t CA[4] = { 0, 0, 1, -1 };
+					static constexpr int32_t CB[4] = { 1, -1, 0, 0 };
+					for (int k = 0; k < 4; k++) {
+						const int32_t na = a + CA[k];
+						const int32_t nb = b + CB[k];
+						if (na < 0 || nb < 0 || na >= cw || nb >= ch)
+							continue;
+						sum += corner[static_cast<std::size_t>(nb) * cw + na] - edgeDifference(a, b, k);
+						neighbours++;
+					}
+					float& value = corner[static_cast<std::size_t>(b) * cw + a];
+					value += SOR * (sum / static_cast<float>(neighbours) - value);
+				}
+			}
+		}
+
 		// Per cell: psi at its centre, speed, and where the water foams
 		result.psi.assign(count, 0.0f);
 		result.speed.assign(count, 0.0f);

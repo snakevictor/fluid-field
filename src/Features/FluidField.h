@@ -295,23 +295,26 @@ private:
 		float Size;
 		uint32_t Enabled;
 		float Offset;
-		float Cling;
 		float ContactWidth;
 		float LiftMost;
 		float FoamStrength;
 		uint32_t DebugMode;
 		float UScale;
+		float SteepFrom;
+		float SteepTo;
+		float Pad[3];
 	};
-	static_assert(sizeof(FallGroundData) == 48);
+	static_assert(sizeof(FallGroundData) == 64);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
 	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must be FallCapture::CELL: the flows are copied texel for texel
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
 	static constexpr float FALL_GROUND_OFFSET = 6.0f;
-	static constexpr float FALL_GROUND_CLING = 24.0f;
 	static constexpr float FALL_GROUND_CONTACT = 6.0f;    ///< World units over which water fades where it cuts into rock
 	static constexpr float FALL_GROUND_LIFT_MOST = 8.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
 	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
-	static constexpr float FALL_STREAM_U_SCALE = 192.0f;  ///< World units across the flow per repeat of vanilla's texture
+	static constexpr float FALL_STREAM_U_SCALE = 192.0f;    ///< World units across the flow per repeat of vanilla's texture
+	static constexpr float FALL_STREAM_STEEP_FROM = 0.35f;  ///< Upward normal below which vanilla's streaks stay (the flow is solved from above)
+	static constexpr float FALL_STREAM_STEEP_TO = 0.6f;
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> fallGroundSRV;
 	winrt::com_ptr<ID3D11Texture2D> fallStreamTexture;  ///< FallSites::BuildStreamMap: stream function, speed, foam, water

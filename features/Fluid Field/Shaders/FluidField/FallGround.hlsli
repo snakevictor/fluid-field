@@ -17,12 +17,14 @@ namespace FallGround
 		float Size;          // Texels along each side
 		uint Enabled;        // This draw is a grounded mesh
 		float Offset;        // How far above the rock the water lies
-		float Cling;         // Water hovering less than this above the rock is drawn down onto it
 		float ContactWidth;  // World units over which the water fades where it cuts into rock
 		float LiftMost;      // Water deeper than this inside rock is left there (a boulder hides it); shallower is lifted onto it
 		float FoamStrength;  // How white the foam is
 		uint DebugMode;      // 0 off; 1: speed as red, foam as green, water as blue; 2: the streamlines as bands
 		float UScale;        // World units across the flow per repeat of vanilla's texture
+		float SteepFrom;     // The surface's upward normal below which the water is too steep for the flow (vanilla's streaks)
+		float SteepTo;       // ...and above which the flow's streaks are used in full
+		float3 Pad;
 	};
 
 	Texture2D<float> Heights : register(t120);
@@ -75,9 +77,9 @@ namespace FallGround
 	}
 
 	/**
-	 * A vertex of falling water, at a world position, moved onto the rock: out of the bed where it
-	 * clips just under it, and down onto rock it hovers just above. Water deep inside rock is a
-	 * boulder's: it is left there, hidden, so the boulder stays dry.
+	 * A vertex of falling water, at a world position, lifted out of the bed where it clips just under
+	 * it. It is never drawn down: vanilla's water covers the grass and clutter on the rock beneath it.
+	 * Water deep inside rock is a boulder's: it is left there, hidden, so the boulder stays dry.
 	 */
 	float3 Ground(float3 a_position)
 	{
@@ -85,12 +87,8 @@ namespace FallGround
 		if (!Height(a_position.xy, ground))
 			return a_position;
 		const float surface = ground + Offset;
-		if (a_position.z < surface)
-			return surface - a_position.z <= LiftMost ? float3(a_position.xy, surface) : a_position;
-		// Just above the rock: eased down onto it, leaving water well clear of it where it is
-		const float gap = a_position.z - surface;
-		if (gap < Cling)
-			a_position.z = surface + gap * gap / Cling;
+		if (a_position.z < surface && surface - a_position.z <= LiftMost)
+			a_position.z = surface;
 		return a_position;
 	}
 
@@ -106,7 +104,10 @@ namespace FallGround
 	void Flow(float2 a_uv, float3 a_position, out float2 a_uvStream, out float a_weight, out float4 a_stream)
 	{
 		a_stream = StreamAt(a_position.xy);
-		a_weight = smoothstep(0.3, 0.8, a_stream.w);
+		// The flow is solved on the falls seen from above: where the water drops steeply its streamlines
+		// are squeezed to nothing, so there vanilla's own streaks stay
+		const float3 normal = normalize(cross(ddx(a_position), ddy(a_position)));
+		a_weight = smoothstep(0.3, 0.8, a_stream.w) * smoothstep(SteepFrom, SteepTo, abs(normal.z));
 		a_uvStream = float2(a_stream.x / UScale, a_uv.y);
 	}
 

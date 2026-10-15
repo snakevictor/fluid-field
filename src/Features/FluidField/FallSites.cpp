@@ -289,18 +289,40 @@ namespace FluidFieldSim
 				// Water only where its surface stands above the rock: rock standing through it is a wall
 				if (bed <= FallCapture::NONE || surface <= NO_SURFACE || surface < bed + STREAM_MIN_DEPTH)
 					continue;
-				if (surface >= a_site.top - STREAM_INFLOW_BAND) {
-					input.kind[i] = FallStream::Inflow;
+				input.kind[i] = FallStream::Water;
+			}
+		}
+		// The open boundaries are a rim only: water near the top or bottom that borders no water (the
+		// edge of where it comes in or leaves). Inside, even the pools are solved
+		std::vector<uint8_t> kind = input.kind;
+		const auto w = static_cast<int32_t>(input.width);
+		const auto h = static_cast<int32_t>(input.height);
+		for (int32_t y = 0; y < h; y++) {
+			for (int32_t x = 0; x < w; x++) {
+				const std::size_t i = static_cast<std::size_t>(y) * w + x;
+				if (input.kind[i] != FallStream::Water)
+					continue;
+				bool rim = false;
+				for (int32_t dy = -1; dy <= 1 && !rim; dy++) {
+					for (int32_t dx = -1; dx <= 1 && !rim; dx++) {
+						const int32_t nx = x + dx;
+						const int32_t ny = y + dy;
+						rim = nx < 0 || ny < 0 || nx >= w || ny >= h || input.kind[static_cast<std::size_t>(ny) * w + nx] == FallStream::Wall;
+					}
+				}
+				const float surface = input.surface[i];
+				if (rim && surface >= a_site.top - STREAM_INFLOW_BAND) {
+					kind[i] = FallStream::Inflow;
 					inflow++;
-				} else if (surface <= a_site.bottom + STREAM_OUTFLOW_BAND) {
-					input.kind[i] = FallStream::Outflow;
+				} else if (rim && surface <= a_site.bottom + STREAM_OUTFLOW_BAND) {
+					kind[i] = FallStream::Outflow;
 					outflow++;
 				} else {
-					input.kind[i] = FallStream::Water;
 					water++;
 				}
 			}
 		}
+		input.kind.swap(kind);
 		logger::info("[Fluid Field] Waterfall site #{} flow: solving {}x{}, {} water, {} inflow, {} outflow cells", a_site.id, input.width, input.height, water, inflow, outflow);
 		auto& stream = streams[a_site.captureKey];
 		stream.originX = a_capture.GetOriginX();
