@@ -111,7 +111,7 @@ void FluidField::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("interactive_fog_tooltip"), "Fog lying on the ground around you, in banks and clearings. It parts and swirls around moving actors and drifts with the weather's wind."));
 	}
-	ImGui::SliderFloat(T(TKEY("fog_density"), "Fog Density"), &settings.FogDensity, 0.0f, 0.05f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("fog_density"), "Fog Density"), &settings.FogDensity, 0.0f, 0.2f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("fog_density_tooltip"), "How thick the fog is inside its layer, in its banks."));
 	}
@@ -119,7 +119,7 @@ void FluidField::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("fog_brightness_tooltip"), "How brightly the fog is lit by the sky and the sun."));
 	}
-	ImGui::SliderFloat(T(TKEY("fog_thickness"), "Fog Thickness"), &settings.FogThickness, 10.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("fog_thickness"), "Fog Thickness"), &settings.FogThickness, 5.0f, 400.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("fog_thickness_tooltip"), "How high the fog layer reaches above the ground, in world units. Thinner patches lie lower."));
 	}
@@ -456,9 +456,9 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.FlowDetail = std::isfinite(a_settings.FlowDetail) ? std::clamp(a_settings.FlowDetail, 0.0f, 2.0f) : defaults.FlowDetail;
 	a_settings.FoamStrength = std::isfinite(a_settings.FoamStrength) ? std::clamp(a_settings.FoamStrength, 0.0f, 3.0f) : defaults.FoamStrength;
 	a_settings.WaterTint = std::isfinite(a_settings.WaterTint) ? std::clamp(a_settings.WaterTint, 0.0f, 1.0f) : defaults.WaterTint;
-	a_settings.FogDensity = std::isfinite(a_settings.FogDensity) ? std::clamp(a_settings.FogDensity, 0.0f, 0.05f) : defaults.FogDensity;
+	a_settings.FogDensity = std::isfinite(a_settings.FogDensity) ? std::clamp(a_settings.FogDensity, 0.0f, 0.2f) : defaults.FogDensity;
 	a_settings.FogBrightness = std::isfinite(a_settings.FogBrightness) ? std::clamp(a_settings.FogBrightness, 0.0f, 2.0f) : defaults.FogBrightness;
-	a_settings.FogThickness = std::isfinite(a_settings.FogThickness) ? std::clamp(a_settings.FogThickness, 10.0f, 400.0f) : defaults.FogThickness;
+	a_settings.FogThickness = std::isfinite(a_settings.FogThickness) ? std::clamp(a_settings.FogThickness, 5.0f, 400.0f) : defaults.FogThickness;
 	a_settings.FogStir = std::isfinite(a_settings.FogStir) ? std::clamp(a_settings.FogStir, 0.0f, 3.0f) : defaults.FogStir;
 	a_settings.FogRefillSeconds = std::isfinite(a_settings.FogRefillSeconds) ? std::clamp(a_settings.FogRefillSeconds, 0.5f, 30.0f) : defaults.FogRefillSeconds;
 	return a_settings;
@@ -1008,8 +1008,14 @@ void FluidField::DrawGroundFogAfterWorld()
 	auto* renderer = globals::game::renderer;
 	if (!renderer)
 		return;
-	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
-	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+	// The targets the world was just rendered into; not always kMAIN, so the fog follows whatever is bound
+	const auto& shadow = globals::game::shadowState->GetRuntimeData();
+	const auto colorIndex = static_cast<uint32_t>(shadow.renderTargets[0]);
+	const auto depthIndex = shadow.depthStencil;
+	if (colorIndex >= RE::RENDER_TARGET::kTOTAL || depthIndex >= RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL)
+		return;
+	auto& main = renderer->GetRuntimeData().renderTargets[colorIndex];
+	auto& depth = renderer->GetDepthStencilData().depthStencils[depthIndex];
 	if (!main.UAV || !depth.depthSRV)
 		return;
 

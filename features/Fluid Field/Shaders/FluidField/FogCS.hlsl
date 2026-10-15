@@ -34,6 +34,10 @@ struct Emitter
 	float2 Pad1;
 };
 
+/** Fog is thick and heavy: it follows the air only partly, and smooths out as it moves. */
+static const float FOG_DRAG = 0.6;
+static const float FOG_DIFFUSION = 0.15;
+
 /** Actor speed at which the shove reaches DisplaceSpeed (a run). */
 static const float FULL_SHOVE_SPEED = 350.0;
 
@@ -97,8 +101,11 @@ float2 Displacement(float2 position)
 	// shove spreads out the fog thins, where it converges (just outside the body) the fog packs up
 	float2 position = float2(logical) + 0.5;
 	float2 shove = Displacement(position);
-	float2 source = position - DeltaTime * (wind + Drift + shove) / CellSize;
+	float2 source = position - DeltaTime * (wind * FOG_DRAG + Drift + shove) / CellSize;
 	float fog = SampleFog(source);
+	// Viscous: disturbances spread and soften rather than staying sharp
+	float neighbours = 0.25 * (SampleFog(source + float2(1, 0)) + SampleFog(source - float2(1, 0)) + SampleFog(source + float2(0, 1)) + SampleFog(source - float2(0, 1)));
+	fog = lerp(fog, neighbours, saturate(FOG_DIFFUSION * DeltaTime * 60.0));
 	float divergence = (Displacement(position + float2(1, 0)).x - Displacement(position - float2(1, 0)).x +
 						   Displacement(position + float2(0, 1)).y - Displacement(position - float2(0, 1)).y) /
 	                   (2.0 * CellSize);
