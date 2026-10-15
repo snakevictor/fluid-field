@@ -345,10 +345,17 @@ namespace FluidFieldSim
 					site.levels.push_back(height);
 			}
 
-			const bool hasFallMeshes = site.classCounts[static_cast<int>(FxClass::Body)] > 0 || site.classCounts[static_cast<int>(FxClass::Skirt)] > 0;
+			const bool hasFallMeshes = site.classCounts[static_cast<int>(FxClass::Body)] > 0;
 			if (site.levels.empty()) {
 				site.kind = Kind::Failed;
 				site.failure = "S3: no water plane";
+				continue;
+			}
+			if (!hasFallMeshes) {
+				// Rapids and splashes only: no drop to reconstruct, the water simulation and foam carry it
+				site.top = site.levels.front();
+				site.bottom = site.levels.back();
+				site.kind = Kind::Rapids;
 				continue;
 			}
 			if (site.levels.size() == 1) {
