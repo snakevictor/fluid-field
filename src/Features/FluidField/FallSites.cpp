@@ -334,6 +334,23 @@ namespace FluidFieldSim
 				site.centroid[k] = 0.5f * (site.fallMin[k] + site.fallMax[k]);
 			planes.clear();
 			a_water.CollectPlanes(site.fallMin[0] - PAIR_MARGIN, site.fallMin[1] - PAIR_MARGIN, site.fallMax[0] + PAIR_MARGIN, site.fallMax[1] + PAIR_MARGIN, planes);
+			// For the log: every plane within a wider search, and what pairing made of it
+			site.candidates.clear();
+			{
+				std::vector<WaterSurfaces::Plane> wider;
+				constexpr float WIDE = 1024.0f;
+				a_water.CollectPlanes(site.fallMin[0] - WIDE, site.fallMin[1] - WIDE, site.fallMax[0] + WIDE, site.fallMax[1] + WIDE, wider);
+				for (const auto& plane : wider) {
+					const bool inMargin = plane.maxX >= site.fallMin[0] - PAIR_MARGIN && plane.minX <= site.fallMax[0] + PAIR_MARGIN &&
+					                      plane.maxY >= site.fallMin[1] - PAIR_MARGIN && plane.minY <= site.fallMax[1] + PAIR_MARGIN;
+					const char* verdict = !inMargin                                         ? "outside margin" :
+					                      plane.height > site.fallMax[2] + NEAR_LEVEL_ABOVE ? "too high" :
+					                      plane.height < site.fallMin[2] - NEAR_LEVEL       ? "too low" :
+					                                                                          "paired";
+					site.candidates += std::format(" {:.0f}{}[{}, x {:.0f}..{:.0f} y {:.0f}..{:.0f}]", plane.height,
+						plane.source == WaterSurfaces::Source::CellWater ? "c" : "o", verdict, plane.minX, plane.maxX, plane.minY, plane.maxY);
+				}
+			}
 			std::vector<float> heights;
 			site.planes.clear();
 			const float clipMin[2] = { site.fallMin[0] - PAIR_MARGIN, site.fallMin[1] - PAIR_MARGIN };
@@ -451,6 +468,8 @@ namespace FluidFieldSim
 				logger::info("[Fluid Field]   site #{} {}: {} refs (fall {}, skirt {}, mist {}, splash {}, rapids {}), x {:.0f}..{:.0f}, y {:.0f}..{:.0f}, z {:.0f}..{:.0f}, levels{}{}",
 					site.id, KindName(site.kind), site.members.size(), site.classCounts[0], site.classCounts[1], site.classCounts[2], site.classCounts[3], site.classCounts[4],
 					site.min[0], site.max[0], site.min[1], site.max[1], site.min[2], site.max[2], levels, site.topFromMesh ? " (top from mesh)" : "");
+				logger::info("[Fluid Field]     falling water x {:.0f}..{:.0f}, y {:.0f}..{:.0f}, z {:.0f}..{:.0f}; planes near:{}", site.fallMin[0], site.fallMax[0], site.fallMin[1],
+					site.fallMax[1], site.fallMin[2], site.fallMax[2], site.candidates);
 			}
 			if (consoleSummary) {
 				if (auto* console = RE::ConsoleLog::GetSingleton())

@@ -75,6 +75,7 @@ namespace FluidFieldSim
 				float height;
 			};
 			std::vector<Plane> planes;
+			std::string candidates;  ///< For the log: planes within a wider search and what pairing made of them
 			float top = 0.0f;
 			float bottom = 0.0f;
 			bool topFromMesh = false;  ///< No plane near the top: the top of the meshes stands in
