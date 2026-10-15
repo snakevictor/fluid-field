@@ -176,6 +176,15 @@ float HenyeyGreenstein(float cosTheta, float g)
 	const float depth = DepthTexture[dispatchID.xy];
 	float4 positionCS = mul(FrameBuffer::CameraViewProjInverse, float4(2 * float2(uv.x, -uv.y + 1) - 1, depth, 1));
 	const float3 surface = positionCS.xyz / positionCS.w;
+	if (DebugMode == 7) {
+		// Debug: the reconstructed world height as coloured bands, 32 units each; sky left alone
+		if (depth < 1.0) {
+			const float z = surface.z + FrameBuffer::CameraPosAdjust.z;
+			const float3 band = frac(z / 32.0) < 0.5 ? float3(1.0, 0.2, 0.2) : float3(0.2, 0.2, 1.0);
+			MainRW[dispatchID.xy] = float4(lerp(MainRW[dispatchID.xy].rgb, band, 0.5), MainRW[dispatchID.xy].a);
+		}
+		return;
+	}
 	const float surfaceDistance = length(surface);
 	const float3 direction = surface / max(surfaceDistance, 1e-3);
 	const float rayLength = min(depth >= 1.0 ? MaxDistance : surfaceDistance, MaxDistance);
@@ -231,7 +240,8 @@ float HenyeyGreenstein(float cosTheta, float g)
 		const float fog = SampleFog(position.xy) * areaFade;
 		// A layer on the ground with a soft top: taller where fog is packed, lifted where the air churns
 		const float height = position.z - ground;
-		if (fog <= 0.0 || height > maxTop)
+		// Nothing below the ground (or the water surface the fog lies on)
+		if (fog <= 0.0 || height > maxTop || height < 0.0)
 			continue;
 		const float2 wind = (DebugMode == 1 || DebugMode == 4) ? 0.0 : SampleWind(position.xy);
 		const float churn = saturate(length(wind) / LIFT_SPEED);

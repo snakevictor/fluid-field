@@ -238,6 +238,8 @@ private:
 	std::string fogDrawTargets;      ///< Debug: the colour and depth targets they drew into
 	uint32_t fogLogCountdown = 0;
 	int fogDebugMode = 0;  ///< Debug: isolates parts of the ground fog to find visual problems; not saved
+	static constexpr int FOG_DEBUG_PREWATER_DEPTH = 5;
+	static constexpr int FOG_DEBUG_BEFORE_WATER = 6;
 
 public:
 	/**
@@ -246,6 +248,9 @@ public:
 	 * from Deferred's Main_RenderWorld hook.
 	 */
 	void DrawGroundFogAfterWorld();
+
+	/** @brief Debug: draws the ground fog from the deferred passes (before water), as an earlier build did. */
+	void DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main);
 
 private:
 	void DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderResourceView* a_depth);

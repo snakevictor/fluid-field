@@ -288,7 +288,8 @@ void FluidField::DrawSettings()
 	ImGui::SeparatorText(T(TKEY("debug"), "Debug"));
 	{
 		const char* fogDebugModes[] = { T(TKEY("fog_debug_normal"), "Normal"), T(TKEY("fog_debug_static"), "Static shape (no wind)"),
-			T(TKEY("fog_debug_resting"), "Resting fog only"), T(TKEY("fog_debug_fixed"), "Fixed sample offsets"), T(TKEY("fog_debug_bare"), "All of the above") };
+			T(TKEY("fog_debug_resting"), "Resting fog only"), T(TKEY("fog_debug_fixed"), "Fixed sample offsets"), T(TKEY("fog_debug_bare"), "All of the above"),
+			T(TKEY("fog_debug_prewater"), "Pre-water depth"), T(TKEY("fog_debug_before_water"), "Draw before water"), T(TKEY("fog_debug_heights"), "Show world height") };
 		ImGui::Combo(T(TKEY("fog_debug"), "Fog Debug"), &fogDebugMode, fogDebugModes, IM_ARRAYSIZE(fogDebugModes));
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("fog_debug_tooltip"), "Isolates parts of the ground fog to find visual problems. Not saved."));
@@ -1023,6 +1024,8 @@ void FluidField::DrawGroundFogAfterWorld()
 {
 	if (!loaded || !settings.Enabled || !settings.InteractiveFog || !fogReady || !globals::state->inWorld)
 		return;
+	if (fogDebugMode == FOG_DEBUG_BEFORE_WATER)
+		return;  // Drawn from the deferred passes instead
 	auto* renderer = globals::game::renderer;
 	if (!renderer)
 		return;
@@ -1043,8 +1046,15 @@ void FluidField::DrawGroundFogAfterWorld()
 
 	// The live depth holds the water surfaces; it can only be read once it is no longer bound
 	globals::d3d::context->OMSetRenderTargets(0, nullptr, nullptr);
-	DrawGroundFog(main.UAV, depth.depthSRV);
+	DrawGroundFog(main.UAV, fogDebugMode == FOG_DEBUG_PREWATER_DEPTH ? Util::GetCurrentSceneDepthSRV(false) : depth.depthSRV);
 	globals::game::shadowState->GetRuntimeData().stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
+}
+
+void FluidField::DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main)
+{
+	if (fogDebugMode != FOG_DEBUG_BEFORE_WATER || !loaded || !settings.Enabled || !settings.InteractiveFog || !fogReady)
+		return;
+	DrawGroundFog(a_main, Util::GetCurrentSceneDepthSRV(false));
 }
 
 void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderResourceView* a_depth)
