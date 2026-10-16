@@ -203,7 +203,7 @@ namespace FluidFieldSim
 		/** @brief Starts the flows of newly captured sites and collects finished ones. */
 		void PollStreams();
 		bool hideEffects = false;
-		uint32_t layerMask = 0x7;                                                                ///< Bit per Layer: the falling-water model parts shown while effects are hidden
+		uint32_t layerMask = 0x1;                                                                ///< Bit per Layer: the falling-water model parts shown while effects are hidden
 		std::unordered_map<const RE::NiAVObject*, RE::NiPointer<RE::NiAVObject>> hiddenEffects;  ///< Culled effect 3D: whole effect references, and the spray particles in the falling-water models
 		void RefreshHiddenEffects();
 		uint64_t groundVersion = 0;

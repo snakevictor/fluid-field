@@ -1408,7 +1408,6 @@ void FluidField::ReleaseFallGround()
 	fallGroundOn = nullptr;
 	fallGroundOff = nullptr;
 	fallGroundVersion = UINT64_MAX;
-	fallGroundDebugUploaded = -1;
 }
 
 void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
@@ -1449,18 +1448,16 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, fallGroundScratch.data(), FALL_GROUND_SIZE * sizeof(float), 0);
 		fallSites.BuildStreamMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallStreamScratch);
 		context->UpdateSubresource(fallStreamTexture.get(), 0, nullptr, fallStreamScratch.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
-		fallGroundDebugUploaded = -1;
 	}
-	if (fallGroundDebugUploaded == fallGroundDebug)
-		return;
-	fallGroundDebugUploaded = fallGroundDebug;
+	// Every frame: the camera moves
+	const auto& eye = globals::game::frameBufferCached.GetCameraPosAdjust();
 	const FallGroundData on{ { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET,
 		FALL_GROUND_CONTACT, FALL_GROUND_LIFT_MOST, FALL_FOAM_STRENGTH, static_cast<uint32_t>(fallGroundDebug), FALL_STREAM_U_SCALE,
-		FALL_STREAM_STEEP_FROM, FALL_STREAM_STEEP_TO, {} };
+		FALL_STREAM_STEEP_FROM, FALL_STREAM_STEEP_TO, { eye.x, eye.y, eye.z } };
 	context->UpdateSubresource(fallGroundOn.get(), 0, nullptr, &on, 0, 0);
 }
 
-void FluidField::SetupEffectGeometry(RE::BSRenderPass* a_pass)
+void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
 {
 	auto* context = globals::d3d::context;
 	const bool grounded = fallGroundSRV && settings.Enabled && settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && a_pass && a_pass->geometry && fallSites.IsGrounded(a_pass->geometry);

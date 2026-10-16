@@ -72,6 +72,8 @@ about it.
 -   **Warping a waterfall's texture cannot make water part around rock** (2026-10-15). Shifting vanilla's streaks (constant u) by a push field bends them a little; with foam collars and a thinned wake it still reads as water cutting through the boulder, and pushing the coarse mesh's vertices far tears its triangles. Parting needs a real flow on the surface (a solver with the rock as walls).
 -   **Deploying right after killing the game can hit a locked DLL** (2026-10-15): MSB8066 on the plugin stamp. Wait a few seconds and deploy again.
 
+-   **Vanilla's falling-water models are a lit surface under effect overlays** (2026-10-15). `FXWaterfallBody*.nif` holds an inner surface drawn by the lighting shader (BSLightingShaderProperty, no effect texture), a white-water sheet (BSEffectShader, FXWhiteWater01), streak layers (FXfluidTile01) and spray particle systems (NiParticleSystem). The water you see is mostly the inner surface; the effect layers read brown and ragged on their own. Changing only the effect shader touches the overlays. `FXWaterfallThin*.nif` has no lit surface: only streak layers and particles.
+
 ## Repository conventions
 
 -   **There is no `AI-INSTRUCTIONS.md`** (2026-10-13, Phase 0). `AGENTS.md` fills that role and points to `.claude/CLAUDE.md`. `.github/copilot-instructions.md` still mentions `AI-INSTRUCTIONS.md`; that is upstream text and we left it alone.

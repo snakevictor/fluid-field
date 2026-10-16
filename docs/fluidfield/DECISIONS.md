@@ -658,3 +658,26 @@ Entry format:
     applicable to this situation, if it can be improved or outright
     replaced"; "yeah lets try that")
 -   References: D26, D27, `plans/waterfall-replacement.md`
+
+## D29: Only the falls' lit water surface; grounding and flow move to it
+
+-   Date: 2026-10-15
+-   Phase / spike: D26 and D28 follow-up
+-   Decision: Each vanilla falling-water model is several parts (logged by
+    FallSites): an inner surface drawn by the lighting shader
+    (`...Inner01`, `...SlopeMesh01`; BSLightingShaderProperty), a white-water
+    sheet (`...Foam`, FXWhiteWater01), streak layers (`L2_whiteCrossStream`,
+    `fallsMesh`, `Object0x`; FXfluidTile01), and spray particle systems
+    (`PCloud...`). Isolating them in game showed the inner surface is the
+    water itself, clean and bright; the sheet is a brown translucent overlay
+    and the streak layers are the brown ragged strands. While waterfall
+    effects are hidden (Hide Waterfall Effects), only the inner surface now
+    shows (FallLayerMask, default 1). Grounding and the streamline mapping
+    move to it: CS's Lighting.hlsl, under `FLUID_FIELD` and only for flagged
+    draws (BSLightingShader SetupGeometry), bends its vertices onto the rock
+    and replaces its texture's across coordinate with the stream function.
+    The camera position is passed in the fall constants, since the lighting
+    vertex shader has no FrameBuffer. Every D26 to D28 effect-shader change had
+    been applied to the overlay layers only.
+-   Decided by: @Victor ("leave only the water surface for us to work on")
+-   References: D26, D28

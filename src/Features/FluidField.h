@@ -88,7 +88,7 @@ struct FluidField : OverlayFeature
 		float FoamStrength = 1.0f;           ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
 		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
 		bool Waterfalls = true;              ///< Waterfalls landing on the simulated water drive it (D22)
-		uint32_t FallLayerMask = 0x7;        ///< Debug: which parts of vanilla's falling-water models show while waterfall effects are hidden (bits: inner, sheet, streaks, particles)
+		uint32_t FallLayerMask = 0x1;        ///< Which parts of vanilla's falling-water models show while waterfall effects are hidden (bits: inner surface, white-water sheet, streaks, particles)
 		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
@@ -120,7 +120,7 @@ struct FluidField : OverlayFeature
 
 	/** @brief FLUID_FIELD, defined for the water shader only. */
 	virtual std::string_view GetShaderDefineName() override { return "FLUID_FIELD"; }
-	virtual bool HasShaderDefine(RE::BSShader::Type a_type) override { return a_type == RE::BSShader::Type::Water || a_type == RE::BSShader::Type::Effect; }
+	virtual bool HasShaderDefine(RE::BSShader::Type a_type) override { return a_type == RE::BSShader::Type::Water || a_type == RE::BSShader::Type::Effect || a_type == RE::BSShader::Type::Lighting; }
 
 	/** @brief Water grid placement for the water shader (SharedData::fluidFieldSettings); 16-byte sized. */
 	struct WaterShaderData
@@ -265,10 +265,11 @@ public:
 	void DrawGroundFogAfterWorld();
 
 	/**
-	 * @brief Called as each effect geometry is set up for drawing: binds the waterfall grounding (D26)
-	 * when it is a grounded falling-water mesh, and turns it off again for the next draw otherwise.
+	 * @brief Called as each effect or lighting geometry is set up for drawing: binds the waterfall
+	 * grounding and flow (D26, D29) when it is part of a grounded falling-water mesh, and turns it off
+	 * again for the next draw otherwise.
 	 */
-	void SetupEffectGeometry(RE::BSRenderPass* a_pass);
+	void SetupFallGeometry(RE::BSRenderPass* a_pass);
 
 	/**
 	 * @brief Called from the deferred passes: snapshots the main camera for the ground fog drawn
@@ -303,7 +304,7 @@ private:
 		float UScale;
 		float SteepFrom;
 		float SteepTo;
-		float Pad[3];
+		float CameraPos[3];
 	};
 	static_assert(sizeof(FallGroundData) == 64);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
@@ -325,7 +326,6 @@ private:
 	winrt::com_ptr<ID3D11Buffer> fallGroundOff;  ///< Enabled = 0, for every other effect draw
 	float fallGroundOrigin[2]{};
 	uint64_t fallGroundVersion = UINT64_MAX;
-	int fallGroundDebugUploaded = -1;
 	bool fallGroundBound = false;  ///< The last effect draw bound the grounding
 	std::vector<float> fallGroundScratch;
 	/** @brief Rebuilds the ground and flow maps when the sites change or the player moves far; uploads the constants. */

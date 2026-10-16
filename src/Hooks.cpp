@@ -232,6 +232,8 @@ namespace LightingExtensions
 		{
 			globals::state->UpdateLightingShaderPermutation(pass);
 			func(shader, pass, renderFlags);
+			if (globals::features::fluidField.loaded)
+				globals::features::fluidField.SetupFallGeometry(pass);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -248,7 +250,7 @@ namespace EffectExtensions
 			globals::state->UpdateEffectShaderPermutation(pass);
 			globals::state->permutationData.EffectRadius = pass->geometry->worldBound.radius;
 			if (globals::features::fluidField.loaded)
-				globals::features::fluidField.SetupEffectGeometry(pass);
+				globals::features::fluidField.SetupFallGeometry(pass);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};

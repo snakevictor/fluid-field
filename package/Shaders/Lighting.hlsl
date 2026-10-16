@@ -12,6 +12,9 @@
 #include "Common/SharedData.hlsli"
 #include "Common/Skinned.hlsli"
 #include "Common/Triplanar.hlsli"
+#if defined(FLUID_FIELD)
+#	include "FluidField/FallGround.hlsli"
+#endif
 
 #if defined(FACEGEN) || defined(FACEGEN_RGB_TINT)
 #	define SKIN
@@ -172,12 +175,22 @@ VS_OUTPUT main(VS_INPUT input)
 	precise float4 worldPosition = float4(mul(inputPosition, transpose(worldMatrix)), 1);
 
 	float4 viewPos = mul(ViewProj, worldPosition);
-#	else   // !SKINNED
+#	else  // !SKINNED
 	precise float4 previousWorldPosition = float4(mul(PreviousWorld, inputPosition), 1);
 	precise float4 worldPosition = float4(mul(World, inputPosition), 1);
 	precise float4x4 world4x4 = float4x4(World[0], World[1], World[2], float4(0, 0, 0, 1));
 	precise float4x4 modelView = mul(ViewProj, world4x4);
 	float4 viewPos = mul(modelView, inputPosition);
+#		if defined(FLUID_FIELD)
+	// Fluid Field (D29): a waterfall's lit surface bent onto the rock it runs over
+	[branch] if (FallGround::Enabled)
+	{
+		const float3 grounded = FallGround::Ground(worldPosition.xyz + FallGround::CameraPos) - FallGround::CameraPos;
+		previousWorldPosition.xyz += grounded - worldPosition.xyz;
+		worldPosition.xyz = grounded;
+		viewPos = mul(ViewProj, worldPosition);
+	}
+#		endif
 #	endif  // SKINNED
 
 	vsout.Position = viewPos;
@@ -1026,6 +1039,17 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 	float2 uv = input.TexCoord0.xy;
+#	if defined(FLUID_FIELD)
+	// Fluid Field (D29): a waterfall's lit surface with its streaks laid along the falls' streamlines
+	[branch] if (FallGround::Enabled)
+	{
+		float2 uvStream;
+		float weight;
+		float4 stream;
+		FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, uvStream, weight, stream);
+		uv.x = lerp(uv.x, uvStream.x, weight);
+	}
+#	endif
 	float2 uvOriginal = uv;
 
 	// Lattice cell comes from the geometric UV, before the parallax block below rewrites uv.
