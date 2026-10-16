@@ -31,11 +31,12 @@ namespace FallGround
 		float2 TexOffset;    // This mesh's texture scroll (vanilla's), taken back out of its coordinates
 		float Gravity;       // World units per second squared the falling water gains speed by (D33)
 		float Pad;
-		float2 TexScale;  // This mesh's world units per texture repeat along u and v (D35); 0 unknown
-		float2 Pad2;
+		float2 TexScale;       // This mesh's world units per texture repeat along u and v (D35); 0 unknown
+		uint HideUnderwater;   // Falling water under the pools' surface is not drawn (D36)
+		float PoolFoamHeight;  // World units above the water below over which the falls foam into it
 	};
 
-	Texture2D<float> Heights : register(t120);
+	Texture2D<float2> Heights : register(t120);  // The captured rock, and the pools' surface (D36)
 	Texture2D<float> SceneDepth : register(t121);
 	Texture2D<float4> Stream : register(t122);  // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
 
@@ -50,14 +51,25 @@ namespace FallGround
 		if (any(base < 0) || any(base + 1 >= int(Size)))
 			return false;
 		const float2 t = texel - float2(base);
-		const float h00 = Heights.Load(int3(base, 0));
-		const float h10 = Heights.Load(int3(base + int2(1, 0), 0));
-		const float h01 = Heights.Load(int3(base + int2(0, 1), 0));
-		const float h11 = Heights.Load(int3(base + int2(1, 1), 0));
+		const float h00 = Heights.Load(int3(base, 0)).x;
+		const float h10 = Heights.Load(int3(base + int2(1, 0), 0)).x;
+		const float h01 = Heights.Load(int3(base + int2(0, 1), 0)).x;
+		const float h11 = Heights.Load(int3(base + int2(1, 1), 0)).x;
 		if (min(min(h00, h10), min(h01, h11)) < NONE)
 			return false;
 		a_height = lerp(lerp(h00, h10, t.x), lerp(h01, h11, t.x), t.y);
 		return true;
+	}
+
+	/** The pools' surface over a world position (the water the falls leave and land in), or false where there is none (D36). */
+	bool Pool(float2 a_position, out float a_height)
+	{
+		const int2 texel = int2(floor((a_position - Origin) * InverseCell + 0.5));
+		a_height = 0.0;
+		if (any(texel < 0) || any(texel >= int(Size)))
+			return false;
+		a_height = Heights.Load(int3(texel, 0)).y;
+		return a_height > NONE;
 	}
 
 	/**

@@ -72,6 +72,7 @@ struct VSOutput
 	float Mist: TEXCOORD2;  // 1 for mist, 0 for spray
 	float ViewDepth: TEXCOORD3;
 	float Seed: TEXCOORD4;
+	float Above: TEXCOORD5;  // World units above the water the particle came out of (plunges), fading it there
 };
 
 VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
@@ -166,6 +167,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	output.Mist = mist ? 1.0 : 0.0;
 	output.ViewDepth = length(world);
 	output.Seed = r0;
+	output.Above = kind == 1 ? world.z + FrameBuffer::CameraPosAdjust.z - (emitter.Position.z - 4.0) : 1000.0;
 	return output;
 }
 
@@ -174,13 +176,19 @@ float4 PSMain(VSOutput input) : SV_Target
 	if (input.Alpha <= 0.001)
 		discard;
 	const float radius = length(input.Corner);
-	// Spray: a small bright droplet cluster; mist: a soft round puff
-	float shape = input.Mist > 0.5 ? (1.0 - smoothstep(0.2, 1.0, radius)) : (1.0 - smoothstep(0.35, 1.0, radius));
-	shape *= input.Mist > 0.5 ? 1.0 : (0.75 + 0.25 * sin(input.Seed * 40.0 + input.Corner.x * 5.0) * sin(input.Corner.y * 6.0));
-	// Soft where it meets anything in front of it
+	float shape;
+	if (input.Mist > 0.5) {
+		// Mist (D36): a soft, uneven wisp, not a disc: a falloff broken up by a few drifting waves
+		const float2 c = input.Corner;
+		const float wisp = 0.5 + 0.25 * sin(c.x * 2.3 + input.Seed * 19.0) * sin(c.y * 2.9 + input.Seed * 7.0) + 0.25 * sin((c.x + c.y) * 4.1 + input.Seed * 31.0);
+		shape = pow(saturate(1.0 - radius), 1.6) * saturate(wisp * 1.3);
+	} else {
+		shape = (1.0 - smoothstep(0.35, 1.0, radius)) * (0.75 + 0.25 * sin(input.Seed * 40.0 + input.Corner.x * 5.0) * sin(input.Corner.y * 6.0));
+	}
+	// Soft where it meets anything in front of it, and fading into the water it rose from
 	const float sceneDepth = SharedData::GetScreenDepth(SceneDepth.Load(int3(input.Position.xy, 0)));
 	const float depth = SharedData::GetScreenDepth(input.Position.z);
-	const float soft = saturate((sceneDepth - depth) / (input.Mist > 0.5 ? 40.0 : 6.0));
+	const float soft = saturate((sceneDepth - depth) / (input.Mist > 0.5 ? 150.0 : 6.0)) * saturate(input.Above / (input.Mist > 0.5 ? 40.0 : 4.0));
 	const float alpha = saturate(input.Alpha * shape * soft);
 	if (alpha <= 0.002)
 		discard;

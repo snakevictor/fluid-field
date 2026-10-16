@@ -378,6 +378,37 @@ namespace FluidFieldSim
 				}
 			}
 		}
+		// D36: water under a pool's surface (vanilla's meshes dipping into the water above or below) is the
+		// pool's: under the top it is where the falls' water comes from, under the bottom where it goes.
+		// The flow then starts where the falls leave the water above, and ends where they meet the water below
+		{
+			std::vector<float> cover(kind.size(), NO_SURFACE);
+			for (const auto& plane : a_site.planes) {
+				const auto x0 = std::max(0, static_cast<int32_t>(std::ceil((plane.min[0] - a_capture.GetOriginX()) / FallCapture::CELL)));
+				const auto y0 = std::max(0, static_cast<int32_t>(std::ceil((plane.min[1] - a_capture.GetOriginY()) / FallCapture::CELL)));
+				const auto x1 = std::min(w - 1, static_cast<int32_t>(std::floor((plane.max[0] - a_capture.GetOriginX()) / FallCapture::CELL)));
+				const auto y1 = std::min(h - 1, static_cast<int32_t>(std::floor((plane.max[1] - a_capture.GetOriginY()) / FallCapture::CELL)));
+				for (int32_t y = y0; y <= y1; y++) {
+					for (int32_t x = x0; x <= x1; x++) {
+						float& stored = cover[static_cast<std::size_t>(y) * w + x];
+						stored = std::max(stored, plane.height);
+					}
+				}
+			}
+			for (std::size_t i = 0; i < kind.size(); i++) {
+				if (kind[i] != FallStream::Water || cover[i] <= NO_SURFACE || cover[i] < input.surface[i] - POOL_COVER)
+					continue;
+				if (cover[i] >= a_site.top - STREAM_INFLOW_BAND) {
+					kind[i] = FallStream::Inflow;
+					inflow++;
+					water--;
+				} else if (cover[i] <= a_site.bottom + STREAM_OUTFLOW_BAND) {
+					kind[i] = FallStream::Outflow;
+					outflow++;
+					water--;
+				}
+			}
+		}
 		input.kind.swap(kind);
 		logger::info("[Fluid Field] Waterfall site #{} flow: solving {}x{}, {} water, {} inflow, {} outflow cells", a_site.id, input.width, input.height, water, inflow, outflow);
 		auto& stream = streams[a_site.captureKey];
@@ -417,6 +448,8 @@ namespace FluidFieldSim
 				stream.emitters.swap(mesh.emitters);
 				stream.seamFoam.swap(mesh.seamFoam);
 				stream.plunges.swap(mesh.plunges);
+				stream.seamPoints.swap(mesh.seamPoints);
+				stream.waterLines.swap(mesh.waterLines);
 				stream.meshReady = true;
 				changed = true;
 				uint32_t kinds[3]{};
@@ -984,6 +1017,26 @@ namespace FluidFieldSim
 		for (const auto& [key, plunge] : plunges)
 			mesh.plunges.push_back(plunge);
 
+		// Where vanilla's pieces cross each water level, for the debug view (D36)
+		for (const auto& triangle : a_sources) {
+			for (const float level : a_levels) {
+				float points[2][3];
+				int count = 0;
+				for (int k = 0; k < 3 && count < 2; k++) {
+					const float* a = triangle.position[k];
+					const float* b = triangle.position[(k + 1) % 3];
+					if ((a[2] - level) * (b[2] - level) >= 0.0f)
+						continue;
+					const float s = (level - a[2]) / (b[2] - a[2]);
+					for (int c = 0; c < 3; c++)
+						points[count][c] = a[c] + (b[c] - a[c]) * s;
+					count++;
+				}
+				if (count == 2)
+					mesh.waterLines.push_back({ points[0][0], points[0][1], points[0][2], points[1][0], points[1][1], points[1][2] });
+			}
+		}
+
 		// The seams (D34): where one of vanilla's pieces ends against another, the join shows on their own
 		// meshes. Points along each piece's open edges (used by one of its triangles) that lie close to
 		// another piece foam on the flow's map and throw spray and mist
@@ -1070,6 +1123,7 @@ namespace FluidFieldSim
 				return dot3(d, d);
 			};
 			std::vector<std::array<float, 6>> seams;  // Position, normal
+			std::vector<uint8_t> seamKinds;           // 0 an open edge against another piece, 1 two pieces crossing
 			for (const auto& [key, use] : edges) {
 				if (use.uses != 1)
 					continue;
@@ -1096,6 +1150,7 @@ namespace FluidFieldSim
 					const float* n0 = triangle.normal[use.corner];
 					const float* n1 = triangle.normal[(use.corner + 1) % 3];
 					seams.push_back({ p[0], p[1], p[2], n0[0] + n1[0], n0[1] + n1[1], n0[2] + n1[2] });
+					seamKinds.push_back(0);
 				}
 			}
 			// ...and where two pieces cut through each other: the line where their triangles intersect
@@ -1160,6 +1215,22 @@ namespace FluidFieldSim
 								}
 								if (apart)
 									continue;
+								// Pieces lying along each other (layers of the same water) show no seam where they cross
+								const auto faceNormal = [](const SourceTriangle& a_t, float a_n[3]) {
+									const float ax = a_t.position[1][0] - a_t.position[0][0], ay = a_t.position[1][1] - a_t.position[0][1], az = a_t.position[1][2] - a_t.position[0][2];
+									const float bx = a_t.position[2][0] - a_t.position[0][0], by = a_t.position[2][1] - a_t.position[0][1], bz = a_t.position[2][2] - a_t.position[0][2];
+									a_n[0] = ay * bz - az * by;
+									a_n[1] = az * bx - ax * bz;
+									a_n[2] = ax * by - ay * bx;
+									const float length = std::sqrt(a_n[0] * a_n[0] + a_n[1] * a_n[1] + a_n[2] * a_n[2]);
+									for (int c = 0; c < 3; c++)
+										a_n[c] = length > 1e-6f ? a_n[c] / length : 0.0f;
+								};
+								float na[3], nb[3];
+								faceNormal(first, na);
+								faceNormal(second, nb);
+								if (std::abs(na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2]) > SEAM_CROSSING_ANGLE)
+									continue;
 								float hits[6][3];
 								int count = 0;
 								for (int k = 0; k < 3; k++) {
@@ -1193,6 +1264,7 @@ namespace FluidFieldSim
 										seam[3 + c] = first.normal[0][c] + first.normal[1][c] + first.normal[2][c];
 									}
 									seams.push_back(seam);
+									seamKinds.push_back(1);
 								}
 							}
 						}
@@ -1200,6 +1272,8 @@ namespace FluidFieldSim
 				}
 			}
 			mesh.seams = static_cast<uint32_t>(seams.size());
+			for (std::size_t i = 0; i < seams.size(); i++)
+				mesh.seamPoints.push_back({ seams[i][0], seams[i][1], seams[i][2], static_cast<float>(seamKinds[i]) });
 
 			// Foam on the flow's map, round every seam point
 			mesh.seamFoam.assign(static_cast<std::size_t>(w) * h, 0.0f);
@@ -1220,8 +1294,9 @@ namespace FluidFieldSim
 				}
 			}
 
-			// Spray and mist along the seams, where the water strikes the other piece
-			for (const auto& seam : seams) {
+			// Spray and mist along the seams, where the water strikes the other piece (less where two cross)
+			for (std::size_t i = 0; i < seams.size(); i++) {
+				const auto& seam = seams[i];
 				float normal[3] = { seam[3], seam[4], seam[5] };
 				const float n = std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
 				for (float& component : normal)
@@ -1229,7 +1304,7 @@ namespace FluidFieldSim
 				if (n <= 1e-6f)
 					normal[2] = 1.0f;
 				const float p[3] = { seam[0], seam[1], seam[2] };
-				offer(p, normal, 1.0f, FallEmitterKind::Strike, EMITTER_SPACING);
+				offer(p, normal, seamKinds[i] == 0 ? 1.0f : 0.6f, FallEmitterKind::Strike, EMITTER_SPACING);
 			}
 		}
 		mesh.emitters.reserve(chosen.size());
@@ -1282,10 +1357,10 @@ namespace FluidFieldSim
 			const float burst = std::max(0.0f, std::sin(a_time * 6.3f + seed * 5.0f) * std::sin(a_time * 2.9f + seed * 3.0f));
 			const float pull = std::min(plunge->speed * PLUNGE_PULL, 260.0f) * a_strength;
 			a_emitters.push_back({ .position = { plunge->position[0] / a_cellSize - static_cast<float>(a_gridMin[0]), plunge->position[1] / a_cellSize - static_cast<float>(a_gridMin[1]) },
-				.radius = std::max(0.5f * PLUNGE_WATER_SPACING / a_cellSize, 1.5f),
+				.radius = std::max(0.75f * PLUNGE_WATER_SPACING / a_cellSize, 1.5f),
 				.depthRate = -PLUNGE_SPLASH * burst * plunge->strength * a_strength,
 				.velocity = { plunge->direction[0] * pull, plunge->direction[1] * pull },
-				.pad1 = { 60.0f * plunge->strength * a_strength, a_foam ? 0.8f * plunge->strength * a_strength : 0.0f } });
+				.pad1 = { 60.0f * plunge->strength * a_strength, a_foam ? 4.0f * std::max(plunge->strength, 0.6f) * a_strength : 0.0f } });
 		}
 	}
 
@@ -1790,6 +1865,27 @@ namespace FluidFieldSim
 		}
 	}
 
+	void FallSites::BuildPoolMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const
+	{
+		a_heights.assign(static_cast<std::size_t>(a_size) * a_size, FallCapture::NONE);
+		for (const auto& site : sites) {
+			if (site.kind == Kind::Failed)
+				continue;
+			for (const auto& plane : site.planes) {
+				const auto x0 = std::max(0, static_cast<int32_t>(std::ceil((plane.min[0] - a_originX) / a_cell)));
+				const auto y0 = std::max(0, static_cast<int32_t>(std::ceil((plane.min[1] - a_originY) / a_cell)));
+				const auto x1 = std::min(static_cast<int32_t>(a_size) - 1, static_cast<int32_t>(std::floor((plane.max[0] - a_originX) / a_cell)));
+				const auto y1 = std::min(static_cast<int32_t>(a_size) - 1, static_cast<int32_t>(std::floor((plane.max[1] - a_originY) / a_cell)));
+				for (int32_t y = y0; y <= y1; y++) {
+					for (int32_t x = x0; x <= x1; x++) {
+						float& stored = a_heights[static_cast<std::size_t>(y) * a_size + x];
+						stored = std::max(stored, plane.height);
+					}
+				}
+			}
+		}
+	}
+
 	void FallSites::Summarise()
 	{
 		// One line per cell (by each site's centroid), logged when it changes
@@ -1855,7 +1951,7 @@ namespace FluidFieldSim
 		}
 	}
 
-	void FallSites::DrawDebug(ImDrawList* a_drawList, float a_range) const
+	void FallSites::DrawDebug(ImDrawList* a_drawList, float a_range, bool a_sites, int a_view) const
 	{
 		auto* camera = PlayerCamera();
 		if (!camera || !a_drawList)
@@ -1920,6 +2016,79 @@ namespace FluidFieldSim
 				return IM_COL32(255, 60, 60, 255);
 			}
 		};
+
+		// D36: vanilla's fall meshes, and where they meet each other, the water and the rock
+		if (a_view > 0) {
+			// A short segment, only when both ends are in front of the camera
+			const auto segment = [&](const float a[3], const float b[3], ImU32 a_color, float a_thickness) {
+				ImVec2 pa, pb;
+				if (project(a[0], a[1], a[2], pa) && project(b[0], b[1], b[2], pb))
+					a_drawList->AddLine(pa, pb, a_color, a_thickness);
+			};
+			const auto mark = [&](const float p[3], ImU32 a_color, float a_size) {
+				ImVec2 s;
+				if (!project(p[0], p[1], p[2], s))
+					return;
+				a_drawList->AddLine(ImVec2(s.x - a_size, s.y - a_size), ImVec2(s.x + a_size, s.y + a_size), a_color, 2.0f);
+				a_drawList->AddLine(ImVec2(s.x - a_size, s.y + a_size), ImVec2(s.x + a_size, s.y - a_size), a_color, 2.0f);
+			};
+			const auto inView = [&](const float p[3]) {
+				const float dx = p[0] - eye.x, dy = p[1] - eye.y, dz = p[2] - eye.z;
+				return dx * dx + dy * dy + dz * dz < FALL_VIEW_RANGE * FALL_VIEW_RANGE;
+			};
+			for (const auto& site : sites) {
+				const auto it = site.captureKey ? streams.find(site.captureKey) : streams.end();
+				if (it == streams.end())
+					continue;
+				const auto& stream = it->second;
+				const FallCapture* capture = GetCapture(site);
+				const auto insideRock = [&](const float p[3]) {
+					float ground;
+					return capture && capture->IsComplete() && capture->Sample(p[0], p[1], ground) && ground > p[2] + 4.0f;
+				};
+				if (a_view == 1) {
+					for (const auto& triangle : stream.sources) {
+						if (!inView(triangle.position[0]))
+							continue;
+						// One colour per piece, round the hue circle by the golden angle
+						const float hue = std::fmod(static_cast<float>(triangle.piece) * 0.618034f, 1.0f);
+						float r, g, b;
+						ImGui::ColorConvertHSVtoRGB(hue, 0.65f, 1.0f, r, g, b);
+						const ImU32 pieceColor = IM_COL32(static_cast<int>(r * 255.0f), static_cast<int>(g * 255.0f), static_cast<int>(b * 255.0f), 200);
+						for (int k = 0; k < 3; k++) {
+							const float* a = triangle.position[k];
+							const float* b2 = triangle.position[(k + 1) % 3];
+							segment(a, b2, insideRock(a) && insideRock(b2) ? IM_COL32(255, 40, 40, 230) : pieceColor, 1.0f);
+						}
+					}
+				} else {
+					for (const auto& point : stream.seamPoints) {
+						if (inView(point.data()))
+							mark(point.data(), point[3] < 0.5f ? IM_COL32(255, 230, 40, 255) : IM_COL32(255, 60, 255, 255), 3.0f);
+					}
+					for (const auto& waterLine : stream.waterLines) {
+						if (inView(waterLine.data()))
+							segment(waterLine.data(), waterLine.data() + 3, IM_COL32(60, 255, 90, 255), 2.5f);
+					}
+					for (const auto& triangle : stream.sources) {
+						for (int k = 0; k < 3; k++) {
+							if (inView(triangle.position[k]) && insideRock(triangle.position[k]))
+								mark(triangle.position[k], IM_COL32(255, 40, 40, 200), 2.0f);
+						}
+					}
+					static constexpr ImU32 KIND_COLORS[3] = { IM_COL32(60, 230, 255, 255), IM_COL32(60, 110, 255, 255), IM_COL32(255, 150, 40, 255) };
+					for (const auto& emitter : stream.emitters) {
+						if (inView(emitter.position)) {
+							ImVec2 s;
+							if (project(emitter.position[0], emitter.position[1], emitter.position[2], s))
+								a_drawList->AddCircleFilled(s, 2.5f, KIND_COLORS[std::clamp(static_cast<int>(emitter.kind), 0, 2)]);
+						}
+					}
+				}
+			}
+		}
+		if (!a_sites)
+			return;
 
 		for (const auto& site : sites) {
 			const float dx = site.centroid[0] - eye.x;

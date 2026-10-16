@@ -176,10 +176,18 @@ namespace FluidFieldSim
 		uint32_t CountKind(Kind a_kind) const;
 
 		/**
-		 * @brief Draws the stages' debug view in the world: classified references as boxes by class,
-		 * site footprints at their levels, and a label per site. Within a_range of the camera.
+		 * @brief Draws the debug views in the world, within a_range of the camera. a_sites: classified
+		 * references as boxes by class, site footprints at their levels, and a label per site. a_view 1:
+		 * vanilla's falling-water triangles by piece, red inside rock; 2: their seams, where they cross
+		 * the water levels, and the spray emitters by kind (D36).
 		 */
-		void DrawDebug(ImDrawList* a_drawList, float a_range) const;
+		void DrawDebug(ImDrawList* a_drawList, float a_range, bool a_sites, int a_view) const;
+
+		/**
+		 * @brief D36: the pools' surface over a ground map's lattice: per texel the highest water plane
+		 * of any site covering it, else FallCapture::NONE. Falling water under it is hidden.
+		 */
+		void BuildPoolMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const;
 
 		/** @brief Prints each cell's summary to the game console too, not only the log. */
 		void SetConsoleSummary(bool a_print) { consoleSummary = a_print; }
@@ -225,11 +233,13 @@ namespace FluidFieldSim
 		{
 			std::vector<FallSurfaceVertex> vertices;
 			std::vector<uint32_t> indices;
-			std::vector<FallEmitter> emitters;  ///< Where it throws spray and mist (D31)
-			uint32_t culled = 0;                ///< Source triangles dropped where another piece lies on them
-			std::vector<float> seamFoam;        ///< Per flow cell, 0 to 1: foam where vanilla's pieces meet (D34)
-			uint32_t seams = 0;                 ///< Points found along the seams
-			std::vector<FallPlunge> plunges;    ///< Where falling water meets the water below (D35)
+			std::vector<FallEmitter> emitters;             ///< Where it throws spray and mist (D31)
+			uint32_t culled = 0;                           ///< Source triangles dropped where another piece lies on them
+			std::vector<float> seamFoam;                   ///< Per flow cell, 0 to 1: foam where vanilla's pieces meet (D34)
+			uint32_t seams = 0;                            ///< Points found along the seams
+			std::vector<FallPlunge> plunges;               ///< Where falling water meets the water below (D35)
+			std::vector<std::array<float, 4>> seamPoints;  ///< Position and kind (0: an open edge against another piece, 1: two pieces crossing), for the debug view
+			std::vector<std::array<float, 6>> waterLines;  ///< Where vanilla's pieces cross a water level, as segments, for the debug view
 		};
 		/** @brief A site's steady flow, solved on its capture's lattice on a worker thread. */
 		struct Stream
@@ -245,6 +255,8 @@ namespace FluidFieldSim
 			std::vector<FallEmitter> emitters;
 			std::vector<float> seamFoam;  ///< SurfaceMesh::seamFoam
 			std::vector<FallPlunge> plunges;
+			std::vector<std::array<float, 4>> seamPoints;
+			std::vector<std::array<float, 6>> waterLines;
 			std::vector<SourceTriangle> sources;
 			std::vector<float> levels;  ///< The site's water levels, where the falls meet bodies of water  ///< Vanilla's falling-water triangles, gathered when the solve starts
 			std::future<SurfaceMesh> meshPending;
@@ -275,14 +287,17 @@ namespace FluidFieldSim
 		static constexpr float PLUNGE_BAND = 14.0f;           ///< World units round a lower water level where falling water plunges
 		static constexpr float PLUNGE_HEAD = 40.0f;           ///< Water that has fallen at least this far below its head plunges
 		static constexpr float PLUNGE_SPACING = 16.0f;        ///< World units between plunge emitters
-		static constexpr float PLUNGE_WATER_SPACING = 56.0f;  ///< World units between the plunge's pushes on the simulated water
+		static constexpr float PLUNGE_WATER_SPACING = 40.0f;  ///< World units between the plunge's pushes on the simulated water
 		static constexpr float OBSTACLE_FOAM = 0.6f;          ///< Rock foam at least this much throws spray
 		static constexpr float OBSTACLE_SPACING = 28.0f;
-		static constexpr float PLUNGE_SPLASH = 220.0f;    ///< World units per second the plunge pushes the simulated water down at its strongest
-		static constexpr float PLUNGE_PULL = 0.35f;       ///< Fraction of the falling water's speed the water below is pulled along at
-		static constexpr int FLOW_DILATE_CELLS = 6;       ///< Cells the flow is carried past the water's edge for the surface
-		static constexpr float FALL_SPEED = 600.0f;       ///< World units per second of drop counted into the travel time, so steep water streaks too
-		static constexpr float MEET_FOAM_HEIGHT = 20.0f;  ///< Water within this of a site's level (where it meets a body of water) foams
+		static constexpr float FALL_VIEW_RANGE = 2500.0f;   ///< World units round the camera the fall debug views draw (D36)
+		static constexpr float SEAM_CROSSING_ANGLE = 0.9f;  ///< Pieces crossing with their faces closer than this (cosine) lie along each other: no seam shows (D36)
+		static constexpr float POOL_COVER = 2.0f;           ///< Water lying under a pool's surface by more than this is the pool's (D36)
+		static constexpr float PLUNGE_SPLASH = 220.0f;      ///< World units per second the plunge pushes the simulated water down at its strongest
+		static constexpr float PLUNGE_PULL = 0.35f;         ///< Fraction of the falling water's speed the water below is pulled along at
+		static constexpr int FLOW_DILATE_CELLS = 6;         ///< Cells the flow is carried past the water's edge for the surface
+		static constexpr float FALL_SPEED = 600.0f;         ///< World units per second of drop counted into the travel time, so steep water streaks too
+		static constexpr float MEET_FOAM_HEIGHT = 20.0f;    ///< Water within this of a site's level (where it meets a body of water) foams
 		std::vector<std::future<SurfaceMesh>> retiredMeshes;
 		/** @brief Gathers every site's surface into one list. */
 		void RefreshSurfaces();

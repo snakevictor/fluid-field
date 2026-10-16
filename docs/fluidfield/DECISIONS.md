@@ -837,3 +837,30 @@ Entry format:
     the low mesh resolution"; "it should also greatly drive the flow of the
     shallow water")
 -   References: D22, D31, D34
+
+## D36: Falls under the water hidden; flow bounded by the pools; debug views; menu reorganised
+
+-   Date: 2026-10-16
+-   Phase / spike: D35 follow-up, from @Victor's review screenshots
+-   Decision: Water under a pool's surface (vanilla's fall meshes dipping into
+    the water above or below, where their flow ran the wrong way) belongs to
+    the pool: in the solve it is inflow under the top level and outflow under
+    the bottom, so the falls' flow starts where they leave the water above
+    and ends where they meet the water below. In the shaders those parts are
+    discarded (Hide Falls Under Water; the ground map carries the pools'
+    surface in a second channel), and the falls whiten wholly within 26 units
+    above the water below. Plunge pushes on the simulated water are closer
+    (40 units), wider and foam four times as hard; the solver takes 96
+    emitters. Pieces crossing nearly along each other (faces within cos 0.9)
+    no longer count as seams. Mist is a soft uneven wisp, twice as large,
+    fading over 150 units into what is in front of it and into the water it
+    rose from. Debug: a Waterfall Overlay draws vanilla's fall meshes by piece
+    (red inside rock) or their intersections (seams by kind, water-level
+    crossings, rock contacts, emitters by kind). The menu is reorganised into
+    Water, Waterfalls, Ground Fog, Quality and Debug sections; the falls' own
+    surface (D30), the test puff and test current are gone from it.
+-   Decided by: @Victor ("trace the intersection of the shallow water with
+    the waterfall meshes"; "hide the underwater part"; "the 'seam' where the
+    water falls into the shallow water should be completely foamy"; "refactor
+    our page on the CS menu")
+-   References: D30, D34, D35

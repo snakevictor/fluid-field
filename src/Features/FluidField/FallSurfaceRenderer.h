@@ -111,7 +111,7 @@ namespace FluidFieldSim
 		static constexpr float SPRAY_SPEED = 260.0f;    ///< World units per second thrown up and out at full strength
 		static constexpr float SPRAY_SIZE = 10.0f;      ///< World units across
 		static constexpr float MIST_LIFE = 3.0f;
-		static constexpr float MIST_SIZE = 70.0f;
+		static constexpr float MIST_SIZE = 150.0f;
 		static constexpr float MIST_RISE = 40.0f;          ///< World units per second
 		static constexpr float PARTICLE_GRAVITY = 687.0f;  ///< Repeats per second vanilla's texture scrolls along v, where the flow's is not used      ///< Light at this point of the frame, as the ground fog and the old curtains needed
 

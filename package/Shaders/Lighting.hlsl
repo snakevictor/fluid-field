@@ -1035,8 +1035,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	FallGround::FlowSample fallFlow = (FallGround::FlowSample)0;
 	const float2 fallUvVanilla = uv;
 	const bool fallFlowOn = FallGround::Enabled && FallGround::DebugMode < 3;
+	float fallPoolHeight = 0.0;
+	bool fallPool = false;
 	[branch] if (fallFlowOn)
 	{
+		// D36: falling water under the pools' surface is the pool's, and not drawn
+		fallPool = FallGround::Pool(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy, fallPoolHeight);
+		if (FallGround::HideUnderwater && fallPool && input.WorldPosition.z + FrameBuffer::CameraPosAdjust.z < fallPoolHeight - 1.0)
+			discard;
 #		if !defined(MODELSPACENORMALS)
 		// The mesh's interpolated frame: tangent, bitangent and normal are the columns of TBN (D35)
 		fallFlow = FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, float3(input.TBN0.z, input.TBN1.z, input.TBN2.z),
@@ -1504,7 +1510,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// White water (D34): aerated where it falls fast, foamed where it piles against rock, squeezes past
 		// it, meets still water or where vanilla's pieces meet; broken up by the texture's own streaks
 		const float fast = smoothstep(1.5, 4.5, length(fallFlow.velocity) / FallGround::FlowSpeed);
-		const float white = saturate(max(fallFlow.stream.z, fast * 0.5)) * fallFlow.strength;
+		float white = saturate(max(fallFlow.stream.z, fast * 0.5)) * fallFlow.strength;
+		// D36: wholly white where the falls meet the water below, thinning up the falls
+		[flatten] if (fallPool)
+			white = max(white, 1.0 - saturate((input.WorldPosition.z + FrameBuffer::CameraPosAdjust.z - fallPoolHeight) / FallGround::PoolFoamHeight));
 		const float streak = smoothstep(0.15, 0.75, Color::RGBToLuminance(rawBaseColor.rgb) + white * 0.45);
 		rawBaseColor.rgb = lerp(rawBaseColor.rgb, float3(0.86, 0.9, 0.92), white * streak * 0.8);
 		baseColor = float4(Color::Diffuse(rawBaseColor.rgb), rawBaseColor.a);
