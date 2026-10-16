@@ -65,8 +65,8 @@ namespace FluidFieldSim
 		static constexpr float RIPPLE_LENGTH = 40.0f;
 		static constexpr float BULGE_HEIGHT = 10.0f;   ///< The water mounds over rock just under it, world units
 		static constexpr float SHALLOW_DEPTH = 40.0f;  ///< Water shallower than this over rock waves and mounds
-		static constexpr float CONTACT_WIDTH = 8.0f;   ///< World units over which the water fades where it meets rock in front of it
-		static constexpr float BRIGHTNESS = 0.3f;
+		static constexpr float CONTACT_WIDTH = 2.0f;   ///< World units over which the water fades where it meets rock in front of it
+		static constexpr float BRIGHTNESS = 0.32f;
 		static constexpr float VANILLA_SCROLL = 0.6f;  ///< Repeats per second vanilla's texture scrolls along v, where the flow's is not used      ///< Light at this point of the frame, as the ground fog and the old curtains needed
 
 	private:

@@ -244,6 +244,7 @@ namespace FluidFieldSim
 		static constexpr float MERGE_BUCKET = 64.0f;       ///< World units per bucket when finding overlaps
 		static constexpr float MERGE_ABOVE = 3.0f;         ///< Only near-duplicates are dropped: another piece this close above or below covers a triangle
 		static constexpr float MERGE_BELOW = 3.0f;
+		static constexpr int FLOW_DILATE_CELLS = 6;       ///< Cells the flow is carried past the water's edge for the surface
 		static constexpr float FALL_SPEED = 600.0f;       ///< World units per second of drop counted into the travel time, so steep water streaks too
 		static constexpr float MEET_FOAM_HEIGHT = 20.0f;  ///< Water within this of a site's level (where it meets a body of water) foams
 		std::vector<std::future<SurfaceMesh>> retiredMeshes;

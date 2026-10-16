@@ -553,6 +553,51 @@ namespace FluidFieldSim
 		const auto h = static_cast<int32_t>(a_flow.height);
 		const float cell = FallCapture::CELL;
 
+		// The flow carried a few cells past the water's edge (each dry cell takes its wet neighbours'
+		// mean), so vanilla's pieces reaching beyond the solved water keep one texture field
+		FallStream::Result dilated = a_flow;
+		std::vector<uint8_t> known = a_flow.water;
+		for (int pass = 0; pass < FLOW_DILATE_CELLS; pass++) {
+			std::vector<uint8_t> next = known;
+			for (int32_t y = 0; y < h; y++) {
+				for (int32_t x = 0; x < w; x++) {
+					const std::size_t i = static_cast<std::size_t>(y) * w + x;
+					if (known[i])
+						continue;
+					float sums[5]{};
+					int count = 0;
+					for (int32_t dy = -1; dy <= 1; dy++) {
+						for (int32_t dx = -1; dx <= 1; dx++) {
+							const int32_t nx = x + dx, ny = y + dy;
+							if (nx < 0 || ny < 0 || nx >= w || ny >= h)
+								continue;
+							const std::size_t j = static_cast<std::size_t>(ny) * w + nx;
+							if (!known[j])
+								continue;
+							sums[0] += dilated.psi[j];
+							sums[1] += dilated.travel[j];
+							sums[2] += dilated.speed[j];
+							sums[3] += dilated.foam[j];
+							sums[4] += dilated.depth[j];
+							count++;
+						}
+					}
+					if (!count)
+						continue;
+					const float k = 1.0f / static_cast<float>(count);
+					dilated.psi[i] = sums[0] * k;
+					dilated.travel[i] = sums[1] * k;
+					dilated.speed[i] = sums[2] * k;
+					dilated.foam[i] = sums[3] * k;
+					dilated.depth[i] = sums[4] * k;
+					next[i] = 1;
+				}
+			}
+			known.swap(next);
+		}
+		dilated.water = known;
+		const FallStream::Result& flowField = dilated;
+
 		// The flow under a point, bilinear over its water cells; the weight is how much water is around
 		struct Flow
 		{
@@ -575,15 +620,15 @@ namespace FluidFieldSim
 						continue;
 					const std::size_t i = static_cast<std::size_t>(y) * w + x;
 					const float k = (dx ? tx : 1.0f - tx) * (dy ? ty : 1.0f - ty);
-					flow.water += a_flow.water[i] ? k : 0.0f;
-					if (!a_flow.water[i])
+					flow.water += flowField.water[i] ? k : 0.0f;
+					if (!flowField.water[i])
 						continue;
-					flow.across += a_flow.psi[i] * k;
-					flow.travel += a_flow.travel[i] * k;
-					flow.speed += a_flow.speed[i] * k;
-					flow.foam += a_flow.foam[i] * k;
-					flow.edge += a_flow.edge[i] * k;
-					flow.depth += a_flow.depth[i] * k;
+					flow.across += flowField.psi[i] * k;
+					flow.travel += flowField.travel[i] * k;
+					flow.speed += flowField.speed[i] * k;
+					flow.foam += flowField.foam[i] * k;
+					flow.edge += flowField.edge[i] * k;
+					flow.depth += flowField.depth[i] * k;
 					weight += k;
 				}
 			}

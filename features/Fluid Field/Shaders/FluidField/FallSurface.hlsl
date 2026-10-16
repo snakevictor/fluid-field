@@ -50,6 +50,8 @@ Texture2D<float> SceneDepth : register(t103);
 SamplerState Wrap : register(s0);
 
 static const float TWO_PI = 6.2831853;
+static const float3 ClearColor = float3(0.12, 0.4, 0.8);   // Clear falling water
+static const float3 WhiteColor = float3(0.32, 0.68, 1.0);  // Aerated, streaked water
 
 struct VSOutput
 {
@@ -94,9 +96,10 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 float4 PSMain(VSOutput input) : SV_Target
 {
 	// Along the flow the texture scrolls with the water, stretching where it speeds up
-	const float2 uv = float2(input.Across / UScale, (input.Travel - Time) * BaseSpeed / VScale);
+	// Vanilla's falling-water texture runs along u (its tall falls span three times more u than v)
+	const float2 uv = float2((input.Travel - Time) * BaseSpeed / VScale, input.Across / UScale);
 	// Vanilla's own coordinates where the flow's are not used (steep water, off the flow)
-	const float2 vanillaUV = float2(input.UV.x, input.UV.y - Time * VanillaScroll);
+	const float2 vanillaUV = float2(input.UV.x - Time * VanillaScroll, input.UV.y);
 
 	// Debug views
 	if (DebugMode == 1)
@@ -113,7 +116,7 @@ float4 PSMain(VSOutput input) : SV_Target
 	const float2 dUVdx = ddx(uv);
 	const float2 dUVdy = ddy(uv);
 	float3 geometric = normalize(input.Normal);
-	const float3 tangent = normalize(dPdx * dUVdy.y - dPdy * dUVdx.y);
+	const float3 tangent = normalize(dPdx * dUVdy.y - dPdy * dUVdx.y);  // Along u
 	const float3 bitangent = normalize(cross(geometric, tangent));
 	const float3 detail = lerp(NormalMap.Sample(Wrap, vanillaUV).xyz, NormalMap.Sample(Wrap, uv).xyz, input.FlowUsed) * 2.0 - 1.0;
 	float3 normal = normalize(tangent * detail.x + bitangent * detail.y + geometric * max(detail.z, 0.3));
@@ -124,15 +127,19 @@ float4 PSMain(VSOutput input) : SV_Target
 	// Vanilla's falling-water texture as how white the water is: clear water tinted, its streaks white
 	const float4 texel = lerp(Diffuse.Sample(Wrap, vanillaUV), Diffuse.Sample(Wrap, uv), input.FlowUsed);
 	const float whiteness = saturate(smoothstep(0.15, 0.85, dot(texel.rgb, float3(0.3, 0.5, 0.2))) + saturate(input.Foam) * 0.6);
-	const float3 albedo = Color::Diffuse(lerp(float3(0.55, 0.72, 0.8), float3(0.92, 0.95, 0.97), whiteness));
+	// Colours matched to vanilla's falls under the same light (measured in game)
+	const float3 albedo = Color::Diffuse(lerp(ClearColor, WhiteColor, whiteness));
 	const float3 sunDirection = normalize(SharedData::DirLightDirection.xyz);
-	const float3 sun = SharedData::DirLightColor.rgb * saturate(dot(normal, sunDirection));
-	const float3 ambient = max(SharedData::GetAmbient(normal), 0.0);
+	// Falling water is lit mostly by the sky; the sun only brightens it a little, without its colour
+	// (vanilla's falls barely answer the sun, and a low orange sun turned the crests brown)
+	const float3 sun = Color::RGBToLuminance(SharedData::DirLightColor.rgb) * saturate(dot(normal, sunDirection)) * 0.25;
+	// The sky's light, its average colour only: its directional terms read warm ground bounce here
+	const float3 ambient = max(float3(SharedData::AmbientSHR.x, SharedData::AmbientSHG.x, SharedData::AmbientSHB.x), 0.0) * 0.886;
 	const float3 halfway = normalize(sunDirection - view);
 	const float specular = pow(saturate(dot(normal, halfway)), 80.0) * 0.6;
 	const float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(-view, normal)), 5.0);
 	// The sky in it, at grazing angles mostly
-	const float3 sky = max(SharedData::GetAmbient(reflect(view, normal)), 0.0);
+	const float3 sky = ambient;
 	const float3 color = (albedo * (ambient + sun) + SharedData::DirLightColor.rgb * specular + sky * (0.15 + 0.85 * fresnel)) * Brightness;
 
 	// Soft where it meets rock in front of it, and at its edges
