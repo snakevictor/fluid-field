@@ -310,6 +310,8 @@ namespace FluidFieldSim
 		static constexpr float FALL_VIEW_RANGE = 2500.0f;   ///< World units round the camera the fall debug views draw (D36)
 		static constexpr float SEAM_CROSSING_ANGLE = 0.9f;  ///< Pieces crossing with their faces closer than this (cosine) lie along each other: no seam shows (D36)
 		static constexpr float POOL_COVER = 2.0f;           ///< Water lying under a pool's surface by more than this is the pool's (D36)
+		static constexpr float POOL_BAND = 24.0f;           ///< D40: a pool's water is where vanilla's falling water lies at its level, within this...
+		static constexpr float POOL_SHALLOW = 160.0f;       ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
 		static constexpr float BURIED_MARGIN = 6.0f;        ///< Vanilla's meshes deeper than this under the captured rock and ground are buried (D37)
 		static constexpr float FOG_SPACING = 64.0f;         ///< World units between the falls' fog sources (D37)
 		static constexpr float FOG_RADIUS = 56.0f;          ///< World units round a source that it fogs
@@ -336,7 +338,7 @@ namespace FluidFieldSim
 		std::unordered_map<uint64_t, Stream> streams;          ///< By Site::captureKey
 		std::vector<std::future<FallStream::Result>> retired;  ///< Solves of sites that went away, left to finish
 		/** @brief Vanilla's falling-water meshes of a site seen from above, and its pools, on a lattice; NO_SURFACE where none. */
-		void RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface) const;
+		void RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface, bool a_planes = true) const;
 		void StartStream(const Site& a_site, const FallCapture& a_capture);
 		/** @brief Starts the flows of newly captured sites and collects finished ones. */
 		void PollStreams();

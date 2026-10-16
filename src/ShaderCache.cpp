@@ -674,6 +674,12 @@ namespace SIE
 				defines[lastIndex++] = { "NO_PIXEL_SHADER", nullptr };
 			}
 
+			for (auto* feature : Feature::GetFeatureList()) {
+				if (feature->loaded && feature->HasShaderDefine(RE::BSShader::Type::Utility)) {
+					defines[lastIndex++] = { feature->GetShaderDefineName().data(), nullptr };
+				}
+			}
+
 			defines[lastIndex++] = { nullptr, nullptr };
 		}
 
@@ -1722,11 +1728,11 @@ namespace SIE
 			// Compiling the preprocessed snapshot keeps the published bytecode matched to the key if the files change meanwhile.
 			const bool fromSnapshot = !shared.source.empty();
 			const HRESULT compileResult = shared.compileFailed ? E_FAIL :
-			                              dedupeHit ? S_OK :
-			                              fromSnapshot ? D3DCompile(shared.source.data(), shared.source.size(), pathString.c_str(), nullptr, nullptr, "main",
-															 GetShaderProfile(shaderClass), flags, 0, &shaderBlob, &errorBlob) :
-			                                             D3DCompileFromFile(path.c_str(), defines.data(), &includeHandler, "main",
-															 GetShaderProfile(shaderClass), flags, 0, &shaderBlob, &errorBlob);
+			                              dedupeHit            ? S_OK :
+			                              fromSnapshot         ? D3DCompile(shared.source.data(), shared.source.size(), pathString.c_str(), nullptr, nullptr, "main",
+																	 GetShaderProfile(shaderClass), flags, 0, &shaderBlob, &errorBlob) :
+			                                                     D3DCompileFromFile(path.c_str(), defines.data(), &includeHandler, "main",
+																	 GetShaderProfile(shaderClass), flags, 0, &shaderBlob, &errorBlob);
 			const auto& capturedIncludes = fromSnapshot ? preprocessHandler.includes : includeHandler.includes;
 			// If the include handler captured any includes, register them so the watcher
 			// can invalidate dependents even if this compilation fails. Do NOT clear
@@ -3326,7 +3332,7 @@ namespace SIE
 		// still reads high briefly, which would otherwise underflow uint64_t (logs as ~2^64-1).
 		const uint64_t total = compilationSet.totalTasks.load(std::memory_order_relaxed);
 		const uint64_t done = compilationSet.completedTasks.load(std::memory_order_relaxed) +
-		                     compilationSet.failedTasks.load(std::memory_order_relaxed);
+		                      compilationSet.failedTasks.load(std::memory_order_relaxed);
 		// This task has already finished running, but Complete(task) has not yet updated the counters.
 		// Include the current task in the local progress snapshot so the logged remaining count is accurate.
 		const uint64_t doneIncludingCurrent = (done < total) ? (done + 1) : total;

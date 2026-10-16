@@ -1527,6 +1527,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// Whitened in the water's own hue (a fixed white albedo lit warm, orange at dawn, next to vanilla's blue)
 		const float3 foamColor = rawBaseColor.rgb / max(max(rawBaseColor.r, max(rawBaseColor.g, rawBaseColor.b)), 0.05) * 0.92;
 		rawBaseColor.rgb = lerp(rawBaseColor.rgb, foamColor, white * streak * 0.8);
+		// Debug (D40): 1 the solved flow's speed (red), foam (green) and water (blue); 2 the texture's direction of motion
+		[branch] if (FallGround::DebugMode == 1)
+			rawBaseColor.rgb = float3(saturate(length(fallFlow.stream.xy) * 0.5), saturate(fallFlow.stream.z), fallFlow.stream.w);
+		else if (FallGround::DebugMode == 2)
+			rawBaseColor.rgb = (0.5 + 0.5 * fallFlow.velocity / max(length(fallFlow.velocity), 1e-3)) * saturate(length(fallFlow.velocity) / FallGround::FlowSpeed);
 		baseColor = float4(Color::Diffuse(rawBaseColor.rgb), rawBaseColor.a);
 	}
 #		endif

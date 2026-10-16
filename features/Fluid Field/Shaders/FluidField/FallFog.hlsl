@@ -55,7 +55,7 @@ Texture2D<float4> WaterFlowTex : register(t67);
 StructuredBuffer<float4> MistVolumes : register(t104);  // Per volume: centre and strength, then half extents
 
 /** Farthest the fog is marched, world units. */
-static const float FOG_RANGE = 3000.0;
+static const float FOG_RANGE = 1600.0;
 /** World units across one wisp, and seconds between restarts of each of the wisps' two drifting phases. */
 static const float WISP_SIZE = 90.0;
 static const float WISP_PERIOD = 3.0;
@@ -64,6 +64,8 @@ static const float MIST_VOLUME_SHARE = 0.12;
 /** World units the fog round a strike stands above it, and how far up and down it spreads from there (D39). */
 static const float SOURCE_LIFT = 20.0;
 static const float SOURCE_SPREAD = 45.0;
+/** World units round the camera kept clear of fog, fading in over five times as far. */
+static const float NEAR_CLEAR = 40.0;
 
 float Hash3(float3 a_p)
 {
@@ -201,7 +203,8 @@ float4 PSMain(VSOutput input) : SV_Target
 	{
 		const float t = (float(s) + jitter) * step;
 		const float3 position = direction * t + FrameBuffer::CameraPosAdjust.xyz;
-		const float density = FogAt(position);
+		// None right at the camera: from inside the layer it would be a wall over the whole view (D40)
+		const float density = FogAt(position) * smoothstep(NEAR_CLEAR, NEAR_CLEAR * 5.0, t);
 		if (density <= 0.0)
 			continue;
 		const float absorbed = 1.0 - exp(-density * step);

@@ -340,7 +340,7 @@ private:
 	static constexpr float FALL_GROUND_LIFT_MOST = 8.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
 	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
 	static constexpr float FALL_POOL_FOAM = 26.0f;          ///< World units above the water below over which the falls foam into it (D36)
-	static constexpr float FALL_FOG_DENSITY = 0.02f;        ///< Waterfall fog's extinction per world unit at strength 1 over wholly white water (D38)
+	static constexpr float FALL_FOG_DENSITY = 0.004f;       ///< Waterfall fog's extinction per world unit at strength 1 over wholly white water (D38)
 	static constexpr float FALL_GRAVITY = 687.0f;           ///< World units per second squared (Skyrim's)
 	static constexpr float FALL_STREAM_STEEP_FROM = 0.35f;  ///< Upward normal below which the water falls straight down its slope (the flow is solved from above)
 	static constexpr float FALL_STREAM_STEEP_TO = 0.6f;

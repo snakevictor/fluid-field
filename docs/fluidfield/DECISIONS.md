@@ -942,3 +942,27 @@ Entry format:
     between water meshes and water meshes with other meshes like stones";
     "for the waterfall though we don't care about whats not poking through")
 -   References: D34, D38
+
+## D40: Pools only where their water is; the depth pre-pass gets FLUID_FIELD; fog tamed
+
+-   Date: 2026-10-16
+-   Phase / spike: D39 follow-up; root causes found by instrumenting, not guessing
+-   Decision: Vanilla's water planes reach this code as whole cells (4096
+    units), so "under a pool" covered most of a waterfall: the solve made a
+    third of it inflow or outflow and foamed most of it (the cream/tan rims),
+    and the clip cut visible water. A pool's water is now only where the
+    captured rock lies under its level and either the falls' own surface lies
+    within 24 units of it or the rock lies within 160 units under it (a river
+    or pool bed, not a fall's face); the pools' map comes from that cover,
+    and the solve's surface takes the pools only there. The remaining tan was
+    the depth pre-pass: ShaderCache's Utility defines never added feature
+    defines, so FLUID_FIELD never reached Utility.hlsl and its clip never ran
+    (A/B: the tan went with Hide Buried Falls off). The Utility define
+    builder now adds them, as Lighting's does. Waterfall fog was an opaque
+    wall from inside its layer: density 0.004 (was 0.02) and none within 40
+    units of the camera, fading in over 200; marched at most 1600 units in 64
+    steps; its sources bilinear. Waterfall Shading's debug colours now paint
+    the lit falls too.
+-   Decided by: investigation after @Victor's report ("everything's borked
+    besides the flowmap"; "fog/smoke over water seemed proximity dependant")
+-   References: D36, D38, D39

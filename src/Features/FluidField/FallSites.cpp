@@ -247,7 +247,7 @@ namespace FluidFieldSim
 		return it != captures.end() ? &it->second : nullptr;
 	}
 
-	void FallSites::RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface) const
+	void FallSites::RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface, bool a_planes) const
 	{
 		a_surface.assign(static_cast<std::size_t>(a_width) * a_height, NO_SURFACE);
 		const auto window = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * a_width + a_x; };
@@ -310,7 +310,7 @@ namespace FluidFieldSim
 			});
 		}
 		// The site's pools
-		for (const auto& plane : a_site.planes) {
+		for (const auto& plane : a_planes ? a_site.planes : std::vector<Site::Plane>{}) {
 			int32_t x0, x1, y0, y1;
 			range(plane.min[0], plane.max[0], a_originX, a_width, x0, x1);
 			range(plane.min[1], plane.max[1], a_originY, a_height, y0, y1);
@@ -329,12 +329,41 @@ namespace FluidFieldSim
 		input.width = a_capture.GetWidth();
 		input.height = a_capture.GetHeight();
 		input.cell = FallCapture::CELL;
-		RasterSurface(a_site, a_capture.GetOriginX(), a_capture.GetOriginY(), FallCapture::CELL, static_cast<int32_t>(input.width), static_cast<int32_t>(input.height), input.surface);
+		RasterSurface(a_site, a_capture.GetOriginX(), a_capture.GetOriginY(), FallCapture::CELL, static_cast<int32_t>(input.width), static_cast<int32_t>(input.height), input.surface, false);
 		input.kind.assign(input.surface.size(), FallStream::Wall);
 		input.bed.assign(input.surface.size(), 0.0f);
 		for (uint32_t y = 0; y < input.height; y++) {
 			for (uint32_t x = 0; x < input.width; x++)
 				input.bed[static_cast<std::size_t>(y) * input.width + x] = a_capture.At(x, y);
+		}
+		// D40: vanilla's water planes are whole cells (4096 units), far wider than their water. A pool's water
+		// is only where the rock lies under its level and either the falls' own surface lies at that level or
+		// the rock lies shallow under it (a river or pool bed, not the face of a fall)
+		input.cover.assign(input.surface.size(), NO_SURFACE);
+		{
+			const auto cw = static_cast<int32_t>(input.width);
+			const auto ch = static_cast<int32_t>(input.height);
+			for (const auto& plane : a_site.planes) {
+				const auto x0 = std::max(0, static_cast<int32_t>(std::ceil((plane.min[0] - a_capture.GetOriginX()) / FallCapture::CELL)));
+				const auto y0 = std::max(0, static_cast<int32_t>(std::ceil((plane.min[1] - a_capture.GetOriginY()) / FallCapture::CELL)));
+				const auto x1 = std::min(cw - 1, static_cast<int32_t>(std::floor((plane.max[0] - a_capture.GetOriginX()) / FallCapture::CELL)));
+				const auto y1 = std::min(ch - 1, static_cast<int32_t>(std::floor((plane.max[1] - a_capture.GetOriginY()) / FallCapture::CELL)));
+				for (int32_t y = y0; y <= y1; y++) {
+					for (int32_t x = x0; x <= x1; x++) {
+						const std::size_t i = static_cast<std::size_t>(y) * cw + x;
+						const float bed = input.bed[i];
+						const float mesh = input.surface[i];
+						if (bed <= FallCapture::NONE || bed >= plane.height - POOL_COVER)
+							continue;
+						const bool meshAtLevel = mesh > NO_SURFACE && mesh >= plane.height - POOL_BAND;
+						const bool shallowBed = bed >= plane.height - POOL_SHALLOW;
+						if (meshAtLevel || shallowBed)
+							input.cover[i] = std::max(input.cover[i], plane.height);
+					}
+				}
+			}
+			for (std::size_t i = 0; i < input.surface.size(); i++)
+				input.surface[i] = std::max(input.surface[i], input.cover[i]);
 		}
 		uint32_t water = 0, inflow = 0, outflow = 0;
 		for (uint32_t y = 0; y < input.height; y++) {
@@ -382,20 +411,7 @@ namespace FluidFieldSim
 		// pool's: under the top it is where the falls' water comes from, under the bottom where it goes.
 		// The flow then starts where the falls leave the water above, and ends where they meet the water below
 		{
-			std::vector<float> cover(kind.size(), NO_SURFACE);
-			for (const auto& plane : a_site.planes) {
-				const auto x0 = std::max(0, static_cast<int32_t>(std::ceil((plane.min[0] - a_capture.GetOriginX()) / FallCapture::CELL)));
-				const auto y0 = std::max(0, static_cast<int32_t>(std::ceil((plane.min[1] - a_capture.GetOriginY()) / FallCapture::CELL)));
-				const auto x1 = std::min(w - 1, static_cast<int32_t>(std::floor((plane.max[0] - a_capture.GetOriginX()) / FallCapture::CELL)));
-				const auto y1 = std::min(h - 1, static_cast<int32_t>(std::floor((plane.max[1] - a_capture.GetOriginY()) / FallCapture::CELL)));
-				for (int32_t y = y0; y <= y1; y++) {
-					for (int32_t x = x0; x <= x1; x++) {
-						float& stored = cover[static_cast<std::size_t>(y) * w + x];
-						stored = std::max(stored, plane.height);
-					}
-				}
-			}
-			input.cover = cover;
+			const std::vector<float>& cover = input.cover;
 			for (std::size_t i = 0; i < kind.size(); i++) {
 				if (kind[i] != FallStream::Water || cover[i] <= NO_SURFACE || cover[i] < input.surface[i] - POOL_COVER)
 					continue;
@@ -1954,20 +1970,23 @@ namespace FluidFieldSim
 
 	void FallSites::BuildPoolMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const
 	{
+		// D40: where each site's pools really have water (its flow's cover), on the same lattice as its flow
 		a_heights.assign(static_cast<std::size_t>(a_size) * a_size, FallCapture::NONE);
-		for (const auto& site : sites) {
-			if (site.kind == Kind::Failed)
+		const auto n = static_cast<int32_t>(a_size);
+		for (const auto& [key, stream] : streams) {
+			if (!stream.ready || stream.result.cover.size() != stream.result.water.size())
 				continue;
-			for (const auto& plane : site.planes) {
-				const auto x0 = std::max(0, static_cast<int32_t>(std::ceil((plane.min[0] - a_originX) / a_cell)));
-				const auto y0 = std::max(0, static_cast<int32_t>(std::ceil((plane.min[1] - a_originY) / a_cell)));
-				const auto x1 = std::min(static_cast<int32_t>(a_size) - 1, static_cast<int32_t>(std::floor((plane.max[0] - a_originX) / a_cell)));
-				const auto y1 = std::min(static_cast<int32_t>(a_size) - 1, static_cast<int32_t>(std::floor((plane.max[1] - a_originY) / a_cell)));
-				for (int32_t y = y0; y <= y1; y++) {
-					for (int32_t x = x0; x <= x1; x++) {
-						float& stored = a_heights[static_cast<std::size_t>(y) * a_size + x];
-						stored = std::max(stored, plane.height);
-					}
+			const auto w = static_cast<int32_t>(stream.result.width);
+			const auto h = static_cast<int32_t>(stream.result.height);
+			const auto offsetX = static_cast<int32_t>(std::lround((stream.originX - a_originX) / a_cell));
+			const auto offsetY = static_cast<int32_t>(std::lround((stream.originY - a_originY) / a_cell));
+			for (int32_t y = std::max(0, -offsetY); y < h && y + offsetY < n; y++) {
+				for (int32_t x = std::max(0, -offsetX); x < w && x + offsetX < n; x++) {
+					const float cover = stream.result.cover[static_cast<std::size_t>(y) * w + x];
+					if (cover <= NO_SURFACE)
+						continue;
+					float& stored = a_heights[static_cast<std::size_t>(y + offsetY) * a_size + static_cast<std::size_t>(x + offsetX)];
+					stored = std::max(stored, cover);
 				}
 			}
 		}
