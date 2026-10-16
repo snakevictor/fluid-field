@@ -60,6 +60,13 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GroundWaterfalls,
 	ReplaceWaterfallSurface,
 	FallLayerMask,
+	FallFlowPeriod,
+	FallFlowMost,
+	FallAcceleration,
+	SprayAmount,
+	SpraySize,
+	MistAmount,
+	MistOpacity,
 	WaterfallDebug)
 
 void FluidField::DrawSettings()
@@ -285,6 +292,29 @@ void FluidField::DrawSettings()
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("ground_waterfalls_tooltip"), "Bends vanilla's waterfall meshes onto the rock they run over, flows them around rocks in their way, and softens them into the rock with foam where they meet it. Off shows vanilla's waterfalls unchanged."));
+	}
+	if (ImGui::TreeNode(T(TKEY("waterfall_look"), "Waterfall Flow and Spray"))) {
+		const char* layerNames[] = { T(TKEY("fall_layer_surface"), "Show Vanilla Water Surface"), T(TKEY("fall_layer_sheet"), "Show Vanilla White-Water Sheet"),
+			T(TKEY("fall_layer_streaks"), "Show Vanilla Streak Layers"), T(TKEY("fall_layer_particles"), "Show Vanilla Spray Particles") };
+		for (uint32_t bit = 0; bit < 4; bit++) {
+			bool on = (settings.FallLayerMask & (1u << bit)) != 0;
+			if (ImGui::Checkbox(layerNames[bit], &on))
+				settings.FallLayerMask = on ? settings.FallLayerMask | (1u << bit) : settings.FallLayerMask & ~(1u << bit);
+		}
+		ImGui::SliderFloat(T(TKEY("fall_flow_period"), "Flow Cycle (s)"), &settings.FallFlowPeriod, 0.1f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("%s", T(TKEY("fall_flow_period_tooltip"), "How often the flowmap restarts its texture. Shorter stretches it less round rocks but pulses more."));
+		}
+		ImGui::SliderFloat(T(TKEY("fall_flow_most"), "Flow Stretch Limit"), &settings.FallFlowMost, 0.2f, 6.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat(T(TKEY("fall_acceleration"), "Fall Acceleration"), &settings.FallAcceleration, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("%s", T(TKEY("fall_acceleration_tooltip"), "How much speed the water gains from the height it has dropped (1: free fall, 0: the solved flow only)."));
+		}
+		ImGui::SliderInt(T(TKEY("spray_amount"), "Spray Amount"), &settings.SprayAmount, 0, 96, "%d", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat(T(TKEY("spray_size"), "Spray Size"), &settings.SpraySize, 0.5f, 12.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderInt(T(TKEY("mist_amount"), "Mist Amount"), &settings.MistAmount, 0, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat(T(TKEY("mist_opacity"), "Mist Opacity"), &settings.MistOpacity, 0.0f, 0.4f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::TreePop();
 	}
 	ImGui::Text(T(TKEY("waterfall_sites"), "Waterfall sites: %u falls, %u cascades, %u rapids, %u no bottom, %u failed"),
 		fallSites.CountKind(FluidFieldSim::FallSites::Kind::Fall), fallSites.CountKind(FluidFieldSim::FallSites::Kind::Cascade),
@@ -1098,7 +1128,7 @@ void FluidField::DrawGroundFogAfterWorld()
 		return;
 
 	// The falls' own water surfaces (D30), before the ground fog lies over their base
-	if (settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && settings.ReplaceWaterfallSurface && cameraSnapshot) {
+	if (settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && cameraSnapshot) {
 		fallSurface.Upload(globals::d3d::device, globals::d3d::context, fallSites.GetSurfaceVertices(), fallSites.GetSurfaceIndices(), fallSites.GetSurfaceEmitters(),
 			fallSites.GetSurfaceVersion());
 		const auto& shadow = globals::game::shadowState->GetRuntimeData();
@@ -1117,6 +1147,11 @@ void FluidField::DrawGroundFogAfterWorld()
 			params.normal = fallSites.GetSurfaceNormal();
 			params.time = fallSurfaceTime;
 			params.debugMode = static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 4));
+			params.drawSurface = settings.ReplaceWaterfallSurface;
+			params.sprayPerEmitter = static_cast<uint32_t>(std::clamp(settings.SprayAmount, 0, 96));
+			params.mistPerEmitter = static_cast<uint32_t>(std::clamp(settings.MistAmount, 0, 8));
+			params.spraySize = settings.SpraySize;
+			params.mistOpacity = settings.MistOpacity;
 			globals::profiler->BeginPass("FluidField::FallSurfaces");
 			fallSurface.Draw(globals::d3d::device, globals::d3d::context, params);
 			globals::profiler->EndPass();
@@ -1454,13 +1489,16 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	if (!fallGroundTexture) {
 		D3D11_TEXTURE2D_DESC desc{ .Width = FALL_GROUND_SIZE, .Height = FALL_GROUND_SIZE, .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R32_FLOAT, .SampleDesc = { 1, 0 }, .Usage = D3D11_USAGE_DEFAULT, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = 0 };
 		D3D11_BUFFER_DESC cbDesc{ .ByteWidth = sizeof(FallGroundData), .Usage = D3D11_USAGE_DEFAULT, .BindFlags = D3D11_BIND_CONSTANT_BUFFER, .CPUAccessFlags = 0, .MiscFlags = 0, .StructureByteStride = 0 };
+		D3D11_BUFFER_DESC onDesc = cbDesc;
+		onDesc.Usage = D3D11_USAGE_DYNAMIC;
+		onDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 		const FallGroundData off{};
 		const D3D11_SUBRESOURCE_DATA offData{ &off, 0, 0 };
 		D3D11_TEXTURE2D_DESC streamDesc = desc;
 		streamDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 		if (FAILED(device->CreateTexture2D(&desc, nullptr, fallGroundTexture.put())) || FAILED(device->CreateShaderResourceView(fallGroundTexture.get(), nullptr, fallGroundSRV.put())) ||
 			FAILED(device->CreateTexture2D(&streamDesc, nullptr, fallStreamTexture.put())) || FAILED(device->CreateShaderResourceView(fallStreamTexture.get(), nullptr, fallStreamSRV.put())) ||
-			FAILED(device->CreateBuffer(&cbDesc, &offData, fallGroundOn.put())) || FAILED(device->CreateBuffer(&cbDesc, &offData, fallGroundOff.put()))) {
+			FAILED(device->CreateBuffer(&onDesc, &offData, fallGroundOn.put())) || FAILED(device->CreateBuffer(&cbDesc, &offData, fallGroundOff.put()))) {
 			logger::warn("[Fluid Field] Could not create the waterfall ground map; waterfalls are not grounded");
 			ReleaseFallGround();
 			return;
@@ -1486,11 +1524,10 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		fallSites.BuildStreamMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallStreamScratch);
 		context->UpdateSubresource(fallStreamTexture.get(), 0, nullptr, fallStreamScratch.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
 	}
-	const FallGroundData on{ { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET,
-		FALL_GROUND_CONTACT, FALL_GROUND_LIFT_MOST, FALL_FOAM_STRENGTH, static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 4)), FALL_STREAM_U_SCALE,
-		FALL_STREAM_STEEP_FROM, FALL_STREAM_STEEP_TO,
-		FALL_STREAM_SLOW_FROM, FALL_STREAM_SLOW_TO, 0.0f };
-	context->UpdateSubresource(fallGroundOn.get(), 0, nullptr, &on, 0, 0);
+	fallGroundData = { { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET,
+		FALL_GROUND_CONTACT, FALL_GROUND_LIFT_MOST, FALL_FOAM_STRENGTH, static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 4)), fallSurfaceTime,
+		FluidFieldSim::FallStream::BASE_SPEED, std::max(settings.FallFlowPeriod, 0.05f), std::max(settings.FallFlowMost, 0.1f), FALL_STREAM_STEEP_FROM, FALL_STREAM_STEEP_TO, {},
+		FALL_GRAVITY * std::max(settings.FallAcceleration, 0.0f), 0.0f };
 }
 
 void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
@@ -1498,6 +1535,17 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
 	auto* context = globals::d3d::context;
 	const bool grounded = fallGroundSRV && settings.Enabled && settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && a_pass && a_pass->geometry && fallSites.IsGrounded(a_pass->geometry);
 	if (grounded) {
+		// D32: the flowmap moves each mesh's texture itself, so vanilla's scroll is taken back out of its coordinates
+		auto* property = a_pass->shaderProperty;
+		auto* material = property ? property->material : nullptr;
+		const uint32_t buffer = globals::game::smState ? globals::game::smState->textureTransformCurrentBuffer : 0;
+		fallGroundData.TexOffset[0] = material ? material->texCoordOffset[buffer].x : 0.0f;
+		fallGroundData.TexOffset[1] = material ? material->texCoordOffset[buffer].y : 0.0f;
+		D3D11_MAPPED_SUBRESOURCE mapped{};
+		if (SUCCEEDED(context->Map(fallGroundOn.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+			std::memcpy(mapped.pData, &fallGroundData, sizeof(fallGroundData));
+			context->Unmap(fallGroundOn.get(), 0);
+		}
 		ID3D11Buffer* constants = fallGroundOn.get();
 		context->VSSetConstantBuffers(13, 1, &constants);
 		context->PSSetConstantBuffers(13, 1, &constants);

@@ -2,7 +2,8 @@
 // the way, the joins with the water above and below). Stateless: each particle's position follows
 // from its emitter, a hash of its index and the time, so nothing is simulated or stored. Spray is
 // small droplets thrown up and out, falling back under gravity; mist is large soft puffs that rise
-// and fade. Drawn as camera-facing quads after the falls' surface, sharing its constants.
+// and fade. Drawn as camera-facing quads after the falls' surface, sharing its constants; droplets
+// are drawn smeared along their motion (D33), as the eye sees fast spray, and lit white.
 
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
@@ -44,6 +45,8 @@ cbuffer FallSurfaceCB : register(b7)
 	float MistSize;
 	float MistRise;
 	float Gravity;
+	float MistOpacity;
+	float SprayStretch;
 	float2 Pad;
 };
 
@@ -100,6 +103,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	const float3 spread = side * cos(angle) + forward * sin(angle);
 
 	float3 position = emitter.Position + spread * (r1 * 12.0);
+	float3 motion = 0.0;  // World units per second now, along which a droplet is smeared
 	float size;
 	float alpha;
 	if (mist) {
@@ -107,26 +111,41 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 		position += (emitter.Direction * 30.0 * emitter.Speed + spread * 20.0) * age + float3(0, 0, MistRise * age);
 		size = MistSize * (0.5 + age / life) * (0.7 + 0.6 * r2);
 		const float t = age / life;
-		alpha = 0.18 * smoothstep(0.0, 0.2, t) * (1.0 - smoothstep(0.5, 1.0, t)) * emitter.Strength;
+		alpha = MistOpacity * smoothstep(0.0, 0.2, t) * (1.0 - smoothstep(0.5, 1.0, t)) * emitter.Strength;
 	} else {
 		// Spray is thrown up and out, carried with the water, and falls back
 		const float speed = SpraySpeed * (0.35 + 0.65 * r2) * (0.4 + 0.6 * emitter.Strength);
 		const float3 velocity = (up * (0.6 + 0.4 * r1) + spread * 0.5) * speed + emitter.Direction * 120.0 * emitter.Speed;
 		position += velocity * age + float3(0, 0, -0.5 * Gravity * age * age);
-		size = SpraySize * (0.6 + 0.8 * r2) * (1.0 + age / life);
+		motion = velocity + float3(0, 0, -Gravity * age);
+		size = SpraySize * (0.5 + 1.0 * r2);
 		const float t = age / life;
-		alpha = 0.85 * smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.55, 1.0, t)) * emitter.Strength;
+		alpha = 0.9 * smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.55, 1.0, t)) * emitter.Strength;
 	}
-	if (!active)
-		alpha = 0.0;
-
-	// A camera-facing quad: its corners along the view's right and up
-	const float3 right = normalize(float3(FrameBuffer::CameraView[0].x, FrameBuffer::CameraView[0].y, FrameBuffer::CameraView[0].z));
-	const float3 viewUp = normalize(float3(FrameBuffer::CameraView[1].x, FrameBuffer::CameraView[1].y, FrameBuffer::CameraView[1].z));
-	const float2 corner = CORNERS[vertexID];
-	const float3 world = position + (right * corner.x + viewUp * corner.y) * (size * 0.5) - FrameBuffer::CameraPosAdjust.xyz;
 
 	VSOutput output;
+	if (!active || alpha <= 0.001) {
+		// Nothing to draw: a degenerate quad outside the view, so it costs no pixels
+		output = (VSOutput)0;
+		output.Position = float4(2.0, 2.0, 2.0, 1.0);
+		return output;
+	}
+
+	// A camera-facing quad; a droplet's is stretched along its motion as seen from the camera
+	const float3 relative = position - FrameBuffer::CameraPosAdjust.xyz;
+	const float3 toCamera = -relative / max(length(relative), 1e-3);
+	float3 right = normalize(float3(FrameBuffer::CameraView[0].x, FrameBuffer::CameraView[0].y, FrameBuffer::CameraView[0].z));
+	float3 viewUp = normalize(float3(FrameBuffer::CameraView[1].x, FrameBuffer::CameraView[1].y, FrameBuffer::CameraView[1].z));
+	float length2 = size;
+	const float3 across = motion - toCamera * dot(motion, toCamera);
+	if (dot(across, across) > 1.0) {
+		viewUp = normalize(across);
+		right = normalize(cross(viewUp, toCamera));
+		length2 = size + length(across) * SprayStretch;
+	}
+	const float2 corner = CORNERS[vertexID];
+	const float3 world = relative + right * corner.x * (size * 0.5) + viewUp * corner.y * (length2 * 0.5);
+
 	output.Position = mul(FrameBuffer::CameraViewProj, float4(world, 1.0));
 	output.Corner = corner;
 	output.Alpha = alpha;
@@ -152,7 +171,8 @@ float4 PSMain(VSOutput input) : SV_Target
 	if (alpha <= 0.002)
 		discard;
 	const float3 ambient = max(float3(SharedData::AmbientSHR.x, SharedData::AmbientSHG.x, SharedData::AmbientSHB.x), 0.0) * 0.886;
-	// The falls' white water tone (FallSurface.hlsl's WhiteColor), brighter: spray catches the light
-	const float3 color = float3(0.42, 0.75, 1.0) * (ambient + Color::RGBToLuminance(SharedData::DirLightColor.rgb) * 0.3) * Brightness * 1.4;
+	// White water, lit by the light's brightness, not its colour (the sky's blue made it glow blue)
+	const float light = Color::RGBToLuminance(ambient) + Color::RGBToLuminance(SharedData::DirLightColor.rgb) * 0.3;
+	const float3 color = float3(0.93, 0.96, 1.0) * light * Brightness * (input.Mist > 0.5 ? 1.6 : 2.2);
 	return float4(color * alpha, alpha);  // Premultiplied
 }

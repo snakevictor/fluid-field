@@ -55,6 +55,7 @@ namespace FluidFieldSim
 			std::vector<float> level;   ///< The water surface, lightly smoothed over the water (for the mesh)
 			std::vector<float> depth;   ///< Water surface above the rock
 			std::vector<float> travel;  ///< Seconds the water takes to reach each cell from where it comes in, at BASE_SPEED
+			std::vector<float> head;    ///< The height the water here has fallen from (D33): the highest surface upstream, less what it loses on the way
 			std::vector<float> edge;    ///< 0 at the water's edge (beside rock or a bank) to 1 EDGE_CELLS in
 			uint32_t iterations = 0;
 			float residual = 0.0f;  ///< Largest pressure change in the last sweep, world units
@@ -74,6 +75,8 @@ namespace FluidFieldSim
 		static constexpr uint32_t TRAVEL_ROUNDS = 24;  ///< Rounds of four sweeps for the travel time
 		static constexpr int32_t EDGE_CELLS = 2;       ///< Cells over which the water fades in from its edge
 		static constexpr int32_t MEET_CELLS = 2;       ///< Cells of foam where the falls meet still water (where they come in and leave)
+		static constexpr float HEAD_LOSS = 0.35f;      ///< Height the water's head loses per world unit it runs (friction): a steep drop keeps its speed, a long run slows
+		static constexpr float HEAD_MOST = 900.0f;     ///< Most height a head stands above the surface
 
 		static Result Solve(const Input& a_input);
 	};

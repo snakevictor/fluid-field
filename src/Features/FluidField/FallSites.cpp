@@ -890,12 +890,12 @@ namespace FluidFieldSim
 				for (int32_t x = std::max(0, -offsetX); x < w && x + offsetX < n; x++) {
 					const std::size_t from = static_cast<std::size_t>(y) * w + x;
 					const std::size_t to = (static_cast<std::size_t>(y + offsetY) * a_size + static_cast<std::size_t>(x + offsetX)) * 4;
-					if (!result.water[from] || a_field[to + 3] > 0.0f)
+					if (!result.water[from] || a_field[to + 2] >= 2.0f)
 						continue;
-					a_field[to + 0] = result.psi[from];
-					a_field[to + 1] = result.speed[from];
-					a_field[to + 2] = result.foam[from];
-					a_field[to + 3] = 1.0f;
+					a_field[to + 0] = result.vx[from];
+					a_field[to + 1] = result.vy[from];
+					a_field[to + 2] = 2.0f + std::clamp(result.foam[from], 0.0f, 1.0f);  // 2 and up: water
+					a_field[to + 3] = result.head.size() == result.water.size() ? result.head[from] : result.level[from];
 				}
 			}
 		}

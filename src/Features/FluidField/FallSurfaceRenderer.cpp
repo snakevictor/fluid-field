@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <random>
 
 namespace FluidFieldSim
 {
@@ -113,7 +114,7 @@ namespace FluidFieldSim
 		indexCount = 0;
 		emitterCount = 0;
 		if (!a_emitters.empty()) {
-			const auto count = static_cast<uint32_t>(std::min<std::size_t>(a_emitters.size(), MAX_PARTICLES / (SPRAY_PER_EMITTER + MIST_PER_EMITTER)));
+			const auto count = static_cast<uint32_t>(a_emitters.size());
 			if (count > emitterCapacity) {
 				emitters = nullptr;
 				emittersSRV = nullptr;
@@ -131,8 +132,12 @@ namespace FluidFieldSim
 				}
 			}
 			if (emitters) {
+				// Shuffled, so that when only the first emitters fit (DrawParticles), they are spread over every fall
+				std::vector<FallEmitter> shuffled = a_emitters;
+				std::mt19937 random(0x5eed);
+				std::shuffle(shuffled.begin(), shuffled.end(), random);
 				const D3D11_BOX box{ 0, 0, 0, static_cast<UINT>(count * sizeof(FallEmitter)), 1, 1 };
-				a_context->UpdateSubresource(emitters.get(), 0, &box, a_emitters.data(), 0, 0);
+				a_context->UpdateSubresource(emitters.get(), 0, &box, shuffled.data(), 0, 0);
 				emitterCount = count;
 			}
 		}
@@ -177,12 +182,14 @@ namespace FluidFieldSim
 
 	void FallSurfaceRenderer::Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params)
 	{
-		if (indexCount == 0 || !verticesSRV || !indices || !a_params.target || !a_params.depth || !a_params.camera || !a_params.diffuse || !EnsureShaders() || !EnsureStates(a_device))
+		if ((a_params.drawSurface && (indexCount == 0 || !verticesSRV || !indices || !a_params.diffuse)) || (!a_params.drawSurface && emitterCount == 0) || !a_params.target ||
+			!a_params.depth || !a_params.camera || !EnsureShaders() || !EnsureStates(a_device))
 			return;
+		const uint32_t perEmitter = std::max(a_params.sprayPerEmitter + a_params.mistPerEmitter, 1u);
 
 		const Constants data{ a_params.time, U_SCALE, V_SCALE, FallStream::BASE_SPEED, WAVE_HEIGHT, WAVE_LENGTH, RIPPLE_HEIGHT, RIPPLE_LENGTH, BULGE_HEIGHT, SHALLOW_DEPTH, CONTACT_WIDTH,
-			BRIGHTNESS, a_params.debugMode, VANILLA_SCROLL, emitterCount, SPRAY_PER_EMITTER, MIST_PER_EMITTER, SPRAY_LIFE, SPRAY_SPEED, SPRAY_SIZE, MIST_LIFE, MIST_SIZE,
-			MIST_RISE, PARTICLE_GRAVITY, {} };
+			BRIGHTNESS, a_params.debugMode, VANILLA_SCROLL, std::min(emitterCount, MAX_PARTICLES / perEmitter), a_params.sprayPerEmitter, a_params.mistPerEmitter, SPRAY_LIFE,
+			SPRAY_SPEED, a_params.spraySize, MIST_LIFE, MIST_SIZE, MIST_RISE, PARTICLE_GRAVITY, a_params.mistOpacity, SPRAY_STRETCH, {} };
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (FAILED(a_context->Map(constants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
 			return;
@@ -248,8 +255,9 @@ namespace FluidFieldSim
 		a_context->PSSetShaderResources(TEXTURES_SLOT, 3, textures);
 		ID3D11SamplerState* wrap = sampler.get();
 		a_context->PSSetSamplers(SAMPLER_SLOT, 1, &wrap);
-		a_context->DrawIndexed(indexCount, 0, 0);
-		DrawParticles(a_context);
+		if (a_params.drawSurface && indexCount > 0)
+			a_context->DrawIndexed(indexCount, 0, 0);
+		DrawParticles(a_context, perEmitter);
 
 		// Restore
 		ID3D11RenderTargetView* targets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];
@@ -280,15 +288,15 @@ namespace FluidFieldSim
 		a_context->PSSetSamplers(SAMPLER_SLOT, 1, &psSampler);
 	}
 
-	void FallSurfaceRenderer::DrawParticles(ID3D11DeviceContext* a_context)
+	void FallSurfaceRenderer::DrawParticles(ID3D11DeviceContext* a_context, uint32_t a_perEmitter)
 	{
-		if (emitterCount == 0 || !emittersSRV)
+		if (emitterCount == 0 || !emittersSRV || a_perEmitter == 0)
 			return;
 		// Same targets, states and constants as the surface; the emitters in the vertex shader's slot
 		a_context->VSSetShader(sprayVertexShader.get(), nullptr, 0);
 		a_context->PSSetShader(sprayPixelShader.get(), nullptr, 0);
 		ID3D11ShaderResourceView* view = emittersSRV.get();
 		a_context->VSSetShaderResources(VERTICES_SLOT, 1, &view);
-		a_context->DrawInstanced(6, emitterCount * (SPRAY_PER_EMITTER + MIST_PER_EMITTER), 0, 0);
+		a_context->DrawInstanced(6, std::min(emitterCount, MAX_PARTICLES / a_perEmitter) * a_perEmitter, 0, 0);
 	}
 }

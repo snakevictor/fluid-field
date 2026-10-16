@@ -56,50 +56,57 @@ struct FluidField : OverlayFeature
 	struct Settings
 	{
 		bool Enabled = false;
-		uint GridResolution = 256;            ///< Texels per side
-		float GridSize = 4096.0f;             ///< World units per side
-		uint JacobiIterations = 30;           ///< Pressure solve iterations per step
-		float WindDamping = 0.3f;             ///< Fraction of wind speed lost per second, as an exponential rate
-		float TestPuffStrength = 800.0f;      ///< Test puff wind speed at its centre, world units per second
-		float TestPuffRadius = 256.0f;        ///< Test puff radius, world units
-		bool DepthMapEnabled = false;         ///< Experimental: build the riverbed and obstacle map (R1)
-		bool VerifyLandscape = false;         ///< Debug: compare cached landscape heights with the engine's
-		bool VerifyWater = false;             ///< Debug: compare water surface heights with the engine's
-		bool RaycastBed = true;               ///< Find rocks, banks and riverbed meshes under water with Havok rays
-		uint RaysPerFrame = 32;               ///< Most bed rays cast in one frame
-		float RaySpacing = 64.0f;             ///< World units between bed rays
-		bool LogDepthMap = false;             ///< Debug: log what bed rays hit and periodic depth map statistics
-		bool MeshCutObstacles = true;         ///< Water-line obstacles from cutting placed meshes at the water height (D15)
-		bool WaterEnabled = false;            ///< Experimental: simulate shallow water on the grid (needs the depth map)
-		float WakeStrength = 1.0f;            ///< How strongly the player drags the water along
-		float TestCurrentSpeed = 0.0f;        ///< Test current until vanilla flow is read, world units per second
-		float TestCurrentAngle = 0.0f;        ///< Test current heading in degrees, 0 = north, clockwise
-		uint WaterResolution = 512;           ///< Near water texels per side; its own grid, separate from the wind's
-		float WaterSize = 4096.0f;            ///< Near water width in world units (full detail: obstacles, wakes)
-		bool FarWater = true;                 ///< A coarser water level around the near one, so rivers stay simulated further out
-		float FarWaterScale = 4.0f;           ///< Far water width as a multiple of the near width, at the same resolution
-		float SurfaceNormalStrength = 1.0f;   ///< How strongly the simulated waves tilt the water's surface normal
-		float WaveDamping = 0.3f;             ///< Fraction of the water's speed lost per second, as an exponential rate
-		float SplashStrength = 1.0f;          ///< How hard actors entering or leaving the water push it
-		float RiverSpeed = 150.0f;            ///< River current at full flowmap strength, world units per second (0: test current only)
-		float CurrentPull = 0.25f;            ///< Per-second pull of the water toward the river current; lower lets obstacles shape the flow
-		float Turbulence = 0.4f;              ///< Vorticity confinement: keeps eddies behind obstacles alive (0: off)
-		float FlowDetail = 1.2f;              ///< Strength of the surface detail carried by the simulated flow
-		float FoamStrength = 1.0f;            ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
-		bool ReplaceVanillaFoam = true;       ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
-		bool Waterfalls = true;               ///< Waterfalls landing on the simulated water drive it (D22)
-		int WaterfallDebug = 0;               ///< Debug: 1 the flow's speed, foam and water; 2 its streamlines; 3 grounding without the streamline texture
-		uint32_t FallLayerMask = 0x1;         ///< Which parts of vanilla's falling-water models show while waterfall effects are hidden (bits: inner surface, white-water sheet, streaks, particles)
-		bool GroundWaterfalls = true;         ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
-		bool ReplaceWaterfallSurface = true;  ///< Draw the falls' own dense, flowing water surface in place of vanilla's falling-water meshes (D30)
-		float WaterfallStrength = 1.0f;       ///< How hard waterfalls churn, push and foam the water
-		float WaterTint = 0.5f;               ///< How much the water type's colour tints what is seen through all water (0: vanilla)
-		bool InteractiveFog = true;           ///< Ground fog that actors and the weather's wind move (D21)
-		float FogDensity = 0.08f;             ///< Ground fog extinction per world unit inside the layer, in its banks
-		float FogBrightness = 0.15f;          ///< How brightly the ground fog is lit, as a fraction of the light around it
-		float FogThickness = 18.0f;           ///< Height of the ground fog layer's top above the ground, in its banks, world units
-		float FogStir = 1.0f;                 ///< How strongly moving actors push the air and part the fog
-		float FogRefillSeconds = 10.0f;       ///< Seconds for parted fog to fill back in (about two thirds of the way)
+		uint GridResolution = 256;             ///< Texels per side
+		float GridSize = 4096.0f;              ///< World units per side
+		uint JacobiIterations = 30;            ///< Pressure solve iterations per step
+		float WindDamping = 0.3f;              ///< Fraction of wind speed lost per second, as an exponential rate
+		float TestPuffStrength = 800.0f;       ///< Test puff wind speed at its centre, world units per second
+		float TestPuffRadius = 256.0f;         ///< Test puff radius, world units
+		bool DepthMapEnabled = false;          ///< Experimental: build the riverbed and obstacle map (R1)
+		bool VerifyLandscape = false;          ///< Debug: compare cached landscape heights with the engine's
+		bool VerifyWater = false;              ///< Debug: compare water surface heights with the engine's
+		bool RaycastBed = true;                ///< Find rocks, banks and riverbed meshes under water with Havok rays
+		uint RaysPerFrame = 32;                ///< Most bed rays cast in one frame
+		float RaySpacing = 64.0f;              ///< World units between bed rays
+		bool LogDepthMap = false;              ///< Debug: log what bed rays hit and periodic depth map statistics
+		bool MeshCutObstacles = true;          ///< Water-line obstacles from cutting placed meshes at the water height (D15)
+		bool WaterEnabled = false;             ///< Experimental: simulate shallow water on the grid (needs the depth map)
+		float WakeStrength = 1.0f;             ///< How strongly the player drags the water along
+		float TestCurrentSpeed = 0.0f;         ///< Test current until vanilla flow is read, world units per second
+		float TestCurrentAngle = 0.0f;         ///< Test current heading in degrees, 0 = north, clockwise
+		uint WaterResolution = 512;            ///< Near water texels per side; its own grid, separate from the wind's
+		float WaterSize = 4096.0f;             ///< Near water width in world units (full detail: obstacles, wakes)
+		bool FarWater = true;                  ///< A coarser water level around the near one, so rivers stay simulated further out
+		float FarWaterScale = 4.0f;            ///< Far water width as a multiple of the near width, at the same resolution
+		float SurfaceNormalStrength = 1.0f;    ///< How strongly the simulated waves tilt the water's surface normal
+		float WaveDamping = 0.3f;              ///< Fraction of the water's speed lost per second, as an exponential rate
+		float SplashStrength = 1.0f;           ///< How hard actors entering or leaving the water push it
+		float RiverSpeed = 150.0f;             ///< River current at full flowmap strength, world units per second (0: test current only)
+		float CurrentPull = 0.25f;             ///< Per-second pull of the water toward the river current; lower lets obstacles shape the flow
+		float Turbulence = 0.4f;               ///< Vorticity confinement: keeps eddies behind obstacles alive (0: off)
+		float FlowDetail = 1.2f;               ///< Strength of the surface detail carried by the simulated flow
+		float FoamStrength = 1.0f;             ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
+		bool ReplaceVanillaFoam = true;        ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
+		bool Waterfalls = true;                ///< Waterfalls landing on the simulated water drive it (D22)
+		int WaterfallDebug = 0;                ///< Debug: 1 the flow's speed, foam and water; 2 its streamlines; 3 grounding without the streamline texture
+		uint32_t FallLayerMask = 0x1;          ///< Which parts of vanilla's falling-water models show while waterfall effects are hidden (bits: inner surface, white-water sheet, streaks, particles)
+		bool GroundWaterfalls = true;          ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
+		bool ReplaceWaterfallSurface = false;  ///< Draw the falls' own dense, flowing water surface in place of vanilla's falling-water meshes (D30; off since D32)
+		float WaterfallStrength = 1.0f;        ///< How hard waterfalls churn, push and foam the water
+		float FallFlowPeriod = 0.5f;           ///< Seconds per cycle of the falls' flowmap (D32): shorter stretches the texture less, pulses more
+		float FallFlowMost = 2.5f;             ///< Most texture repeats the flowmap moves the texture per cycle
+		float FallAcceleration = 0.6f;         ///< How much of gravity's pull the falling water keeps as speed (D33; 0: the solved flow only)
+		int SprayAmount = 32;                  ///< Spray droplets alive per emitter at once (D31)
+		float SpraySize = 2.5f;                ///< Spray droplet width, world units
+		int MistAmount = 2;                    ///< Mist puffs alive per emitter at once
+		float MistOpacity = 0.07f;             ///< How dense each mist puff is
+		float WaterTint = 0.5f;                ///< How much the water type's colour tints what is seen through all water (0: vanilla)
+		bool InteractiveFog = true;            ///< Ground fog that actors and the weather's wind move (D21)
+		float FogDensity = 0.08f;              ///< Ground fog extinction per world unit inside the layer, in its banks
+		float FogBrightness = 0.15f;           ///< How brightly the ground fog is lit, as a fraction of the light around it
+		float FogThickness = 18.0f;            ///< Height of the ground fog layer's top above the ground, in its banks, world units
+		float FogStir = 1.0f;                  ///< How strongly moving actors push the air and part the fog
+		float FogRefillSeconds = 10.0f;        ///< Seconds for parted fog to fill back in (about two thirds of the way)
 	};
 
 	Settings settings;
@@ -305,14 +312,17 @@ private:
 		float LiftMost;
 		float FoamStrength;
 		uint32_t DebugMode;
-		float UScale;
+		float Time;
+		float FlowSpeed;
+		float FlowPeriod;
+		float FlowMost;
 		float SteepFrom;
 		float SteepTo;
-		float SlowFrom;
-		float SlowTo;
+		float TexOffset[2];
+		float Gravity;
 		float Pad;
 	};
-	static_assert(sizeof(FallGroundData) == 64);
+	static_assert(sizeof(FallGroundData) == 80);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
 	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must be FallCapture::CELL: the flows are copied texel for texel
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
@@ -320,17 +330,16 @@ private:
 	static constexpr float FALL_GROUND_CONTACT = 6.0f;    ///< World units over which water fades where it cuts into rock
 	static constexpr float FALL_GROUND_LIFT_MOST = 8.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
 	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
-	static constexpr float FALL_STREAM_U_SCALE = 192.0f;  ///< World units across the flow per repeat of the texture: squeezed across, the tile reads as streaks along the flow
-	static constexpr float FALL_STREAM_SLOW_FROM = 0.2f;  ///< Flow speed below which vanilla's texture stays (pools, eddies)
-	static constexpr float FALL_STREAM_SLOW_TO = 0.5f;
-	static constexpr float FALL_STREAM_STEEP_FROM = 0.35f;  ///< Upward normal below which vanilla's streaks stay (the flow is solved from above)
+	static constexpr float FALL_GRAVITY = 687.0f;           ///< World units per second squared (Skyrim's)
+	static constexpr float FALL_STREAM_STEEP_FROM = 0.35f;  ///< Upward normal below which the water falls straight down its slope (the flow is solved from above)
 	static constexpr float FALL_STREAM_STEEP_TO = 0.6f;
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> fallGroundSRV;
-	winrt::com_ptr<ID3D11Texture2D> fallStreamTexture;  ///< FallSites::BuildStreamMap: stream function, speed, foam, water
+	winrt::com_ptr<ID3D11Texture2D> fallStreamTexture;  ///< FallSites::BuildStreamMap: velocity (x, y), foam, water
 	winrt::com_ptr<ID3D11ShaderResourceView> fallStreamSRV;
 	std::vector<float> fallStreamScratch;
-	winrt::com_ptr<ID3D11Buffer> fallGroundOn;   ///< Constants for grounded draws
+	winrt::com_ptr<ID3D11Buffer> fallGroundOn;  ///< Constants for grounded draws, rewritten per draw (each mesh's texture scroll)
+	FallGroundData fallGroundData{};
 	winrt::com_ptr<ID3D11Buffer> fallGroundOff;  ///< Enabled = 0, for every other effect draw
 	float fallGroundOrigin[2]{};
 	uint64_t fallGroundVersion = UINT64_MAX;

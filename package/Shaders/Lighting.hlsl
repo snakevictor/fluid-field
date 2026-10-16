@@ -1030,14 +1030,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	float2 uv = input.TexCoord0.xy;
 #	if defined(FLUID_FIELD)
-	// Fluid Field (D29): a waterfall's lit surface with its streaks laid along the falls' streamlines
-	[branch] if (FallGround::Enabled && FallGround::DebugMode < 3)
+	// Fluid Field (D32): a waterfall's lit surface carried by the falls' flow; its first phase is
+	// sampled through uv, the second and vanilla's own texture after the base samples below
+	FallGround::FlowSample fallFlow = (FallGround::FlowSample)0;
+	const float2 fallUvVanilla = uv;
+	const bool fallFlowOn = FallGround::Enabled && FallGround::DebugMode < 3;
+	[branch] if (fallFlowOn)
 	{
-		float2 uvStream;
-		float weight;
-		float4 stream;
-		FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, uvStream, weight, stream);
-		uv.x = lerp(uv.x, uvStream.x, weight);
+		fallFlow = FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
+		uv = fallFlow.uvA;
 	}
 #	endif
 	float2 uvOriginal = uv;
@@ -1484,6 +1485,19 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	baseColor = float4(Color::Diffuse(rawBaseColor.rgb), rawBaseColor.a);
 	float4 normalColor;
 	MESH_TV_SAMPLE_BIAS(normalColor, TexNormalSampler, SampNormalSampler, uv);
+#		if defined(FLUID_FIELD)
+	[branch] if (fallFlowOn)
+	{
+		rawBaseColor = lerp(rawBaseColor, TexColorSampler.SampleBias(SampColorSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB);
+		normalColor = lerp(normalColor, TexNormalSampler.SampleBias(SampNormalSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB);
+		[flatten] if (fallFlow.strength < 1.0)
+		{
+			rawBaseColor = lerp(TexColorSampler.SampleBias(SampColorSampler, fallUvVanilla, SharedData::MipBias), rawBaseColor, fallFlow.strength);
+			normalColor = lerp(TexNormalSampler.SampleBias(SampNormalSampler, fallUvVanilla, SharedData::MipBias), normalColor, fallFlow.strength);
+		}
+		baseColor = float4(Color::Diffuse(rawBaseColor.rgb), rawBaseColor.a);
+	}
+#		endif
 	normal = normalColor;
 #		if defined(TRUE_PBR)
 	MESH_TV_SAMPLE_BIAS(rawRMAOS, TexRMAOSSampler, SampRMAOSSampler, diffuseUv);

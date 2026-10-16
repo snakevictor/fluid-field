@@ -62,6 +62,11 @@ namespace FluidFieldSim
 			ID3D11ShaderResourceView* normal = nullptr;
 			float time = 0.0f;
 			uint32_t debugMode = 0;
+			bool drawSurface = true;  ///< false: only the spray and mist, over vanilla's own falling water (D32)
+			uint32_t sprayPerEmitter = SPRAY_PER_EMITTER;
+			uint32_t mistPerEmitter = MIST_PER_EMITTER;
+			float spraySize = SPRAY_SIZE;
+			float mistOpacity = 0.07f;
 		};
 		void Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params);
 
@@ -82,10 +87,11 @@ namespace FluidFieldSim
 		static constexpr float VANILLA_SCROLL = 0.6f;
 		static constexpr uint32_t SPRAY_PER_EMITTER = 12;  ///< Spray particles alive per emitter at once
 		static constexpr uint32_t MIST_PER_EMITTER = 3;    ///< Mist puffs alive per emitter at once
-		static constexpr uint32_t MAX_PARTICLES = 160000;
-		static constexpr float SPRAY_LIFE = 0.9f;     ///< Seconds
-		static constexpr float SPRAY_SPEED = 260.0f;  ///< World units per second thrown up and out at full strength
-		static constexpr float SPRAY_SIZE = 10.0f;    ///< World units across
+		static constexpr uint32_t MAX_PARTICLES = 600000;
+		static constexpr float SPRAY_STRETCH = 0.012f;  ///< Seconds of motion each droplet is drawn smeared over
+		static constexpr float SPRAY_LIFE = 0.9f;       ///< Seconds
+		static constexpr float SPRAY_SPEED = 260.0f;    ///< World units per second thrown up and out at full strength
+		static constexpr float SPRAY_SIZE = 10.0f;      ///< World units across
 		static constexpr float MIST_LIFE = 3.0f;
 		static constexpr float MIST_SIZE = 70.0f;
 		static constexpr float MIST_RISE = 40.0f;          ///< World units per second
@@ -94,7 +100,7 @@ namespace FluidFieldSim
 	private:
 		bool EnsureShaders();
 		bool EnsureStates(ID3D11Device* a_device);
-		void DrawParticles(ID3D11DeviceContext* a_context);
+		void DrawParticles(ID3D11DeviceContext* a_context, uint32_t a_perEmitter);
 
 		struct alignas(16) Constants
 		{
@@ -122,7 +128,9 @@ namespace FluidFieldSim
 			float mistSize;
 			float mistRise;
 			float gravity;
-			float pad2[4];
+			float mistOpacity;
+			float sprayStretch;
+			float pad2[2];
 		};
 
 		winrt::com_ptr<ID3D11Buffer> vertices;

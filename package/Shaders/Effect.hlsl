@@ -737,22 +737,23 @@ PS_OUTPUT main(PS_INPUT input)
 	float4 baseTexColor = float4(1, 1, 1, 1);
 	float4 baseColor = float4(1, 1, 1, 1);
 #	if defined(FLUID_FIELD)
-	float4 fallStream = 0.0;  // The falls' flow here (FallGround::StreamAt): stream function, speed, foam, water
+	float4 fallStream = 0.0;  // The falls' flow here (FallGround::StreamAt): velocity (x, y), foam, water around
+	float3 fallVelocity = 0.0;
 #	endif
 #	if !defined(TEXTURE)
 	[branch] if (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToColor || Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha)
 #	endif
 	{
 #	if defined(FLUID_FIELD)
-		// Fluid Field (D28): falling water's streaks laid along the falls' streamlines
+		// Fluid Field (D32): falling water's texture carried by the falls' flow
 		[branch] if (FallGround::Enabled && FallGround::DebugMode < 3)
 		{
-			float2 uvStream;
-			float weight;
-			FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, uvStream, weight, fallStream);
-			baseTexColor = TexBaseSampler.Sample(SampBaseSampler, input.TexCoord0.xy);
-			[branch] if (weight > 0.0)
-				baseTexColor = lerp(baseTexColor, TexBaseSampler.Sample(SampBaseSampler, uvStream), weight);
+			const FallGround::FlowSample flow = FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
+			fallStream = flow.stream;
+			fallVelocity = flow.velocity;
+			baseTexColor = lerp(TexBaseSampler.Sample(SampBaseSampler, flow.uvA), TexBaseSampler.Sample(SampBaseSampler, flow.uvB), flow.blendB);
+			[flatten] if (flow.strength < 1.0)
+				baseTexColor = lerp(TexBaseSampler.Sample(SampBaseSampler, input.TexCoord0.xy), baseTexColor, flow.strength);
 		}
 		else
 #	endif
@@ -930,14 +931,10 @@ PS_OUTPUT main(PS_INPUT input)
 #	if defined(FLUID_FIELD)
 	// Fluid Field (D28) debug 1: the falls' flow speed as red, foam as green, water as blue (black: none, as on rock)
 	[branch] if (FallGround::Enabled && FallGround::DebugMode == 1)
-		psout.Diffuse.xyz = float3(saturate(fallStream.y * 0.5), saturate(fallStream.z), fallStream.w);
-	// Debug 2: the streamlines as bands, every 32 units across the flow, tinted by speed; dark where there is no flow
+		psout.Diffuse.xyz = float3(saturate(length(fallStream.xy) * 0.5), saturate(fallStream.z), fallStream.w);
+	// Debug 2 (D32): the flowmap's direction as colour (x red, y green, up blue), brighter for faster
 	[branch] if (FallGround::Enabled && FallGround::DebugMode == 2)
-	{
-		const float band = 0.5 + 0.5 * cos(fallStream.x * (6.2831853 / 32.0));
-		const float3 tint = lerp(float3(0.2, 0.5, 1.0), float3(1.0, 0.4, 0.2), saturate(fallStream.y - 0.5));
-		psout.Diffuse.xyz = lerp(float3(0.05, 0.05, 0.05), tint * (0.3 + 0.7 * band), smoothstep(0.3, 0.8, fallStream.w));
-	}
+		psout.Diffuse.xyz = (0.5 + 0.5 * fallVelocity / max(length(fallVelocity), 1e-3)) * saturate(length(fallVelocity) / FallGround::FlowSpeed);
 #	endif
 #	if defined(LIGHTING) && defined(LIGHT_LIMIT_FIX) && defined(LLFDEBUG)
 	if (SharedData::lightLimitFixSettings.EnableLightsVisualisation) {

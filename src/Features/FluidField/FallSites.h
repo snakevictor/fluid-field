@@ -119,8 +119,8 @@ namespace FluidFieldSim
 
 		/**
 		 * @brief The steady flow of every site whose flow is solved (D28), on a ground map's lattice
-		 * (a_cell must be FallCapture::CELL): per texel the stream function (world units across the flow),
-		 * the speed (1 for free flow), foam (0 to 1), and 1 where there is water; zeros elsewhere.
+		 * (a_cell must be FallCapture::CELL): per texel the velocity (x, y; 1 for free flow), foam plus 2
+		 * where there is water (so 2 to 3 on water, 0 elsewhere), and the head (D33), world height.
 		 */
 		void BuildStreamMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
 

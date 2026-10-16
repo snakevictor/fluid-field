@@ -381,6 +381,51 @@ namespace FluidFieldSim
 					value = 0.0f;
 			}
 		}
+
+		// The head (D33): the highest water surface upstream, less HEAD_LOSS per unit run, so water
+		// that has dropped carries the speed of its fall (the shaders turn the drop below it into speed)
+		{
+			result.head = result.level;
+			const auto sample = [&](float a_x, float a_y, float& a_value) {
+				const auto ix = static_cast<int32_t>(std::floor(a_x));
+				const auto iy = static_cast<int32_t>(std::floor(a_y));
+				const float tx = a_x - static_cast<float>(ix);
+				const float ty = a_y - static_cast<float>(iy);
+				float sum = 0.0f, weight = 0.0f;
+				for (int32_t dy = 0; dy <= 1; dy++) {
+					for (int32_t dx = 0; dx <= 1; dx++) {
+						if (!open(ix + dx, iy + dy) || !result.water[index(ix + dx, iy + dy)])
+							continue;
+						const float k = (dx ? tx : 1.0f - tx) * (dy ? ty : 1.0f - ty);
+						sum += result.head[index(ix + dx, iy + dy)] * k;
+						weight += k;
+					}
+				}
+				if (weight < 1e-3f)
+					return false;
+				a_value = sum / weight;
+				return true;
+			};
+			for (uint32_t round = 0; round < TRAVEL_ROUNDS; round++) {
+				for (int order = 0; order < 4; order++) {
+					const bool flipX = (order & 1) != 0;
+					const bool flipY = (order & 2) != 0;
+					for (int32_t yy = 0; yy < h; yy++) {
+						const int32_t y = flipY ? h - 1 - yy : yy;
+						for (int32_t xx = 0; xx < w; xx++) {
+							const int32_t x = flipX ? w - 1 - xx : xx;
+							const std::size_t i = index(x, y);
+							const float speed = result.speed[i];
+							if (!result.water[i] || speed < 1e-4f)
+								continue;
+							float upstream;
+							if (sample(static_cast<float>(x) - result.vx[i] / speed, static_cast<float>(y) - result.vy[i] / speed, upstream))
+								result.head[i] = std::clamp(upstream - HEAD_LOSS * cell, result.head[i], result.level[i] + HEAD_MOST);
+						}
+					}
+				}
+			}
+		}
 		return result;
 	}
 }

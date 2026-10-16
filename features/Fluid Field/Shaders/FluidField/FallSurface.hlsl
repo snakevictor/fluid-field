@@ -50,6 +50,8 @@ cbuffer FallSurfaceCB : register(b7)
 	float MistSize;
 	float MistRise;
 	float Gravity;
+	float MistOpacity;
+	float SprayStretch;
 	float2 Pad;
 };
 

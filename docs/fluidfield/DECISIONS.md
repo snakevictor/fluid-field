@@ -737,3 +737,51 @@ Entry format:
     them with the flow"; "merged them into one big mesh"; "foam and splashes
     and gpu particles")
 -   References: D28, D30
+
+## D32: Vanilla's falling water, moved by the flow as a flowmap
+
+-   Date: 2026-10-16
+-   Phase / spike: D31 revision
+-   Decision: The falls' own merged surface (D30, D31) is off by default
+    (@Victor: "the water itself looks shit"); vanilla's falling-water meshes
+    show again (lit surface, white-water sheet, streaks; vanilla's particles
+    and mist/splash meshes stay hidden) and the GPU spray and mist (D31) are
+    kept over them. Their textures are now carried by the falls' solved
+    velocity as a flowmap, replacing D28's stream-function u remap: two
+    phases half a cycle apart cross-fade, each reset before it stretches
+    (0.5 s cycle, at most 1.5 repeats per cycle), staggered over the surface.
+    The velocity is solved from above: on the surface it is lifted onto the
+    slope; where the surface is steep, straight down it at free speed or
+    faster. It enters each mesh's texture space through the screen-space
+    derivatives of position and texture coordinates, so every layer moves
+    with the same water whatever its UV layout. Vanilla's own scroll is
+    taken back out (the material's current texture offset, per draw). The
+    stream map now carries velocity, foam and water.
+-   Decided by: @Victor ("go back to the original water meshes and try to
+    drive a simulation on them that can redirect the textures (like a
+    flowmap) more realistically. keep the gpu shit though")
+-   References: D28, D29, D31
+
+## D33: Gravity in the falls' flow; spray reworked; vanilla's overlay layers hidden
+
+-   Date: 2026-10-16
+-   Phase / spike: D32 follow-up, from @Victor's review screenshots
+-   Decision: The solver now carries a head per cell: the highest water
+    surface upstream along the flow, less 0.35 per world unit run (friction),
+    at most 900 above the surface. The shaders turn the drop below it into
+    speed along the slope (sqrt(v² + 2·g·drop), g = 687 × Fall Acceleration),
+    added downhill to the solved velocity, so falling water speeds up and the
+    crest no longer reads as flowing backwards where the solved flow is weak.
+    The stream map packs foam + 2 on water in its third channel and the head
+    in its fourth. Vanilla's white-water sheet and streak layers are hidden
+    again by default (they were the grey/brown "spray"); each layer has a
+    checkbox. Spray droplets are smaller (2.5), more (32 per emitter, up to
+    600k particles, emitters shuffled so a cap thins them evenly), smeared
+    along their motion, and lit white by the light's brightness rather than
+    its colour (the sky's blue made them glow); mist is sparser and fainter.
+    Flow cycle, stretch limit, acceleration and spray/mist amounts are menu
+    settings so they tune without rebuilding.
+-   Decided by: @Victor ("velocity seems inconsequential, we need a way to
+    give gravity to the solver"; "spray and mist are blue"; "too big and too
+    few"; "get rid of it")
+-   References: D31, D32
