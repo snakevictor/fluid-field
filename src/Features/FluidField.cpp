@@ -69,6 +69,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MistAmount,
 	MistOpacity,
 	FallFog,
+	FallFogHeight,
 	WaterfallDebug)
 
 void FluidField::DrawSettings()
@@ -153,7 +154,8 @@ void FluidField::DrawSettings()
 		ImGui::SliderInt(T(TKEY("mist_amount"), "Mist Amount"), &settings.MistAmount, 0, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat(T(TKEY("mist_opacity"), "Mist Opacity"), &settings.MistOpacity, 0.0f, 0.4f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat(T(TKEY("fall_fog"), "Waterfall Fog"), &settings.FallFog, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("fall_fog_tooltip"), "Fog the falls make round where they drop and land, which the wind carries off. Needs Ground Fog."));
+		tooltip(T(TKEY("fall_fog_tooltip"), "Mist hanging over the water the falls run into, as thick as the water is white, drifting with its flow; and where vanilla's waterfall mist stands. Separate from the ground fog. 0 turns it off."));
+		ImGui::SliderFloat(T(TKEY("fall_fog_height"), "Waterfall Fog Height"), &settings.FallFogHeight, 10.0f, 300.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 
 		ImGui::SeparatorText(T(TKEY("waterfall_vanilla_layers"), "Vanilla Layers"));
 		const char* layerNames[] = { T(TKEY("fall_layer_surface"), "Water Surface"), T(TKEY("fall_layer_sheet"), "White-Water Sheet"), T(TKEY("fall_layer_streaks"), "Streak Layers"),
@@ -727,9 +729,6 @@ void FluidField::Prepass()
 	if (settings.InteractiveFog) {
 		windEmitters = airSources.Update(playerPos, gridMin, cellSize, settings.GridResolution, deltaTime, settings.FogStir, FluidFieldSim::WindSolver::MAX_EMITTERS - 1);
 	}
-	// The falls' fog round their plunges and drops (D37), carried by the same wind
-	if (settings.InteractiveFog && settings.Waterfalls && settings.GroundWaterfalls)
-		fallSites.AppendFogEmitters(windEmitters, gridMin, cellSize, settings.GridResolution, settings.FallFog, FluidFieldSim::WindSolver::MAX_EMITTERS - 1);
 	if (testPuff)
 		windEmitters.push_back(*testPuff);
 
@@ -1094,6 +1093,16 @@ void FluidField::DrawGroundFogAfterWorld()
 			params.spraySize = settings.SpraySize;
 			params.mistOpacity = settings.MistOpacity;
 			params.sprayOpacity = settings.SprayOpacity;
+			params.fogDensity = settings.FallFog * FALL_FOG_DENSITY;
+			params.fogHeight = settings.FallFogHeight;
+			fallSurface.UploadMist(globals::d3d::device, globals::d3d::context, fallSites.GetMistVolumes(), fallSites.GetSurfaceVersion());
+			// The fog reads the falls' ground and pools (b13, t120, t122) and the simulated water (t66, t67)
+			ID3D11Buffer* fallConstants = fallGroundOn.get();
+			globals::d3d::context->PSSetConstantBuffers(13, 1, &fallConstants);
+			ID3D11ShaderResourceView* fallMaps[3] = { fallGroundSRV.get(), nullptr, fallStreamSRV.get() };
+			globals::d3d::context->PSSetShaderResources(120, 3, fallMaps);
+			BindWaterOutputs(globals::d3d::context);
+			fallGroundBound = true;
 			globals::profiler->BeginPass("FluidField::FallSurfaces");
 			fallSurface.Draw(globals::d3d::device, globals::d3d::context, params);
 			globals::profiler->EndPass();
@@ -1500,6 +1509,11 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
 		} else {
 			fallGroundData.TexScale[0] = fallGroundData.TexScale[1] = 0.0f;
 		}
+		// D38: the vertex shaders' camera offset (Lighting's has none of its own), the same in every pass
+		const auto eye = globals::game::frameBufferCached.GetCameraPosAdjust();
+		fallGroundData.CameraOffset[0] = eye.x;
+		fallGroundData.CameraOffset[1] = eye.y;
+		fallGroundData.CameraOffset[2] = eye.z;
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (SUCCEEDED(context->Map(fallGroundOn.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
 			std::memcpy(mapped.pData, &fallGroundData, sizeof(fallGroundData));

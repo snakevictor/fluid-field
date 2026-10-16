@@ -91,6 +91,9 @@ struct VS_OUTPUT
 	float4 FogParam: COLOR1;
 
 	float3 ModelPosition: TEXCOORD12;
+#if defined(FLUID_FIELD)
+	float FallClip: SV_ClipDistance0;  // Fluid Field (D38): falling water buried in rock, ground or the pools is cut away
+#endif
 };
 #ifdef VSHADER
 
@@ -278,6 +281,10 @@ VS_OUTPUT main(VS_INPUT input)
 	vsout.FogParam.w = fogColorParam;
 
 	vsout.ModelPosition = input.Position.xyz;
+
+#	if defined(FLUID_FIELD)
+	vsout.FallClip = FallGround::ClipDistance(worldPosition.xyz);
+#	endif
 
 	return vsout;
 }
@@ -1041,8 +1048,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	{
 		// D36: falling water under the pools' surface is the pool's, and not drawn
 		fallPool = FallGround::Pool(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy, fallPoolHeight);
-		if (FallGround::Buried(input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz))
-			discard;
 #		if !defined(MODELSPACENORMALS)
 		// The mesh's interpolated frame: tangent, bitangent and normal are the columns of TBN (D35)
 		fallFlow = FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, float3(input.TBN0.z, input.TBN1.z, input.TBN2.z),

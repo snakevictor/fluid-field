@@ -256,6 +256,21 @@ namespace EffectExtensions
 	};
 }
 
+namespace UtilityExtensions
+{
+	struct BSUtilityShader_SetupGeometry
+	{
+		static void thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
+		{
+			func(shader, pass, renderFlags);
+			// Fluid Field (D38): the depth pre-pass cuts falling water where the lit pass hides it
+			if (globals::features::fluidField.loaded)
+				globals::features::fluidField.SetupFallGeometry(pass);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+}
+
 namespace SkyExtensions
 {
 	struct BSSkyShader_SetupGeometry
@@ -1116,6 +1131,7 @@ namespace Hooks
 		logger::info("Installing SetupGeometry hooks");
 		stl::write_vfunc<0x6, LightingExtensions::BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
 		stl::write_vfunc<0x6, EffectExtensions::BSEffectShader_SetupGeometry>(RE::VTABLE_BSEffectShader[0]);
+		stl::write_vfunc<0x6, UtilityExtensions::BSUtilityShader_SetupGeometry>(RE::VTABLE_BSUtilityShader[0]);
 		stl::write_vfunc<0x6, SkyExtensions::BSSkyShader_SetupGeometry>(RE::VTABLE_BSSkyShader[0]);
 		stl::write_thunk_call<GrassExtensions::BSGrassShaderProperty_ctor>(REL::RelocationID(15214, 15383).address() + Util::VersionedRelocation::Select(0x45B, 0x4F5, 0x4FD));
 		stl::write_vfunc<0x6, GrassExtensions::BSGrassShader_SetupGeometry>(RE::VTABLE_BSGrassShader[0]);

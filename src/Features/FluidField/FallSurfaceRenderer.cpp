@@ -19,6 +19,10 @@ namespace FluidFieldSim
 
 	void FallSurfaceRenderer::Release()
 	{
+		mist = nullptr;
+		mistSRV = nullptr;
+		mistCount = 0;
+		mistVersion = UINT64_MAX;
 		vertices = nullptr;
 		verticesSRV = nullptr;
 		indices = nullptr;
@@ -49,7 +53,7 @@ namespace FluidFieldSim
 
 	bool FallSurfaceRenderer::EnsureShaders()
 	{
-		if (vertexShader && pixelShader && sprayVertexShader && sprayPixelShader)
+		if (vertexShader && pixelShader && sprayVertexShader && sprayPixelShader && fogVertexShader && fogPixelShader)
 			return true;
 		if (shaderFailed)
 			return false;
@@ -57,12 +61,16 @@ namespace FluidFieldSim
 		pixelShader.attach(reinterpret_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSurface.hlsl", {}, "ps_5_0", "PSMain")));
 		sprayVertexShader.attach(reinterpret_cast<ID3D11VertexShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSpray.hlsl", {}, "vs_5_0", "VSMain")));
 		sprayPixelShader.attach(reinterpret_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSpray.hlsl", {}, "ps_5_0", "PSMain")));
-		if (!vertexShader || !pixelShader || !sprayVertexShader || !sprayPixelShader) {
+		fogVertexShader.attach(reinterpret_cast<ID3D11VertexShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallFog.hlsl", {}, "vs_5_0", "VSMain")));
+		fogPixelShader.attach(reinterpret_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallFog.hlsl", {}, "ps_5_0", "PSMain")));
+		if (!vertexShader || !pixelShader || !sprayVertexShader || !sprayPixelShader || !fogVertexShader || !fogPixelShader) {
 			logger::error("[Fluid Field] Waterfall surface shaders failed to compile; waterfalls stay vanilla");
 			vertexShader = nullptr;
 			pixelShader = nullptr;
 			sprayVertexShader = nullptr;
 			sprayPixelShader = nullptr;
+			fogVertexShader = nullptr;
+			fogPixelShader = nullptr;
 			shaderFailed = true;
 			return false;
 		}
@@ -182,14 +190,15 @@ namespace FluidFieldSim
 
 	void FallSurfaceRenderer::Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params)
 	{
-		if ((a_params.drawSurface && (indexCount == 0 || !verticesSRV || !indices || !a_params.diffuse)) || (!a_params.drawSurface && emitterCount == 0) || !a_params.target ||
+		if ((a_params.drawSurface && (indexCount == 0 || !verticesSRV || !indices || !a_params.diffuse)) || (!a_params.drawSurface && emitterCount == 0 && a_params.fogDensity <= 0.0f) || !a_params.target ||
 			!a_params.depth || !a_params.camera || !EnsureShaders() || !EnsureStates(a_device))
 			return;
 		const uint32_t perEmitter = std::max(a_params.sprayPerEmitter + a_params.mistPerEmitter, 1u);
 
 		const Constants data{ a_params.time, U_SCALE, V_SCALE, FallStream::BASE_SPEED, WAVE_HEIGHT, WAVE_LENGTH, RIPPLE_HEIGHT, RIPPLE_LENGTH, BULGE_HEIGHT, SHALLOW_DEPTH, CONTACT_WIDTH,
 			BRIGHTNESS, a_params.debugMode, VANILLA_SCROLL, std::min(emitterCount, MAX_PARTICLES / perEmitter), a_params.sprayPerEmitter, a_params.mistPerEmitter, SPRAY_LIFE,
-			SPRAY_SPEED, a_params.spraySize, MIST_LIFE, MIST_SIZE, MIST_RISE, PARTICLE_GRAVITY, a_params.mistOpacity, SPRAY_STRETCH, a_params.sprayOpacity, 0.0f };
+			SPRAY_SPEED, a_params.spraySize, MIST_LIFE, MIST_SIZE, MIST_RISE, PARTICLE_GRAVITY, a_params.mistOpacity, SPRAY_STRETCH, a_params.sprayOpacity, 0.0f,
+			a_params.fogDensity, a_params.fogHeight, FOG_STEPS, mistCount };
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (FAILED(a_context->Map(constants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
 			return;
@@ -258,6 +267,8 @@ namespace FluidFieldSim
 		if (a_params.drawSurface && indexCount > 0)
 			a_context->DrawIndexed(indexCount, 0, 0);
 		DrawParticles(a_context, perEmitter);
+		if (a_params.fogDensity > 0.0f)
+			DrawFog(a_context);
 
 		// Restore
 		ID3D11RenderTargetView* targets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];
@@ -286,6 +297,42 @@ namespace FluidFieldSim
 		a_context->PSSetShaderResources(TEXTURES_SLOT, 3, psTextures);
 		ID3D11SamplerState* psSampler = savedSampler.get();
 		a_context->PSSetSamplers(SAMPLER_SLOT, 1, &psSampler);
+	}
+
+	void FallSurfaceRenderer::UploadMist(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const std::vector<std::array<float, 8>>& a_volumes, uint64_t a_version)
+	{
+		if (a_version == mistVersion && mist)
+			return;
+		mistVersion = a_version;
+		if (!mist) {
+			D3D11_BUFFER_DESC desc{ .ByteWidth = MAX_MIST_VOLUMES * 2 * 16, .Usage = D3D11_USAGE_DEFAULT, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, .StructureByteStride = 16 };
+			D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{ .Format = DXGI_FORMAT_UNKNOWN, .ViewDimension = D3D11_SRV_DIMENSION_BUFFER, .Buffer = { .FirstElement = 0, .NumElements = MAX_MIST_VOLUMES * 2 } };
+			if (FAILED(a_device->CreateBuffer(&desc, nullptr, mist.put())) || FAILED(a_device->CreateShaderResourceView(mist.get(), &srvDesc, mistSRV.put()))) {
+				mist = nullptr;
+				mistSRV = nullptr;
+				mistCount = 0;
+				return;
+			}
+			Util::SetResourceName(mist.get(), "FluidField::FallMistVolumes");
+			Util::SetResourceName(mistSRV.get(), "FluidField::FallMistVolumes SRV");
+		}
+		mistCount = static_cast<uint32_t>(std::min<std::size_t>(a_volumes.size(), MAX_MIST_VOLUMES));
+		if (mistCount > 0) {
+			const D3D11_BOX box{ 0, 0, 0, static_cast<UINT>(mistCount * sizeof(a_volumes[0])), 1, 1 };
+			a_context->UpdateSubresource(mist.get(), 0, &box, a_volumes.data(), 0, 0);
+		}
+	}
+
+	void FallSurfaceRenderer::DrawFog(ID3D11DeviceContext* a_context)
+	{
+		// One screen-filling triangle; the vertices come from their index alone
+		a_context->VSSetShader(fogVertexShader.get(), nullptr, 0);
+		a_context->PSSetShader(fogPixelShader.get(), nullptr, 0);
+		ID3D11ShaderResourceView* view = mistSRV.get();
+		a_context->PSSetShaderResources(TEXTURES_SLOT + 3, 1, &view);
+		a_context->Draw(3, 0);
+		ID3D11ShaderResourceView* none = nullptr;
+		a_context->PSSetShaderResources(TEXTURES_SLOT + 3, 1, &none);
 	}
 
 	void FallSurfaceRenderer::DrawParticles(ID3D11DeviceContext* a_context, uint32_t a_perEmitter)

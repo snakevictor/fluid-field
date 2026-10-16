@@ -891,3 +891,34 @@ Entry format:
     where they enter a rock mesh or a shallow water mesh or even the
     ground/landscape")
 -   References: D21, D34, D35, D36
+
+## D38: Buried falls cut in the vertex shaders; walls only where rock pierces; a waterfall fog of its own
+
+-   Date: 2026-10-16
+-   Phase / spike: D37 follow-up, from @Victor's review screenshots
+-   Decision: D36/D37's pixel discards left the depth pre-pass's depth behind
+    (the lit falls are drawn after a depth pre-pass by BSUtilityShader), so
+    hidden parts showed as flat, milky G-buffer. The cut is now geometric:
+    Lighting.hlsl and Utility.hlsl (now built with FLUID_FIELD) output
+    SV_ClipDistance from the same function (FallGround::ClipDistance: height
+    above the pools' surface and above the captured rock and ground less 6
+    units), from a camera offset in our own constants (Lighting's vertex
+    shader has none), so both passes cut the same triangles at the same line.
+    A BSUtilityShader SetupGeometry hook binds our constants for the falls'
+    utility draws. In the solve, rock is a wall only where it stands 2 units
+    through the water's surface: rock lying under the falls no longer counts.
+    The falls' fog no longer feeds the ground fog (D37): a separate waterfall
+    fog (FallFog.hlsl, a full-screen pass after the spray) marches each view
+    ray through a layer over the pools, as thick as the simulated water is
+    white (its foam, which the plunges churn and the flow carries) or as the
+    falls' own foam, up to Waterfall Fog Height (90) above it, broken into
+    wisps drifting with the water's flow. Vanilla's waterfall mist and splash
+    effects drive it too: their bounds as weak fog volumes (12% share), and a
+    mist emitter at each one's foot. Mist defaults toned back (2 puffs,
+    opacity 0.06, 100 units) after they blotted out the view.
+-   Decided by: @Victor ("the mesh parts we're discarding are showing up
+    milky/white"; "our only concern is meshes that actually intersect with the
+    waterfall meshes"; "I want it separate from the ground fog ... as
+    'waterfall fog'"; "use the existing vanilla fog particles in waterfalls to
+    drive OUR fog and particles effects too")
+-   References: D21, D36, D37

@@ -8,6 +8,9 @@
 #if defined(RENDER_SHADOWMASK) || defined(RENDER_SHADOWMASKSPOT) || defined(RENDER_SHADOWMASKPB) || defined(RENDER_SHADOWMASKDPB)
 #	define RENDER_SHADOWMASK_ANY
 #endif
+#if defined(FLUID_FIELD)
+#	include "FluidField/FallGround.hlsli"
+#endif
 
 struct VS_INPUT
 {
@@ -69,13 +72,16 @@ struct VS_OUTPUT
 	float Depth: TEXCOORD2;
 #	endif
 #endif
+#if defined(FLUID_FIELD)
+	float FallClip: SV_ClipDistance0;  // Fluid Field (D38): the same cut as Lighting.hlsl, so the depth pre-pass leaves nothing where falling water is hidden
+#endif
 };
 
 #ifdef VSHADER
 cbuffer PerTechnique : register(b0)
 {
 	float4 HighDetailRange : packoffset(c0);  // loaded cells center in xy, size in zw
-	float2 ParabolaParam : packoffset(c1);       // inverse radius in x, y is 1 for forward hemisphere or -1 for backward hemisphere
+	float2 ParabolaParam : packoffset(c1);    // inverse radius in x, y is 1 for forward hemisphere or -1 for backward hemisphere
 };
 
 cbuffer PerMaterial : register(b1)
@@ -100,6 +106,9 @@ float2 SmoothSaturate(float2 value)
 VS_OUTPUT main(VS_INPUT input)
 {
 	VS_OUTPUT vsout;
+#	if defined(FLUID_FIELD)
+	vsout.FallClip = 1.0;
+#	endif
 
 #	if (defined(RENDER_DEPTH) && defined(RENDER_SHADOWMASK_ANY)) || SHADOWFILTER == 2
 	vsout.PositionCS.xy = input.PositionMS.xy;
@@ -142,6 +151,9 @@ VS_OUTPUT main(VS_INPUT input)
 #		else
 	precise float4x4 modelViewProj = mul(FrameBuffer::CameraViewProj, World);
 	positionCS = mul(modelViewProj, positionMS);
+#			if defined(FLUID_FIELD)
+	vsout.FallClip = FallGround::ClipDistance(mul(World, positionMS).xyz);
+#			endif
 #		endif
 
 #		if defined(RENDER_SHADOWMAP) && defined(RENDER_SHADOWMAP_CLAMPED)

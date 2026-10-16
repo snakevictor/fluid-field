@@ -99,9 +99,10 @@ struct FluidField : OverlayFeature
 		int SprayAmount = 160;               ///< Spray droplets alive per emitter at once (D31)
 		float SpraySize = 1.4f;              ///< Spray droplet width, world units
 		float SprayOpacity = 0.2f;           ///< How opaque each droplet is
-		int MistAmount = 4;                  ///< Mist puffs alive per emitter at once
-		float MistOpacity = 0.16f;           ///< How dense each mist puff is
-		float FallFog = 1.0f;                ///< How much fog the falls make for the ground fog (D37)
+		int MistAmount = 2;                  ///< Mist puffs alive per emitter at once
+		float MistOpacity = 0.06f;           ///< How dense each mist puff is
+		float FallFog = 1.0f;                ///< How thick the waterfall fog is (D38; 0 off)
+		float FallFogHeight = 90.0f;         ///< World units the waterfall fog stands above the water where it is thickest
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
 		bool InteractiveFog = true;          ///< Ground fog that actors and the weather's wind move (D21)
 		float FogDensity = 0.08f;            ///< Ground fog extinction per world unit inside the layer, in its banks
@@ -131,7 +132,7 @@ struct FluidField : OverlayFeature
 
 	/** @brief FLUID_FIELD, defined for the water shader only. */
 	virtual std::string_view GetShaderDefineName() override { return "FLUID_FIELD"; }
-	virtual bool HasShaderDefine(RE::BSShader::Type a_type) override { return a_type == RE::BSShader::Type::Water || a_type == RE::BSShader::Type::Effect || a_type == RE::BSShader::Type::Lighting; }
+	virtual bool HasShaderDefine(RE::BSShader::Type a_type) override { return a_type == RE::BSShader::Type::Water || a_type == RE::BSShader::Type::Effect || a_type == RE::BSShader::Type::Lighting || a_type == RE::BSShader::Type::Utility; }
 
 	/** @brief Water grid placement for the water shader (SharedData::fluidFieldSettings); 16-byte sized. */
 	struct WaterShaderData
@@ -326,8 +327,10 @@ private:
 		float TexScale[2];
 		uint32_t HideUnderwater;
 		float PoolFoamHeight;
+		float CameraOffset[3];
+		float Pad3;
 	};
-	static_assert(sizeof(FallGroundData) == 96);
+	static_assert(sizeof(FallGroundData) == 112);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
 	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must be FallCapture::CELL: the flows are copied texel for texel
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
@@ -336,6 +339,7 @@ private:
 	static constexpr float FALL_GROUND_LIFT_MOST = 8.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
 	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
 	static constexpr float FALL_POOL_FOAM = 26.0f;          ///< World units above the water below over which the falls foam into it (D36)
+	static constexpr float FALL_FOG_DENSITY = 0.02f;        ///< Waterfall fog's extinction per world unit at strength 1 over wholly white water (D38)
 	static constexpr float FALL_GRAVITY = 687.0f;           ///< World units per second squared (Skyrim's)
 	static constexpr float FALL_STREAM_STEEP_FROM = 0.35f;  ///< Upward normal below which the water falls straight down its slope (the flow is solved from above)
 	static constexpr float FALL_STREAM_STEEP_TO = 0.6f;

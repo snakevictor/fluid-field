@@ -134,6 +134,8 @@ namespace FluidFieldSim
 		const std::vector<FallSurfaceVertex>& GetSurfaceVertices() const { return surfaceVertices; }
 		const std::vector<uint32_t>& GetSurfaceIndices() const { return surfaceIndices; }
 		const std::vector<FallEmitter>& GetSurfaceEmitters() const { return surfaceEmitters; }
+		/** @brief D38: vanilla's waterfall mist effects round the sites, as fog volumes: centre and strength, then half extents. */
+		const std::vector<std::array<float, 8>>& GetMistVolumes() const { return mistVolumes; }
 
 		/**
 		 * @brief D35: the plunges' pushes on the simulated water, in a water level's logical texel
@@ -175,7 +177,7 @@ namespace FluidFieldSim
 			Particles  ///< Spray: particle systems and parts with no triangles
 		};
 		static Layer LayerOf(RE::BSGeometry* a_geometry);
-		static constexpr float STREAM_MIN_DEPTH = 4.0f;      ///< Water must stand this far above the rock to flow there
+		static constexpr float STREAM_MIN_DEPTH = -2.0f;     ///< Rock is a wall only where it stands this far through the water's surface (D38: rock lying under the falls does not count)
 		static constexpr float STREAM_INFLOW_BAND = 64.0f;   ///< Water within this of the site's top comes in there
 		static constexpr float STREAM_OUTFLOW_BAND = 32.0f;  ///< Water within this of the site's bottom leaves there
 		static constexpr float NO_SURFACE = -1.0e7f;
@@ -317,6 +319,7 @@ namespace FluidFieldSim
 		std::vector<uint32_t> surfaceIndices;
 		std::vector<FallEmitter> surfaceEmitters;
 		std::vector<FallPlunge> surfacePlunges;
+		std::vector<std::array<float, 8>> mistVolumes;
 		mutable std::unordered_map<const RE::BSGeometry*, std::array<float, 2>> textureScales;  ///< GatherSources: each lit mesh's world units per texture repeat
 		uint64_t surfaceVersion = 0;
 		bool replaceSurface = false;

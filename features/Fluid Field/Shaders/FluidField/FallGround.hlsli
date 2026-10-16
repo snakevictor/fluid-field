@@ -34,6 +34,8 @@ namespace FallGround
 		float2 TexScale;       // This mesh's world units per texture repeat along u and v (D35); 0 unknown
 		uint HideUnderwater;   // Falling water under the pools' surface is not drawn (D36)
 		float PoolFoamHeight;  // World units above the water below over which the falls foam into it
+		float3 CameraOffset;   // FrameBuffer::CameraPosAdjust, for the vertex shaders that have none (D38)
+		float Pad3;
 	};
 
 	Texture2D<float2> Heights : register(t120);  // The captured rock, and the pools' surface (D36)
@@ -84,6 +86,27 @@ namespace FallGround
 		if (Pool(a_position.xy, pool) && a_position.z < pool - 1.0)
 			return true;
 		return Height(a_position.xy, ground) && a_position.z < ground - BURIED;
+	}
+
+	/**
+	 * D38: how far a vertex of falling water stands above where it is buried (under the pools' surface,
+	 * or in the captured rock and ground), for SV_ClipDistance. The depth pre-pass (Utility.hlsl) and
+	 * the lit pass (Lighting.hlsl) cut the same triangles at the same line, so nothing is left behind in
+	 * depth where the water is hidden. 1 on every other draw.
+	 * @param a_position Camera-relative world position (add CameraOffset for the absolute one).
+	 */
+	float ClipDistance(float3 a_position)
+	{
+		if (!Enabled || !HideUnderwater)
+			return 1.0;
+		const float3 position = a_position + CameraOffset;
+		float distance = 1.0e6;
+		float pool, ground;
+		if (Pool(position.xy, pool))
+			distance = min(distance, position.z - (pool - 1.0));
+		if (Height(position.xy, ground))
+			distance = min(distance, position.z - (ground - BURIED));
+		return distance;
 	}
 
 	/**

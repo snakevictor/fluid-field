@@ -1339,6 +1339,33 @@ namespace FluidFieldSim
 		surfaceIndices.clear();
 		surfaceEmitters.clear();
 		surfacePlunges.clear();
+		// D38: vanilla's own waterfall mist effects drive the falls' fog and mist too: their bounds as fog
+		// volumes, and a mist emitter at each one's foot
+		mistVolumes.clear();
+		for (const auto& site : sites) {
+			for (const uint32_t member : site.members) {
+				const auto& ref = refs[member];
+				if (ref.cls != FxClass::Mist && ref.cls != FxClass::Splash)
+					continue;
+				const float strength = ref.cls == FxClass::Mist ? 0.5f : 0.3f;
+				std::array<float, 8> volume{};
+				for (int k = 0; k < 3; k++) {
+					volume[k] = 0.5f * (ref.min[k] + ref.max[k]);
+					volume[4 + k] = std::max(0.5f * (ref.max[k] - ref.min[k]), 16.0f);
+				}
+				volume[3] = strength;
+				mistVolumes.push_back(volume);
+				FallEmitter emitter{};
+				emitter.position[0] = volume[0];
+				emitter.position[1] = volume[1];
+				emitter.position[2] = ref.min[2];
+				emitter.normal[2] = 1.0f;
+				emitter.strength = strength;
+				emitter.speed = 120.0f;
+				emitter.kind = static_cast<float>(FallEmitterKind::Plunge);
+				surfaceEmitters.push_back(emitter);
+			}
+		}
 		for (const auto& [key, stream] : streams) {
 			if (!stream.meshReady || stream.vertices.empty())
 				continue;

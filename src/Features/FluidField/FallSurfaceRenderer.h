@@ -3,6 +3,7 @@
 #include <d3d11.h>
 #include <winrt/base.h>
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -85,8 +86,13 @@ namespace FluidFieldSim
 			float spraySize = SPRAY_SIZE;
 			float mistOpacity = 0.07f;
 			float sprayOpacity = 0.35f;
+			float fogDensity = 0.0f;  ///< Waterfall fog (D38): extinction per world unit over wholly white water; 0 off
+			float fogHeight = 90.0f;
 		};
 		void Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params);
+
+		/** @brief D38: vanilla's waterfall mist effects, as fog volumes: per volume its centre and strength, then its half extents. */
+		void UploadMist(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const std::vector<std::array<float, 8>>& a_volumes, uint64_t a_version);
 
 		void Release();
 		void ReleaseShaders();
@@ -111,7 +117,7 @@ namespace FluidFieldSim
 		static constexpr float SPRAY_SPEED = 260.0f;    ///< World units per second thrown up and out at full strength
 		static constexpr float SPRAY_SIZE = 10.0f;      ///< World units across
 		static constexpr float MIST_LIFE = 3.0f;
-		static constexpr float MIST_SIZE = 150.0f;
+		static constexpr float MIST_SIZE = 100.0f;
 		static constexpr float MIST_RISE = 40.0f;          ///< World units per second
 		static constexpr float PARTICLE_GRAVITY = 687.0f;  ///< Repeats per second vanilla's texture scrolls along v, where the flow's is not used      ///< Light at this point of the frame, as the ground fog and the old curtains needed
 
@@ -119,6 +125,7 @@ namespace FluidFieldSim
 		bool EnsureShaders();
 		bool EnsureStates(ID3D11Device* a_device);
 		void DrawParticles(ID3D11DeviceContext* a_context, uint32_t a_perEmitter);
+		void DrawFog(ID3D11DeviceContext* a_context);
 
 		struct alignas(16) Constants
 		{
@@ -150,6 +157,10 @@ namespace FluidFieldSim
 			float sprayStretch;
 			float sprayOpacity;
 			float pad2;
+			float fogDensity;
+			float fogHeight;
+			uint32_t fogSteps;
+			uint32_t mistVolumeCount;
 		};
 
 		winrt::com_ptr<ID3D11Buffer> vertices;
@@ -160,6 +171,14 @@ namespace FluidFieldSim
 		uint32_t indexCount = 0;
 		uint64_t uploadedVersion = UINT64_MAX;
 
+		winrt::com_ptr<ID3D11VertexShader> fogVertexShader;
+		winrt::com_ptr<ID3D11PixelShader> fogPixelShader;
+		winrt::com_ptr<ID3D11Buffer> mist;
+		winrt::com_ptr<ID3D11ShaderResourceView> mistSRV;
+		uint32_t mistCount = 0;
+		uint64_t mistVersion = UINT64_MAX;
+		static constexpr uint32_t MAX_MIST_VOLUMES = 64;
+		static constexpr uint32_t FOG_STEPS = 40;
 		winrt::com_ptr<ID3D11Buffer> emitters;
 		winrt::com_ptr<ID3D11ShaderResourceView> emittersSRV;
 		uint32_t emitterCapacity = 0;
