@@ -63,7 +63,7 @@ namespace FluidFieldSim
 		static constexpr float BULGE_HEIGHT = 6.0f;    ///< The water mounds over rock just under it, world units
 		static constexpr float SHALLOW_DEPTH = 40.0f;  ///< Water shallower than this over rock waves and mounds
 		static constexpr float CONTACT_WIDTH = 8.0f;   ///< World units over which the water fades where it meets rock in front of it
-		static constexpr float BRIGHTNESS = 1.0f;
+		static constexpr float BRIGHTNESS = 0.3f;      ///< Light at this point of the frame, as the ground fog and the old curtains needed
 
 	private:
 		bool EnsureShaders();

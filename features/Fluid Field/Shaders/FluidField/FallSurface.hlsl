@@ -111,23 +111,28 @@ float4 PSMain(VSOutput input) : SV_Target
 	if (dot(normal, view) > 0.0)
 		normal = -normal;
 
-	// Vanilla's falling-water texture, lit by the sun and the sky like the world's lit surfaces
+	// Vanilla's falling-water texture as how white the water is: clear water tinted, its streaks white
 	const float4 texel = Diffuse.Sample(Wrap, uv);
-	float3 albedo = Color::Diffuse(texel.rgb);
-	albedo = lerp(albedo, float3(0.9, 0.93, 0.95), saturate(input.Foam) * 0.7);
+	const float whiteness = saturate(smoothstep(0.15, 0.85, dot(texel.rgb, float3(0.3, 0.5, 0.2))) + saturate(input.Foam) * 0.6);
+	const float3 albedo = Color::Diffuse(lerp(float3(0.55, 0.72, 0.8), float3(0.92, 0.95, 0.97), whiteness));
 	const float3 sunDirection = normalize(SharedData::DirLightDirection.xyz);
 	const float3 sun = SharedData::DirLightColor.rgb * saturate(dot(normal, sunDirection));
 	const float3 ambient = max(SharedData::GetAmbient(normal), 0.0);
 	const float3 halfway = normalize(sunDirection - view);
 	const float specular = pow(saturate(dot(normal, halfway)), 80.0) * 0.6;
 	const float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(-view, normal)), 5.0);
-	const float3 color = (albedo * (ambient + sun) + SharedData::DirLightColor.rgb * specular + ambient * fresnel * 0.3) * Brightness;
+	// The sky in it, at grazing angles mostly
+	const float3 sky = max(SharedData::GetAmbient(reflect(view, normal)), 0.0);
+	const float3 color = (albedo * (ambient + sun) + SharedData::DirLightColor.rgb * specular + sky * (0.15 + 0.85 * fresnel)) * Brightness;
 
 	// Soft where it meets rock in front of it, and at its edges
 	const float sceneDepth = SharedData::GetScreenDepth(SceneDepth.Load(int3(input.Position.xy, 0)));
 	const float depth = SharedData::GetScreenDepth(input.Position.z);
 	const float contact = saturate((sceneDepth - depth) / ContactWidth);
-	const float alpha = saturate(input.Edge * 1.5) * contact;
+	// The edge fades over its last cells, so the grid's steps along the banks do not show
+	const float alpha = smoothstep(0.05, 0.9, input.Edge) * (DebugMode == 3 ? 1.0 : contact);
+	if (DebugMode == 4)
+		return float4(contact.xxx, 1.0);
 	if (alpha <= 0.002)
 		discard;
 	return float4(color * alpha, alpha);  // Premultiplied

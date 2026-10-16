@@ -435,15 +435,60 @@ namespace FluidFieldSim
 		a_stream.indices.clear();
 		std::vector<uint32_t> slot(static_cast<std::size_t>(w) * h, UINT32_MAX);
 		const auto index = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * w + a_x; };
-		const auto wet = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < w && a_y < h && result.water[index(a_x, a_y)]; };
+
+		// The surface's cells: the water, with slits of rock barely at its surface closed (a cell that is
+		// not water but mostly surrounded by it takes its neighbours' values); real boulders stay open
+		FallStream::Result closed = result;
+		std::vector<uint8_t> covered = result.water;
+		for (int pass = 0; pass < SURFACE_CLOSE_PASSES; pass++) {
+			std::vector<uint8_t> next = covered;
+			for (int32_t y = 1; y + 1 < h; y++) {
+				for (int32_t x = 1; x + 1 < w; x++) {
+					const std::size_t i = index(x, y);
+					if (covered[i])
+						continue;
+					int count = 0;
+					float sums[8]{};
+					for (int32_t dy = -1; dy <= 1; dy++) {
+						for (int32_t dx = -1; dx <= 1; dx++) {
+							const std::size_t j = index(x + dx, y + dy);
+							if ((dx == 0 && dy == 0) || !covered[j])
+								continue;
+							count++;
+							sums[0] += closed.level[j];
+							sums[1] += closed.psi[j];
+							sums[2] += closed.travel[j];
+							sums[3] += closed.speed[j];
+							sums[4] += closed.foam[j];
+							sums[5] += closed.edge[j];
+							sums[6] += closed.depth[j];
+						}
+					}
+					if (count < SURFACE_CLOSE_NEIGHBOURS)
+						continue;
+					const float k = 1.0f / static_cast<float>(count);
+					closed.level[i] = sums[0] * k;
+					closed.psi[i] = sums[1] * k;
+					closed.travel[i] = sums[2] * k;
+					closed.speed[i] = sums[3] * k;
+					closed.foam[i] = std::max(sums[4] * k, 0.5f);  // Water over rock at its surface churns white
+					closed.edge[i] = sums[5] * k;
+					closed.depth[i] = 0.0f;
+					next[i] = 1;
+				}
+			}
+			covered.swap(next);
+		}
+
+		const auto wet = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < w && a_y < h && covered[index(a_x, a_y)]; };
 		for (int32_t y = 0; y < h; y++) {
 			for (int32_t x = 0; x < w; x++) {
 				const std::size_t i = index(x, y);
-				if (!result.water[i])
+				if (!covered[i])
 					continue;
 				// The normal from the surface around, over water only
-				const float here = result.level[i];
-				const auto at = [&](int32_t a_x, int32_t a_y) { return wet(a_x, a_y) ? result.level[index(a_x, a_y)] : here; };
+				const float here = closed.level[i];
+				const auto at = [&](int32_t a_x, int32_t a_y) { return wet(a_x, a_y) ? closed.level[index(a_x, a_y)] : here; };
 				const float sx = (at(x + 1, y) - at(x - 1, y)) / (2.0f * cell);
 				const float sy = (at(x, y + 1) - at(x, y - 1)) / (2.0f * cell);
 				const float length = std::sqrt(sx * sx + sy * sy + 1.0f);
@@ -451,15 +496,15 @@ namespace FluidFieldSim
 				vertex.position[0] = a_stream.originX + static_cast<float>(x) * cell;
 				vertex.position[1] = a_stream.originY + static_cast<float>(y) * cell;
 				vertex.position[2] = here;
-				vertex.across = result.psi[i];
-				vertex.travel = result.travel[i];
-				vertex.speed = result.speed[i];
-				vertex.foam = result.foam[i];
-				vertex.edge = result.edge[i];
+				vertex.across = closed.psi[i];
+				vertex.travel = closed.travel[i];
+				vertex.speed = closed.speed[i];
+				vertex.foam = closed.foam[i];
+				vertex.edge = closed.edge[i];
 				vertex.normal[0] = -sx / length;
 				vertex.normal[1] = -sy / length;
 				vertex.normal[2] = 1.0f / length;
-				vertex.depth = result.depth[i];
+				vertex.depth = closed.depth[i];
 				slot[i] = static_cast<uint32_t>(a_stream.vertices.size());
 				a_stream.vertices.push_back(vertex);
 			}

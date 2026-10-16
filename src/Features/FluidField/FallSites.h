@@ -157,6 +157,8 @@ namespace FluidFieldSim
 		static constexpr float STREAM_INFLOW_BAND = 64.0f;   ///< Water within this of the site's top comes in there
 		static constexpr float STREAM_OUTFLOW_BAND = 32.0f;  ///< Water within this of the site's bottom leaves there
 		static constexpr float NO_SURFACE = -1.0e7f;
+		static constexpr int SURFACE_CLOSE_PASSES = 2;      ///< Passes closing slits of rock barely at the falls' surface
+		static constexpr int SURFACE_CLOSE_NEIGHBOURS = 5;  ///< Of a cell's eight neighbours, how many must be water to close it
 
 		/** @brief Counts for the menu: sites by kind. */
 		uint32_t CountKind(Kind a_kind) const;
