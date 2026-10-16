@@ -290,6 +290,36 @@ namespace FallGround
 		return result;
 	}
 
+	float LaceHash(float2 a_p)
+	{
+		a_p = frac(a_p * float2(0.1031, 0.1030));
+		a_p += dot(a_p, a_p.yx + 33.33);
+		return frac((a_p.x + a_p.y) * a_p.x);
+	}
+
+	float LaceNoise(float2 a_p)
+	{
+		const float2 i = floor(a_p);
+		const float2 f = a_p - i;
+		const float2 u = f * f * (3.0 - 2.0 * f);
+		return lerp(lerp(LaceHash(i), LaceHash(i + float2(1, 0)), u.x), lerp(LaceHash(i + float2(0, 1)), LaceHash(i + float2(1, 1)), u.x), u.y);
+	}
+
+	/**
+	 * D42: foam as lace, the way white water looks: thin filaments, stretched along the flow, carried by
+	 * it in the flowmap's two phases (the same texture coordinates as the water's texture), so they
+	 * stream with the water. 0 to 1, high on the filaments. The texture runs along u.
+	 */
+	float Lace(FlowSample a_flow)
+	{
+		const float2 stretch = float2(0.7, 3.2);
+		const float a = LaceNoise(a_flow.uvA * stretch) * 0.6 + LaceNoise(a_flow.uvA * stretch * 2.7 + 3.1) * 0.4;
+		const float b = LaceNoise(a_flow.uvB * stretch + 11.7) * 0.6 + LaceNoise(a_flow.uvB * stretch * 2.7 + 7.9) * 0.4;
+		const float n = lerp(a, b, a_flow.blendB);
+		// Ridges of the noise: thin lines where it crosses its middle
+		return 1.0 - saturate(abs(n - 0.5) * 2.6);
+	}
+
 	/**
 	 * How much of the falling water shows where it cuts into rock, from the scene's depth at the pixel:
 	 * it fades over the last ContactWidth before the rock, so intersections are soft. Water lying on

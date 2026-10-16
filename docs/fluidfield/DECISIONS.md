@@ -985,3 +985,24 @@ Entry format:
     the player.
 -   Decided by: investigation after @Victor's report
 -   References: D38, D39, D40
+
+## D42: Lace foam on the falls; D43: violent waterfall fog
+
+-   Date: 2026-10-16
+-   Phase / spike: D41 follow-up (@Victor: "keep improving our waterfall";
+    "waterfall fog should be agitated and violent, not static"; FluidNinja
+    LIVE clip as reference)
+-   Decision: D42: the falls' whitening is lace, not a flat blend: ridges of
+    two-octave noise stretched along the texture's flow axis (u), carried in
+    the flowmap's two phases so the filaments stream with the water; few and
+    thin where the water is barely white, joining up as it whitens, solid
+    where it is wholly white (the plunge, against rock). Speed whitens only
+    the fastest drops. D43: the fog's wisps are in a frame along the flow,
+    stretched 3.5x along it at speed, carried at the falls' own speed, their
+    domain churned by two fast swirling warps (1.6 wisps, changing at 1.1/s)
+    and boiling upward at 70 units/s; the cycle is 1.6 s. The fog tears into
+    strands (thresholded wisps) with clear air between, sources at 2x the
+    pool layer's density; plunges dominate (strikes 0.35, drops 0.3); the
+    band reaches 420 above the sources (it sliced their tops flat); the tint
+    is cooler and barely sun-lit.
+-   References: D34, D38, D41

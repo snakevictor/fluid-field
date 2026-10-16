@@ -1514,19 +1514,22 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		}
 		// White water (D34): aerated where it falls fast, foamed where it piles against rock, squeezes past
 		// it, meets still water or where vanilla's pieces meet; broken up by the texture's own streaks
-		const float fast = smoothstep(1.5, 4.5, length(fallFlow.velocity) / FallGround::FlowSpeed);
+		const float fast = smoothstep(2.5, 6.0, length(fallFlow.velocity) / FallGround::FlowSpeed);
 		// The foam map's cells are coarse (16 units): softened over its neighbourhood, so it does not show as blocks
 		const float2 fallXY = input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy;
 		const float foamSoft = 0.2 * (fallFlow.stream.z + FallGround::StreamAt(fallXY + float2(14.0, 6.0)).z + FallGround::StreamAt(fallXY - float2(14.0, 6.0)).z +
 										 FallGround::StreamAt(fallXY + float2(-6.0, 14.0)).z + FallGround::StreamAt(fallXY + float2(6.0, -14.0)).z);
-		float white = FallGround::Whitening ? saturate(max(foamSoft, fast * 0.5)) * fallFlow.strength : 0.0;
+		float white = FallGround::Whitening ? saturate(max(foamSoft, fast * 0.35)) * fallFlow.strength : 0.0;
 		// D36: wholly white where the falls meet the water below, thinning up the falls
 		[flatten] if (fallPool && FallGround::Whitening)
 			white = max(white, 1.0 - saturate((input.WorldPosition.z + FrameBuffer::CameraPosAdjust.z - fallPoolHeight) / FallGround::PoolFoamHeight));
-		const float streak = smoothstep(0.15, 0.75, Color::RGBToLuminance(rawBaseColor.rgb) + white * 0.45);
-		// Whitened in the water's own hue (a fixed white albedo lit warm, orange at dawn, next to vanilla's blue)
-		const float3 foamColor = rawBaseColor.rgb / max(max(rawBaseColor.r, max(rawBaseColor.g, rawBaseColor.b)), 0.05) * 0.92;
-		rawBaseColor.rgb = lerp(rawBaseColor.rgb, foamColor, white * streak * 0.8);
+		// D42: foam as lace, filaments streaming with the water: few and thin where the water is barely
+		// white, joining up where it is white, solid where it is wholly white (the plunge, against rock)
+		const float lace = FallGround::Lace(fallFlow);
+		const float cover = saturate(smoothstep(1.0 - white, 1.0 - white * 0.6, lace) + smoothstep(0.75, 1.0, white));
+		// In the water's own hue, brighter (a fixed white albedo lit warm, orange at dawn, next to vanilla's blue)
+		const float3 foamColor = rawBaseColor.rgb / max(max(rawBaseColor.r, max(rawBaseColor.g, rawBaseColor.b)), 0.05) * 0.95;
+		rawBaseColor.rgb = lerp(rawBaseColor.rgb, foamColor, white > 0.0 ? cover * 0.9 : 0.0);
 		// Debug (D40): 1 the solved flow's speed (red), foam (green) and water (blue); 2 the texture's direction of motion
 		[branch] if (FallGround::DebugMode == 1)
 			rawBaseColor.rgb = float3(saturate(length(fallFlow.stream.xy) * 0.5), saturate(fallFlow.stream.z), fallFlow.stream.w);

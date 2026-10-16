@@ -61,14 +61,20 @@ StructuredBuffer<float4> MistVolumes : register(t104);  // Per volume: centre an
 static const float FOG_RANGE = 8000.0;
 /** World units across one wisp, and seconds between restarts of each of the wisps' two drifting phases. */
 static const float WISP_SIZE = 90.0;
-static const float WISP_PERIOD = 3.0;
+static const float WISP_PERIOD = 1.6;
+/** How much longer the wisps are along the flow than across it, at full speed (D42). */
+static const float WISP_STRETCH = 3.5;
+/** D43: how far the churn warps the wisps (in wisps), how fast it changes, and how fast the mist boils upward (units a second). */
+static const float CHURN = 1.6;
+static const float CHURN_RATE = 1.1;
+static const float BOIL_SPEED = 70.0;
 /** How thick vanilla's mist volumes are, as a share of the fog over wholly white water: their bounds are big boxes. */
 static const float MIST_VOLUME_SHARE = 0.12;
 /** World units the fog round a strike stands above it, and how far up and down it spreads from there (D39). */
 static const float SOURCE_LIFT = 60.0;
 static const float SOURCE_SPREAD = 120.0;
 /** How much thicker the fog round the falls' sources is than over merely white water (D41). */
-static const float SOURCE_DENSITY = 6.0;
+static const float SOURCE_DENSITY = 2.0;
 /** World units round the camera kept clear of fog, fading in over five times as far. */
 static const float NEAR_CLEAR = 40.0;
 
@@ -92,13 +98,27 @@ float Noise3(float3 a_p)
 /** Wisps drifting with the water's flow, in two phases that restart before they shear apart. */
 float Wisps(float3 a_position, float2 a_flow)
 {
+	// D43: agitated, violent spray-mist, not drifting haze. The domain is churned by two fast,
+	// swirling warps (the larger slower, the smaller quicker), boils upward, and streams along the flow
+	// in two phases that restart before they shear apart
 	const float cycle = Time / WISP_PERIOD;
 	const float phaseA = frac(cycle);
 	const float phaseB = frac(cycle + 0.5);
-	const float3 base = float3(a_position.xy, a_position.z * 2.0) / WISP_SIZE;
-	const float2 drift = a_flow * WISP_PERIOD / WISP_SIZE;
-	const float a = Noise3(base - float3(drift * phaseA, Time * 0.05)) * 0.65 + Noise3(base * 2.3 - float3(drift * phaseA * 2.3, Time * 0.08)) * 0.35;
-	const float b = Noise3(base + 17.3 - float3(drift * phaseB, Time * 0.05)) * 0.65 + Noise3(base * 2.3 + 5.1 - float3(drift * phaseB * 2.3, Time * 0.08)) * 0.35;
+	const float speed = length(a_flow);
+	const float2 along = speed > 1.0 ? a_flow / speed : float2(1.0, 0.0);
+	const float2 across = float2(-along.y, along.x);
+	const float stretch = lerp(1.0, WISP_STRETCH, saturate(speed / 200.0));
+	float3 base = float3(dot(a_position.xy, along) / stretch, dot(a_position.xy, across), a_position.z * 1.5) / WISP_SIZE;
+	// Boiling: the mist rises and rolls over as it goes
+	base.z -= Time * BOIL_SPEED / WISP_SIZE;
+	// Churn: the domain warped by quickly changing noise, so the wisps tear, curl and re-form
+	const float3 warpA = float3(Noise3(base * 0.7 + float3(0.0, 0.0, Time * CHURN_RATE)), Noise3(base * 0.7 + float3(5.2, 1.3, Time * CHURN_RATE)),
+		Noise3(base * 0.7 + float3(9.1, 4.7, Time * CHURN_RATE)));
+	const float3 warpB = float3(Noise3(base * 1.9 + float3(2.0, 7.0, Time * CHURN_RATE * 2.3)), Noise3(base * 1.9 + float3(3.3, 8.1, Time * CHURN_RATE * 2.3)), 0.5);
+	base += (warpA - 0.5) * CHURN + (warpB - 0.5) * CHURN * 0.45;
+	const float2 drift = float2(speed / stretch, 0.0) * WISP_PERIOD / WISP_SIZE;
+	const float a = Noise3(base - float3(drift * phaseA, 0.0)) * 0.6 + Noise3(base * 2.6 - float3(drift * phaseA * 2.6, Time * 0.4)) * 0.4;
+	const float b = Noise3(base + 17.3 - float3(drift * phaseB, 0.0)) * 0.6 + Noise3(base * 2.6 + 5.1 - float3(drift * phaseB * 2.6, Time * 0.4)) * 0.4;
 	return lerp(a, b, abs(1.0 - 2.0 * phaseA));
 }
 
@@ -147,7 +167,7 @@ float FogAt(float3 a_position, out float3 a_parts)
 		const float above = a_position.z - level;
 		if (white > 0.01 && above > 0.0 && above < top) {
 			const float wisps = Wisps(a_position, flowFoam.xy);
-			density = FogDensity * white * smoothstep(0.2, 0.75, wisps) * (1.0 - smoothstep(0.35, 1.0, above / top));
+			density = FogDensity * white * smoothstep(0.38, 0.78, wisps) * (1.0 - smoothstep(0.35, 1.0, above / top));
 		}
 		a_parts.x = density;
 	}
@@ -159,7 +179,8 @@ float FogAt(float3 a_position, out float3 a_parts)
 		const float lift = (a_position.z - sourceHeight - SOURCE_LIFT) / SOURCE_SPREAD;
 		const float around = exp(-lift * lift);
 		if (around > 0.01) {
-			const float add = FogDensity * SOURCE_DENSITY * source * around * smoothstep(0.2, 0.7, Wisps(a_position, 0.0));
+			const float2 flow = FallGround::StreamAt(a_position.xy).xy * BaseSpeed;
+			const float add = FogDensity * SOURCE_DENSITY * source * around * smoothstep(0.42, 0.78, Wisps(a_position, flow));
 			density += add;
 			a_parts.y = add;
 		}
@@ -253,7 +274,7 @@ float4 PSMain(VSOutput input) : SV_Target
 		discard;
 	// White water's mist, lit by the light's brightness (as the spray)
 	const float3 ambient = max(float3(SharedData::AmbientSHR.x, SharedData::AmbientSHG.x, SharedData::AmbientSHB.x), 0.0) * 0.886;
-	const float light = Color::RGBToLuminance(ambient) + Color::RGBToLuminance(SharedData::DirLightColor.rgb) * 0.15;
-	const float3 color = float3(0.93, 0.96, 1.0) * light * Brightness * 1.8;
+	const float light = Color::RGBToLuminance(ambient) + Color::RGBToLuminance(SharedData::DirLightColor.rgb) * 0.08;
+	const float3 color = float3(0.84, 0.91, 1.0) * light * Brightness * 1.8;
 	return float4(color * scattered, alpha);
 }

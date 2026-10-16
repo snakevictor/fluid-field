@@ -2023,8 +2023,8 @@ namespace FluidFieldSim
 			const auto kind = static_cast<FallEmitterKind>(static_cast<uint32_t>(emitter.kind));
 			const float radius = kind == FallEmitterKind::Plunge ? FOG_PLUNGE_RADIUS : kind == FallEmitterKind::Strike ? FOG_SOURCE_RADIUS :
 			                                                                                                             FOG_SOURCE_RADIUS * 0.7f;
-			const float weight = std::max(emitter.strength, 0.5f) * (kind == FallEmitterKind::Plunge ? 1.0f : kind == FallEmitterKind::Strike ? 0.7f :
-																																				0.4f);
+			const float weight = std::max(emitter.strength, 0.5f) * (kind == FallEmitterKind::Plunge ? 1.0f : kind == FallEmitterKind::Strike ? 0.35f :
+																																				0.3f);
 			const auto reach = static_cast<int32_t>(std::ceil(radius / a_cell));
 			const auto cx = static_cast<int32_t>(std::lround((emitter.position[0] - a_originX) / a_cell));
 			const auto cy = static_cast<int32_t>(std::lround((emitter.position[1] - a_originY) / a_cell));

@@ -1102,7 +1102,7 @@ void FluidField::DrawGroundFogAfterWorld()
 			float fogLow, fogHigh;
 			if (fallSites.GetFogBand(fogLow, fogHigh)) {
 				params.fogBottom = fogLow - 20.0f;
-				params.fogTop = fogHigh + std::max(settings.FallFogHeight, 160.0f);
+				params.fogTop = fogHigh + std::max(settings.FallFogHeight, 420.0f);  // Above the sources' rise (FallFog.hlsl SOURCE_LIFT + 3 SOURCE_SPREAD)
 			} else {
 				params.fogDensity = 0.0f;
 			}
