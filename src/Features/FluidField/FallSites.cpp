@@ -411,10 +411,11 @@ namespace FluidFieldSim
 				SurfaceMesh mesh = stream.meshPending.get();
 				stream.vertices.swap(mesh.vertices);
 				stream.indices.swap(mesh.indices);
+				stream.emitters.swap(mesh.emitters);
 				stream.meshReady = true;
 				changed = true;
-				logger::info("[Fluid Field] Waterfall site #{} surface: {} source triangles ({} under another piece dropped), {} vertices, {} triangles", stream.siteId,
-					stream.sources.size(), mesh.culled, stream.vertices.size(), stream.indices.size() / 3);
+				logger::info("[Fluid Field] Waterfall site #{} surface: {} source triangles ({} under another piece dropped), {} vertices, {} triangles, {} spray emitters",
+					stream.siteId, stream.sources.size(), mesh.culled, stream.vertices.size(), stream.indices.size() / 3, stream.emitters.size());
 				continue;
 			}
 			if (stream.ready || !stream.pending.valid() || stream.pending.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
@@ -804,6 +805,36 @@ namespace FluidFieldSim
 			}
 		}
 		mesh.culled = static_cast<uint32_t>(std::count(kept.begin(), kept.end(), static_cast<uint8_t>(0)));
+
+		// Spray and mist (D31): where the surface foams most, one emitter per EMITTER_SPACING cell, with
+		// the water's motion there (the flow across, and down the surface's slope)
+		std::unordered_map<int64_t, uint32_t> best;
+		for (uint32_t v = 0; v < mesh.vertices.size(); v++) {
+			const auto& vertex = mesh.vertices[v];
+			if (vertex.foam < EMITTER_FOAM)
+				continue;
+			const auto key = (static_cast<int64_t>(std::floor(vertex.position[0] / EMITTER_SPACING)) << 32) ^ static_cast<uint32_t>(static_cast<int32_t>(std::floor(vertex.position[1] / EMITTER_SPACING))) ^
+			                 (static_cast<int64_t>(std::floor(vertex.position[2] / EMITTER_SPACING)) << 48);
+			auto [it, added] = best.try_emplace(key, v);
+			if (!added && mesh.vertices[it->second].foam < vertex.foam)
+				it->second = v;
+		}
+		for (const auto& [key, v] : best) {
+			const auto& vertex = mesh.vertices[v];
+			FallEmitter emitter{};
+			for (int k = 0; k < 3; k++) {
+				emitter.position[k] = vertex.position[k];
+				emitter.normal[k] = vertex.normal[k];
+			}
+			emitter.strength = vertex.foam;
+			emitter.speed = vertex.speed;
+			// Down the surface: gravity's direction in its plane
+			float down[3] = { -vertex.normal[0] * vertex.normal[2], -vertex.normal[1] * vertex.normal[2], -1.0f + vertex.normal[2] * vertex.normal[2] };
+			const float length = std::sqrt(down[0] * down[0] + down[1] * down[1] + down[2] * down[2]);
+			for (int k = 0; k < 3; k++)
+				emitter.direction[k] = length > 1e-4f ? down[k] / length : 0.0f;
+			mesh.emitters.push_back(emitter);
+		}
 		return mesh;
 	}
 
@@ -811,6 +842,7 @@ namespace FluidFieldSim
 	{
 		surfaceVertices.clear();
 		surfaceIndices.clear();
+		surfaceEmitters.clear();
 		for (const auto& [key, stream] : streams) {
 			if (!stream.meshReady || stream.vertices.empty())
 				continue;
@@ -818,6 +850,7 @@ namespace FluidFieldSim
 			surfaceVertices.insert(surfaceVertices.end(), stream.vertices.begin(), stream.vertices.end());
 			for (const uint32_t i : stream.indices)
 				surfaceIndices.push_back(base + i);
+			surfaceEmitters.insert(surfaceEmitters.end(), stream.emitters.begin(), stream.emitters.end());
 		}
 		surfaceVersion++;
 	}

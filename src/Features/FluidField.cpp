@@ -1099,7 +1099,8 @@ void FluidField::DrawGroundFogAfterWorld()
 
 	// The falls' own water surfaces (D30), before the ground fog lies over their base
 	if (settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && settings.ReplaceWaterfallSurface && cameraSnapshot) {
-		fallSurface.Upload(globals::d3d::device, globals::d3d::context, fallSites.GetSurfaceVertices(), fallSites.GetSurfaceIndices(), fallSites.GetSurfaceVersion());
+		fallSurface.Upload(globals::d3d::device, globals::d3d::context, fallSites.GetSurfaceVertices(), fallSites.GetSurfaceIndices(), fallSites.GetSurfaceEmitters(),
+			fallSites.GetSurfaceVersion());
 		const auto& shadow = globals::game::shadowState->GetRuntimeData();
 		const auto colorIndex = static_cast<uint32_t>(shadow.renderTargets[0]);
 		const auto depthIndex = shadow.depthStencil;

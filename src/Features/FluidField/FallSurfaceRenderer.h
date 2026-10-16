@@ -25,6 +25,18 @@ namespace FluidFieldSim
 	};
 	static_assert(sizeof(FallSurfaceVertex) == 64);
 
+	/** @brief Where the falls throw spray and mist (D31), matching Emitter in FallSpray.hlsl. */
+	struct FallEmitter
+	{
+		float position[3];   ///< On the surface, world units
+		float strength;      ///< 0 to 1: how much it throws
+		float direction[3];  ///< The water's motion there, unit
+		float speed;         ///< 1 for free flow
+		float normal[3];     ///< The surface's normal there, up
+		float pad;
+	};
+	static_assert(sizeof(FallEmitter) == 48);
+
 	/**
 	 * @brief Draws the falls' own water surface (D30) after the world: one merged mesh per site, made of
 	 * vanilla's falling-water meshes subdivided, displaced by the flow in the vertex shader, with
@@ -34,9 +46,9 @@ namespace FluidFieldSim
 	class FallSurfaceRenderer
 	{
 	public:
-		/** @brief Uploads the mesh when its version changed. */
+		/** @brief Uploads the mesh and the spray emitters when their version changed. */
 		void Upload(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const std::vector<FallSurfaceVertex>& a_vertices, const std::vector<uint32_t>& a_indices,
-			uint64_t a_version);
+			const std::vector<FallEmitter>& a_emitters, uint64_t a_version);
 
 		struct DrawParams
 		{
@@ -67,11 +79,22 @@ namespace FluidFieldSim
 		static constexpr float SHALLOW_DEPTH = 40.0f;  ///< Water shallower than this over rock waves and mounds
 		static constexpr float CONTACT_WIDTH = 2.0f;   ///< World units over which the water fades where it meets rock in front of it
 		static constexpr float BRIGHTNESS = 0.32f;
-		static constexpr float VANILLA_SCROLL = 0.6f;  ///< Repeats per second vanilla's texture scrolls along v, where the flow's is not used      ///< Light at this point of the frame, as the ground fog and the old curtains needed
+		static constexpr float VANILLA_SCROLL = 0.6f;
+		static constexpr uint32_t SPRAY_PER_EMITTER = 12;  ///< Spray particles alive per emitter at once
+		static constexpr uint32_t MIST_PER_EMITTER = 3;    ///< Mist puffs alive per emitter at once
+		static constexpr uint32_t MAX_PARTICLES = 160000;
+		static constexpr float SPRAY_LIFE = 0.9f;     ///< Seconds
+		static constexpr float SPRAY_SPEED = 260.0f;  ///< World units per second thrown up and out at full strength
+		static constexpr float SPRAY_SIZE = 10.0f;    ///< World units across
+		static constexpr float MIST_LIFE = 3.0f;
+		static constexpr float MIST_SIZE = 70.0f;
+		static constexpr float MIST_RISE = 40.0f;          ///< World units per second
+		static constexpr float PARTICLE_GRAVITY = 687.0f;  ///< Repeats per second vanilla's texture scrolls along v, where the flow's is not used      ///< Light at this point of the frame, as the ground fog and the old curtains needed
 
 	private:
 		bool EnsureShaders();
 		bool EnsureStates(ID3D11Device* a_device);
+		void DrawParticles(ID3D11DeviceContext* a_context);
 
 		struct alignas(16) Constants
 		{
@@ -89,7 +112,17 @@ namespace FluidFieldSim
 			float brightness;
 			uint32_t debugMode;
 			float vanillaScroll;
-			float pad[2];
+			uint32_t emitterCount;
+			uint32_t sprayPerEmitter;
+			uint32_t mistPerEmitter;
+			float sprayLife;
+			float spraySpeed;
+			float spraySize;
+			float mistLife;
+			float mistSize;
+			float mistRise;
+			float gravity;
+			float pad2[4];
 		};
 
 		winrt::com_ptr<ID3D11Buffer> vertices;
@@ -100,9 +133,16 @@ namespace FluidFieldSim
 		uint32_t indexCount = 0;
 		uint64_t uploadedVersion = UINT64_MAX;
 
+		winrt::com_ptr<ID3D11Buffer> emitters;
+		winrt::com_ptr<ID3D11ShaderResourceView> emittersSRV;
+		uint32_t emitterCapacity = 0;
+		uint32_t emitterCount = 0;
+
 		winrt::com_ptr<ID3D11Buffer> constants;
 		winrt::com_ptr<ID3D11VertexShader> vertexShader;
 		winrt::com_ptr<ID3D11PixelShader> pixelShader;
+		winrt::com_ptr<ID3D11VertexShader> sprayVertexShader;
+		winrt::com_ptr<ID3D11PixelShader> sprayPixelShader;
 		winrt::com_ptr<ID3D11BlendState> blend;
 		winrt::com_ptr<ID3D11DepthStencilState> depthState;
 		winrt::com_ptr<ID3D11RasterizerState> raster;

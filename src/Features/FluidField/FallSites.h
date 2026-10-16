@@ -130,6 +130,7 @@ namespace FluidFieldSim
 		 */
 		const std::vector<FallSurfaceVertex>& GetSurfaceVertices() const { return surfaceVertices; }
 		const std::vector<uint32_t>& GetSurfaceIndices() const { return surfaceIndices; }
+		const std::vector<FallEmitter>& GetSurfaceEmitters() const { return surfaceEmitters; }
 		uint64_t GetSurfaceVersion() const { return surfaceVersion; }
 		/** @brief Vanilla's falling-water textures (from the lit surface of its models), for the fall surfaces; null until one is seen. */
 		ID3D11ShaderResourceView* GetSurfaceDiffuse() const;
@@ -211,7 +212,8 @@ namespace FluidFieldSim
 		{
 			std::vector<FallSurfaceVertex> vertices;
 			std::vector<uint32_t> indices;
-			uint32_t culled = 0;  ///< Source triangles dropped where another piece lies on them
+			std::vector<FallEmitter> emitters;  ///< Where it throws spray and mist (D31)
+			uint32_t culled = 0;                ///< Source triangles dropped where another piece lies on them
 		};
 		/** @brief A site's steady flow, solved on its capture's lattice on a worker thread. */
 		struct Stream
@@ -224,6 +226,7 @@ namespace FluidFieldSim
 			bool ready = false;
 			std::vector<FallSurfaceVertex> vertices;  ///< Its surface mesh, built once the flow is solved
 			std::vector<uint32_t> indices;
+			std::vector<FallEmitter> emitters;
 			std::vector<SourceTriangle> sources;
 			std::vector<float> levels;  ///< The site's water levels, where the falls meet bodies of water  ///< Vanilla's falling-water triangles, gathered when the solve starts
 			std::future<SurfaceMesh> meshPending;
@@ -244,6 +247,8 @@ namespace FluidFieldSim
 		static constexpr float MERGE_BUCKET = 64.0f;       ///< World units per bucket when finding overlaps
 		static constexpr float MERGE_ABOVE = 3.0f;         ///< Only near-duplicates are dropped: another piece this close above or below covers a triangle
 		static constexpr float MERGE_BELOW = 3.0f;
+		static constexpr float EMITTER_SPACING = 20.0f;   ///< World units between spray emitters
+		static constexpr float EMITTER_FOAM = 0.55f;      ///< Foam at least this much throws spray
 		static constexpr int FLOW_DILATE_CELLS = 6;       ///< Cells the flow is carried past the water's edge for the surface
 		static constexpr float FALL_SPEED = 600.0f;       ///< World units per second of drop counted into the travel time, so steep water streaks too
 		static constexpr float MEET_FOAM_HEIGHT = 20.0f;  ///< Water within this of a site's level (where it meets a body of water) foams
@@ -252,6 +257,7 @@ namespace FluidFieldSim
 		void RefreshSurfaces();
 		std::vector<FallSurfaceVertex> surfaceVertices;
 		std::vector<uint32_t> surfaceIndices;
+		std::vector<FallEmitter> surfaceEmitters;
 		uint64_t surfaceVersion = 0;
 		bool replaceSurface = false;
 		RE::NiPointer<RE::NiSourceTexture> surfaceDiffuse;

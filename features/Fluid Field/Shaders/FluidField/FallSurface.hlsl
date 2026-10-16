@@ -39,7 +39,17 @@ cbuffer FallSurfaceCB : register(b7)
 	float ContactWidth;  // World units over which the water fades where it meets rock in front of it
 	float Brightness;
 	uint DebugMode;       // 0 off; 1: speed as red, foam as green, edge as blue; 2: the streamlines as bands
-	float VanillaScroll;  // Repeats per second vanilla's texture scrolls along v
+	float VanillaScroll;  // Repeats per second vanilla's texture scrolls along u
+	uint EmitterCount;
+	uint SprayPerEmitter;
+	uint MistPerEmitter;
+	float SprayLife;
+	float SpraySpeed;
+	float SpraySize;
+	float MistLife;
+	float MistSize;
+	float MistRise;
+	float Gravity;
 	float2 Pad;
 };
 

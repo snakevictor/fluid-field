@@ -712,3 +712,28 @@ Entry format:
     well as some sort of tesselation/displacement based on the flow"; "fix
     the fucking seams betwen the meshes")
 -   References: D28, D29
+
+## D31: Falls' surface from vanilla's meshes; GPU spray and mist
+
+-   Date: 2026-10-16
+-   Phase / spike: D30 revision and follow-up
+-   Decision: The falls' surface is built from vanilla's own falling-water
+    meshes (each model's lit surface, else its largest effect layer), not a
+    plan-view grid: the grid version was flat and slow (@Victor: "waaay too
+    shallow and slow"). Per site on a worker thread: near-duplicate layers
+    (within 3 units) dropped, each piece subdivided to about 12-unit
+    triangles, coincident vertices welded, the solved flow's coordinates at
+    every vertex (carried six cells past the water's edge). One merged mesh
+    per site, so the seams between vanilla's pieces are gone. Vanilla's
+    falling-water texture runs along u, so the travel time (with the drop
+    below the falls' top counted in) drives u and the streamlines v. Colour
+    matched to vanilla by measuring captures. Water within 20 units of a
+    site's level foams (the joins with the water above and below). Spray and
+    mist are stateless GPU particles: emitters where the surface foams most,
+    each particle's position computed from its emitter, a hash and the time
+    (spray thrown up and out under gravity; mist rising and fading), drawn as
+    camera-facing quads after the surface.
+-   Decided by: @Victor ("combining the OG vanilla shapes and tesselating
+    them with the flow"; "merged them into one big mesh"; "foam and splashes
+    and gpu particles")
+-   References: D28, D30

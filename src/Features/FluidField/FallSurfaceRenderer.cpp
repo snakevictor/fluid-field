@@ -2,6 +2,7 @@
 
 #include "FallStream.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace FluidFieldSim
@@ -20,6 +21,10 @@ namespace FluidFieldSim
 		vertices = nullptr;
 		verticesSRV = nullptr;
 		indices = nullptr;
+		emitters = nullptr;
+		emittersSRV = nullptr;
+		emitterCapacity = 0;
+		emitterCount = 0;
 		vertexCapacity = 0;
 		indexCapacity = 0;
 		indexCount = 0;
@@ -36,21 +41,27 @@ namespace FluidFieldSim
 	{
 		vertexShader = nullptr;
 		pixelShader = nullptr;
+		sprayVertexShader = nullptr;
+		sprayPixelShader = nullptr;
 		shaderFailed = false;
 	}
 
 	bool FallSurfaceRenderer::EnsureShaders()
 	{
-		if (vertexShader && pixelShader)
+		if (vertexShader && pixelShader && sprayVertexShader && sprayPixelShader)
 			return true;
 		if (shaderFailed)
 			return false;
 		vertexShader.attach(reinterpret_cast<ID3D11VertexShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSurface.hlsl", {}, "vs_5_0", "VSMain")));
 		pixelShader.attach(reinterpret_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSurface.hlsl", {}, "ps_5_0", "PSMain")));
-		if (!vertexShader || !pixelShader) {
+		sprayVertexShader.attach(reinterpret_cast<ID3D11VertexShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSpray.hlsl", {}, "vs_5_0", "VSMain")));
+		sprayPixelShader.attach(reinterpret_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSpray.hlsl", {}, "ps_5_0", "PSMain")));
+		if (!vertexShader || !pixelShader || !sprayVertexShader || !sprayPixelShader) {
 			logger::error("[Fluid Field] Waterfall surface shaders failed to compile; waterfalls stay vanilla");
 			vertexShader = nullptr;
 			pixelShader = nullptr;
+			sprayVertexShader = nullptr;
+			sprayPixelShader = nullptr;
 			shaderFailed = true;
 			return false;
 		}
@@ -94,12 +105,37 @@ namespace FluidFieldSim
 	}
 
 	void FallSurfaceRenderer::Upload(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const std::vector<FallSurfaceVertex>& a_vertices, const std::vector<uint32_t>& a_indices,
-		uint64_t a_version)
+		const std::vector<FallEmitter>& a_emitters, uint64_t a_version)
 	{
 		if (a_version == uploadedVersion)
 			return;
 		uploadedVersion = a_version;
 		indexCount = 0;
+		emitterCount = 0;
+		if (!a_emitters.empty()) {
+			const auto count = static_cast<uint32_t>(std::min<std::size_t>(a_emitters.size(), MAX_PARTICLES / (SPRAY_PER_EMITTER + MIST_PER_EMITTER)));
+			if (count > emitterCapacity) {
+				emitters = nullptr;
+				emittersSRV = nullptr;
+				const uint32_t capacity = count + count / 4;
+				D3D11_BUFFER_DESC desc{ .ByteWidth = static_cast<UINT>(capacity * sizeof(FallEmitter)), .Usage = D3D11_USAGE_DEFAULT, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, .StructureByteStride = sizeof(FallEmitter) };
+				D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{ .Format = DXGI_FORMAT_UNKNOWN, .ViewDimension = D3D11_SRV_DIMENSION_BUFFER, .Buffer = { .FirstElement = 0, .NumElements = capacity } };
+				if (SUCCEEDED(a_device->CreateBuffer(&desc, nullptr, emitters.put())) && SUCCEEDED(a_device->CreateShaderResourceView(emitters.get(), &srvDesc, emittersSRV.put()))) {
+					Util::SetResourceName(emitters.get(), "FluidField::FallEmitters");
+					Util::SetResourceName(emittersSRV.get(), "FluidField::FallEmitters SRV");
+					emitterCapacity = capacity;
+				} else {
+					emitters = nullptr;
+					emittersSRV = nullptr;
+					emitterCapacity = 0;
+				}
+			}
+			if (emitters) {
+				const D3D11_BOX box{ 0, 0, 0, static_cast<UINT>(count * sizeof(FallEmitter)), 1, 1 };
+				a_context->UpdateSubresource(emitters.get(), 0, &box, a_emitters.data(), 0, 0);
+				emitterCount = count;
+			}
+		}
 		if (a_vertices.empty() || a_indices.empty())
 			return;
 		const auto vertexCount = static_cast<uint32_t>(a_vertices.size());
@@ -145,7 +181,8 @@ namespace FluidFieldSim
 			return;
 
 		const Constants data{ a_params.time, U_SCALE, V_SCALE, FallStream::BASE_SPEED, WAVE_HEIGHT, WAVE_LENGTH, RIPPLE_HEIGHT, RIPPLE_LENGTH, BULGE_HEIGHT, SHALLOW_DEPTH, CONTACT_WIDTH,
-			BRIGHTNESS, a_params.debugMode, VANILLA_SCROLL, {} };
+			BRIGHTNESS, a_params.debugMode, VANILLA_SCROLL, emitterCount, SPRAY_PER_EMITTER, MIST_PER_EMITTER, SPRAY_LIFE, SPRAY_SPEED, SPRAY_SIZE, MIST_LIFE, MIST_SIZE,
+			MIST_RISE, PARTICLE_GRAVITY, {} };
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (FAILED(a_context->Map(constants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
 			return;
@@ -212,6 +249,7 @@ namespace FluidFieldSim
 		ID3D11SamplerState* wrap = sampler.get();
 		a_context->PSSetSamplers(SAMPLER_SLOT, 1, &wrap);
 		a_context->DrawIndexed(indexCount, 0, 0);
+		DrawParticles(a_context);
 
 		// Restore
 		ID3D11RenderTargetView* targets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];
@@ -240,5 +278,17 @@ namespace FluidFieldSim
 		a_context->PSSetShaderResources(TEXTURES_SLOT, 3, psTextures);
 		ID3D11SamplerState* psSampler = savedSampler.get();
 		a_context->PSSetSamplers(SAMPLER_SLOT, 1, &psSampler);
+	}
+
+	void FallSurfaceRenderer::DrawParticles(ID3D11DeviceContext* a_context)
+	{
+		if (emitterCount == 0 || !emittersSRV)
+			return;
+		// Same targets, states and constants as the surface; the emitters in the vertex shader's slot
+		a_context->VSSetShader(sprayVertexShader.get(), nullptr, 0);
+		a_context->PSSetShader(sprayPixelShader.get(), nullptr, 0);
+		ID3D11ShaderResourceView* view = emittersSRV.get();
+		a_context->VSSetShaderResources(VERTICES_SLOT, 1, &view);
+		a_context->DrawInstanced(6, emitterCount * (SPRAY_PER_EMITTER + MIST_PER_EMITTER), 0, 0);
 	}
 }

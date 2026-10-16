@@ -76,6 +76,9 @@ about it.
 
 -   **Lit geometry must keep its exact vertex position** (2026-10-15). BSLightingShader surfaces are drawn after a depth prepass and the colour pass depth-tests against it for equality. Recomputing the clip position in Lighting.hlsl, even mathematically the same (`mul(ViewProj, worldPosition)` instead of `mul(modelView, inputPosition)`), changed the depth in the last bits and the surface drew as a flat brown. Displace lit geometry only in a pass that also displaces its prepass, or not at all; change its look in the pixel shader.
 
+-   **Vanilla's falling-water texture runs along u** (2026-10-16): on `FXWaterfallBodyTall` u spans 0.08..3.39 against v -2.04..-0.97. Laying a flow's along coordinate on v makes herringbone across the streaks.
+-   **The ambient SH's directional terms read warm under waterfalls** (2026-10-16): `SharedData::GetAmbient(normal)` came out tan there and made custom water brown. The DC term (`AmbientSHR.x` etc. times 0.886) with the material's own tint matched vanilla's falls; check colours by measuring captures against vanilla in the same view, not by eye.
+
 ## Repository conventions
 
 -   **There is no `AI-INSTRUCTIONS.md`** (2026-10-13, Phase 0). `AGENTS.md` fills that role and points to `.claude/CLAUDE.md`. `.github/copilot-instructions.md` still mentions `AI-INSTRUCTIONS.md`; that is upstream text and we left it alone.
