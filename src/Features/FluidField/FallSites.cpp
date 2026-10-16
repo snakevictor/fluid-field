@@ -13,7 +13,10 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <map>
 #include <numeric>
+#include <tuple>
+#include <unordered_set>
 
 namespace FluidFieldSim
 {
@@ -412,10 +415,15 @@ namespace FluidFieldSim
 				stream.vertices.swap(mesh.vertices);
 				stream.indices.swap(mesh.indices);
 				stream.emitters.swap(mesh.emitters);
+				stream.seamFoam.swap(mesh.seamFoam);
+				stream.plunges.swap(mesh.plunges);
 				stream.meshReady = true;
 				changed = true;
-				logger::info("[Fluid Field] Waterfall site #{} surface: {} source triangles ({} under another piece dropped), {} vertices, {} triangles, {} spray emitters",
-					stream.siteId, stream.sources.size(), mesh.culled, stream.vertices.size(), stream.indices.size() / 3, stream.emitters.size());
+				uint32_t kinds[3]{};
+				for (const auto& emitter : stream.emitters)
+					kinds[std::clamp(static_cast<int>(emitter.kind), 0, 2)]++;
+				logger::info("[Fluid Field] Waterfall site #{} surface: {} source triangles ({} under another piece dropped), {} vertices, {} triangles, {} seam points; emitters: {} at drops, {} at plunges, {} striking; {} plunge pushes",
+					stream.siteId, stream.sources.size(), mesh.culled, stream.vertices.size(), stream.indices.size() / 3, mesh.seams, kinds[0], kinds[1], kinds[2], stream.plunges.size());
 				continue;
 			}
 			if (stream.ready || !stream.pending.valid() || stream.pending.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
@@ -516,6 +524,30 @@ namespace FluidFieldSim
 					if (normal.z < 0.0f)
 						normal = -normal;
 				}
+				// D35: its texel density, world units per texture repeat along u and v, area weighted
+				{
+					double sum[2]{}, area = 0.0;
+					for (uint32_t t = 0; t < counts.triangleCount; t++) {
+						const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(t) * 3;
+						if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+							continue;
+						const RE::NiPoint3 e1 = positions[index[1]] - positions[index[0]];
+						const RE::NiPoint3 e2 = positions[index[2]] - positions[index[0]];
+						const float du1 = uvs[index[1]][0] - uvs[index[0]][0], dv1 = uvs[index[1]][1] - uvs[index[0]][1];
+						const float du2 = uvs[index[2]][0] - uvs[index[0]][0], dv2 = uvs[index[2]][1] - uvs[index[0]][1];
+						const float det = du1 * dv2 - du2 * dv1;
+						const float faceArea = 0.5f * e1.Cross(e2).Length();
+						if (std::abs(det) < 1e-8f || faceArea < 1e-3f)
+							continue;
+						const RE::NiPoint3 tu = (e1 * dv2 - e2 * dv1) / det;
+						const RE::NiPoint3 tv = (e2 * du1 - e1 * du2) / det;
+						sum[0] += static_cast<double>(tu.Length()) * faceArea;
+						sum[1] += static_cast<double>(tv.Length()) * faceArea;
+						area += faceArea;
+					}
+					if (area > 0.0)
+						textureScales[geometry] = { static_cast<float>(sum[0] / area), static_cast<float>(sum[1] / area) };
+				}
 				for (uint32_t t = 0; t < counts.triangleCount; t++) {
 					const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(t) * 3;
 					if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
@@ -565,7 +597,7 @@ namespace FluidFieldSim
 					const std::size_t i = static_cast<std::size_t>(y) * w + x;
 					if (known[i])
 						continue;
-					float sums[5]{};
+					float sums[9]{};
 					int count = 0;
 					for (int32_t dy = -1; dy <= 1; dy++) {
 						for (int32_t dx = -1; dx <= 1; dx++) {
@@ -580,6 +612,10 @@ namespace FluidFieldSim
 							sums[2] += dilated.speed[j];
 							sums[3] += dilated.foam[j];
 							sums[4] += dilated.depth[j];
+							sums[5] += dilated.vx[j];
+							sums[6] += dilated.vy[j];
+							sums[7] += dilated.head[j];
+							sums[8] += dilated.rockFoam[j];
 							count++;
 						}
 					}
@@ -591,6 +627,10 @@ namespace FluidFieldSim
 					dilated.speed[i] = sums[2] * k;
 					dilated.foam[i] = sums[3] * k;
 					dilated.depth[i] = sums[4] * k;
+					dilated.vx[i] = sums[5] * k;
+					dilated.vy[i] = sums[6] * k;
+					dilated.head[i] = sums[7] * k;
+					dilated.rockFoam[i] = sums[8] * k;
 					next[i] = 1;
 				}
 			}
@@ -602,7 +642,7 @@ namespace FluidFieldSim
 		// The flow under a point, bilinear over its water cells; the weight is how much water is around
 		struct Flow
 		{
-			float across, travel, speed, foam, edge, depth, water;
+			float across, travel, speed, foam, edge, depth, water, vx, vy, head, rockFoam;
 		};
 		const auto flowAt = [&](float a_x, float a_y) {
 			Flow flow{};
@@ -630,6 +670,10 @@ namespace FluidFieldSim
 					flow.foam += flowField.foam[i] * k;
 					flow.edge += flowField.edge[i] * k;
 					flow.depth += flowField.depth[i] * k;
+					flow.vx += flowField.vx[i] * k;
+					flow.vy += flowField.vy[i] * k;
+					flow.head += flowField.head[i] * k;
+					flow.rockFoam += flowField.rockFoam[i] * k;
 					weight += k;
 				}
 			}
@@ -641,6 +685,10 @@ namespace FluidFieldSim
 				flow.foam *= inverse;
 				flow.edge *= inverse;
 				flow.depth *= inverse;
+				flow.vx *= inverse;
+				flow.vy *= inverse;
+				flow.head *= inverse;
+				flow.rockFoam *= inverse;
 			}
 			return flow;
 		};
@@ -806,35 +854,387 @@ namespace FluidFieldSim
 		}
 		mesh.culled = static_cast<uint32_t>(std::count(kept.begin(), kept.end(), static_cast<uint8_t>(0)));
 
-		// Spray and mist (D31): where the surface foams most, one emitter per EMITTER_SPACING cell, with
-		// the water's motion there (the flow across, and down the surface's slope)
-		std::unordered_map<int64_t, uint32_t> best;
-		for (uint32_t v = 0; v < mesh.vertices.size(); v++) {
-			const auto& vertex = mesh.vertices[v];
-			if (vertex.foam < EMITTER_FOAM)
-				continue;
-			const auto key = (static_cast<int64_t>(std::floor(vertex.position[0] / EMITTER_SPACING)) << 32) ^ static_cast<uint32_t>(static_cast<int32_t>(std::floor(vertex.position[1] / EMITTER_SPACING))) ^
-			                 (static_cast<int64_t>(std::floor(vertex.position[2] / EMITTER_SPACING)) << 48);
-			auto [it, added] = best.try_emplace(key, v);
-			if (!added && mesh.vertices[it->second].foam < vertex.foam)
-				it->second = v;
-		}
-		for (const auto& [key, v] : best) {
-			const auto& vertex = mesh.vertices[v];
-			FallEmitter emitter{};
-			for (int k = 0; k < 3; k++) {
-				emitter.position[k] = vertex.position[k];
-				emitter.normal[k] = vertex.normal[k];
-			}
-			emitter.strength = vertex.foam;
-			emitter.speed = vertex.speed;
-			// Down the surface: gravity's direction in its plane
-			float down[3] = { -vertex.normal[0] * vertex.normal[2], -vertex.normal[1] * vertex.normal[2], -1.0f + vertex.normal[2] * vertex.normal[2] };
-			const float length = std::sqrt(down[0] * down[0] + down[1] * down[1] + down[2] * down[2]);
+		// Spray and mist (D35) where the falls throw it, with the water's own motion there: at the drops
+		// (where the surface falls away downstream), at the plunges (where falling water meets the water
+		// below), and where the water strikes something (rock in its way, vanilla's pieces meeting)
+		constexpr float KEPT_GRAVITY = 687.0f * 0.6f;
+		const auto motionAt = [&](const float a_p[3], const float a_n[3], float a_direction[3]) {
+			const Flow flow = flowAt(a_p[0], a_p[1]);
+			const float vx = flow.vx * FallStream::BASE_SPEED, vy = flow.vy * FallStream::BASE_SPEED;
+			const float solved = std::sqrt(vx * vx + vy * vy);
+			const float nz = std::max(a_n[2], 0.15f);
+			float lifted[3] = { vx, vy, -(a_n[0] * vx + a_n[1] * vy) / nz };
+			float down[3] = { a_n[0] * a_n[2], a_n[1] * a_n[2], -1.0f + a_n[2] * a_n[2] };
+			const auto normalize = [](float a_v[3]) {
+				const float length = std::sqrt(a_v[0] * a_v[0] + a_v[1] * a_v[1] + a_v[2] * a_v[2]);
+				for (int k = 0; k < 3; k++)
+					a_v[k] = length > 1e-5f ? a_v[k] / length : 0.0f;
+				return length;
+			};
+			const bool moving = flow.water > 0.1f && normalize(lifted) > 1e-3f;
+			const bool sloped = normalize(down) > 1e-3f;
+			const float steep = 1.0f - std::clamp((a_n[2] - 0.35f) / 0.25f, 0.0f, 1.0f);
+			const float agree = sloped && moving ? std::clamp((lifted[0] * down[0] + lifted[1] * down[1] + lifted[2] * down[2]) * 4.0f, 0.0f, 1.0f) : 0.0f;
 			for (int k = 0; k < 3; k++)
-				emitter.direction[k] = length > 1e-4f ? down[k] / length : 0.0f;
-			mesh.emitters.push_back(emitter);
+				a_direction[k] = moving ? lifted[k] + (down[k] - lifted[k]) * steep * agree : down[k];
+			normalize(a_direction);
+			const float speed = moving ? solved + (std::max(solved, FallStream::BASE_SPEED) - solved) * steep * agree : FallStream::BASE_SPEED * 0.5f;
+			const float drop = std::max(flow.head - a_p[2], 0.0f);
+			return std::sqrt(speed * speed + 2.0f * KEPT_GRAVITY * drop);
+		};
+		std::unordered_map<int64_t, FallEmitter> chosen;
+		const auto offer = [&](const float a_p[3], const float a_n[3], float a_strength, FallEmitterKind a_kind, float a_spacing) {
+			const auto key = (static_cast<int64_t>(std::floor(a_p[0] / a_spacing)) << 40) ^ (static_cast<int64_t>(std::floor(a_p[1] / a_spacing)) << 18) ^
+			                 static_cast<int64_t>(std::floor(a_p[2] / a_spacing)) ^ (static_cast<int64_t>(a_kind) << 60);
+			auto [it, added] = chosen.try_emplace(key);
+			if (!added && it->second.strength >= a_strength)
+				return;
+			FallEmitter& emitter = it->second;
+			for (int k = 0; k < 3; k++) {
+				emitter.position[k] = a_p[k];
+				emitter.normal[k] = a_n[k];
+			}
+			emitter.strength = std::clamp(a_strength, 0.0f, 1.0f);
+			emitter.speed = motionAt(a_p, a_n, emitter.direction);
+			emitter.kind = static_cast<float>(a_kind);
+		};
+		float bottomLevel = FLT_MAX, topLevel = -FLT_MAX;
+		for (const float level : a_levels) {
+			bottomLevel = std::min(bottomLevel, level);
+			topLevel = std::max(topLevel, level);
 		}
+
+		// The drops: water cells whose surface falls away a cell or two downstream, but not just before them
+		{
+			const auto levelAt = [&](float a_x, float a_y, float& a_level) {
+				const auto ix = static_cast<int32_t>(std::floor(a_x));
+				const auto iy = static_cast<int32_t>(std::floor(a_y));
+				const float tx = a_x - static_cast<float>(ix), ty = a_y - static_cast<float>(iy);
+				float sum = 0.0f, weight = 0.0f;
+				for (int32_t dy = 0; dy <= 1; dy++) {
+					for (int32_t dx = 0; dx <= 1; dx++) {
+						const int32_t x = ix + dx, y = iy + dy;
+						if (x < 0 || y < 0 || x >= w || y >= h || !a_flow.water[static_cast<std::size_t>(y) * w + x])
+							continue;
+						const float k = (dx ? tx : 1.0f - tx) * (dy ? ty : 1.0f - ty);
+						sum += a_flow.level[static_cast<std::size_t>(y) * w + x] * k;
+						weight += k;
+					}
+				}
+				if (weight < 0.2f)
+					return false;
+				a_level = sum / weight;
+				return true;
+			};
+			for (int32_t y = 0; y < h; y++) {
+				for (int32_t x = 0; x < w; x++) {
+					const std::size_t i = static_cast<std::size_t>(y) * w + x;
+					if (!a_flow.water[i] || a_flow.speed[i] < 0.05f)
+						continue;
+					const float dx = a_flow.vx[i] / a_flow.speed[i], dy = a_flow.vy[i] / a_flow.speed[i];
+					const float here = a_flow.level[i];
+					float down, up;
+					if (!levelAt(static_cast<float>(x) + dx * LIP_CELLS, static_cast<float>(y) + dy * LIP_CELLS, down))
+						continue;
+					if (!levelAt(static_cast<float>(x) - dx * LIP_CELLS, static_cast<float>(y) - dy * LIP_CELLS, up))
+						up = here;
+					const float drop = here - down;
+					if (drop < LIP_DROP || up - here > drop * 0.5f)
+						continue;
+					const float p[3] = { a_originX + static_cast<float>(x) * cell, a_originY + static_cast<float>(y) * cell, here };
+					const float n[3] = { 0.0f, 0.0f, 1.0f };
+					offer(p, n, std::clamp(drop / (LIP_DROP * 3.0f), 0.3f, 1.0f), FallEmitterKind::Lip, EMITTER_SPACING);
+				}
+			}
+		}
+
+		// The plunges and the rock in the way: on the surface's own vertices
+		std::unordered_map<int64_t, FallPlunge> plunges;
+		for (const auto& vertex : mesh.vertices) {
+			const Flow flow = flowAt(vertex.position[0], vertex.position[1]);
+			float nearestLevel = FLT_MAX;
+			for (const float level : a_levels) {
+				if (level < topLevel - 1.0f && std::abs(vertex.position[2] - level) < std::abs(vertex.position[2] - nearestLevel))
+					nearestLevel = level;
+			}
+			const bool atLevel = std::abs(vertex.position[2] - nearestLevel) < PLUNGE_BAND;
+			const float fallen = flow.head - vertex.position[2];
+			if (atLevel && fallen > PLUNGE_HEAD) {
+				const float strength = std::clamp(fallen / (PLUNGE_HEAD * 4.0f), 0.25f, 1.0f);
+				offer(vertex.position, vertex.normal, strength, FallEmitterKind::Plunge, PLUNGE_SPACING);
+				const auto key = (static_cast<int64_t>(std::floor(vertex.position[0] / PLUNGE_WATER_SPACING)) << 32) ^
+				                 static_cast<uint32_t>(static_cast<int32_t>(std::floor(vertex.position[1] / PLUNGE_WATER_SPACING)));
+				auto [it, added] = plunges.try_emplace(key);
+				if (added || it->second.strength < strength) {
+					FallPlunge& plunge = it->second;
+					for (int k = 0; k < 3; k++)
+						plunge.position[k] = vertex.position[k];
+					plunge.position[2] = nearestLevel;
+					float direction[3];
+					plunge.speed = motionAt(vertex.position, vertex.normal, direction);
+					const float horizontal = std::sqrt(direction[0] * direction[0] + direction[1] * direction[1]);
+					plunge.direction[0] = horizontal > 1e-3f ? direction[0] / horizontal : 0.0f;
+					plunge.direction[1] = horizontal > 1e-3f ? direction[1] / horizontal : 0.0f;
+					plunge.strength = strength;
+				}
+			} else if (!atLevel && flow.rockFoam > OBSTACLE_FOAM) {
+				offer(vertex.position, vertex.normal, flow.rockFoam, FallEmitterKind::Strike, OBSTACLE_SPACING);
+			}
+		}
+		for (const auto& [key, plunge] : plunges)
+			mesh.plunges.push_back(plunge);
+
+		// The seams (D34): where one of vanilla's pieces ends against another, the join shows on their own
+		// meshes. Points along each piece's open edges (used by one of its triangles) that lie close to
+		// another piece foam on the flow's map and throw spray and mist
+		{
+			const auto quantize = [](const float a_p[3]) {
+				const auto qx = static_cast<int64_t>(std::lround(a_p[0] * 2.0f)) & 0x1FFFFF;
+				const auto qy = static_cast<int64_t>(std::lround(a_p[1] * 2.0f)) & 0x1FFFFF;
+				const auto qz = static_cast<int64_t>(std::lround(a_p[2] * 2.0f)) & 0x1FFFFF;
+				return (qx << 42) | (qy << 21) | qz;
+			};
+			struct EdgeUse
+			{
+				uint32_t triangle;
+				int corner;
+				uint32_t uses;
+			};
+			std::map<std::tuple<uint32_t, int64_t, int64_t>, EdgeUse> edges;
+			for (uint32_t t = 0; t < a_sources.size(); t++) {
+				const auto& triangle = a_sources[t];
+				for (int k = 0; k < 3; k++) {
+					int64_t a = quantize(triangle.position[k]), b = quantize(triangle.position[(k + 1) % 3]);
+					if (a > b)
+						std::swap(a, b);
+					auto [it, added] = edges.try_emplace({ triangle.piece, a, b }, EdgeUse{ t, k, 0 });
+					it->second.uses++;
+				}
+			}
+			// Every piece's triangles, by area, reach included
+			std::unordered_map<int64_t, std::vector<uint32_t>> nearby;
+			for (uint32_t t = 0; t < a_sources.size(); t++) {
+				const auto& triangle = a_sources[t];
+				float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
+				for (int k = 0; k < 3; k++) {
+					for (int a = 0; a < 2; a++) {
+						lo[a] = std::min(lo[a], triangle.position[k][a] - SEAM_REACH);
+						hi[a] = std::max(hi[a], triangle.position[k][a] + SEAM_REACH);
+					}
+				}
+				for (auto by = static_cast<int32_t>(std::floor(lo[1] / MERGE_BUCKET)); by <= static_cast<int32_t>(std::floor(hi[1] / MERGE_BUCKET)); by++) {
+					for (auto bx = static_cast<int32_t>(std::floor(lo[0] / MERGE_BUCKET)); bx <= static_cast<int32_t>(std::floor(hi[0] / MERGE_BUCKET)); bx++)
+						nearby[bucketKey(bx, by)].push_back(t);
+				}
+			}
+			// Squared distance from a point to a triangle (closest point by region)
+			const auto distance2 = [](const float a_p[3], const SourceTriangle& a_t) {
+				const auto sub3 = [](const float* a, const float* b, float* r) { r[0] = a[0] - b[0]; r[1] = a[1] - b[1]; r[2] = a[2] - b[2]; };
+				const auto dot3 = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+				const float* a = a_t.position[0];
+				const float* b = a_t.position[1];
+				const float* c = a_t.position[2];
+				float ab[3], ac[3], ap[3], bp[3], cp[3], closest[3];
+				sub3(b, a, ab);
+				sub3(c, a, ac);
+				sub3(a_p, a, ap);
+				const auto at = [&](float a_v, float a_w) {
+					for (int k = 0; k < 3; k++)
+						closest[k] = a[k] + ab[k] * a_v + ac[k] * a_w;
+				};
+				const float d1 = dot3(ab, ap), d2 = dot3(ac, ap);
+				sub3(a_p, b, bp);
+				const float d3 = dot3(ab, bp), d4 = dot3(ac, bp);
+				sub3(a_p, c, cp);
+				const float d5 = dot3(ab, cp), d6 = dot3(ac, cp);
+				const float va = d3 * d6 - d5 * d4, vb = d5 * d2 - d1 * d6, vc = d1 * d4 - d3 * d2;
+				if (d1 <= 0.0f && d2 <= 0.0f)
+					at(0.0f, 0.0f);
+				else if (d3 >= 0.0f && d4 <= d3)
+					at(1.0f, 0.0f);
+				else if (d6 >= 0.0f && d5 <= d6)
+					at(0.0f, 1.0f);
+				else if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f)
+					at(d1 / (d1 - d3), 0.0f);
+				else if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f)
+					at(0.0f, d2 / (d2 - d6));
+				else if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f) {
+					const float k = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+					at(1.0f - k, k);
+				} else {
+					const float denominator = 1.0f / (va + vb + vc);
+					at(vb * denominator, vc * denominator);
+				}
+				float d[3];
+				sub3(a_p, closest, d);
+				return dot3(d, d);
+			};
+			std::vector<std::array<float, 6>> seams;  // Position, normal
+			for (const auto& [key, use] : edges) {
+				if (use.uses != 1)
+					continue;
+				const auto& triangle = a_sources[use.triangle];
+				const float* from = triangle.position[use.corner];
+				const float* to = triangle.position[(use.corner + 1) % 3];
+				const float length = std::sqrt((to[0] - from[0]) * (to[0] - from[0]) + (to[1] - from[1]) * (to[1] - from[1]) + (to[2] - from[2]) * (to[2] - from[2]));
+				const auto steps = std::max(1, static_cast<int>(std::ceil(length / SEAM_STEP)));
+				for (int s = 0; s <= steps; s++) {
+					const float k = static_cast<float>(s) / static_cast<float>(steps);
+					const float p[3] = { from[0] + (to[0] - from[0]) * k, from[1] + (to[1] - from[1]) * k, from[2] + (to[2] - from[2]) * k };
+					const auto it = nearby.find(bucketKey(static_cast<int32_t>(std::floor(p[0] / MERGE_BUCKET)), static_cast<int32_t>(std::floor(p[1] / MERGE_BUCKET))));
+					if (it == nearby.end())
+						continue;
+					bool seam = false;
+					for (const uint32_t other : it->second) {
+						if (a_sources[other].piece != triangle.piece && distance2(p, a_sources[other]) < SEAM_REACH * SEAM_REACH) {
+							seam = true;
+							break;
+						}
+					}
+					if (!seam)
+						continue;
+					const float* n0 = triangle.normal[use.corner];
+					const float* n1 = triangle.normal[(use.corner + 1) % 3];
+					seams.push_back({ p[0], p[1], p[2], n0[0] + n1[0], n0[1] + n1[1], n0[2] + n1[2] });
+				}
+			}
+			// ...and where two pieces cut through each other: the line where their triangles intersect
+			{
+				const auto segmentHits = [](const float* a_from, const float* a_to, const SourceTriangle& a_t, float a_hit[3]) {
+					const float* p0 = a_t.position[0];
+					float e1[3], e2[3], d[3], s[3], q[3], pv[3];
+					for (int k = 0; k < 3; k++) {
+						e1[k] = a_t.position[1][k] - p0[k];
+						e2[k] = a_t.position[2][k] - p0[k];
+						d[k] = a_to[k] - a_from[k];
+						s[k] = a_from[k] - p0[k];
+					}
+					pv[0] = d[1] * e2[2] - d[2] * e2[1];
+					pv[1] = d[2] * e2[0] - d[0] * e2[2];
+					pv[2] = d[0] * e2[1] - d[1] * e2[0];
+					const float det = e1[0] * pv[0] + e1[1] * pv[1] + e1[2] * pv[2];
+					if (std::abs(det) < 1e-6f)
+						return false;
+					const float inverse = 1.0f / det;
+					const float u = (s[0] * pv[0] + s[1] * pv[1] + s[2] * pv[2]) * inverse;
+					if (u < 0.0f || u > 1.0f)
+						return false;
+					q[0] = s[1] * e1[2] - s[2] * e1[1];
+					q[1] = s[2] * e1[0] - s[0] * e1[2];
+					q[2] = s[0] * e1[1] - s[1] * e1[0];
+					const float v = (d[0] * q[0] + d[1] * q[1] + d[2] * q[2]) * inverse;
+					if (v < 0.0f || u + v > 1.0f)
+						return false;
+					const float along = (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]) * inverse;
+					if (along < 0.0f || along > 1.0f)
+						return false;
+					for (int k = 0; k < 3; k++)
+						a_hit[k] = a_from[k] + d[k] * along;
+					return true;
+				};
+				std::vector<uint32_t> seen(a_sources.size(), UINT32_MAX);
+				for (uint32_t t = 0; t < a_sources.size(); t++) {
+					const auto& first = a_sources[t];
+					float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+					for (int k = 0; k < 3; k++) {
+						for (int c = 0; c < 3; c++) {
+							lo[c] = std::min(lo[c], first.position[k][c]);
+							hi[c] = std::max(hi[c], first.position[k][c]);
+						}
+					}
+					for (auto by = static_cast<int32_t>(std::floor(lo[1] / MERGE_BUCKET)); by <= static_cast<int32_t>(std::floor(hi[1] / MERGE_BUCKET)); by++) {
+						for (auto bx = static_cast<int32_t>(std::floor(lo[0] / MERGE_BUCKET)); bx <= static_cast<int32_t>(std::floor(hi[0] / MERGE_BUCKET)); bx++) {
+							const auto it = nearby.find(bucketKey(bx, by));
+							if (it == nearby.end())
+								continue;
+							for (const uint32_t other : it->second) {
+								if (other <= t || seen[other] == t || a_sources[other].piece == first.piece)
+									continue;
+								seen[other] = t;
+								const auto& second = a_sources[other];
+								bool apart = false;
+								for (int c = 0; c < 3 && !apart; c++) {
+									const float olo = std::min({ second.position[0][c], second.position[1][c], second.position[2][c] });
+									const float ohi = std::max({ second.position[0][c], second.position[1][c], second.position[2][c] });
+									apart = ohi < lo[c] || olo > hi[c];
+								}
+								if (apart)
+									continue;
+								float hits[6][3];
+								int count = 0;
+								for (int k = 0; k < 3; k++) {
+									if (segmentHits(first.position[k], first.position[(k + 1) % 3], second, hits[count]))
+										count++;
+									if (segmentHits(second.position[k], second.position[(k + 1) % 3], first, hits[count]))
+										count++;
+								}
+								if (count == 0)
+									continue;
+								// The intersection runs between the two hits farthest apart
+								int from = 0, to = 0;
+								float farthest = -1.0f;
+								for (int i = 0; i < count; i++) {
+									for (int j = i; j < count; j++) {
+										const float dx = hits[i][0] - hits[j][0], dy = hits[i][1] - hits[j][1], dz = hits[i][2] - hits[j][2];
+										const float distance = dx * dx + dy * dy + dz * dz;
+										if (distance > farthest) {
+											farthest = distance;
+											from = i;
+											to = j;
+										}
+									}
+								}
+								const auto steps = std::max(1, static_cast<int>(std::ceil(std::sqrt(farthest) / SEAM_STEP)));
+								for (int s = 0; s <= steps; s++) {
+									const float k = static_cast<float>(s) / static_cast<float>(steps);
+									std::array<float, 6> seam{};
+									for (int c = 0; c < 3; c++) {
+										seam[c] = hits[from][c] + (hits[to][c] - hits[from][c]) * k;
+										seam[3 + c] = first.normal[0][c] + first.normal[1][c] + first.normal[2][c];
+									}
+									seams.push_back(seam);
+								}
+							}
+						}
+					}
+				}
+			}
+			mesh.seams = static_cast<uint32_t>(seams.size());
+
+			// Foam on the flow's map, round every seam point
+			mesh.seamFoam.assign(static_cast<std::size_t>(w) * h, 0.0f);
+			const auto reach = static_cast<int32_t>(std::ceil(SEAM_FOAM_RADIUS / cell));
+			for (const auto& seam : seams) {
+				const auto cx = static_cast<int32_t>(std::floor((seam[0] - a_originX) / cell));
+				const auto cy = static_cast<int32_t>(std::floor((seam[1] - a_originY) / cell));
+				for (int32_t y = cy - reach; y <= cy + reach; y++) {
+					for (int32_t x = cx - reach; x <= cx + reach; x++) {
+						if (x < 0 || y < 0 || x >= w || y >= h)
+							continue;
+						const float ox = a_originX + (static_cast<float>(x) + 0.5f) * cell - seam[0];
+						const float oy = a_originY + (static_cast<float>(y) + 0.5f) * cell - seam[1];
+						const float foam = std::clamp(1.0f - std::sqrt(ox * ox + oy * oy) / SEAM_FOAM_RADIUS, 0.0f, 1.0f);
+						float& value = mesh.seamFoam[static_cast<std::size_t>(y) * w + x];
+						value = std::max(value, foam);
+					}
+				}
+			}
+
+			// Spray and mist along the seams, where the water strikes the other piece
+			for (const auto& seam : seams) {
+				float normal[3] = { seam[3], seam[4], seam[5] };
+				const float n = std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+				for (float& component : normal)
+					component = n > 1e-6f ? component / n : 0.0f;
+				if (n <= 1e-6f)
+					normal[2] = 1.0f;
+				const float p[3] = { seam[0], seam[1], seam[2] };
+				offer(p, normal, 1.0f, FallEmitterKind::Strike, EMITTER_SPACING);
+			}
+		}
+		mesh.emitters.reserve(chosen.size());
+		for (const auto& [key, emitter] : chosen)
+			mesh.emitters.push_back(emitter);
 		return mesh;
 	}
 
@@ -843,6 +1243,7 @@ namespace FluidFieldSim
 		surfaceVertices.clear();
 		surfaceIndices.clear();
 		surfaceEmitters.clear();
+		surfacePlunges.clear();
 		for (const auto& [key, stream] : streams) {
 			if (!stream.meshReady || stream.vertices.empty())
 				continue;
@@ -851,8 +1252,51 @@ namespace FluidFieldSim
 			for (const uint32_t i : stream.indices)
 				surfaceIndices.push_back(base + i);
 			surfaceEmitters.insert(surfaceEmitters.end(), stream.emitters.begin(), stream.emitters.end());
+			surfacePlunges.insert(surfacePlunges.end(), stream.plunges.begin(), stream.plunges.end());
 		}
 		surfaceVersion++;
+	}
+
+	void FallSites::AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_time,
+		float a_strength, uint32_t a_maxEmitters, bool a_foam) const
+	{
+		if (a_strength <= 0.0f || !(a_cellSize > 0.0f) || surfacePlunges.empty() || a_emitters.size() >= a_maxEmitters)
+			return;
+		// Nearest the grid's centre first
+		const float centre = 0.5f * static_cast<float>(a_gridRes);
+		std::vector<std::pair<float, const FallPlunge*>> order;
+		order.reserve(surfacePlunges.size());
+		for (const auto& plunge : surfacePlunges) {
+			const float tx = plunge.position[0] / a_cellSize - static_cast<float>(a_gridMin[0]);
+			const float ty = plunge.position[1] / a_cellSize - static_cast<float>(a_gridMin[1]);
+			if (tx < 0.0f || ty < 0.0f || tx >= static_cast<float>(a_gridRes) || ty >= static_cast<float>(a_gridRes))
+				continue;
+			order.emplace_back((tx - centre) * (tx - centre) + (ty - centre) * (ty - centre), &plunge);
+		}
+		std::sort(order.begin(), order.end(), [](const auto& a_a, const auto& a_b) { return a_a.first < a_b.first; });
+		for (const auto& [distance, plunge] : order) {
+			if (a_emitters.size() >= a_maxEmitters)
+				break;
+			// Splashes: each push heaves the water down in short bursts, at its own rhythm, like a body landing in it
+			const float seed = plunge->position[0] * 0.013f + plunge->position[1] * 0.007f;
+			const float burst = std::max(0.0f, std::sin(a_time * 6.3f + seed * 5.0f) * std::sin(a_time * 2.9f + seed * 3.0f));
+			const float pull = std::min(plunge->speed * PLUNGE_PULL, 260.0f) * a_strength;
+			a_emitters.push_back({ .position = { plunge->position[0] / a_cellSize - static_cast<float>(a_gridMin[0]), plunge->position[1] / a_cellSize - static_cast<float>(a_gridMin[1]) },
+				.radius = std::max(0.5f * PLUNGE_WATER_SPACING / a_cellSize, 1.5f),
+				.depthRate = -PLUNGE_SPLASH * burst * plunge->strength * a_strength,
+				.velocity = { plunge->direction[0] * pull, plunge->direction[1] * pull },
+				.pad1 = { 60.0f * plunge->strength * a_strength, a_foam ? 0.8f * plunge->strength * a_strength : 0.0f } });
+		}
+	}
+
+	bool FallSites::GetTextureScale(const RE::BSGeometry* a_geometry, float a_scale[2]) const
+	{
+		const auto it = textureScales.find(a_geometry);
+		if (it == textureScales.end())
+			return false;
+		a_scale[0] = it->second[0];
+		a_scale[1] = it->second[1];
+		return true;
 	}
 
 	ID3D11ShaderResourceView* FallSites::GetSurfaceDiffuse() const
@@ -894,7 +1338,8 @@ namespace FluidFieldSim
 						continue;
 					a_field[to + 0] = result.vx[from];
 					a_field[to + 1] = result.vy[from];
-					a_field[to + 2] = 2.0f + std::clamp(result.foam[from], 0.0f, 1.0f);  // 2 and up: water
+					const float seam = stream.seamFoam.size() == result.water.size() ? stream.seamFoam[from] : 0.0f;
+					a_field[to + 2] = 2.0f + std::clamp(std::max(result.foam[from], seam), 0.0f, 1.0f);  // 2 and up: water
 					a_field[to + 3] = result.head.size() == result.water.size() ? result.head[from] : result.level[from];
 				}
 			}

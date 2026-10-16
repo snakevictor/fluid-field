@@ -1037,7 +1037,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	const bool fallFlowOn = FallGround::Enabled && FallGround::DebugMode < 3;
 	[branch] if (fallFlowOn)
 	{
-		fallFlow = FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
+#		if !defined(MODELSPACENORMALS)
+		// The mesh's interpolated frame: tangent, bitangent and normal are the columns of TBN (D35)
+		fallFlow = FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, float3(input.TBN0.z, input.TBN1.z, input.TBN2.z),
+			float3(input.TBN0.x, input.TBN1.x, input.TBN2.x), float3(input.TBN0.y, input.TBN1.y, input.TBN2.y));
+#		else
+		fallFlow = FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, 0.0, 0.0, 0.0);
+#		endif
 		uv = fallFlow.uvA;
 	}
 #	endif
@@ -1495,6 +1501,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			rawBaseColor = lerp(TexColorSampler.SampleBias(SampColorSampler, fallUvVanilla, SharedData::MipBias), rawBaseColor, fallFlow.strength);
 			normalColor = lerp(TexNormalSampler.SampleBias(SampNormalSampler, fallUvVanilla, SharedData::MipBias), normalColor, fallFlow.strength);
 		}
+		// White water (D34): aerated where it falls fast, foamed where it piles against rock, squeezes past
+		// it, meets still water or where vanilla's pieces meet; broken up by the texture's own streaks
+		const float fast = smoothstep(1.5, 4.5, length(fallFlow.velocity) / FallGround::FlowSpeed);
+		const float white = saturate(max(fallFlow.stream.z, fast * 0.5)) * fallFlow.strength;
+		const float streak = smoothstep(0.15, 0.75, Color::RGBToLuminance(rawBaseColor.rgb) + white * 0.45);
+		rawBaseColor.rgb = lerp(rawBaseColor.rgb, float3(0.86, 0.9, 0.92), white * streak * 0.8);
 		baseColor = float4(Color::Diffuse(rawBaseColor.rgb), rawBaseColor.a);
 	}
 #		endif

@@ -3,7 +3,9 @@
 #include "FallCapture.h"
 #include "FallStream.h"
 #include "FallSurfaceRenderer.h"
+#include "ShallowWaterSolver.h"
 
+#include <array>
 #include <cstdint>
 #include <future>
 #include <string>
@@ -131,6 +133,17 @@ namespace FluidFieldSim
 		const std::vector<FallSurfaceVertex>& GetSurfaceVertices() const { return surfaceVertices; }
 		const std::vector<uint32_t>& GetSurfaceIndices() const { return surfaceIndices; }
 		const std::vector<FallEmitter>& GetSurfaceEmitters() const { return surfaceEmitters; }
+
+		/**
+		 * @brief D35: the plunges' pushes on the simulated water, in a water level's logical texel
+		 * coordinates: splashes that heave it down and throw it out, the water pulled along the way the
+		 * falls run, and foam. Nearest the grid's centre first, up to a_maxEmitters in all.
+		 */
+		void AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_time, float a_strength,
+			uint32_t a_maxEmitters, bool a_foam) const;
+
+		/** @brief D35: world units per texture repeat along u and v of a falling-water mesh (its own texel density), or false if unknown. */
+		bool GetTextureScale(const RE::BSGeometry* a_geometry, float a_scale[2]) const;
 		uint64_t GetSurfaceVersion() const { return surfaceVersion; }
 		/** @brief Vanilla's falling-water textures (from the lit surface of its models), for the fall surfaces; null until one is seen. */
 		ID3D11ShaderResourceView* GetSurfaceDiffuse() const;
@@ -214,6 +227,9 @@ namespace FluidFieldSim
 			std::vector<uint32_t> indices;
 			std::vector<FallEmitter> emitters;  ///< Where it throws spray and mist (D31)
 			uint32_t culled = 0;                ///< Source triangles dropped where another piece lies on them
+			std::vector<float> seamFoam;        ///< Per flow cell, 0 to 1: foam where vanilla's pieces meet (D34)
+			uint32_t seams = 0;                 ///< Points found along the seams
+			std::vector<FallPlunge> plunges;    ///< Where falling water meets the water below (D35)
 		};
 		/** @brief A site's steady flow, solved on its capture's lattice on a worker thread. */
 		struct Stream
@@ -227,6 +243,8 @@ namespace FluidFieldSim
 			std::vector<FallSurfaceVertex> vertices;  ///< Its surface mesh, built once the flow is solved
 			std::vector<uint32_t> indices;
 			std::vector<FallEmitter> emitters;
+			std::vector<float> seamFoam;  ///< SurfaceMesh::seamFoam
+			std::vector<FallPlunge> plunges;
 			std::vector<SourceTriangle> sources;
 			std::vector<float> levels;  ///< The site's water levels, where the falls meet bodies of water  ///< Vanilla's falling-water triangles, gathered when the solve starts
 			std::future<SurfaceMesh> meshPending;
@@ -247,8 +265,21 @@ namespace FluidFieldSim
 		static constexpr float MERGE_BUCKET = 64.0f;       ///< World units per bucket when finding overlaps
 		static constexpr float MERGE_ABOVE = 3.0f;         ///< Only near-duplicates are dropped: another piece this close above or below covers a triangle
 		static constexpr float MERGE_BELOW = 3.0f;
-		static constexpr float EMITTER_SPACING = 20.0f;   ///< World units between spray emitters
-		static constexpr float EMITTER_FOAM = 0.55f;      ///< Foam at least this much throws spray
+		static constexpr float EMITTER_SPACING = 20.0f;       ///< World units between spray emitters
+		static constexpr float EMITTER_FOAM = 0.55f;          ///< Foam at least this much throws spray
+		static constexpr float SEAM_STEP = 10.0f;             ///< World units between points tested along a piece's open edges (D34)
+		static constexpr float SEAM_REACH = 20.0f;            ///< An open edge this close to another piece is a seam
+		static constexpr float SEAM_FOAM_RADIUS = 28.0f;      ///< World units round a seam that foam
+		static constexpr float LIP_CELLS = 2.0f;              ///< Flow cells downstream the surface is looked at for a drop (D35)
+		static constexpr float LIP_DROP = 40.0f;              ///< The surface falling this far within LIP_CELLS is a drop
+		static constexpr float PLUNGE_BAND = 14.0f;           ///< World units round a lower water level where falling water plunges
+		static constexpr float PLUNGE_HEAD = 40.0f;           ///< Water that has fallen at least this far below its head plunges
+		static constexpr float PLUNGE_SPACING = 16.0f;        ///< World units between plunge emitters
+		static constexpr float PLUNGE_WATER_SPACING = 56.0f;  ///< World units between the plunge's pushes on the simulated water
+		static constexpr float OBSTACLE_FOAM = 0.6f;          ///< Rock foam at least this much throws spray
+		static constexpr float OBSTACLE_SPACING = 28.0f;
+		static constexpr float PLUNGE_SPLASH = 220.0f;    ///< World units per second the plunge pushes the simulated water down at its strongest
+		static constexpr float PLUNGE_PULL = 0.35f;       ///< Fraction of the falling water's speed the water below is pulled along at
 		static constexpr int FLOW_DILATE_CELLS = 6;       ///< Cells the flow is carried past the water's edge for the surface
 		static constexpr float FALL_SPEED = 600.0f;       ///< World units per second of drop counted into the travel time, so steep water streaks too
 		static constexpr float MEET_FOAM_HEIGHT = 20.0f;  ///< Water within this of a site's level (where it meets a body of water) foams
@@ -258,6 +289,8 @@ namespace FluidFieldSim
 		std::vector<FallSurfaceVertex> surfaceVertices;
 		std::vector<uint32_t> surfaceIndices;
 		std::vector<FallEmitter> surfaceEmitters;
+		std::vector<FallPlunge> surfacePlunges;
+		mutable std::unordered_map<const RE::BSGeometry*, std::array<float, 2>> textureScales;  ///< GatherSources: each lit mesh's world units per texture repeat
 		uint64_t surfaceVersion = 0;
 		bool replaceSurface = false;
 		RE::NiPointer<RE::NiSourceTexture> surfaceDiffuse;

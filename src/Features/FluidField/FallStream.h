@@ -47,9 +47,10 @@ namespace FluidFieldSim
 		{
 			uint32_t width = 0;
 			uint32_t height = 0;
-			std::vector<float> psi;    ///< Stream function per cell, world units across the flow
-			std::vector<float> speed;  ///< Flow speed per cell, 1 for free unit flow; 0 on walls
-			std::vector<float> foam;   ///< 0 to 1: where the water piles against rock, behind it, and where it squeezes through
+			std::vector<float> psi;       ///< Stream function per cell, world units across the flow
+			std::vector<float> speed;     ///< Flow speed per cell, 1 for free unit flow; 0 on walls
+			std::vector<float> foam;      ///< 0 to 1: where the water piles against rock, behind it, and where it squeezes through
+			std::vector<float> rockFoam;  ///< The foam from rock alone (not where the falls meet still water), where the water strikes it (D35)
 			std::vector<uint8_t> water;
 			std::vector<float> vx, vy;  ///< Flow velocity per cell (unit drive)
 			std::vector<float> level;   ///< The water surface, lightly smoothed over the water (for the mesh)
@@ -62,21 +63,23 @@ namespace FluidFieldSim
 		};
 
 		static constexpr uint32_t MAX_ITERATIONS = 12000;
-		static constexpr uint32_t PSI_SWEEPS = 400;    ///< Least-squares sweeps over the stream function after integrating it
-		static constexpr float TOLERANCE = 0.01f;      ///< Stop once the pressure moves less than this per sweep
-		static constexpr float SOR = 1.9f;             ///< Over-relaxation
-		static constexpr int32_t SMOOTH_CELLS = 3;     ///< The surface is smoothed over this many cells before its slope is taken
-		static constexpr float FLAT_SLOPE = 0.08f;     ///< Below this slope the drive weakens in proportion
-		static constexpr float STALL_SPEED = 0.45f;    ///< Slower than this beside rock: water piles up or eddies, and foams
-		static constexpr float SQUEEZE_SPEED = 1.35f;  ///< Faster than this: squeezed through a gap, and foams
-		static constexpr int32_t ROCK_REACH = 3;       ///< Cells from rock within which stalled water foams
-		static constexpr float BASE_SPEED = 420.0f;    ///< World units per second of free-flowing water (unit drive)
-		static constexpr float SLOWEST = 0.25f;        ///< Slowest speed counted in the travel time, as a fraction of free flow
-		static constexpr uint32_t TRAVEL_ROUNDS = 24;  ///< Rounds of four sweeps for the travel time
-		static constexpr int32_t EDGE_CELLS = 2;       ///< Cells over which the water fades in from its edge
-		static constexpr int32_t MEET_CELLS = 2;       ///< Cells of foam where the falls meet still water (where they come in and leave)
-		static constexpr float HEAD_LOSS = 0.35f;      ///< Height the water's head loses per world unit it runs (friction): a steep drop keeps its speed, a long run slows
-		static constexpr float HEAD_MOST = 900.0f;     ///< Most height a head stands above the surface
+		static constexpr uint32_t PSI_SWEEPS = 400;      ///< Least-squares sweeps over the stream function after integrating it
+		static constexpr float TOLERANCE = 0.01f;        ///< Stop once the pressure moves less than this per sweep
+		static constexpr float SOR = 1.9f;               ///< Over-relaxation
+		static constexpr int32_t SMOOTH_CELLS = 3;       ///< The surface is smoothed over this many cells before its slope is taken
+		static constexpr float FLAT_SLOPE = 0.08f;       ///< Below this slope the drive weakens in proportion
+		static constexpr float STALL_SPEED = 0.45f;      ///< Slower than this beside rock: water piles up or eddies, and foams
+		static constexpr float SQUEEZE_SPEED = 1.35f;    ///< Faster than this: squeezed through a gap, and foams
+		static constexpr int32_t ROCK_REACH = 3;         ///< Cells from rock within which stalled water foams
+		static constexpr float BASE_SPEED = 420.0f;      ///< World units per second of free-flowing water (unit drive)
+		static constexpr float SLOWEST = 0.25f;          ///< Slowest speed counted in the travel time, as a fraction of free flow
+		static constexpr uint32_t TRAVEL_ROUNDS = 24;    ///< Rounds of four sweeps for the travel time
+		static constexpr int32_t EDGE_CELLS = 2;         ///< Cells over which the water fades in from its edge
+		static constexpr int32_t MEET_CELLS = 2;         ///< Cells of foam where the falls meet still water (where they come in and leave)
+		static constexpr float HEAD_LOSS = 0.35f;        ///< Height the water's head loses per world unit it runs (friction): a steep drop keeps its speed, a long run slows
+		static constexpr float HEAD_MOST = 900.0f;       ///< Most height a head stands above the surface
+		static constexpr uint32_t COURSE_SWEEPS = 6000;  ///< Most sweeps for the course potential (D34)
+		static constexpr float COURSE_FORWARD = 0.35f;   ///< Least speed along the course, as a fraction of free flow: the water never runs back
 
 		static Result Solve(const Input& a_input);
 	};

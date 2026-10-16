@@ -76,8 +76,8 @@ namespace FluidFieldSim
 	class ShallowWaterSolver
 	{
 	public:
-		static constexpr std::uint32_t MAX_EMITTERS = 16;
-		static constexpr float NO_WATER = -1.0e8f;  ///< Map surface value meaning "no vanilla water here"
+		static constexpr std::uint32_t MAX_EMITTERS = 64;  // Wakes, splashes and the falls' plunges (D35)
+		static constexpr float NO_WATER = -1.0e8f;         ///< Map surface value meaning "no vanilla water here"
 
 		using NameFn = WindSolver::NameFn;
 		using CompileFn = WindSolver::CompileFn;

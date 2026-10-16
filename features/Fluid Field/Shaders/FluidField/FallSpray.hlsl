@@ -14,9 +14,9 @@ struct Emitter
 	float3 Position;
 	float Strength;    // 0 to 1
 	float3 Direction;  // The water's motion, unit
-	float Speed;       // 1 for free flow
+	float Speed;       // World units per second
 	float3 Normal;
-	float Pad;
+	float Kind;  // 0: a drop (the water leaves the surface running on), 1: a plunge (thrown up and out), 2: a strike on rock or another piece
 };
 
 cbuffer FallSurfaceCB : register(b7)
@@ -47,7 +47,8 @@ cbuffer FallSurfaceCB : register(b7)
 	float Gravity;
 	float MistOpacity;
 	float SprayStretch;
-	float2 Pad;
+	float SprayOpacity;
+	float Pad;
 };
 
 StructuredBuffer<Emitter> Emitters : register(t100);
@@ -92,8 +93,9 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	const uint born = seed ^ (generation * 104729u);
 	const float r0 = Hash(born + 1u), r1 = Hash(born + 2u), r2 = Hash(born + 3u), r3 = Hash(born + 4u);
 
-	// Some emitters throw little: they skip generations in proportion
-	const bool active = r3 < saturate((emitter.Strength - 0.4) * 1.8);
+	// Weaker emitters throw less often
+	const bool active = r3 < emitter.Strength;
+	const uint kind = uint(round(emitter.Kind));
 
 	// A frame across the surface, for the random spread
 	const float3 up = normalize(emitter.Normal);
@@ -101,26 +103,38 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	const float3 forward = cross(side, up);
 	const float angle = r0 * 6.2831853;
 	const float3 spread = side * cos(angle) + forward * sin(angle);
+	const float3 flowVelocity = emitter.Direction * emitter.Speed;
+	const float3 flat = float3(emitter.Direction.xy, 0.0);
 
-	float3 position = emitter.Position + spread * (r1 * 12.0);
+	// D35: everything leaves with the water's own motion, then gravity (spray) or drag (mist) takes over
+	float3 position = emitter.Position + spread * (r1 * 8.0);
 	float3 motion = 0.0;  // World units per second now, along which a droplet is smeared
 	float size;
 	float alpha;
+	const float t = age / life;
 	if (mist) {
-		// Mist drifts with the water, rises and spreads
-		position += (emitter.Direction * 30.0 * emitter.Speed + spread * 20.0) * age + float3(0, 0, MistRise * age);
-		size = MistSize * (0.5 + age / life) * (0.7 + 0.6 * r2);
-		const float t = age / life;
-		alpha = MistOpacity * smoothstep(0.0, 0.2, t) * (1.0 - smoothstep(0.5, 1.0, t)) * emitter.Strength;
+		// Mist is carried off with the water and slows in the air: x = v0 tau (1 - e^(-t / tau)); it settles a little
+		float3 v0;
+		if (kind == 1)
+			v0 = flat * emitter.Speed * 0.3 + spread * (40.0 + 60.0 * r2) + up * (20.0 + 40.0 * r1);  // Billows out from the plunge
+		else
+			v0 = flowVelocity * (0.5 + 0.3 * r2) + spread * 25.0;
+		const float tau = 0.8;
+		position += v0 * tau * (1.0 - exp(-age / tau)) + float3(0, 0, -MistRise * 0.25 * age);
+		size = MistSize * (0.4 + 0.9 * t) * (0.7 + 0.6 * r2) * (kind == 1 ? 1.0 : 0.6);
+		alpha = MistOpacity * smoothstep(0.0, 0.2, t) * (1.0 - smoothstep(0.4, 1.0, t)) * emitter.Strength * (kind == 1 ? 1.0 : 0.6);
 	} else {
-		// Spray is thrown up and out, carried with the water, and falls back
-		const float speed = SpraySpeed * (0.35 + 0.65 * r2) * (0.4 + 0.6 * emitter.Strength);
-		const float3 velocity = (up * (0.6 + 0.4 * r1) + spread * 0.5) * speed + emitter.Direction * 120.0 * emitter.Speed;
-		position += velocity * age + float3(0, 0, -0.5 * Gravity * age * age);
-		motion = velocity + float3(0, 0, -Gravity * age);
+		float3 v0;
+		if (kind == 0)
+			v0 = flowVelocity * (0.85 + 0.3 * r1) + spread * emitter.Speed * 0.05 + up * 20.0 * r2;  // Runs on off the drop
+		else if (kind == 1)
+			v0 = up * SpraySpeed * (0.4 + 1.0 * r2) * emitter.Strength + spread * SpraySpeed * (0.2 + 0.5 * r1) + flat * emitter.Speed * 0.2;  // Thrown up and out
+		else
+			v0 = flowVelocity * 0.4 + (up * 0.8 + spread * 0.6) * max(emitter.Speed, 150.0) * (0.25 + 0.4 * r2);  // Kicked up where it strikes
+		position += v0 * age + float3(0, 0, -0.5 * Gravity * age * age);
+		motion = v0 + float3(0, 0, -Gravity * age);
 		size = SpraySize * (0.5 + 1.0 * r2);
-		const float t = age / life;
-		alpha = 0.9 * smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.55, 1.0, t)) * emitter.Strength;
+		alpha = SprayOpacity * smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.55, 1.0, t));
 	}
 
 	VSOutput output;
@@ -172,7 +186,8 @@ float4 PSMain(VSOutput input) : SV_Target
 		discard;
 	const float3 ambient = max(float3(SharedData::AmbientSHR.x, SharedData::AmbientSHG.x, SharedData::AmbientSHB.x), 0.0) * 0.886;
 	// White water, lit by the light's brightness, not its colour (the sky's blue made it glow blue)
-	const float light = Color::RGBToLuminance(ambient) + Color::RGBToLuminance(SharedData::DirLightColor.rgb) * 0.3;
+	// The sun weighs little: it lit the mist in shadow too, and glowed it orange at dusk
+	const float light = Color::RGBToLuminance(ambient) + Color::RGBToLuminance(SharedData::DirLightColor.rgb) * 0.12;
 	const float3 color = float3(0.93, 0.96, 1.0) * light * Brightness * (input.Mist > 0.5 ? 1.6 : 2.2);
 	return float4(color * alpha, alpha);  // Premultiplied
 }

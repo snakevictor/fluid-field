@@ -785,3 +785,55 @@ Entry format:
     give gravity to the solver"; "spray and mist are blue"; "too big and too
     few"; "get rid of it")
 -   References: D31, D32
+
+## D34: The falls' course from inflow to outflow; white water; seams
+
+-   Date: 2026-10-16
+-   Phase / spike: D33 follow-up, from @Victor's review
+-   Decision: The solver adds a course potential, 0 on the inflow rim and 1
+    on the outflow rim, harmonic over the water with rock as walls (it has
+    no hollows, so its slope always leads from where the water comes in to
+    where it leaves, round rock). The solved velocity keeps its sideways part
+    but its part along the course is at least 0.35 of free flow: the water
+    never runs back. In the shaders the course leads; steep water turns down
+    its mesh's slope only where that slope agrees with it (Bethesda's meshes
+    fold and bulge), and gravity only adds speed along it. The lit surface
+    whitens where the flow foams (rock, the joins with still water, seams)
+    and a little where it falls fast, broken up by the texture's streaks.
+    Seams: points along each vanilla piece's open edges within 20 units of
+    another piece foam the flow map (28-unit radius) and throw spray. Spray
+    droplets are translucent (Spray Opacity, 0.35).
+-   Decided by: @Victor ("the solver must know where the water starts to flow
+    and where it is going to"; "the little particles need to be translucent")
+-   References: D32, D33
+
+## D35: Spray from the falls' own motion; plunges drive the water; smooth flowmap frame
+
+-   Date: 2026-10-16
+-   Phase / spike: D34 follow-up, from @Victor's review screenshots
+-   Decision: Spray and mist come from three places only, each leaving with
+    the water's own velocity (solved course lifted onto the slope, plus the
+    speed gained from its drop): drops (flow cells whose surface falls 40+
+    units within two cells downstream), plunges (vertices of the falls within
+    14 units of a lower water level whose water has fallen 40+ below its
+    head) and strikes (rock foam over 0.6, and seams). Droplets then fall
+    under gravity; mist is carried with the water and slowed by drag
+    (x = v0·τ(1−e^(−t/τ))), settling rather than rising like steam, and is
+    lit mostly by the ambient light (the sun lit it in shadow and glowed it
+    orange at dusk). Seams now include the lines where two vanilla pieces cut
+    through each other (triangle-triangle intersections), not only open edges
+    near another piece. The plunges push the simulated water: every 56 units
+    along a plunge, a push that heaves it down in bursts like a body landing,
+    pulls it along the falls' direction and foams it, nearest the grid centre
+    first; the water solver takes 64 emitters (was 16). The flowmap on the lit
+    surface uses the mesh's interpolated tangent frame and its measured texel
+    density (per mesh, from its vertices) instead of each triangle's face, so
+    the texture no longer jumps at Bethesda's coarse triangle edges. The
+    whitening no longer raises the surface's opacity (that showed as a colour
+    step down the falls).
+-   Decided by: @Victor ("they should happen at 3 points: where the fall
+    starts, where it ends, and in intersections along the way"; "it should
+    mostly follow the water flow"; "visible texture seam/artifact because of
+    the low mesh resolution"; "it should also greatly drive the flow of the
+    shallow water")
+-   References: D22, D31, D34

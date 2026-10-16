@@ -189,7 +189,7 @@ namespace FluidFieldSim
 
 		const Constants data{ a_params.time, U_SCALE, V_SCALE, FallStream::BASE_SPEED, WAVE_HEIGHT, WAVE_LENGTH, RIPPLE_HEIGHT, RIPPLE_LENGTH, BULGE_HEIGHT, SHALLOW_DEPTH, CONTACT_WIDTH,
 			BRIGHTNESS, a_params.debugMode, VANILLA_SCROLL, std::min(emitterCount, MAX_PARTICLES / perEmitter), a_params.sprayPerEmitter, a_params.mistPerEmitter, SPRAY_LIFE,
-			SPRAY_SPEED, a_params.spraySize, MIST_LIFE, MIST_SIZE, MIST_RISE, PARTICLE_GRAVITY, a_params.mistOpacity, SPRAY_STRETCH, {} };
+			SPRAY_SPEED, a_params.spraySize, MIST_LIFE, MIST_SIZE, MIST_RISE, PARTICLE_GRAVITY, a_params.mistOpacity, SPRAY_STRETCH, a_params.sprayOpacity, 0.0f };
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (FAILED(a_context->Map(constants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
 			return;

@@ -31,6 +31,8 @@ namespace FallGround
 		float2 TexOffset;    // This mesh's texture scroll (vanilla's), taken back out of its coordinates
 		float Gravity;       // World units per second squared the falling water gains speed by (D33)
 		float Pad;
+		float2 TexScale;  // This mesh's world units per texture repeat along u and v (D35); 0 unknown
+		float2 Pad2;
 	};
 
 	Texture2D<float> Heights : register(t120);
@@ -136,7 +138,7 @@ namespace FallGround
 	 * taken into the mesh's texture space through its screen-space derivatives, so every mesh and
 	 * layer moves with the same water whatever its texture layout. Vanilla's own scroll is taken out.
 	 */
-	FlowSample Flow(float2 a_uv, float3 a_position)
+	FlowSample Flow(float2 a_uv, float3 a_position, float3 a_normal, float3 a_tangent, float3 a_bitangent)
 	{
 		FlowSample result;
 		float head;
@@ -145,7 +147,10 @@ namespace FallGround
 		const float3 dpy = ddy(a_position);
 		const float2 dux = ddx(a_uv);
 		const float2 duy = ddy(a_uv);
-		float3 normal = normalize(cross(dpx, dpy));
+		// D35: the mesh's own normal and tangents, interpolated over its vertices, where the draw has them:
+		// the triangles' faces are coarse on Bethesda's meshes, and the flow jumped at every edge
+		const bool smoothFrame = dot(a_normal, a_normal) > 0.25 && TexScale.x > 0.0 && TexScale.y > 0.0;
+		float3 normal = smoothFrame ? normalize(a_normal) : normalize(cross(dpx, dpy));
 		normal *= normal.z < 0.0 ? -1.0 : 1.0;
 
 		// The solved flow lifted onto the surface; on steep water, straight down its slope, at least at free speed
@@ -155,14 +160,19 @@ namespace FallGround
 		const float3 downhill = float3(0.0, 0.0, -1.0) + normal * normal.z;
 		const float steep = 1.0 - smoothstep(SteepFrom, SteepTo, normal.z);
 		const float water = smoothstep(0.3, 0.8, result.stream.w);
-		float3 direction = lerp(lifted / max(length(lifted), 1e-4) * step(1e-3, solvedSpeed), downhill / max(length(downhill), 1e-4), steep);
+		// The solved course leads (D34): steep water turns down its slope only where that agrees with
+		// it, as Bethesda's meshes bulge and fold and their slope can point back up the falls
+		const float3 liftedDirection = lifted / max(length(lifted), 1e-4);
+		const float3 downDirection = downhill / max(length(downhill), 1e-4);
+		const bool solvedHere = water > 0.0 && solvedSpeed > 1e-3;
+		const float agree = solvedHere ? saturate(dot(liftedDirection, downDirection) * 4.0) : 1.0;
+		float3 direction = solvedHere ? lerp(liftedDirection, downDirection, steep * agree) : downDirection;
 		direction /= max(length(direction), 1e-4);
-		const float speed = lerp(solvedSpeed, max(solvedSpeed, 1.0), steep) * FlowSpeed;
-		// Gravity (D33): the speed gained from the drop below the head, along the slope (downhill is
-		// as long as the slope is steep, so flat water gains nothing)
+		const float speed = lerp(solvedSpeed, max(solvedSpeed, 1.0), steep * agree) * FlowSpeed;
+		// Gravity (D33): the speed gained from the drop below the head, along the course
 		const float drop = water > 0.0 ? max(head - a_position.z, 0.0) : 0.0;
 		const float gained = sqrt(speed * speed + 2.0 * Gravity * drop) - speed;
-		result.velocity = direction * speed + downhill * gained;
+		result.velocity = direction * (speed + gained);
 		result.strength = max(water, steep * step(0.05, length(downhill)));
 
 		// Into texture space: the surface's tangents along u and v, then the velocity in u and v
@@ -171,11 +181,23 @@ namespace FallGround
 		if (abs(det) > 1e-12) {
 			const float3 tu = (dpx * duy.y - dpy * dux.y) / det;
 			const float3 tv = (dpy * dux.x - dpx * duy.x) / det;
-			const float uu = dot(tu, tu), uv = dot(tu, tv), vv = dot(tv, tv);
-			const float gram = uu * vv - uv * uv;
-			if (gram > 1e-12) {
-				const float wu = dot(result.velocity, tu), wv = dot(result.velocity, tv);
-				uvVelocity = float2(vv * wu - uv * wv, uu * wv - uv * wu) / gram;
+			if (smoothFrame) {
+				// The smooth tangents, and the mesh's texel density; the faces only say which tangent runs along u
+				const float3 a = normalize(a_tangent);
+				const float3 b = normalize(a_bitangent);
+				const bool swapped = abs(dot(tu, b)) > abs(dot(tu, a));
+				float3 alongU = swapped ? b : a;
+				float3 alongV = swapped ? a : b;
+				alongU *= dot(alongU, tu) < 0.0 ? -1.0 : 1.0;
+				alongV *= dot(alongV, tv) < 0.0 ? -1.0 : 1.0;
+				uvVelocity = float2(dot(result.velocity, alongU) / TexScale.x, dot(result.velocity, alongV) / TexScale.y);
+			} else {
+				const float uu = dot(tu, tu), uv = dot(tu, tv), vv = dot(tv, tv);
+				const float gram = uu * vv - uv * uv;
+				if (gram > 1e-12) {
+					const float wu = dot(result.velocity, tu), wv = dot(result.velocity, tv);
+					uvVelocity = float2(vv * wu - uv * wv, uu * wv - uv * wu) / gram;
+				}
 			}
 		} else
 			result.strength = 0.0;

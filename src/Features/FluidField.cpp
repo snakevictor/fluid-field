@@ -65,6 +65,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	FallAcceleration,
 	SprayAmount,
 	SpraySize,
+	SprayOpacity,
 	MistAmount,
 	MistOpacity,
 	WaterfallDebug)
@@ -312,6 +313,7 @@ void FluidField::DrawSettings()
 		}
 		ImGui::SliderInt(T(TKEY("spray_amount"), "Spray Amount"), &settings.SprayAmount, 0, 96, "%d", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat(T(TKEY("spray_size"), "Spray Size"), &settings.SpraySize, 0.5f, 12.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat(T(TKEY("spray_opacity"), "Spray Opacity"), &settings.SprayOpacity, 0.02f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderInt(T(TKEY("mist_amount"), "Mist Amount"), &settings.MistAmount, 0, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat(T(TKEY("mist_opacity"), "Mist Opacity"), &settings.MistOpacity, 0.0f, 0.4f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::TreePop();
@@ -1152,6 +1154,7 @@ void FluidField::DrawGroundFogAfterWorld()
 			params.mistPerEmitter = static_cast<uint32_t>(std::clamp(settings.MistAmount, 0, 8));
 			params.spraySize = settings.SpraySize;
 			params.mistOpacity = settings.MistOpacity;
+			params.sprayOpacity = settings.SprayOpacity;
 			globals::profiler->BeginPass("FluidField::FallSurfaces");
 			fallSurface.Draw(globals::d3d::device, globals::d3d::context, params);
 			globals::profiler->EndPass();
@@ -1353,6 +1356,8 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 	if (settings.Waterfalls) {
 		if (a_near)
 			waterfallTime += a_deltaTime;
+		// D35: the falls' own plunges first, along their whole width; D22's single pushes after
+		fallSites.AppendWaterEmitters(levelEmitters, a_gridMin, a_cellSize, a_resolution, waterfallTime, settings.WaterfallStrength, FluidFieldSim::ShallowWaterSolver::MAX_EMITTERS, a_near);
 		waterfalls.AppendEmitters(levelEmitters, a_gridMin, a_cellSize, a_resolution, waterfallTime, settings.WaterfallStrength, FluidFieldSim::ShallowWaterSolver::MAX_EMITTERS, a_near);
 	}
 	const std::span<const FluidFieldSim::WaterEmitter> emitters = levelEmitters;
@@ -1541,6 +1546,14 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
 		const uint32_t buffer = globals::game::smState ? globals::game::smState->textureTransformCurrentBuffer : 0;
 		fallGroundData.TexOffset[0] = material ? material->texCoordOffset[buffer].x : 0.0f;
 		fallGroundData.TexOffset[1] = material ? material->texCoordOffset[buffer].y : 0.0f;
+		// D35: the mesh's texel density, for the flowmap's smooth frame (0: the shader measures it per triangle)
+		float scale[2];
+		if (fallSites.GetTextureScale(a_pass->geometry, scale) && material && material->texCoordScale[buffer].x > 1e-4f && material->texCoordScale[buffer].y > 1e-4f) {
+			fallGroundData.TexScale[0] = scale[0] / material->texCoordScale[buffer].x;
+			fallGroundData.TexScale[1] = scale[1] / material->texCoordScale[buffer].y;
+		} else {
+			fallGroundData.TexScale[0] = fallGroundData.TexScale[1] = 0.0f;
+		}
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (SUCCEEDED(context->Map(fallGroundOn.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
 			std::memcpy(mapped.pData, &fallGroundData, sizeof(fallGroundData));

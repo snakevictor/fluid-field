@@ -52,7 +52,8 @@ cbuffer FallSurfaceCB : register(b7)
 	float Gravity;
 	float MistOpacity;
 	float SprayStretch;
-	float2 Pad;
+	float SprayOpacity;
+	float Pad;
 };
 
 StructuredBuffer<SurfaceVertex> Vertices : register(t100);

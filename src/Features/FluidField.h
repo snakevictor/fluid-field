@@ -98,6 +98,7 @@ struct FluidField : OverlayFeature
 		float FallAcceleration = 0.6f;         ///< How much of gravity's pull the falling water keeps as speed (D33; 0: the solved flow only)
 		int SprayAmount = 32;                  ///< Spray droplets alive per emitter at once (D31)
 		float SpraySize = 2.5f;                ///< Spray droplet width, world units
+		float SprayOpacity = 0.35f;            ///< How opaque each droplet is
 		int MistAmount = 2;                    ///< Mist puffs alive per emitter at once
 		float MistOpacity = 0.07f;             ///< How dense each mist puff is
 		float WaterTint = 0.5f;                ///< How much the water type's colour tints what is seen through all water (0: vanilla)
@@ -301,7 +302,7 @@ private:
 	 * @brief D26 and D28: the captured ground around the player, for bending vanilla's falling water
 	 * onto the rock, and the falls' steady flow, whose streamlines vanilla's streaks follow.
 	 */
-	struct alignas(16) FallGroundData
+	struct FallGroundData
 	{
 		float Origin[2];
 		float InverseCell;
@@ -321,8 +322,10 @@ private:
 		float TexOffset[2];
 		float Gravity;
 		float Pad;
+		float TexScale[2];
+		float Pad2[2];
 	};
-	static_assert(sizeof(FallGroundData) == 80);
+	static_assert(sizeof(FallGroundData) == 96);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
 	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must be FallCapture::CELL: the flows are copied texel for texel
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres

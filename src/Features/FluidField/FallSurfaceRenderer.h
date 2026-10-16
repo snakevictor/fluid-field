@@ -31,11 +31,28 @@ namespace FluidFieldSim
 		float position[3];   ///< On the surface, world units
 		float strength;      ///< 0 to 1: how much it throws
 		float direction[3];  ///< The water's motion there, unit
-		float speed;         ///< 1 for free flow
+		float speed;         ///< World units per second (D35)
 		float normal[3];     ///< The surface's normal there, up
-		float pad;
+		float kind;          ///< FallEmitterKind
 	};
 	static_assert(sizeof(FallEmitter) == 48);
+
+	/** @brief What throws a spray emitter's water (D35), matching FallSpray.hlsl. */
+	enum class FallEmitterKind : uint32_t
+	{
+		Lip = 0,     ///< Where the surface drops away: the water leaves it running on
+		Plunge = 1,  ///< Where falling water meets the water below: thrown up and out
+		Strike = 2   ///< Where the water strikes rock or another piece
+	};
+
+	/** @brief Where falling water meets the water below (D35), for its pushes on the simulated water. */
+	struct FallPlunge
+	{
+		float position[3];   ///< On the water below, world units
+		float direction[2];  ///< Horizontal way the falling water runs, unit (or zero)
+		float speed;         ///< World units per second it arrives at
+		float strength;      ///< 0 to 1
+	};
 
 	/**
 	 * @brief Draws the falls' own water surface (D30) after the world: one merged mesh per site, made of
@@ -67,6 +84,7 @@ namespace FluidFieldSim
 			uint32_t mistPerEmitter = MIST_PER_EMITTER;
 			float spraySize = SPRAY_SIZE;
 			float mistOpacity = 0.07f;
+			float sprayOpacity = 0.35f;
 		};
 		void Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params);
 
@@ -130,7 +148,8 @@ namespace FluidFieldSim
 			float gravity;
 			float mistOpacity;
 			float sprayStretch;
-			float pad2[2];
+			float sprayOpacity;
+			float pad2;
 		};
 
 		winrt::com_ptr<ID3D11Buffer> vertices;

@@ -748,7 +748,7 @@ PS_OUTPUT main(PS_INPUT input)
 		// Fluid Field (D32): falling water's texture carried by the falls' flow
 		[branch] if (FallGround::Enabled && FallGround::DebugMode < 3)
 		{
-			const FallGround::FlowSample flow = FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
+			const FallGround::FlowSample flow = FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, 0.0, 0.0, 0.0);
 			fallStream = flow.stream;
 			fallVelocity = flow.velocity;
 			baseTexColor = lerp(TexBaseSampler.Sample(SampBaseSampler, flow.uvA), TexBaseSampler.Sample(SampBaseSampler, flow.uvB), flow.blendB);

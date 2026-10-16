@@ -198,6 +198,7 @@ namespace FluidFieldSim
 		result.psi.assign(count, 0.0f);
 		result.speed.assign(count, 0.0f);
 		result.foam.assign(count, 0.0f);
+		result.rockFoam.assign(count, 0.0f);
 		result.water.assign(count, 0);
 		result.vx.assign(count, 0.0f);
 		result.vy.assign(count, 0.0f);
@@ -238,8 +239,76 @@ namespace FluidFieldSim
 				const float stall = nearRock[i] && drive > 0.5f ? std::clamp((STALL_SPEED - speed) / STALL_SPEED, 0.0f, 1.0f) : 0.0f;
 				const float squeeze = std::clamp((speed - SQUEEZE_SPEED) * 2.0f, 0.0f, 1.0f);
 				result.foam[i] = std::max(stall, squeeze);
+				result.rockFoam[i] = result.foam[i];
 				result.vx[i] = u;
 				result.vy[i] = v;
+			}
+		}
+
+		// The course (D34): which way the water goes, from where it comes in to where it leaves. A
+		// potential, 0 on the inflow and 1 on the outflow, harmonic over the water with the rock as walls,
+		// has no hollows: its slope always leads from one to the other, round rock. The solved velocity
+		// keeps its sideways part (parting round boulders, swirls) but never runs back along the course
+		{
+			bool inflow = false, outflow = false;
+			for (std::size_t i = 0; i < count; i++) {
+				inflow |= a_input.kind[i] == Inflow;
+				outflow |= a_input.kind[i] == Outflow;
+			}
+			if (inflow && outflow) {
+				std::vector<float> course(count, 0.5f);
+				for (std::size_t i = 0; i < count; i++) {
+					if (a_input.kind[i] == Inflow)
+						course[i] = 0.0f;
+					else if (a_input.kind[i] == Outflow)
+						course[i] = 1.0f;
+				}
+				for (uint32_t sweep = 0; sweep < COURSE_SWEEPS; sweep++) {
+					float change = 0.0f;
+					for (int32_t y = 0; y < h; y++) {
+						for (int32_t x = 0; x < w; x++) {
+							const std::size_t i = index(x, y);
+							if (!open(x, y) || a_input.kind[i] == Inflow || a_input.kind[i] == Outflow)
+								continue;
+							float sum = 0.0f;
+							int32_t neighbours = 0;
+							for (int k = 0; k < 4; k++) {
+								if (!open(x + DX[k], y + DY[k]))
+									continue;
+								sum += course[index(x + DX[k], y + DY[k])];
+								neighbours++;
+							}
+							if (!neighbours)
+								continue;
+							const float delta = SOR * (sum / static_cast<float>(neighbours) - course[i]);
+							course[i] += delta;
+							change = std::max(change, std::abs(delta));
+						}
+					}
+					if (change < 1e-6f)
+						break;
+				}
+				for (int32_t y = 0; y < h; y++) {
+					for (int32_t x = 0; x < w; x++) {
+						const std::size_t i = index(x, y);
+						if (!result.water[i])
+							continue;
+						// Its slope, one-sided beside rock
+						const auto at = [&](int32_t a_x, int32_t a_y) { return open(a_x, a_y) ? course[index(a_x, a_y)] : course[i]; };
+						const float sx = 0.5f * (at(x + 1, y) - at(x - 1, y)) * ((open(x + 1, y) && open(x - 1, y)) ? 1.0f : 2.0f);
+						const float sy = 0.5f * (at(x, y + 1) - at(x, y - 1)) * ((open(x, y + 1) && open(x, y - 1)) ? 1.0f : 2.0f);
+						const float slope = std::sqrt(sx * sx + sy * sy);
+						if (slope < 1e-7f)
+							continue;
+						const float dx = sx / slope, dy = sy / slope;
+						const float along = result.vx[i] * dx + result.vy[i] * dy;
+						const float sideX = result.vx[i] - dx * along, sideY = result.vy[i] - dy * along;
+						const float forward = std::max(along, COURSE_FORWARD);
+						result.vx[i] = sideX + dx * forward;
+						result.vy[i] = sideY + dy * forward;
+						result.speed[i] = std::sqrt(result.vx[i] * result.vx[i] + result.vy[i] * result.vy[i]);
+					}
+				}
 			}
 		}
 
