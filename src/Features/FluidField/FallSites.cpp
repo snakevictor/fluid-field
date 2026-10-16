@@ -384,6 +384,7 @@ namespace FluidFieldSim
 		stream.ready = false;
 		stream.meshReady = false;
 		GatherSources(a_site, stream.sources);
+		stream.levels = a_site.levels;
 		stream.pending = std::async(std::launch::async, [input = std::move(input)]() { return FallStream::Solve(input); });
 	}
 
@@ -420,8 +421,8 @@ namespace FluidFieldSim
 				continue;
 			stream.result = stream.pending.get();
 			stream.ready = true;
-			stream.meshPending = std::async(std::launch::async, [flow = stream.result, originX = stream.originX, originY = stream.originY, sources = stream.sources]() {
-				return BuildMergedSurface(flow, originX, originY, sources);
+			stream.meshPending = std::async(std::launch::async, [flow = stream.result, originX = stream.originX, originY = stream.originY, sources = stream.sources, levels = stream.levels]() {
+				return BuildMergedSurface(flow, originX, originY, sources, levels);
 			});
 			changed = true;
 			float speed = 0.0f, foam = 0.0f;
@@ -539,8 +540,14 @@ namespace FluidFieldSim
 		}
 	}
 
-	FallSites::SurfaceMesh FallSites::BuildMergedSurface(const FallStream::Result& a_flow, float a_originX, float a_originY, const std::vector<SourceTriangle>& a_sources)
+	FallSites::SurfaceMesh FallSites::BuildMergedSurface(const FallStream::Result& a_flow, float a_originX, float a_originY, const std::vector<SourceTriangle>& a_sources, const std::vector<float>& a_levels)
 	{
+		// The top of the falls: the drop below it counts into the travel time, so the texture runs down steep water too
+		float top = -FLT_MAX;
+		for (const auto& triangle : a_sources) {
+			for (int k = 0; k < 3; k++)
+				top = std::max(top, triangle.position[k][2]);
+		}
 		SurfaceMesh mesh;
 		const auto w = static_cast<int32_t>(a_flow.width);
 		const auto h = static_cast<int32_t>(a_flow.height);
@@ -661,7 +668,7 @@ namespace FluidFieldSim
 						const float above = oz - pz;
 						if (above < -MERGE_BELOW || above > MERGE_ABOVE)
 							continue;
-						if (above > 0.5f || (std::abs(above) <= 0.5f && a_sources[other].piece < triangle.piece)) {
+						if (a_sources[other].piece < triangle.piece) {
 							found = true;
 							break;
 						}
@@ -710,14 +717,17 @@ namespace FluidFieldSim
 			vertex.uv[1] = a_t.uv[0][1] * w0 + a_t.uv[1][1] * a_u + a_t.uv[2][1] * a_v;
 			const Flow flow = flowAt(vertex.position[0], vertex.position[1]);
 			vertex.across = flow.across;
-			vertex.travel = flow.travel;
+			vertex.travel = flow.travel + (top - vertex.position[2]) / FALL_SPEED;
 			vertex.speed = flow.speed;
 			vertex.foam = flow.foam;
+			// Where the falls meet a body of water, above and below, the join is hidden in foam
+			for (const float level : a_levels)
+				vertex.foam = std::max(vertex.foam, std::clamp(1.0f - std::abs(vertex.position[2] - level) / MEET_FOAM_HEIGHT, 0.0f, 1.0f));
 			vertex.edge = 1.0f;
 			vertex.depth = flow.depth;
-			// The flow is solved from above: on steep water, or off the flow, vanilla's own texture stays
-			const float upward = std::abs(vertex.normal[2]);
-			vertex.flow = std::clamp((flow.water - 0.3f) / 0.5f, 0.0f, 1.0f) * std::clamp((upward - 0.35f) / 0.25f, 0.0f, 1.0f);
+			// Off the flow (beyond the solved water) vanilla's own texture stays; steep water keeps the flow's,
+			// its drop counted in the travel time
+			vertex.flow = std::clamp((flow.water - 0.1f) / 0.4f, 0.0f, 1.0f);
 			const auto index = static_cast<uint32_t>(mesh.vertices.size());
 			mesh.vertices.push_back(vertex);
 			welded.emplace(key, index);

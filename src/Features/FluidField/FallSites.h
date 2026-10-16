@@ -224,7 +224,8 @@ namespace FluidFieldSim
 			bool ready = false;
 			std::vector<FallSurfaceVertex> vertices;  ///< Its surface mesh, built once the flow is solved
 			std::vector<uint32_t> indices;
-			std::vector<SourceTriangle> sources;  ///< Vanilla's falling-water triangles, gathered when the solve starts
+			std::vector<SourceTriangle> sources;
+			std::vector<float> levels;  ///< The site's water levels, where the falls meet bodies of water  ///< Vanilla's falling-water triangles, gathered when the solve starts
 			std::future<SurfaceMesh> meshPending;
 			bool meshReady = false;
 		};
@@ -235,14 +236,16 @@ namespace FluidFieldSim
 		 * the upper kept, each subdivided evenly to about SURFACE_EDGE, welded where they meet, with the
 		 * solved flow's coordinates at every vertex. Runs on a worker thread.
 		 */
-		static SurfaceMesh BuildMergedSurface(const FallStream::Result& a_flow, float a_originX, float a_originY, const std::vector<SourceTriangle>& a_sources);
+		static SurfaceMesh BuildMergedSurface(const FallStream::Result& a_flow, float a_originX, float a_originY, const std::vector<SourceTriangle>& a_sources, const std::vector<float>& a_levels);
 		static constexpr float SURFACE_EDGE = 12.0f;       ///< Target edge length of the subdivided surface, world units
 		static constexpr uint32_t SURFACE_MAX_SPLIT = 10;  ///< Most pieces a source edge is split into
 		static constexpr float SURFACE_WELD = 1.0f;        ///< Vertices this close are one
 		static constexpr float MERGE_FACE_UP = 0.35f;      ///< Only pieces at least this level are merged (curtains are left)
 		static constexpr float MERGE_BUCKET = 64.0f;       ///< World units per bucket when finding overlaps
-		static constexpr float MERGE_ABOVE = 40.0f;        ///< Another piece up to this far above covers a triangle
-		static constexpr float MERGE_BELOW = 4.0f;         ///< ...or this far below (nearly coplanar)
+		static constexpr float MERGE_ABOVE = 3.0f;         ///< Only near-duplicates are dropped: another piece this close above or below covers a triangle
+		static constexpr float MERGE_BELOW = 3.0f;
+		static constexpr float FALL_SPEED = 600.0f;       ///< World units per second of drop counted into the travel time, so steep water streaks too
+		static constexpr float MEET_FOAM_HEIGHT = 20.0f;  ///< Water within this of a site's level (where it meets a body of water) foams
 		std::vector<std::future<SurfaceMesh>> retiredMeshes;
 		/** @brief Gathers every site's surface into one list. */
 		void RefreshSurfaces();

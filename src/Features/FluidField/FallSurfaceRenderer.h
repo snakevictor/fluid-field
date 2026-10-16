@@ -59,11 +59,11 @@ namespace FluidFieldSim
 
 		static constexpr float U_SCALE = 192.0f;      ///< World units across the flow per repeat of the texture
 		static constexpr float V_SCALE = 384.0f;      ///< World units along the flow (at free speed) per repeat
-		static constexpr float WAVE_HEIGHT = 5.0f;    ///< Standing waves where fast water runs shallow over rock, world units
+		static constexpr float WAVE_HEIGHT = 10.0f;   ///< Standing waves where fast water runs shallow over rock, world units
 		static constexpr float WAVE_LENGTH = 72.0f;   ///< World units along the flow
-		static constexpr float RIPPLE_HEIGHT = 1.5f;  ///< Ripples carried by the flow, world units
+		static constexpr float RIPPLE_HEIGHT = 3.0f;  ///< Ripples carried by the flow, world units
 		static constexpr float RIPPLE_LENGTH = 40.0f;
-		static constexpr float BULGE_HEIGHT = 6.0f;    ///< The water mounds over rock just under it, world units
+		static constexpr float BULGE_HEIGHT = 10.0f;   ///< The water mounds over rock just under it, world units
 		static constexpr float SHALLOW_DEPTH = 40.0f;  ///< Water shallower than this over rock waves and mounds
 		static constexpr float CONTACT_WIDTH = 8.0f;   ///< World units over which the water fades where it meets rock in front of it
 		static constexpr float BRIGHTNESS = 0.3f;
