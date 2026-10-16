@@ -155,23 +155,32 @@ namespace FluidFieldSim
 
 	void FallSites::RefreshHiddenEffects()
 	{
-		std::unordered_map<uint32_t, RE::NiPointer<RE::NiAVObject>> wanted;
+		std::unordered_map<const RE::NiAVObject*, RE::NiPointer<RE::NiAVObject>> wanted;
 		if (hideEffects) {
 			for (const auto& ref : refs) {
-				if (ref.cls == FxClass::Body)
-					continue;
 				auto* object = RE::TESForm::LookupByID<RE::TESObjectREFR>(ref.formID);
-				if (auto* root = object ? object->Get3D() : nullptr)
-					wanted.emplace(ref.formID, RE::NiPointer<RE::NiAVObject>(root));
+				auto* root = object ? object->Get3D() : nullptr;
+				if (!root)
+					continue;
+				if (ref.cls != FxClass::Body) {
+					wanted.emplace(root, RE::NiPointer<RE::NiAVObject>(root));
+					continue;
+				}
+				// The falling-water models carry their own spray particles: hide those, keep the water
+				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+					auto* triShape = a_geometry->AsTriShape();
+					if (!triShape || triShape->GetTrishapeRuntimeData().triangleCount == 0)
+						wanted.emplace(a_geometry, RE::NiPointer<RE::NiAVObject>(a_geometry));
+					return RE::BSVisit::BSVisitControl::kContinue;
+				});
 			}
 		}
-		for (auto& [formID, root] : hiddenEffects) {
-			const auto it = wanted.find(formID);
-			if ((it == wanted.end() || it->second != root) && root)
-				root->SetAppCulled(false);
+		for (auto& [object, pointer] : hiddenEffects) {
+			if (!wanted.contains(object) && pointer)
+				pointer->SetAppCulled(false);
 		}
-		for (auto& [formID, root] : wanted)
-			root->SetAppCulled(true);
+		for (auto& [object, pointer] : wanted)
+			pointer->SetAppCulled(true);
 		hiddenEffects.swap(wanted);
 	}
 
@@ -423,7 +432,23 @@ namespace FluidFieldSim
 				if (!root)
 					continue;
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-					grounded.insert(a_geometry);
+					// Only the water's own surfaces: the models also carry particle spray (no triangles of
+					// their own), which grounding and the streamlines would smear
+					auto* triShape = a_geometry->AsTriShape();
+					if (triShape && triShape->GetTrishapeRuntimeData().triangleCount > 0)
+						grounded.insert(a_geometry);
+					// Diagnostics: what each part of a falling-water mesh is, once per model and part
+					auto* property = a_geometry->GetGeometryRuntimeData().shaderProperty.get();
+					auto* effect = property ? netimmerse_cast<RE::BSEffectShaderProperty*>(property) : nullptr;
+					auto* material = effect ? static_cast<RE::BSEffectShaderMaterial*>(effect->GetBaseMaterial()) : nullptr;
+					const char* model = ModelOf(ref->GetBaseObject());
+					const std::string key = std::format("{}|{}", model ? model : "?", a_geometry->name.c_str());
+					if (loggedParts.insert(key).second) {
+						logger::info("[Fluid Field]   fall part {}: '{}', {} vertices, {} triangles, texture '{}', greyscale '{}', shader flags {:016X}", model ? model : "?",
+							a_geometry->name.c_str(), triShape ? triShape->GetTrishapeRuntimeData().vertexCount : 0, triShape ? triShape->GetTrishapeRuntimeData().triangleCount : 0,
+							material ? material->sourceTexturePath.c_str() : "", material ? material->greyscaleTexturePath.c_str() : "",
+							property ? property->flags.underlying() : 0ull);
+					}
 					return RE::BSVisit::BSVisitControl::kContinue;
 				});
 			}

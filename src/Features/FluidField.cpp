@@ -326,7 +326,7 @@ void FluidField::DrawSettings()
 		ImGui::Combo(T(TKEY("waterfall_debug"), "Waterfall Debug"), &fallGroundDebug, fallDebugModes, IM_ARRAYSIZE(fallDebugModes));
 		ImGui::Checkbox(T(TKEY("hide_waterfall_effects"), "Hide Waterfall Effects"), &hideFallEffects);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("hide_waterfall_effects_tooltip"), "Hides vanilla's mist, skirt, splash and rapids meshes around the waterfalls, so the falling water can be judged alone."));
+			ImGui::Text("%s", T(TKEY("hide_waterfall_effects_tooltip"), "Hides vanilla's mist, skirt, splash and rapids meshes and the falls' spray particles, so the falling water can be judged alone."));
 		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("waterfall_debug_tooltip"), "Paints grounded waterfalls with their steady flow. Speed, Foam, Water: red for its speed, green where it foams, blue where it has water (black: none, as on rock). Streamlines: the flow's streamlines as bands, which vanilla's streaks follow; they should part round boulders and close up behind them."));

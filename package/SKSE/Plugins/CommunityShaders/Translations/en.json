@@ -907,7 +907,7 @@
     "feature.fluid_field.ground_waterfalls": "Ground Waterfalls",
     "feature.fluid_field.ground_waterfalls_tooltip": "Bends vanilla's waterfall meshes onto the rock they run over, flows them around rocks in their way, and softens them into the rock with foam where they meet it. Off shows vanilla's waterfalls unchanged.",
     "feature.fluid_field.hide_waterfall_effects": "Hide Waterfall Effects",
-    "feature.fluid_field.hide_waterfall_effects_tooltip": "Hides vanilla's mist, skirt, splash and rapids meshes around the waterfalls, so the falling water can be judged alone.",
+    "feature.fluid_field.hide_waterfall_effects_tooltip": "Hides vanilla's mist, skirt, splash and rapids meshes and the falls' spray particles, so the falling water can be judged alone.",
     "feature.fluid_field.interactive_fog": "Ground Fog",
     "feature.fluid_field.interactive_fog_tooltip": "Fog lying on the ground around you, in banks and clearings. It parts and swirls around moving actors and drifts with the weather's wind.",
     "feature.fluid_field.jacobi_iterations": "Pressure Iterations",

@@ -124,7 +124,8 @@ namespace FluidFieldSim
 		void BuildStreamMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
 
 		/**
-		 * @brief Debug: hides vanilla's mist, skirt, splash and rapids meshes, so the falling water
+		 * @brief Debug: hides vanilla's mist, skirt, splash and rapids meshes, and the spray particles
+		 * inside the falling-water models, so the falling water
 		 * can be judged alone. Shown again when turned off, and on Clear.
 		 */
 		void SetHideEffects(bool a_hide);
@@ -172,6 +173,7 @@ namespace FluidFieldSim
 		std::unordered_map<uint64_t, std::string> cellSummaries;  ///< Last summary logged per cell
 		std::unordered_map<uint64_t, FallCapture> captures;       ///< By Site::captureKey
 		std::unordered_set<const RE::BSGeometry*> grounded;
+		std::unordered_set<std::string> loggedParts;  ///< Diagnostics: falling-water mesh parts already logged
 
 		/** @brief A site's steady flow, solved on its capture's lattice on a worker thread. */
 		struct Stream
@@ -191,7 +193,7 @@ namespace FluidFieldSim
 		/** @brief Starts the flows of newly captured sites and collects finished ones. */
 		void PollStreams();
 		bool hideEffects = false;
-		std::unordered_map<uint32_t, RE::NiPointer<RE::NiAVObject>> hiddenEffects;  ///< By form ID: the 3D culled
+		std::unordered_map<const RE::NiAVObject*, RE::NiPointer<RE::NiAVObject>> hiddenEffects;  ///< Culled effect 3D: whole effect references, and the spray particles in the falling-water models
 		void RefreshHiddenEffects();
 		uint64_t groundVersion = 0;
 	};
