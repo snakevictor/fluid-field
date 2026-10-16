@@ -57,7 +57,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ReplaceVanillaFoam,
 	Waterfalls,
 	WaterfallStrength,
-	GroundWaterfalls)
+	GroundWaterfalls,
+	FallLayerMask)
 
 void FluidField::DrawSettings()
 {
@@ -861,7 +862,7 @@ void FluidField::Prepass()
 			waterfalls.Update(water, playerPos.x, playerPos.y, simulated);
 			// Waterfall sites reconstructed from vanilla's layout (D25)
 			fallSites.SetConsoleSummary(showFallSites);
-			fallSites.SetHideEffects(hideFallEffects);
+			fallSites.SetHideEffects(hideFallEffects, settings.FallLayerMask);
 			fallSites.Update(water);
 			UpdateFallGround(playerPos);
 		} else {

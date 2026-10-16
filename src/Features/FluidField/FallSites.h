@@ -128,7 +128,17 @@ namespace FluidFieldSim
 		 * inside the falling-water models, so the falling water
 		 * can be judged alone. Shown again when turned off, and on Clear.
 		 */
-		void SetHideEffects(bool a_hide);
+		void SetHideEffects(bool a_hide, uint32_t a_layerMask);
+
+		/** @brief The parts of a vanilla falling-water model, by what draws them. */
+		enum class Layer : uint8_t
+		{
+			Inner,     ///< No effect shader (the model's inner or helper surfaces)
+			Sheet,     ///< The white-water sheet (FXWhiteWater)
+			Streaks,   ///< Other effect-shaded surfaces: the streaky fluid layers (FXfluidTile)
+			Particles  ///< Spray: particle systems and parts with no triangles
+		};
+		static Layer LayerOf(RE::BSGeometry* a_geometry);
 		static constexpr float STREAM_MIN_DEPTH = 4.0f;      ///< Water must stand this far above the rock to flow there
 		static constexpr float STREAM_INFLOW_BAND = 64.0f;   ///< Water within this of the site's top comes in there
 		static constexpr float STREAM_OUTFLOW_BAND = 32.0f;  ///< Water within this of the site's bottom leaves there
@@ -193,6 +203,7 @@ namespace FluidFieldSim
 		/** @brief Starts the flows of newly captured sites and collects finished ones. */
 		void PollStreams();
 		bool hideEffects = false;
+		uint32_t layerMask = 0x7;                                                                ///< Bit per Layer: the falling-water model parts shown while effects are hidden
 		std::unordered_map<const RE::NiAVObject*, RE::NiPointer<RE::NiAVObject>> hiddenEffects;  ///< Culled effect 3D: whole effect references, and the spray particles in the falling-water models
 		void RefreshHiddenEffects();
 		uint64_t groundVersion = 0;

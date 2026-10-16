@@ -145,12 +145,26 @@ namespace FluidFieldSim
 		}
 	}
 
-	void FallSites::SetHideEffects(bool a_hide)
+	void FallSites::SetHideEffects(bool a_hide, uint32_t a_layerMask)
 	{
-		if (a_hide == hideEffects)
+		if (a_hide == hideEffects && a_layerMask == layerMask)
 			return;
 		hideEffects = a_hide;
+		layerMask = a_layerMask;
 		RefreshHiddenEffects();
+	}
+
+	FallSites::Layer FallSites::LayerOf(RE::BSGeometry* a_geometry)
+	{
+		auto* triShape = a_geometry->AsTriShape();
+		if (!triShape || triShape->GetTrishapeRuntimeData().triangleCount == 0)
+			return Layer::Particles;
+		auto* property = a_geometry->GetGeometryRuntimeData().shaderProperty.get();
+		auto* effect = property ? netimmerse_cast<RE::BSEffectShaderProperty*>(property) : nullptr;
+		auto* material = effect ? static_cast<RE::BSEffectShaderMaterial*>(effect->GetBaseMaterial()) : nullptr;
+		if (!material)
+			return Layer::Inner;
+		return Lowercase(material->sourceTexturePath.c_str()).find("whitewater") != std::string::npos ? Layer::Sheet : Layer::Streaks;
 	}
 
 	void FallSites::RefreshHiddenEffects()
@@ -166,10 +180,10 @@ namespace FluidFieldSim
 					wanted.emplace(root, RE::NiPointer<RE::NiAVObject>(root));
 					continue;
 				}
-				// The falling-water models carry their own spray particles: hide those, keep the water
+				// The falling-water models carry layers of their own (and spray particles): show only the
+				// layers in the mask
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-					auto* triShape = a_geometry->AsTriShape();
-					if (!triShape || triShape->GetTrishapeRuntimeData().triangleCount == 0)
+					if (!(layerMask & (1u << static_cast<uint32_t>(LayerOf(a_geometry)))))
 						wanted.emplace(a_geometry, RE::NiPointer<RE::NiAVObject>(a_geometry));
 					return RE::BSVisit::BSVisitControl::kContinue;
 				});
@@ -444,10 +458,12 @@ namespace FluidFieldSim
 					const char* model = ModelOf(ref->GetBaseObject());
 					const std::string key = std::format("{}|{}", model ? model : "?", a_geometry->name.c_str());
 					if (loggedParts.insert(key).second) {
-						logger::info("[Fluid Field]   fall part {}: '{}', {} vertices, {} triangles, texture '{}', greyscale '{}', shader flags {:016X}", model ? model : "?",
-							a_geometry->name.c_str(), triShape ? triShape->GetTrishapeRuntimeData().vertexCount : 0, triShape ? triShape->GetTrishapeRuntimeData().triangleCount : 0,
+						logger::info("[Fluid Field]   fall part {}: '{}' ({}, {}, layer {}), {} vertices, {} triangles, texture '{}', greyscale '{}', shader flags {:016X}, culled {}",
+							model ? model : "?", a_geometry->name.c_str(), a_geometry->GetRTTI() ? a_geometry->GetRTTI()->GetName() : "?",
+							property && property->GetRTTI() ? property->GetRTTI()->GetName() : "no shader", static_cast<int>(LayerOf(a_geometry)),
+							triShape ? triShape->GetTrishapeRuntimeData().vertexCount : 0, triShape ? triShape->GetTrishapeRuntimeData().triangleCount : 0,
 							material ? material->sourceTexturePath.c_str() : "", material ? material->greyscaleTexturePath.c_str() : "",
-							property ? property->flags.underlying() : 0ull);
+							property ? property->flags.underlying() : 0ull, a_geometry->GetAppCulled());
 					}
 					return RE::BSVisit::BSVisitControl::kContinue;
 				});

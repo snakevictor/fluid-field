@@ -88,6 +88,7 @@ struct FluidField : OverlayFeature
 		float FoamStrength = 1.0f;           ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
 		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
 		bool Waterfalls = true;              ///< Waterfalls landing on the simulated water drive it (D22)
+		uint32_t FallLayerMask = 0x7;        ///< Debug: which parts of vanilla's falling-water models show while waterfall effects are hidden (bits: inner, sheet, streaks, particles)
 		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
