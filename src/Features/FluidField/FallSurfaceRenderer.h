@@ -88,6 +88,8 @@ namespace FluidFieldSim
 			float sprayOpacity = 0.35f;
 			float fogDensity = 0.0f;  ///< Waterfall fog (D38): extinction per world unit over wholly white water; 0 off
 			float fogHeight = 90.0f;
+			float fogBottom = 0.0f;  ///< The fog's height band (D41)
+			float fogTop = 0.0f;
 		};
 		void Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params);
 
@@ -161,6 +163,9 @@ namespace FluidFieldSim
 			float fogHeight;
 			uint32_t fogSteps;
 			uint32_t mistVolumeCount;
+			float fogBottom;
+			float fogTop;
+			float fogPad[2];
 		};
 
 		winrt::com_ptr<ID3D11Buffer> vertices;
@@ -178,7 +183,7 @@ namespace FluidFieldSim
 		uint32_t mistCount = 0;
 		uint64_t mistVersion = UINT64_MAX;
 		static constexpr uint32_t MAX_MIST_VOLUMES = 64;
-		static constexpr uint32_t FOG_STEPS = 64;  ///< Over FallFog.hlsl's FOG_RANGE: about 25 units a step, finer than the fog is thick
+		static constexpr uint32_t FOG_STEPS = 96;  ///< Over FallFog.hlsl's FOG_RANGE: about 25 units a step, finer than the fog is thick
 		winrt::com_ptr<ID3D11Buffer> emitters;
 		winrt::com_ptr<ID3D11ShaderResourceView> emittersSRV;
 		uint32_t emitterCapacity = 0;

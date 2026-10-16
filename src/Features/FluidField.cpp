@@ -1098,6 +1098,19 @@ void FluidField::DrawGroundFogAfterWorld()
 			params.sprayOpacity = settings.SprayOpacity;
 			params.fogDensity = settings.FallFog * FALL_FOG_DENSITY;
 			params.fogHeight = settings.FallFogHeight;
+			// The band the fog can reach: from the lowest pool or source to the highest, plus its rise
+			float fogLow, fogHigh;
+			if (fallSites.GetFogBand(fogLow, fogHigh)) {
+				params.fogBottom = fogLow - 20.0f;
+				params.fogTop = fogHigh + std::max(settings.FallFogHeight, 160.0f);
+			} else {
+				params.fogDensity = 0.0f;
+			}
+			if (static uint64_t loggedVersion = UINT64_MAX; loggedVersion != fallSites.GetSurfaceVersion()) {
+				loggedVersion = fallSites.GetSurfaceVersion();
+				logger::info("[Fluid Field] Waterfall fog band {:.0f}..{:.0f} (density {:.4f}), camera z {:.0f}", params.fogBottom, params.fogTop, params.fogDensity,
+					globals::game::frameBufferCached.GetCameraPosAdjust().z);
+			}
 			fallSurface.UploadMist(globals::d3d::device, globals::d3d::context, fallSites.GetMistVolumes(), fallSites.GetSurfaceVersion());
 			// The fog reads the falls' ground and pools (b13, t120, t122) and the simulated water (t66, t67)
 			ID3D11Buffer* fallConstants = fallGroundOn.get();

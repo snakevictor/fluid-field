@@ -966,3 +966,22 @@ Entry format:
 -   Decided by: investigation after @Victor's report ("everything's borked
     besides the flowmap"; "fog/smoke over water seemed proximity dependant")
 -   References: D36, D38, D39
+
+## D41: Waterfall fog from the falls' own sources, marched in its height band
+
+-   Date: 2026-10-16
+-   Phase / spike: D40 follow-up (@Victor: "fog doesnt show from afar")
+-   Decision: Two causes, found with a per-part debug view (Waterfall Shading
+    3: red the pools' layer, green the falls' sources, blue vanilla's mist):
+    the fog was marched only 1600 units from the camera, and its pool layer
+    followed the water simulation's foam, which exists only round the player
+    (and restarts after a teleport). The fog is now marched only through its
+    height band (lowest to highest pool, source or mist volume, plus its rise;
+    logged per surface) out to 8000 units in 96 steps, and carried by the
+    falls' own sources wherever the player is: plunges spread fog 180 units
+    round them, strikes 90, drops 63, weighted 1, 0.7 and 0.4, standing 60
+    units above the source and spreading 120 up and down, six times the pool
+    layer's density. The simulation's foam still thickens the pool layer near
+    the player.
+-   Decided by: investigation after @Victor's report
+-   References: D38, D39, D40

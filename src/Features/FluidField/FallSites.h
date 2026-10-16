@@ -152,6 +152,9 @@ namespace FluidFieldSim
 		 */
 		void AppendFogEmitters(std::vector<Emitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_strength, uint32_t a_maxEmitters) const;
 
+		/** @brief D41: the lowest and highest heights the falls' fog rises from (pools, strikes, drops, plunges, vanilla's mist); false if none. */
+		bool GetFogBand(float& a_low, float& a_high) const;
+
 		/** @brief D35: world units per texture repeat along u and v of a falling-water mesh (its own texel density), or false if unknown. */
 		bool GetTextureScale(const RE::BSGeometry* a_geometry, float a_scale[2]) const;
 		uint64_t GetSurfaceVersion() const { return surfaceVersion; }
@@ -316,7 +319,8 @@ namespace FluidFieldSim
 		static constexpr float FOG_SPACING = 64.0f;         ///< World units between the falls' fog sources (D37)
 		static constexpr float FOG_RADIUS = 56.0f;          ///< World units round a source that it fogs
 		static constexpr float FOG_RATE = 2.5f;             ///< Fog made per second at a source's centre, in resting amounts
-		static constexpr float FOG_SOURCE_RADIUS = 40.0f;   ///< World units round each strike, drop and plunge that its fog spreads (D39)
+		static constexpr float FOG_SOURCE_RADIUS = 90.0f;   ///< World units round each strike, drop and plunge that its fog spreads (D39)
+		static constexpr float FOG_PLUNGE_RADIUS = 180.0f;  ///< World units round each plunge that its fog spreads (D41)
 		static constexpr float PLUNGE_SPLASH = 220.0f;      ///< World units per second the plunge pushes the simulated water down at its strongest
 		static constexpr float PLUNGE_PULL = 0.35f;         ///< Fraction of the falling water's speed the water below is pulled along at
 		static constexpr int FLOW_DILATE_CELLS = 6;         ///< Cells the flow is carried past the water's edge for the surface

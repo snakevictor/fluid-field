@@ -1467,6 +1467,29 @@ namespace FluidFieldSim
 		}
 	}
 
+	bool FallSites::GetFogBand(float& a_low, float& a_high) const
+	{
+		a_low = FLT_MAX;
+		a_high = -FLT_MAX;
+		for (const auto& emitter : surfaceEmitters) {
+			a_low = std::min(a_low, emitter.position[2]);
+			a_high = std::max(a_high, emitter.position[2]);
+		}
+		for (const auto& volume : mistVolumes) {
+			a_low = std::min(a_low, volume[2] - volume[6]);
+			a_high = std::max(a_high, volume[2] + volume[6]);
+		}
+		for (const auto& [key, stream] : streams) {
+			for (const float cover : stream.result.cover) {
+				if (cover <= NO_SURFACE)
+					continue;
+				a_low = std::min(a_low, cover);
+				a_high = std::max(a_high, cover);
+			}
+		}
+		return a_low <= a_high;
+	}
+
 	bool FallSites::GetTextureScale(const RE::BSGeometry* a_geometry, float a_scale[2]) const
 	{
 		const auto it = textureScales.find(a_geometry);
@@ -1995,11 +2018,14 @@ namespace FluidFieldSim
 	void FallSites::BuildFogMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
 	{
 		a_field.assign(static_cast<std::size_t>(a_size) * a_size * 2, 0.0f);
-		const auto reach = static_cast<int32_t>(std::ceil(FOG_SOURCE_RADIUS / a_cell));
 		for (const auto& emitter : surfaceEmitters) {
-			// Strikes on rock and other water, and plunges, fog the most; drops a little less
+			// Plunges fog widely and the most, strikes on rock and other water less, drops least (D41)
 			const auto kind = static_cast<FallEmitterKind>(static_cast<uint32_t>(emitter.kind));
-			const float weight = emitter.strength * (kind == FallEmitterKind::Lip ? 0.6f : 1.0f);
+			const float radius = kind == FallEmitterKind::Plunge ? FOG_PLUNGE_RADIUS : kind == FallEmitterKind::Strike ? FOG_SOURCE_RADIUS :
+			                                                                                                             FOG_SOURCE_RADIUS * 0.7f;
+			const float weight = std::max(emitter.strength, 0.5f) * (kind == FallEmitterKind::Plunge ? 1.0f : kind == FallEmitterKind::Strike ? 0.7f :
+																																				0.4f);
+			const auto reach = static_cast<int32_t>(std::ceil(radius / a_cell));
 			const auto cx = static_cast<int32_t>(std::lround((emitter.position[0] - a_originX) / a_cell));
 			const auto cy = static_cast<int32_t>(std::lround((emitter.position[1] - a_originY) / a_cell));
 			for (int32_t y = cy - reach; y <= cy + reach; y++) {
@@ -2008,7 +2034,8 @@ namespace FluidFieldSim
 						continue;
 					const float dx = a_originX + static_cast<float>(x) * a_cell - emitter.position[0];
 					const float dy = a_originY + static_cast<float>(y) * a_cell - emitter.position[1];
-					const float strength = weight * std::clamp(1.0f - std::sqrt(dx * dx + dy * dy) / FOG_SOURCE_RADIUS, 0.0f, 1.0f);
+					const float falloff = std::clamp(1.0f - std::sqrt(dx * dx + dy * dy) / radius, 0.0f, 1.0f);
+					const float strength = weight * falloff * (2.0f - falloff);  // Full in the middle, soft at the edge
 					const std::size_t i = (static_cast<std::size_t>(y) * a_size + x) * 2;
 					if (strength > a_field[i]) {
 						a_field[i] = strength;
