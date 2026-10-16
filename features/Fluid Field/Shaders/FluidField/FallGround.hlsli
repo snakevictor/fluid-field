@@ -25,7 +25,9 @@ namespace FallGround
 		float UScale;        // World units across the flow per repeat of vanilla's texture
 		float SteepFrom;     // The surface's upward normal below which the water is too steep for the flow (vanilla's streaks)
 		float SteepTo;       // ...and above which the flow's streaks are used in full
-		float3 Pad;
+		float SlowFrom;      // Flow speed (1 free) below which vanilla's texture stays
+		float SlowTo;        // ...and above which the streamline texture is used in full
+		float Pad;
 	};
 
 	Texture2D<float> Heights : register(t120);
@@ -108,7 +110,8 @@ namespace FallGround
 		// The flow is solved on the falls seen from above: where the water drops steeply its streamlines
 		// are squeezed to nothing, so there vanilla's own streaks stay
 		const float3 normal = normalize(cross(ddx(a_position), ddy(a_position)));
-		a_weight = smoothstep(0.3, 0.8, a_stream.w) * smoothstep(SteepFrom, SteepTo, abs(normal.z));
+		// Where the flow is slow (pools, eddies) its streamlines loop: vanilla's texture stays there
+		a_weight = smoothstep(0.3, 0.8, a_stream.w) * smoothstep(SteepFrom, SteepTo, abs(normal.z)) * smoothstep(SlowFrom, SlowTo, a_stream.y);
 		a_uvStream = float2(a_stream.x / UScale, a_uv.y);
 	}
 

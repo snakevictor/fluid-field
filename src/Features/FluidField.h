@@ -305,7 +305,9 @@ private:
 		float UScale;
 		float SteepFrom;
 		float SteepTo;
-		float Pad[3];
+		float SlowFrom;
+		float SlowTo;
+		float Pad;
 	};
 	static_assert(sizeof(FallGroundData) == 64);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
@@ -315,7 +317,9 @@ private:
 	static constexpr float FALL_GROUND_CONTACT = 6.0f;    ///< World units over which water fades where it cuts into rock
 	static constexpr float FALL_GROUND_LIFT_MOST = 8.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
 	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
-	static constexpr float FALL_STREAM_U_SCALE = 192.0f;    ///< World units across the flow per repeat of vanilla's texture
+	static constexpr float FALL_STREAM_U_SCALE = 512.0f;  ///< World units across the flow per repeat of the lit surface's texture (about its own repeat)
+	static constexpr float FALL_STREAM_SLOW_FROM = 0.2f;  ///< Flow speed below which vanilla's texture stays (pools, eddies)
+	static constexpr float FALL_STREAM_SLOW_TO = 0.5f;
 	static constexpr float FALL_STREAM_STEEP_FROM = 0.35f;  ///< Upward normal below which vanilla's streaks stay (the flow is solved from above)
 	static constexpr float FALL_STREAM_STEEP_TO = 0.6f;
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;

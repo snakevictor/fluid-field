@@ -1453,7 +1453,8 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	}
 	const FallGroundData on{ { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET,
 		FALL_GROUND_CONTACT, FALL_GROUND_LIFT_MOST, FALL_FOAM_STRENGTH, static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 3)), FALL_STREAM_U_SCALE,
-		FALL_STREAM_STEEP_FROM, FALL_STREAM_STEEP_TO, {} };
+		FALL_STREAM_STEEP_FROM, FALL_STREAM_STEEP_TO,
+		FALL_STREAM_SLOW_FROM, FALL_STREAM_SLOW_TO, 0.0f };
 	context->UpdateSubresource(fallGroundOn.get(), 0, nullptr, &on, 0, 0);
 }
 
