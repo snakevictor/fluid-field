@@ -85,3 +85,20 @@ about it.
 -   **VR support was removed from Community Shaders** in `c9d7c0524` (2026-06-07, #2475), but `CMakePresets.json` still sets `ENABLE_SKYRIM_VR=ON` in the ALL preset; `CMakeLists.txt` no longer reads it. The roadmap's VR compatibility row and spike R9 need revisiting.
 -   **Snow Deformation is not in this repo** (2026-10-13, Phase 0). It lives in open upstream PR #2751 and the fork `josefplyr1/skyrim-community-shaders-dynamic-snow-deformation`. Its Havok input is the same sphere bound that Grass Collision uses, and it reads no velocities, masses or contacts. See `reports/snow-deformation.md`.
 -   **The root `CMakeLists.txt` is not gersemi-clean on `dev`** (2026-10-13, Phase 1). Any edit makes the hook reformat about 90 unrelated lines. Keep Fluid Field build logic out of it (the solver test is a standalone project for this reason).
+
+## Vanilla water planes reach us as whole cells (2026-10-16)
+
+The water planes paired with a waterfall site (WaterSurfaces planes, water objects and cell water
+alike) carry bounds of a whole 4096-unit cell, far wider than their water. Treating "below a
+plane's height inside its bounds" as "under that pool" swallowed most of a waterfall. A pool's
+water has to be confirmed from the captured rock (bed under the level, and the falls' surface at
+the level or the bed shallow under it). (D40)
+
+## Utility shaders got no feature defines; lit draws have a depth pre-pass (2026-10-16)
+
+The lit falls (BSLightingShader) are drawn after a depth pre-pass by BSUtilityShader. Anything that
+removes lit pixels (discard, clip) must be mirrored in Utility.hlsl, or the pre-pass's depth stays
+and the G-buffer shows blank there (milky, then tan). ShaderCache's Utility define builder did not
+add feature defines at all until D40, so a feature's #if in Utility.hlsl was dead code. Also: CS
+compiles shader permutations asynchronously, so the first seconds after a load or a settings change
+render with older shaders; wait 5 to 10 s before judging a capture.
