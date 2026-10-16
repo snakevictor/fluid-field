@@ -4,6 +4,7 @@
 #include "FallStream.h"
 #include "FallSurfaceRenderer.h"
 #include "ShallowWaterSolver.h"
+#include "WindSolver.h"
 
 #include <array>
 #include <cstdint>
@@ -141,6 +142,13 @@ namespace FluidFieldSim
 		 */
 		void AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_time, float a_strength,
 			uint32_t a_maxEmitters, bool a_foam) const;
+
+		/**
+		 * @brief D37: the falls' fog for the ground fog (D21), in the wind grid's logical texel
+		 * coordinates: fog made continuously round the plunges and drops, which the wind then carries.
+		 * Nearest the grid's centre first, up to a_maxEmitters in all.
+		 */
+		void AppendFogEmitters(std::vector<Emitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_strength, uint32_t a_maxEmitters) const;
 
 		/** @brief D35: world units per texture repeat along u and v of a falling-water mesh (its own texel density), or false if unknown. */
 		bool GetTextureScale(const RE::BSGeometry* a_geometry, float a_scale[2]) const;
@@ -293,6 +301,10 @@ namespace FluidFieldSim
 		static constexpr float FALL_VIEW_RANGE = 2500.0f;   ///< World units round the camera the fall debug views draw (D36)
 		static constexpr float SEAM_CROSSING_ANGLE = 0.9f;  ///< Pieces crossing with their faces closer than this (cosine) lie along each other: no seam shows (D36)
 		static constexpr float POOL_COVER = 2.0f;           ///< Water lying under a pool's surface by more than this is the pool's (D36)
+		static constexpr float BURIED_MARGIN = 6.0f;        ///< Vanilla's meshes deeper than this under the captured rock and ground are buried (D37)
+		static constexpr float FOG_SPACING = 64.0f;         ///< World units between the falls' fog sources (D37)
+		static constexpr float FOG_RADIUS = 56.0f;          ///< World units round a source that it fogs
+		static constexpr float FOG_RATE = 2.5f;             ///< Fog made per second at a source's centre, in resting amounts
 		static constexpr float PLUNGE_SPLASH = 220.0f;      ///< World units per second the plunge pushes the simulated water down at its strongest
 		static constexpr float PLUNGE_PULL = 0.35f;         ///< Fraction of the falling water's speed the water below is pulled along at
 		static constexpr int FLOW_DILATE_CELLS = 6;         ///< Cells the flow is carried past the water's edge for the surface

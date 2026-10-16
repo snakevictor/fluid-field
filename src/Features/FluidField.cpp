@@ -68,6 +68,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SprayOpacity,
 	MistAmount,
 	MistOpacity,
+	FallFog,
 	WaterfallDebug)
 
 void FluidField::DrawSettings()
@@ -91,6 +92,7 @@ void FluidField::DrawSettings()
 
 	// Water: the simulated surface, how it moves, how it looks, what pushes it
 	if (ImGui::CollapsingHeader(T(TKEY("water"), "Water"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::PushID("WaterSection");
 		ImGui::Checkbox(T(TKEY("water_enabled"), "Simulate Water"), &settings.WaterEnabled);
 		tooltip(T(TKEY("water_enabled_tooltip"), "Simulates the water around the player: currents, waves, wakes and foam on vanilla's water."));
 
@@ -121,16 +123,18 @@ void FluidField::DrawSettings()
 		tooltip(T(TKEY("wake_strength_tooltip"), "How strongly actors push the water when moving through it."));
 		ImGui::SliderFloat(T(TKEY("splash_strength"), "Splash Strength"), &settings.SplashStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("splash_strength_tooltip"), "How hard jumping or falling into the water, or climbing out of it, pushes the water."));
+		ImGui::PopID();
 	}
 
 	// Waterfalls: vanilla's falling water moved by its solved flow, with spray, mist and foam
 	if (ImGui::CollapsingHeader(T(TKEY("waterfalls_header"), "Waterfalls"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::PushID("WaterfallsSection");
 		ImGui::Checkbox(T(TKEY("waterfalls"), "Waterfalls"), &settings.Waterfalls);
 		tooltip(T(TKEY("waterfalls_tooltip"), "Waterfalls flow round the rock they run over, throw spray and mist, and churn, push and foam the water they land in."));
 		ImGui::Checkbox(T(TKEY("ground_waterfalls"), "Flowing Waterfalls"), &settings.GroundWaterfalls);
 		tooltip(T(TKEY("ground_waterfalls_tooltip"), "Moves vanilla's waterfall textures with each fall's solved flow, so they part round rocks, and adds its spray and mist. Off shows vanilla's waterfalls unchanged."));
-		ImGui::Checkbox(T(TKEY("hide_underwater_falls"), "Hide Falls Under Water"), &settings.HideUnderwaterFalls);
-		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes that dip under the water above or below them."));
+		ImGui::Checkbox(T(TKEY("hide_underwater_falls"), "Hide Buried Falls"), &settings.HideUnderwaterFalls);
+		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes that run on under the water above or below them, or into the rock and ground."));
 		ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Plunge Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("waterfall_strength_tooltip"), "How hard the falls churn, push and foam the water they land in."));
 
@@ -143,11 +147,13 @@ void FluidField::DrawSettings()
 		tooltip(T(TKEY("fall_flow_most_tooltip"), "Most texture repeats the texture moves per cycle; it caps how fast the texture runs."));
 
 		ImGui::SeparatorText(T(TKEY("waterfall_spray"), "Spray and Mist"));
-		ImGui::SliderInt(T(TKEY("spray_amount"), "Spray Amount"), &settings.SprayAmount, 0, 96, "%d", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderInt(T(TKEY("spray_amount"), "Spray Amount"), &settings.SprayAmount, 0, 320, "%d", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat(T(TKEY("spray_size"), "Spray Size"), &settings.SpraySize, 0.5f, 12.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat(T(TKEY("spray_opacity"), "Spray Opacity"), &settings.SprayOpacity, 0.02f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderInt(T(TKEY("mist_amount"), "Mist Amount"), &settings.MistAmount, 0, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat(T(TKEY("mist_opacity"), "Mist Opacity"), &settings.MistOpacity, 0.0f, 0.4f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat(T(TKEY("fall_fog"), "Waterfall Fog"), &settings.FallFog, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("fall_fog_tooltip"), "Fog the falls make round where they drop and land, which the wind carries off. Needs Ground Fog."));
 
 		ImGui::SeparatorText(T(TKEY("waterfall_vanilla_layers"), "Vanilla Layers"));
 		const char* layerNames[] = { T(TKEY("fall_layer_surface"), "Water Surface"), T(TKEY("fall_layer_sheet"), "White-Water Sheet"), T(TKEY("fall_layer_streaks"), "Streak Layers"),
@@ -158,10 +164,12 @@ void FluidField::DrawSettings()
 				settings.FallLayerMask = on ? settings.FallLayerMask | (1u << bit) : settings.FallLayerMask & ~(1u << bit);
 		}
 		tooltip(T(TKEY("fall_layers_tooltip"), "Which parts of vanilla's waterfall models show. The sheet and streak layers smear when the flow moves them."));
+		ImGui::PopID();
 	}
 
 	// Ground fog
 	if (ImGui::CollapsingHeader(T(TKEY("fog"), "Ground Fog"))) {
+		ImGui::PushID("FogSection");
 		ImGui::Checkbox(T(TKEY("interactive_fog"), "Ground Fog"), &settings.InteractiveFog);
 		tooltip(T(TKEY("interactive_fog_tooltip"), "Fog lying on the ground around you, in banks and clearings. It parts and swirls around moving actors and drifts with the weather's wind."));
 		ImGui::SliderFloat(T(TKEY("fog_density"), "Density"), &settings.FogDensity, 0.0f, 0.2f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
@@ -174,10 +182,12 @@ void FluidField::DrawSettings()
 		tooltip(T(TKEY("fog_stir_tooltip"), "How hard actors shove the fog aside and push the air, piling it around them and swirling it behind them."));
 		ImGui::SliderFloat(T(TKEY("fog_refill"), "Refill"), &settings.FogRefillSeconds, 0.5f, 30.0f, "%.1f s", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("fog_refill_tooltip"), "How long shoved fog takes to settle back."));
+		ImGui::PopID();
 	}
 
 	// Quality: grid sizes and the bed and obstacle detection the water stands on
 	if (ImGui::CollapsingHeader(T(TKEY("quality"), "Quality"))) {
+		ImGui::PushID("QualitySection");
 		ImGui::SeparatorText(T(TKEY("water_quality"), "Water"));
 		const auto waterResolutionLabel = std::format("{0} x {0}", settings.WaterResolution);
 		if (ImGui::BeginCombo(T(TKEY("water_resolution"), "Water Resolution"), waterResolutionLabel.c_str())) {
@@ -232,10 +242,12 @@ void FluidField::DrawSettings()
 		tooltip(T(TKEY("ray_spacing_tooltip"), "World units between rays. Smaller finds smaller rocks and casts more rays. Changing it clears the results."));
 		ImGui::Checkbox(T(TKEY("mesh_cut"), "Cut Meshes at the Water Line"), &settings.MeshCutObstacles);
 		tooltip(T(TKEY("mesh_cut_tooltip"), "Finds pillars, posts, walls and boats by cutting their meshes at the water height. Rays then only measure the bed."));
+		ImGui::PopID();
 	}
 
 	// Debug: views, isolation toggles and what the systems found
 	if (ImGui::CollapsingHeader(T(TKEY("debug"), "Debug"))) {
+		ImGui::PushID("DebugSection");
 		ImGui::SeparatorText(T(TKEY("debug_waterfalls"), "Waterfalls"));
 		{
 			const char* fallDebugModes[] = { T(TKEY("waterfall_debug_off"), "Off"), T(TKEY("waterfall_debug_fields"), "Speed, Foam, Water"), T(TKEY("waterfall_debug_direction"), "Flow Direction"),
@@ -307,6 +319,7 @@ void FluidField::DrawSettings()
 			ImGui::Text(T(TKEY("water_verify_result"), "Water checked %u times: error %.2f units, plane vs bound %.2f (%u of %u samples missed)"), stats.runs, stats.maxError,
 				stats.maxPlaneDifference, stats.samplesMissed, stats.samplesChecked);
 		}
+		ImGui::PopID();
 	}
 }
 
@@ -714,6 +727,9 @@ void FluidField::Prepass()
 	if (settings.InteractiveFog) {
 		windEmitters = airSources.Update(playerPos, gridMin, cellSize, settings.GridResolution, deltaTime, settings.FogStir, FluidFieldSim::WindSolver::MAX_EMITTERS - 1);
 	}
+	// The falls' fog round their plunges and drops (D37), carried by the same wind
+	if (settings.InteractiveFog && settings.Waterfalls && settings.GroundWaterfalls)
+		fallSites.AppendFogEmitters(windEmitters, gridMin, cellSize, settings.GridResolution, settings.FallFog, FluidFieldSim::WindSolver::MAX_EMITTERS - 1);
 	if (testPuff)
 		windEmitters.push_back(*testPuff);
 
@@ -1073,7 +1089,7 @@ void FluidField::DrawGroundFogAfterWorld()
 			params.time = fallSurfaceTime;
 			params.debugMode = static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 3));
 			params.drawSurface = false;  // D32: vanilla's own falling water shows; the falls' own surface stays unused
-			params.sprayPerEmitter = static_cast<uint32_t>(std::clamp(settings.SprayAmount, 0, 96));
+			params.sprayPerEmitter = static_cast<uint32_t>(std::clamp(settings.SprayAmount, 0, 320));
 			params.mistPerEmitter = static_cast<uint32_t>(std::clamp(settings.MistAmount, 0, 8));
 			params.spraySize = settings.SpraySize;
 			params.mistOpacity = settings.MistOpacity;

@@ -105,7 +105,7 @@ namespace FluidFieldSim
 		static constexpr float VANILLA_SCROLL = 0.6f;
 		static constexpr uint32_t SPRAY_PER_EMITTER = 12;  ///< Spray particles alive per emitter at once
 		static constexpr uint32_t MIST_PER_EMITTER = 3;    ///< Mist puffs alive per emitter at once
-		static constexpr uint32_t MAX_PARTICLES = 600000;
+		static constexpr uint32_t MAX_PARTICLES = 2000000;
 		static constexpr float SPRAY_STRETCH = 0.012f;  ///< Seconds of motion each droplet is drawn smeared over
 		static constexpr float SPRAY_LIFE = 0.9f;       ///< Seconds
 		static constexpr float SPRAY_SPEED = 260.0f;    ///< World units per second thrown up and out at full strength

@@ -96,11 +96,12 @@ struct FluidField : OverlayFeature
 		float FallFlowPeriod = 0.5f;         ///< Seconds per cycle of the falls' flowmap (D32): shorter stretches the texture less, pulses more
 		float FallFlowMost = 2.5f;           ///< Most texture repeats the flowmap moves the texture per cycle
 		float FallAcceleration = 0.6f;       ///< How much of gravity's pull the falling water keeps as speed (D33; 0: the solved flow only)
-		int SprayAmount = 32;                ///< Spray droplets alive per emitter at once (D31)
-		float SpraySize = 2.5f;              ///< Spray droplet width, world units
-		float SprayOpacity = 0.35f;          ///< How opaque each droplet is
-		int MistAmount = 2;                  ///< Mist puffs alive per emitter at once
-		float MistOpacity = 0.07f;           ///< How dense each mist puff is
+		int SprayAmount = 160;               ///< Spray droplets alive per emitter at once (D31)
+		float SpraySize = 1.4f;              ///< Spray droplet width, world units
+		float SprayOpacity = 0.2f;           ///< How opaque each droplet is
+		int MistAmount = 4;                  ///< Mist puffs alive per emitter at once
+		float MistOpacity = 0.16f;           ///< How dense each mist puff is
+		float FallFog = 1.0f;                ///< How much fog the falls make for the ground fog (D37)
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
 		bool InteractiveFog = true;          ///< Ground fog that actors and the weather's wind move (D21)
 		float FogDensity = 0.08f;            ///< Ground fog extinction per world unit inside the layer, in its banks

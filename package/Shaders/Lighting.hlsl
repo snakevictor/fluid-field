@@ -1041,7 +1041,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	{
 		// D36: falling water under the pools' surface is the pool's, and not drawn
 		fallPool = FallGround::Pool(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy, fallPoolHeight);
-		if (FallGround::HideUnderwater && fallPool && input.WorldPosition.z + FrameBuffer::CameraPosAdjust.z < fallPoolHeight - 1.0)
+		if (FallGround::Buried(input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz))
 			discard;
 #		if !defined(MODELSPACENORMALS)
 		// The mesh's interpolated frame: tangent, bitangent and normal are the columns of TBN (D35)

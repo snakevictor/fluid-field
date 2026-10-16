@@ -395,6 +395,7 @@ namespace FluidFieldSim
 					}
 				}
 			}
+			input.cover = cover;
 			for (std::size_t i = 0; i < kind.size(); i++) {
 				if (kind[i] != FallStream::Water || cover[i] <= NO_SURFACE || cover[i] < input.surface[i] - POOL_COVER)
 					continue;
@@ -915,8 +916,23 @@ namespace FluidFieldSim
 			const float drop = std::max(flow.head - a_p[2], 0.0f);
 			return std::sqrt(speed * speed + 2.0f * KEPT_GRAVITY * drop);
 		};
+		// D37: vanilla's meshes reach on into rock, the ground and the pools, where nothing of them shows:
+		// nothing is thrown from there
+		const auto buried = [&](const float a_p[3], bool a_pools) {
+			const auto x = static_cast<int32_t>(std::lround((a_p[0] - a_originX) / cell));
+			const auto y = static_cast<int32_t>(std::lround((a_p[1] - a_originY) / cell));
+			if (x < 0 || y < 0 || x >= w || y >= h)
+				return false;
+			const std::size_t i = static_cast<std::size_t>(y) * w + x;
+			if (a_flow.bed.size() == static_cast<std::size_t>(w) * h && a_flow.bed[i] > FallCapture::NONE && a_p[2] < a_flow.bed[i] - BURIED_MARGIN)
+				return true;
+			return a_pools && a_flow.cover.size() == static_cast<std::size_t>(w) * h && a_p[2] < a_flow.cover[i] - POOL_COVER;
+		};
 		std::unordered_map<int64_t, FallEmitter> chosen;
 		const auto offer = [&](const float a_p[3], const float a_n[3], float a_strength, FallEmitterKind a_kind, float a_spacing) {
+			// Plunges stand at the pool's own level: only the rock hides them
+			if (buried(a_p, a_kind != FallEmitterKind::Plunge))
+				return;
 			const auto key = (static_cast<int64_t>(std::floor(a_p[0] / a_spacing)) << 40) ^ (static_cast<int64_t>(std::floor(a_p[1] / a_spacing)) << 18) ^
 			                 static_cast<int64_t>(std::floor(a_p[2] / a_spacing)) ^ (static_cast<int64_t>(a_kind) << 60);
 			auto [it, added] = chosen.try_emplace(key);
@@ -1147,6 +1163,8 @@ namespace FluidFieldSim
 					}
 					if (!seam)
 						continue;
+					if (buried(p, true))
+						continue;
 					const float* n0 = triangle.normal[use.corner];
 					const float* n1 = triangle.normal[(use.corner + 1) % 3];
 					seams.push_back({ p[0], p[1], p[2], n0[0] + n1[0], n0[1] + n1[1], n0[2] + n1[2] });
@@ -1263,6 +1281,8 @@ namespace FluidFieldSim
 										seam[c] = hits[from][c] + (hits[to][c] - hits[from][c]) * k;
 										seam[3 + c] = first.normal[0][c] + first.normal[1][c] + first.normal[2][c];
 									}
+									if (buried(seam.data(), true))
+										continue;
 									seams.push_back(seam);
 									seamKinds.push_back(1);
 								}
@@ -1361,6 +1381,46 @@ namespace FluidFieldSim
 				.depthRate = -PLUNGE_SPLASH * burst * plunge->strength * a_strength,
 				.velocity = { plunge->direction[0] * pull, plunge->direction[1] * pull },
 				.pad1 = { 60.0f * plunge->strength * a_strength, a_foam ? 4.0f * std::max(plunge->strength, 0.6f) * a_strength : 0.0f } });
+		}
+	}
+
+	void FallSites::AppendFogEmitters(std::vector<Emitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_strength, uint32_t a_maxEmitters) const
+	{
+		if (a_strength <= 0.0f || !(a_cellSize > 0.0f) || a_emitters.size() >= a_maxEmitters)
+			return;
+		// The plunges and the drops, thinned to one every FOG_SPACING, nearest the grid's centre first
+		struct Source
+		{
+			float x, y, strength;
+		};
+		std::unordered_map<int64_t, Source> thinned;
+		const auto add = [&](float a_x, float a_y, float a_strength) {
+			const auto key = (static_cast<int64_t>(std::floor(a_x / FOG_SPACING)) << 32) ^ static_cast<uint32_t>(static_cast<int32_t>(std::floor(a_y / FOG_SPACING)));
+			auto [it, added] = thinned.try_emplace(key, Source{ a_x, a_y, a_strength });
+			if (!added && it->second.strength < a_strength)
+				it->second = { a_x, a_y, a_strength };
+		};
+		for (const auto& plunge : surfacePlunges)
+			add(plunge.position[0], plunge.position[1], plunge.strength);
+		for (const auto& emitter : surfaceEmitters) {
+			if (static_cast<FallEmitterKind>(static_cast<uint32_t>(emitter.kind)) == FallEmitterKind::Lip)
+				add(emitter.position[0], emitter.position[1], 0.6f * emitter.strength);
+		}
+		const float centre = 0.5f * static_cast<float>(a_gridRes);
+		std::vector<std::pair<float, Source>> order;
+		for (const auto& [key, source] : thinned) {
+			const float tx = source.x / a_cellSize - static_cast<float>(a_gridMin[0]);
+			const float ty = source.y / a_cellSize - static_cast<float>(a_gridMin[1]);
+			if (tx < 0.0f || ty < 0.0f || tx >= static_cast<float>(a_gridRes) || ty >= static_cast<float>(a_gridRes))
+				continue;
+			order.emplace_back((tx - centre) * (tx - centre) + (ty - centre) * (ty - centre), Source{ tx, ty, source.strength });
+		}
+		std::sort(order.begin(), order.end(), [](const auto& a_a, const auto& a_b) { return a_a.first < a_b.first; });
+		for (const auto& [distance, source] : order) {
+			if (a_emitters.size() >= a_maxEmitters)
+				break;
+			// No push on the air and no shove of the fog: only fog made, round the point
+			a_emitters.push_back({ .position = { source.x, source.y }, .radius = std::max(FOG_RADIUS / a_cellSize, 1.0f), .pad0 = 0.0f, .velocity = { 0.0f, 0.0f }, .pad1 = { FOG_RATE * source.strength * a_strength, 0.0f } });
 		}
 	}
 

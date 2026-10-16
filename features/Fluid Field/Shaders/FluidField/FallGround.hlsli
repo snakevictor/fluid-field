@@ -72,6 +72,20 @@ namespace FallGround
 		return a_height > NONE;
 	}
 
+	/** D37: falling water this far under the captured rock and ground is buried in it. */
+	static const float BURIED = 6.0;
+
+	/** Whether falling water at a world position runs on under the pools or into the rock and ground, where it is not drawn (D36, D37). */
+	bool Buried(float3 a_position)
+	{
+		if (!HideUnderwater)
+			return false;
+		float pool, ground;
+		if (Pool(a_position.xy, pool) && a_position.z < pool - 1.0)
+			return true;
+		return Height(a_position.xy, ground) && a_position.z < ground - BURIED;
+	}
+
 	/**
 	 * The falls' flow at a world position, bilinear over its water texels only: velocity (x, y),
 	 * foam, and how much water is around (0 to 1); and the head the water there has fallen from.

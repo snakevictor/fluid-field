@@ -749,8 +749,7 @@ PS_OUTPUT main(PS_INPUT input)
 		[branch] if (FallGround::Enabled && FallGround::DebugMode < 3)
 		{
 			// D36: falling water under the pools' surface is the pool's, and not drawn
-			float poolHeight;
-			if (FallGround::HideUnderwater && FallGround::Pool(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy, poolHeight) && input.WorldPosition.z + FrameBuffer::CameraPosAdjust.z < poolHeight - 1.0)
+			if (FallGround::Buried(input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz))
 				discard;
 			const FallGround::FlowSample flow = FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, 0.0, 0.0, 0.0);
 			fallStream = flow.stream;

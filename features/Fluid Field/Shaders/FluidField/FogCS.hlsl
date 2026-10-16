@@ -31,7 +31,8 @@ struct Emitter
 	float Radius;     // Texels, Gaussian falloff
 	float Speed;      // The actor's speed, world units per second
 	float2 Velocity;  // Wind impulse, along the actor's motion
-	float2 Pad1;
+	float FogRate;    // Fog made per second at the centre, in resting amounts (the falls' fog, D37); 0 for actors
+	float Pad1;
 };
 
 /** Fog is thick and heavy: it follows the air only partly, and smooths out as it moves. */
@@ -116,6 +117,14 @@ float2 Displacement(float2 position)
 	fog *= exp(-StirRate * stirred * DeltaTime);
 	const float resting = FogPattern::Resting((float2(GridMin + logical) + 0.5) * CellSize, PatternOffset);
 	fog = resting + (fog - resting) * exp(-RefillRate * DeltaTime);
+	// The falls make fog round their plunges and drops (D37); the wind carries it off
+	for (uint s = 0; s < EmitterCount; s++) {
+		Emitter e = Emitters[s];
+		if (e.FogRate <= 0.0)
+			continue;
+		float2 d = position - e.Position;
+		fog += e.FogRate * DeltaTime * exp(-dot(d, d) / max(e.Radius * e.Radius, 0.25));
+	}
 
 	FogOut[id] = clamp(fog, 0.0, MaxFog);
 }

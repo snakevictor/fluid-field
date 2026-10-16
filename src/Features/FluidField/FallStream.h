@@ -41,6 +41,7 @@ namespace FluidFieldSim
 			std::vector<float> surface;  ///< Water surface height per cell (any value on walls)
 			std::vector<float> bed;      ///< Rock height per cell
 			std::vector<uint8_t> kind;   ///< Cell per cell
+			std::vector<float> cover;    ///< The pools' surface over each cell, or below any water where none (D36)
 		};
 
 		struct Result
@@ -51,6 +52,8 @@ namespace FluidFieldSim
 			std::vector<float> speed;     ///< Flow speed per cell, 1 for free unit flow; 0 on walls
 			std::vector<float> foam;      ///< 0 to 1: where the water piles against rock, behind it, and where it squeezes through
 			std::vector<float> rockFoam;  ///< The foam from rock alone (not where the falls meet still water), where the water strikes it (D35)
+			std::vector<float> bed;       ///< Input::bed, for what of vanilla's meshes is buried (D37)
+			std::vector<float> cover;     ///< Input::cover, for what is under the pools (D37)
 			std::vector<uint8_t> water;
 			std::vector<float> vx, vy;  ///< Flow velocity per cell (unit drive)
 			std::vector<float> level;   ///< The water surface, lightly smoothed over the water (for the mesh)
@@ -80,6 +83,7 @@ namespace FluidFieldSim
 		static constexpr float HEAD_MOST = 900.0f;       ///< Most height a head stands above the surface
 		static constexpr uint32_t COURSE_SWEEPS = 6000;  ///< Most sweeps for the course potential (D34)
 		static constexpr float COURSE_FORWARD = 0.35f;   ///< Least speed along the course, as a fraction of free flow: the water never runs back
+		static constexpr float COURSE_START = 0.35f;     ///< Up to this far along the course (0 at the inflow, 1 at the outflow) the water is held to it: no backflow at the falls' start (D37)
 
 		static Result Solve(const Input& a_input);
 	};

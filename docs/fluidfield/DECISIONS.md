@@ -864,3 +864,30 @@ Entry format:
     water falls into the shallow water should be completely foamy"; "refactor
     our page on the CS menu")
 -   References: D30, D34, D35
+
+## D37: Buried falls hidden; the falls' start held to the course; spray only from visible water; falls' fog
+
+-   Date: 2026-10-16
+-   Phase / spike: D36 follow-up, from @Victor's review screenshots
+-   Decision: Vanilla's fall meshes run on into rock, the ground and the
+    pools. Parts more than 6 units under the captured rock and ground, or
+    under a pool's surface, are discarded in the shaders (Hide Buried Falls)
+    and throw no spray, make no seams and no emitters (the solve's result
+    now carries the bed and the pools' cover). Risk noted: water flowing
+    under an overhang the capture took as ground would hide too. Near the
+    falls' start (the first 0.35 of the course potential) the course rules:
+    the water runs on at free speed at least and its sideways part shrinks
+    by up to 85%, so the start never flows back. Spray defaults are finer
+    and denser (1.4 units, opacity 0.2, 160 per emitter, up to 2 million),
+    mist denser (4 per emitter, opacity 0.16). The falls feed the ground fog
+    (D21): every 64 units along their plunges and drops a source makes fog
+    (2.5 resting amounts per second, 56-unit radius), which the wind carries
+    off (Waterfall Fog; needs Ground Fog). The menu's duplicate IDs (section
+    headers sharing labels with their checkboxes) are scoped per section.
+-   Decided by: @Victor ("at the start of the fall, velocity and gravity
+    should be the strongest driving factors"; "they should always come from
+    water"; "smaller, fainter and like 5x denser"; "continuously generated,
+    short lived but simulated fog"; "completely invisible from the point
+    where they enter a rock mesh or a shallow water mesh or even the
+    ground/landscape")
+-   References: D21, D34, D35, D36

@@ -199,6 +199,8 @@ namespace FluidFieldSim
 		result.speed.assign(count, 0.0f);
 		result.foam.assign(count, 0.0f);
 		result.rockFoam.assign(count, 0.0f);
+		result.bed = a_input.bed;
+		result.cover = a_input.cover;
 		result.water.assign(count, 0);
 		result.vx.assign(count, 0.0f);
 		result.vy.assign(count, 0.0f);
@@ -302,8 +304,12 @@ namespace FluidFieldSim
 							continue;
 						const float dx = sx / slope, dy = sy / slope;
 						const float along = result.vx[i] * dx + result.vy[i] * dy;
-						const float sideX = result.vx[i] - dx * along, sideY = result.vy[i] - dy * along;
-						const float forward = std::max(along, COURSE_FORWARD);
+						// D37: near the start the course and gravity rule: the water runs straight on at free speed at
+						// least, and turns aside less, so the falls' start never flows back however the solve churns
+						const float start = 1.0f - std::clamp(course[i] / COURSE_START, 0.0f, 1.0f);
+						const float side = 1.0f - 0.85f * start;
+						const float sideX = (result.vx[i] - dx * along) * side, sideY = (result.vy[i] - dy * along) * side;
+						const float forward = std::max(along, COURSE_FORWARD + (1.0f - COURSE_FORWARD) * start);
 						result.vx[i] = sideX + dx * forward;
 						result.vy[i] = sideY + dy * forward;
 						result.speed[i] = std::sqrt(result.vx[i] * result.vx[i] + result.vy[i] * result.vy[i]);
