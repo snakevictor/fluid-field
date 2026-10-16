@@ -922,3 +922,23 @@ Entry format:
     'waterfall fog'"; "use the existing vanilla fog particles in waterfalls to
     drive OUR fog and particles effects too")
 -   References: D21, D36, D37
+
+## D39: Fog from every collision; whitening in the water's hue, with a toggle
+
+-   Date: 2026-10-16
+-   Phase / spike: D38 follow-up, from @Victor's review
+-   Decision: The waterfall fog rises wherever the falls' water strikes rock
+    or other water, drops and plunges, not only over the pools: their
+    emitters are splatted (40-unit radius) into a fog-source map, strength and
+    height, carried in the ground map's third and fourth channels (now
+    RGBA32F), and the fog shader adds fog round each source's height (risen
+    20 units, spread 45) with one lookup per sample. The lit falls' whitening
+    keeps the water's own hue (a fixed white albedo lit warm and showed
+    orange at dawn) and softens the 16-unit foam map over its neighbourhood
+    (it showed as blocks); Whiten Falls turns it off for comparison. Rock
+    under the falls stays out of their solve (only rock through the surface
+    is a wall, D38); the shallow water's depth handling is unchanged.
+-   Decided by: @Victor ("fog should also be generated along colisions
+    between water meshes and water meshes with other meshes like stones";
+    "for the waterfall though we don't care about whats not poking through")
+-   References: D34, D38

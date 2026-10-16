@@ -35,10 +35,10 @@ namespace FallGround
 		uint HideUnderwater;   // Falling water under the pools' surface is not drawn (D36)
 		float PoolFoamHeight;  // World units above the water below over which the falls foam into it
 		float3 CameraOffset;   // FrameBuffer::CameraPosAdjust, for the vertex shaders that have none (D38)
-		float Pad3;
+		uint Whitening;        // The falls whiten with their foam and speed (D34); 0 for the debug comparison (D39)
 	};
 
-	Texture2D<float2> Heights : register(t120);  // The captured rock, and the pools' surface (D36)
+	Texture2D<float4> Heights : register(t120);  // The captured rock, the pools' surface (D36), and the falls' fog sources: strength and height (D39)
 	Texture2D<float> SceneDepth : register(t121);
 	Texture2D<float4> Stream : register(t122);  // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
 
@@ -72,6 +72,21 @@ namespace FallGround
 			return false;
 		a_height = Heights.Load(int3(texel, 0)).y;
 		return a_height > NONE;
+	}
+
+	/**
+	 * D39: the falls' fog sources over a world position, where their water strikes rock or other water,
+	 * drops and plunges: how strongly (0 to 1), and the height they stand at.
+	 */
+	float FogSource(float2 a_position, out float a_height)
+	{
+		const int2 texel = int2(floor((a_position - Origin) * InverseCell + 0.5));
+		a_height = 0.0;
+		if (any(texel < 0) || any(texel >= int(Size)))
+			return 0.0;
+		const float4 map = Heights.Load(int3(texel, 0));
+		a_height = map.w;
+		return map.z;
 	}
 
 	/** D37: falling water this far under the captured rock and ground is buried in it. */

@@ -92,6 +92,7 @@ struct FluidField : OverlayFeature
 		uint32_t FallLayerMask = 0x1;        ///< Which parts of vanilla's falling-water models show while waterfall effects are hidden (bits: inner surface, white-water sheet, streaks, particles)
 		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		bool HideUnderwaterFalls = true;     ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
+		bool FallWhitening = true;           ///< The falls whiten with their foam and speed (D34)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		float FallFlowPeriod = 0.5f;         ///< Seconds per cycle of the falls' flowmap (D32): shorter stretches the texture less, pulses more
 		float FallFlowMost = 2.5f;           ///< Most texture repeats the flowmap moves the texture per cycle
@@ -328,7 +329,7 @@ private:
 		uint32_t HideUnderwater;
 		float PoolFoamHeight;
 		float CameraOffset[3];
-		float Pad3;
+		uint32_t Whitening;
 	};
 	static_assert(sizeof(FallGroundData) == 112);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
@@ -355,7 +356,8 @@ private:
 	uint64_t fallGroundVersion = UINT64_MAX;
 	bool fallGroundBound = false;  ///< The last effect draw bound the grounding
 	std::vector<float> fallGroundScratch;
-	std::vector<float> fallPoolScratch;  ///< FallSites::BuildPoolMap, interleaved with the ground into the ground map's second channel
+	std::vector<float> fallPoolScratch;
+	std::vector<float> fallFogScratch;  ///< FallSites::BuildFogMap: per texel strength and height (D39)  ///< FallSites::BuildPoolMap, interleaved with the ground into the ground map's second channel
 	/** @brief Rebuilds the ground and flow maps when the sites change or the player moves far; uploads the constants. */
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
 	void ReleaseFallGround();

@@ -59,6 +59,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	WaterfallStrength,
 	GroundWaterfalls,
 	HideUnderwaterFalls,
+	FallWhitening,
 	FallLayerMask,
 	FallFlowPeriod,
 	FallFlowMost,
@@ -135,6 +136,8 @@ void FluidField::DrawSettings()
 		ImGui::Checkbox(T(TKEY("ground_waterfalls"), "Flowing Waterfalls"), &settings.GroundWaterfalls);
 		tooltip(T(TKEY("ground_waterfalls_tooltip"), "Moves vanilla's waterfall textures with each fall's solved flow, so they part round rocks, and adds its spray and mist. Off shows vanilla's waterfalls unchanged."));
 		ImGui::Checkbox(T(TKEY("hide_underwater_falls"), "Hide Buried Falls"), &settings.HideUnderwaterFalls);
+		ImGui::Checkbox(T(TKEY("fall_whitening"), "Whiten Falls"), &settings.FallWhitening);
+		tooltip(T(TKEY("fall_whitening_tooltip"), "Whitens the falling water where it foams (against rock, at seams, into the water below) and where it falls fast. Off shows the flowing texture alone, for comparison."));
 		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes that run on under the water above or below them, or into the rock and ground."));
 		ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Plunge Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("waterfall_strength_tooltip"), "How hard the falls churn, push and foam the water they land in."));
@@ -1449,7 +1452,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		const D3D11_SUBRESOURCE_DATA offData{ &off, 0, 0 };
 		D3D11_TEXTURE2D_DESC streamDesc = desc;
 		streamDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-		desc.Format = DXGI_FORMAT_R32G32_FLOAT;  // The rock, and the pools' surface (D36)
+		desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;  // The rock, the pools' surface (D36), the fog sources' strength and height (D39)
 		if (FAILED(device->CreateTexture2D(&desc, nullptr, fallGroundTexture.put())) || FAILED(device->CreateShaderResourceView(fallGroundTexture.get(), nullptr, fallGroundSRV.put())) ||
 			FAILED(device->CreateTexture2D(&streamDesc, nullptr, fallStreamTexture.put())) || FAILED(device->CreateShaderResourceView(fallStreamTexture.get(), nullptr, fallStreamSRV.put())) ||
 			FAILED(device->CreateBuffer(&onDesc, &offData, fallGroundOn.put())) || FAILED(device->CreateBuffer(&cbDesc, &offData, fallGroundOff.put()))) {
@@ -1475,19 +1478,22 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		fallGroundOrigin[1] = std::floor((a_playerPos.y - half) / FALL_GROUND_CELL) * FALL_GROUND_CELL;
 		fallSites.BuildGroundMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallGroundScratch);
 		fallSites.BuildPoolMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallPoolScratch);
-		std::vector<float> interleaved(fallGroundScratch.size() * 2);
+		fallSites.BuildFogMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallFogScratch);
+		std::vector<float> interleaved(fallGroundScratch.size() * 4);
 		for (std::size_t i = 0; i < fallGroundScratch.size(); i++) {
-			interleaved[i * 2] = fallGroundScratch[i];
-			interleaved[i * 2 + 1] = fallPoolScratch[i];
+			interleaved[i * 4] = fallGroundScratch[i];
+			interleaved[i * 4 + 1] = fallPoolScratch[i];
+			interleaved[i * 4 + 2] = fallFogScratch[i * 2];
+			interleaved[i * 4 + 3] = fallFogScratch[i * 2 + 1];
 		}
-		context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, interleaved.data(), FALL_GROUND_SIZE * 2 * sizeof(float), 0);
+		context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, interleaved.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
 		fallSites.BuildStreamMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallStreamScratch);
 		context->UpdateSubresource(fallStreamTexture.get(), 0, nullptr, fallStreamScratch.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
 	}
 	fallGroundData = { { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET,
 		FALL_GROUND_CONTACT, FALL_GROUND_LIFT_MOST, FALL_FOAM_STRENGTH, static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 3)), fallSurfaceTime,
 		FluidFieldSim::FallStream::BASE_SPEED, std::max(settings.FallFlowPeriod, 0.05f), std::max(settings.FallFlowMost, 0.1f), FALL_STREAM_STEEP_FROM, FALL_STREAM_STEEP_TO, {},
-		FALL_GRAVITY * std::max(settings.FallAcceleration, 0.0f), 0.0f, {}, settings.HideUnderwaterFalls ? 1u : 0u, FALL_POOL_FOAM };
+		FALL_GRAVITY * std::max(settings.FallAcceleration, 0.0f), 0.0f, {}, settings.HideUnderwaterFalls ? 1u : 0u, FALL_POOL_FOAM, {}, settings.FallWhitening ? 1u : 0u };
 }
 
 void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)

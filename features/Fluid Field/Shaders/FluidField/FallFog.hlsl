@@ -61,6 +61,9 @@ static const float WISP_SIZE = 90.0;
 static const float WISP_PERIOD = 3.0;
 /** How thick vanilla's mist volumes are, as a share of the fog over wholly white water: their bounds are big boxes. */
 static const float MIST_VOLUME_SHARE = 0.12;
+/** World units the fog round a strike stands above it, and how far up and down it spreads from there (D39). */
+static const float SOURCE_LIFT = 20.0;
+static const float SOURCE_SPREAD = 45.0;
 
 float Hash3(float3 a_p)
 {
@@ -136,6 +139,16 @@ float FogAt(float3 a_position)
 			const float wisps = Wisps(a_position, flowFoam.xy);
 			density = FogDensity * white * smoothstep(0.2, 0.75, wisps) * (1.0 - smoothstep(0.35, 1.0, above / top));
 		}
+	}
+	// Where the falls' water strikes rock or other water, drops and plunges (D39): fog round that height,
+	// risen a little
+	float sourceHeight;
+	const float source = FallGround::FogSource(a_position.xy, sourceHeight);
+	if (source > 0.01) {
+		const float lift = (a_position.z - sourceHeight - SOURCE_LIFT) / SOURCE_SPREAD;
+		const float around = exp(-lift * lift);
+		if (around > 0.01)
+			density += FogDensity * source * around * smoothstep(0.25, 0.75, Wisps(a_position, 0.0));
 	}
 	// Where vanilla's waterfall mist effects stand
 	for (uint i = 0; i < MistVolumeCount; i++) {

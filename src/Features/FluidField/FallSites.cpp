@@ -1973,6 +1973,33 @@ namespace FluidFieldSim
 		}
 	}
 
+	void FallSites::BuildFogMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
+	{
+		a_field.assign(static_cast<std::size_t>(a_size) * a_size * 2, 0.0f);
+		const auto reach = static_cast<int32_t>(std::ceil(FOG_SOURCE_RADIUS / a_cell));
+		for (const auto& emitter : surfaceEmitters) {
+			// Strikes on rock and other water, and plunges, fog the most; drops a little less
+			const auto kind = static_cast<FallEmitterKind>(static_cast<uint32_t>(emitter.kind));
+			const float weight = emitter.strength * (kind == FallEmitterKind::Lip ? 0.6f : 1.0f);
+			const auto cx = static_cast<int32_t>(std::lround((emitter.position[0] - a_originX) / a_cell));
+			const auto cy = static_cast<int32_t>(std::lround((emitter.position[1] - a_originY) / a_cell));
+			for (int32_t y = cy - reach; y <= cy + reach; y++) {
+				for (int32_t x = cx - reach; x <= cx + reach; x++) {
+					if (x < 0 || y < 0 || x >= static_cast<int32_t>(a_size) || y >= static_cast<int32_t>(a_size))
+						continue;
+					const float dx = a_originX + static_cast<float>(x) * a_cell - emitter.position[0];
+					const float dy = a_originY + static_cast<float>(y) * a_cell - emitter.position[1];
+					const float strength = weight * std::clamp(1.0f - std::sqrt(dx * dx + dy * dy) / FOG_SOURCE_RADIUS, 0.0f, 1.0f);
+					const std::size_t i = (static_cast<std::size_t>(y) * a_size + x) * 2;
+					if (strength > a_field[i]) {
+						a_field[i] = strength;
+						a_field[i + 1] = emitter.position[2];
+					}
+				}
+			}
+		}
+	}
+
 	void FallSites::Summarise()
 	{
 		// One line per cell (by each site's centroid), logged when it changes

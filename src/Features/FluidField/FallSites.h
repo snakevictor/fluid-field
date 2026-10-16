@@ -199,6 +199,13 @@ namespace FluidFieldSim
 		 */
 		void BuildPoolMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const;
 
+		/**
+		 * @brief D39: the falls' fog sources over a ground map's lattice: per texel, two floats: how
+		 * strongly fog rises there (0 to 1; strikes on rock and other water, drops, plunges) and the
+		 * height it rises from.
+		 */
+		void BuildFogMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
+
 		/** @brief Prints each cell's summary to the game console too, not only the log. */
 		void SetConsoleSummary(bool a_print) { consoleSummary = a_print; }
 
@@ -307,6 +314,7 @@ namespace FluidFieldSim
 		static constexpr float FOG_SPACING = 64.0f;         ///< World units between the falls' fog sources (D37)
 		static constexpr float FOG_RADIUS = 56.0f;          ///< World units round a source that it fogs
 		static constexpr float FOG_RATE = 2.5f;             ///< Fog made per second at a source's centre, in resting amounts
+		static constexpr float FOG_SOURCE_RADIUS = 40.0f;   ///< World units round each strike, drop and plunge that its fog spreads (D39)
 		static constexpr float PLUNGE_SPLASH = 220.0f;      ///< World units per second the plunge pushes the simulated water down at its strongest
 		static constexpr float PLUNGE_PULL = 0.35f;         ///< Fraction of the falling water's speed the water below is pulled along at
 		static constexpr int FLOW_DILATE_CELLS = 6;         ///< Cells the flow is carried past the water's edge for the surface

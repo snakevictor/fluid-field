@@ -892,6 +892,8 @@
     "feature.fluid_field.fall_view_meshes": "Fall Meshes",
     "feature.fluid_field.fall_view_off": "Off",
     "feature.fluid_field.fall_view_tooltip": "Fall Meshes: vanilla's falling-water triangles, one colour per mesh, red where they run inside rock. Intersections: where the meshes meet (yellow: a mesh ends against another; magenta: two cross), where they cross the water above or below (green), and the spray emitters (cyan: drops, blue: plunges, orange: strikes on rock or another mesh). Drawn through everything. Not saved.",
+    "feature.fluid_field.fall_whitening": "Whiten Falls",
+    "feature.fluid_field.fall_whitening_tooltip": "Whitens the falling water where it foams (against rock, at seams, into the water below) and where it falls fast. Off shows the flowing texture alone, for comparison.",
     "feature.fluid_field.far_water": "Far Water",
     "feature.fluid_field.far_water_scale": "Far Water Scale",
     "feature.fluid_field.far_water_scale_tooltip": "How much wider the far water is than the detailed water, at the same resolution.",
