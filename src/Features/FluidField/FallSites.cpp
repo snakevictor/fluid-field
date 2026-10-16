@@ -336,30 +336,33 @@ namespace FluidFieldSim
 			for (uint32_t x = 0; x < input.width; x++)
 				input.bed[static_cast<std::size_t>(y) * input.width + x] = a_capture.At(x, y);
 		}
-		// D40: vanilla's water planes are whole cells (4096 units), far wider than their water. A pool's water
-		// is only where the rock lies under its level and either the falls' own surface lies at that level or
-		// the rock lies shallow under it (a river or pool bed, not the face of a fall)
+		// D40, D45: the pools' water. The site's paired planes miss pools (a tier between two falls is in
+		// none), and planes are whole cells, far wider than their water, so the engine's own water height
+		// is sampled on every cell. A pool's water is where the rock lies under it and either the falls'
+		// own surface lies at its level or the rock lies shallow under it (a river or pool bed, not the face
+		// of a fall)
 		input.cover.assign(input.surface.size(), NO_SURFACE);
 		{
 			const auto cw = static_cast<int32_t>(input.width);
 			const auto ch = static_cast<int32_t>(input.height);
-			for (const auto& plane : a_site.planes) {
-				const auto x0 = std::max(0, static_cast<int32_t>(std::ceil((plane.min[0] - a_capture.GetOriginX()) / FallCapture::CELL)));
-				const auto y0 = std::max(0, static_cast<int32_t>(std::ceil((plane.min[1] - a_capture.GetOriginY()) / FallCapture::CELL)));
-				const auto x1 = std::min(cw - 1, static_cast<int32_t>(std::floor((plane.max[0] - a_capture.GetOriginX()) / FallCapture::CELL)));
-				const auto y1 = std::min(ch - 1, static_cast<int32_t>(std::floor((plane.max[1] - a_capture.GetOriginY()) / FallCapture::CELL)));
-				for (int32_t y = y0; y <= y1; y++) {
-					for (int32_t x = x0; x <= x1; x++) {
-						const std::size_t i = static_cast<std::size_t>(y) * cw + x;
-						const float bed = input.bed[i];
-						const float mesh = input.surface[i];
-						if (bed <= FallCapture::NONE || bed >= plane.height - POOL_COVER)
-							continue;
-						const bool meshAtLevel = mesh > NO_SURFACE && mesh >= plane.height - POOL_BAND;
-						const bool shallowBed = bed >= plane.height - POOL_SHALLOW;
-						if (meshAtLevel || shallowBed)
-							input.cover[i] = std::max(input.cover[i], plane.height);
+			for (int32_t y = 0; y < ch; y++) {
+				for (int32_t x = 0; x < cw; x++) {
+					const std::size_t i = static_cast<std::size_t>(y) * cw + x;
+					float level = NO_SURFACE;
+					if (waterSurfaces) {
+						float height;
+						if (waterSurfaces->SampleHeight(a_capture.GetOriginX() + static_cast<float>(x) * FallCapture::CELL, a_capture.GetOriginY() + static_cast<float>(y) * FallCapture::CELL, height) !=
+							WaterSurfaces::Source::None)
+							level = height;
 					}
+					const float bed = input.bed[i];
+					const float mesh = input.surface[i];
+					if (level <= NO_SURFACE || bed <= FallCapture::NONE || bed >= level - POOL_COVER)
+						continue;
+					const bool meshAtLevel = mesh > NO_SURFACE && mesh >= level - POOL_BAND;
+					const bool shallowBed = bed >= level - POOL_SHALLOW;
+					if (meshAtLevel || shallowBed)
+						input.cover[i] = level;
 				}
 			}
 			for (std::size_t i = 0; i < input.surface.size(); i++)
@@ -1017,7 +1020,22 @@ namespace FluidFieldSim
 		std::unordered_map<int64_t, FallPlunge> plunges;
 		for (const auto& vertex : mesh.vertices) {
 			const Flow flow = flowAt(vertex.position[0], vertex.position[1]);
+			// D45: the pool's own level under the vertex (the engine's water), not only the site's paired levels
 			float nearestLevel = FLT_MAX;
+			{
+				const auto cx = static_cast<int32_t>(std::lround((vertex.position[0] - a_originX) / cell));
+				const auto cy = static_cast<int32_t>(std::lround((vertex.position[1] - a_originY) / cell));
+				for (int32_t dy = -1; dy <= 1; dy++) {
+					for (int32_t dx = -1; dx <= 1; dx++) {
+						const int32_t x = cx + dx, y = cy + dy;
+						if (x < 0 || y < 0 || x >= w || y >= h || a_flow.cover.size() != static_cast<std::size_t>(w) * h)
+							continue;
+						const float level = a_flow.cover[static_cast<std::size_t>(y) * w + x];
+						if (level > NO_SURFACE && std::abs(vertex.position[2] - level) < std::abs(vertex.position[2] - nearestLevel))
+							nearestLevel = level;
+					}
+				}
+			}
 			for (const float level : a_levels) {
 				if (level < topLevel - 1.0f && std::abs(vertex.position[2] - level) < std::abs(vertex.position[2] - nearestLevel))
 					nearestLevel = level;
@@ -1469,22 +1487,13 @@ namespace FluidFieldSim
 
 	bool FallSites::GetFogBand(float& a_low, float& a_high) const
 	{
+		// D44: the seams' heights only, where the fog is made
 		a_low = FLT_MAX;
 		a_high = -FLT_MAX;
-		for (const auto& emitter : surfaceEmitters) {
-			a_low = std::min(a_low, emitter.position[2]);
-			a_high = std::max(a_high, emitter.position[2]);
-		}
-		for (const auto& volume : mistVolumes) {
-			a_low = std::min(a_low, volume[2] - volume[6]);
-			a_high = std::max(a_high, volume[2] + volume[6]);
-		}
 		for (const auto& [key, stream] : streams) {
-			for (const float cover : stream.result.cover) {
-				if (cover <= NO_SURFACE)
-					continue;
-				a_low = std::min(a_low, cover);
-				a_high = std::max(a_high, cover);
+			for (const auto& seam : stream.seamPoints) {
+				a_low = std::min(a_low, seam[2]);
+				a_high = std::max(a_high, seam[2]);
 			}
 		}
 		return a_low <= a_high;
@@ -1670,6 +1679,7 @@ namespace FluidFieldSim
 
 	void FallSites::Update(const WaterSurfaces& a_water)
 	{
+		waterSurfaces = &a_water;
 		CaptureStep();
 		PollStreams();
 		if (updatesUntilScan > 0) {
@@ -2017,15 +2027,42 @@ namespace FluidFieldSim
 
 	void FallSites::BuildFogMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
 	{
+		// D44: fog only where vanilla's falling-water meshes collide (their seams: an open edge against
+		// another piece, or two crossing), strongest along the seam, soft round it
 		a_field.assign(static_cast<std::size_t>(a_size) * a_size * 2, 0.0f);
+		const auto reach = static_cast<int32_t>(std::ceil(FOG_SOURCE_RADIUS / a_cell));
+		for (const auto& [key, stream] : streams) {
+			for (const auto& seam : stream.seamPoints) {
+				const auto cx = static_cast<int32_t>(std::lround((seam[0] - a_originX) / a_cell));
+				const auto cy = static_cast<int32_t>(std::lround((seam[1] - a_originY) / a_cell));
+				for (int32_t y = cy - reach; y <= cy + reach; y++) {
+					for (int32_t x = cx - reach; x <= cx + reach; x++) {
+						if (x < 0 || y < 0 || x >= static_cast<int32_t>(a_size) || y >= static_cast<int32_t>(a_size))
+							continue;
+						const float dx = a_originX + static_cast<float>(x) * a_cell - seam[0];
+						const float dy = a_originY + static_cast<float>(y) * a_cell - seam[1];
+						const float falloff = std::clamp(1.0f - std::sqrt(dx * dx + dy * dy) / FOG_SOURCE_RADIUS, 0.0f, 1.0f);
+						const float strength = falloff * (2.0f - falloff);
+						const std::size_t i = (static_cast<std::size_t>(y) * a_size + x) * 2;
+						if (strength > a_field[i]) {
+							a_field[i] = strength;
+							a_field[i + 1] = seam[2];
+						}
+					}
+				}
+			}
+		}
+	}
+
+	void FallSites::BuildPlungeMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
+	{
+		// D44: where the falls plunge into the water below, along their whole width: the water there
+		// foams, and the simulated flow carries the foam off downstream
+		a_field.assign(static_cast<std::size_t>(a_size) * a_size, 0.0f);
+		const auto reach = static_cast<int32_t>(std::ceil(PLUNGE_FOAM_RADIUS / a_cell));
 		for (const auto& emitter : surfaceEmitters) {
-			// Plunges fog widely and the most, strikes on rock and other water less, drops least (D41)
-			const auto kind = static_cast<FallEmitterKind>(static_cast<uint32_t>(emitter.kind));
-			const float radius = kind == FallEmitterKind::Plunge ? FOG_PLUNGE_RADIUS : kind == FallEmitterKind::Strike ? FOG_SOURCE_RADIUS :
-			                                                                                                             FOG_SOURCE_RADIUS * 0.7f;
-			const float weight = std::max(emitter.strength, 0.5f) * (kind == FallEmitterKind::Plunge ? 1.0f : kind == FallEmitterKind::Strike ? 0.35f :
-																																				0.3f);
-			const auto reach = static_cast<int32_t>(std::ceil(radius / a_cell));
+			if (static_cast<FallEmitterKind>(static_cast<uint32_t>(emitter.kind)) != FallEmitterKind::Plunge)
+				continue;
 			const auto cx = static_cast<int32_t>(std::lround((emitter.position[0] - a_originX) / a_cell));
 			const auto cy = static_cast<int32_t>(std::lround((emitter.position[1] - a_originY) / a_cell));
 			for (int32_t y = cy - reach; y <= cy + reach; y++) {
@@ -2034,13 +2071,9 @@ namespace FluidFieldSim
 						continue;
 					const float dx = a_originX + static_cast<float>(x) * a_cell - emitter.position[0];
 					const float dy = a_originY + static_cast<float>(y) * a_cell - emitter.position[1];
-					const float falloff = std::clamp(1.0f - std::sqrt(dx * dx + dy * dy) / radius, 0.0f, 1.0f);
-					const float strength = weight * falloff * (2.0f - falloff);  // Full in the middle, soft at the edge
-					const std::size_t i = (static_cast<std::size_t>(y) * a_size + x) * 2;
-					if (strength > a_field[i]) {
-						a_field[i] = strength;
-						a_field[i + 1] = emitter.position[2];
-					}
+					const float falloff = std::clamp(1.0f - std::sqrt(dx * dx + dy * dy) / PLUNGE_FOAM_RADIUS, 0.0f, 1.0f);
+					float& value = a_field[static_cast<std::size_t>(y) * a_size + x];
+					value = std::max(value, std::max(emitter.strength, 0.5f) * falloff);
 				}
 			}
 		}

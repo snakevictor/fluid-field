@@ -55,6 +55,11 @@ namespace FluidFieldSim
 		std::int32_t seedGridMin[2]{};
 		std::uint32_t seedRes = 0;
 		float seedCellSize = 0.0f;
+		/// D44: where waterfalls plunge into the water, per texel 0 to 1 (FallSites::BuildPlungeMap); the water foams there
+		ID3D11ShaderResourceView* plungeMap = nullptr;
+		float plungeOrigin[2]{};
+		float plungeInverseCell = 0.0f;
+		std::uint32_t plungeSize = 0;
 	};
 
 	/** @brief Colour scales for the water debug view: a value of 1/scale maps to full intensity. */
@@ -196,8 +201,11 @@ namespace FluidFieldSim
 			std::int32_t seedGridMin[2];
 			std::uint32_t seedRes;
 			float seedCellSize;
+			float plungeOrigin[2];
+			float plungeInverseCell;
+			std::uint32_t plungeSize;
 		};
-		static_assert(sizeof(WaterConstants) == 112);
+		static_assert(sizeof(WaterConstants) == 128);
 
 		// Matches WaterDebugCB in WaterDebugViewCS.hlsl
 		struct alignas(16) DebugConstants
@@ -223,7 +231,8 @@ namespace FluidFieldSim
 		void Dispatch(ID3D11DeviceContext* context, ID3D11ComputeShader* shader, std::span<ID3D11ShaderResourceView* const> srvs, std::span<ID3D11UnorderedAccessView* const> uavs);
 
 		std::uint32_t resolution = 0;
-		ID3D11ShaderResourceView* seedFoamSRV = nullptr;  ///< This step's seed foam (not owned)
+		ID3D11ShaderResourceView* seedFoamSRV = nullptr;
+		ID3D11ShaderResourceView* plungeSRV = nullptr;  ///< This step's plunge map (not owned)  ///< This step's seed foam (not owned)
 		std::uint32_t mapResolution = 0;
 		float mapSpacing = 64.0f;
 		bool mapUploaded = false;

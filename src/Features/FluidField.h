@@ -357,7 +357,10 @@ private:
 	bool fallGroundBound = false;  ///< The last effect draw bound the grounding
 	std::vector<float> fallGroundScratch;
 	std::vector<float> fallPoolScratch;
-	std::vector<float> fallFogScratch;  ///< FallSites::BuildFogMap: per texel strength and height (D39)  ///< FallSites::BuildPoolMap, interleaved with the ground into the ground map's second channel
+	std::vector<float> fallFogScratch;
+	winrt::com_ptr<ID3D11Texture2D> fallPlungeTexture;  ///< FallSites::BuildPlungeMap, for the water's foam (D44)
+	winrt::com_ptr<ID3D11ShaderResourceView> fallPlungeSRV;
+	std::vector<float> fallPlungeScratch;  ///< FallSites::BuildFogMap: per texel strength and height (D39)  ///< FallSites::BuildPoolMap, interleaved with the ground into the ground map's second channel
 	/** @brief Rebuilds the ground and flow maps when the sites change or the player moves far; uploads the constants. */
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
 	void ReleaseFallGround();

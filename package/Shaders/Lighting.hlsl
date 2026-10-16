@@ -1528,7 +1528,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		const float lace = FallGround::Lace(fallFlow);
 		const float cover = saturate(smoothstep(1.0 - white, 1.0 - white * 0.6, lace) + smoothstep(0.75, 1.0, white));
 		// In the water's own hue, brighter (a fixed white albedo lit warm, orange at dawn, next to vanilla's blue)
-		const float3 foamColor = rawBaseColor.rgb / max(max(rawBaseColor.r, max(rawBaseColor.g, rawBaseColor.b)), 0.05) * 0.95;
+		const float3 waterHue = rawBaseColor.rgb / max(max(rawBaseColor.r, max(rawBaseColor.g, rawBaseColor.b)), 0.05);
+		const float3 foamColor = lerp(float3(0.9, 0.9, 0.9), waterHue * 0.9, 0.25);  // Mostly white (D44: the water's own hue tinted it blue)
 		rawBaseColor.rgb = lerp(rawBaseColor.rgb, foamColor, white > 0.0 ? cover * 0.9 : 0.0);
 		// Debug (D40): 1 the solved flow's speed (red), foam (green) and water (blue); 2 the texture's direction of motion
 		[branch] if (FallGround::DebugMode == 1)

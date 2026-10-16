@@ -196,6 +196,6 @@ float4 PSMain(VSOutput input) : SV_Target
 	// White water, lit by the light's brightness, not its colour (the sky's blue made it glow blue)
 	// The sun weighs little: it lit the mist in shadow too, and glowed it orange at dusk
 	const float light = Color::RGBToLuminance(ambient) + Color::RGBToLuminance(SharedData::DirLightColor.rgb) * 0.12;
-	const float3 color = float3(0.93, 0.96, 1.0) * light * Brightness * (input.Mist > 0.5 ? 1.6 : 2.2);
+	const float3 color = float3(0.94, 0.95, 0.96) * light * Brightness * (input.Mist > 0.5 ? 1.6 : 2.2);
 	return float4(color * alpha, alpha);  // Premultiplied
 }

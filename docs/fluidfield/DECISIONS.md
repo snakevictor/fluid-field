@@ -1006,3 +1006,40 @@ Entry format:
     band reaches 420 above the sources (it sliced their tops flat); the tint
     is cooler and barely sun-lit.
 -   References: D34, D38, D41
+
+## D44: Fog only at the meshes' seams; plunge foam; per-pass clip; no uphill flow; neutral colours
+
+-   Date: 2026-10-16
+-   Phase / spike: @Victor's review ("fog only when waterfall meshes collide,
+    as cheap as possible"; "where the fall drops into shallow water ... needs
+    that foam"; "underwater parts ... still visible with reflections";
+    "backflow where the drop goes straight into a rock"; "performance is
+    shiiiiit"; "weird blue tint at 6am")
+-   Decision: Measured first: FluidField::FallSurfaces cost 55 ms GPU, all of
+    it the fog march (spray 0.07 ms). The fog is now made only at vanilla's
+    fall meshes' seams (open edges against another piece and crossings),
+    splatted 70 units round each seam point; no pool layer, no vanilla mist
+    volumes; marched in 32 steps over the seams' height band only, with a
+    cheaper churn (one warp, two phases, one detail octave, 4 noise lookups
+    per lit sample): 55 ms to 3.7 ms. Plunges foam the water: a plunge map
+    (R16F, the ground map's lattice, 40 units round every plunge emitter) is
+    read by WaterFoamCS (t9; WaterCB gains its placement, 112 to 128 bytes)
+    and makes 3 foam/s there, which the flow carries downstream. The clip
+    uses the render pass's own posAdjust (RendererShadowState), not the main
+    camera's (reflections render from a mirrored camera). The falls' flow
+    never runs uphill: an upward direction keeps only its level part, or turns
+    down the slope. Foam, spray and fog colours are near-neutral white (the
+    water's own hue tinted them blue).
+-   References: D36, D38, D41, D43
+
+## D45: The pools from the engine's water, not the site's paired levels
+
+-   Date: 2026-10-16
+-   Decision: A tier between two falls is in none of a site's paired levels,
+    so its plunges were not found and the falls running into it were not cut
+    or foamed. The pools' cover is now sampled from the engine's water
+    (WaterSurfaces::SampleHeight on every cell of the site's capture), with
+    D40's checks (bed under the level, and the falls' surface at it or the
+    bed shallow under it), and plunges are found against that cover as well
+    as the paired levels.
+-   References: D36, D40, D44

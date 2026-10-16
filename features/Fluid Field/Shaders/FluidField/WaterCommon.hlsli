@@ -17,30 +17,33 @@
 
 cbuffer WaterCB : register(b1)
 {
-	float Gravity;          // World units per second squared
-	float MaxDepth;         // Depth used for transport is capped here, keeping waves shallow and the step stable
-	float MaxSpeed;         // Face velocities are clamped to this, world units per second
-	float WetThreshold;     // Depth below which a cell counts as dry
-	float2 Current;         // Background current, world units per second
-	float CurrentRelax;     // Per-second rate at which velocity relaxes toward the current
-	float LevelRelax;       // Per-second rate at which depth relaxes toward the vanilla depth
-	uint MapRes;            // WaterMap texels per side, a power of two
-	float MapSpacing;       // World units between WaterMap texels
-	float EdgeWidth;        // Texels over which the grid edge blends back to vanilla
-	float EdgeRelax;        // Per-step blend toward vanilla at the very edge
-	uint ObstacleRes;       // ObstacleMap texels per side, a power of two (0: no detail)
-	float ObstacleSpacing;  // World units between ObstacleMap texels
-	float RiverSpeed;       // World units per second at full flowmap strength
-	uint FlowmapEnabled;    // RiverFlowmap is bound and replaces Current
-	float2 FlowmapCells;    // Flowmap size in cells
-	int2 FlowmapOffset;     // Added to a cell's coordinates to get its flowmap tile
-	float Vorticity;        // Vorticity confinement strength: keeps eddies behind obstacles alive
-	float SimTime;          // Seconds simulated since the last reset
-	float FoamStrength;     // Scales how much foam the foam pass makes (0: none)
-	float FoamMax;          // Most foam a cell holds
-	int2 SeedGridMin;       // Placement of the level that seeds foam for cells coming into this one
-	uint SeedRes;           // Its texels per side (0: no seed)
-	float SeedCellSize;     // Its world units per texel
+	float Gravity;            // World units per second squared
+	float MaxDepth;           // Depth used for transport is capped here, keeping waves shallow and the step stable
+	float MaxSpeed;           // Face velocities are clamped to this, world units per second
+	float WetThreshold;       // Depth below which a cell counts as dry
+	float2 Current;           // Background current, world units per second
+	float CurrentRelax;       // Per-second rate at which velocity relaxes toward the current
+	float LevelRelax;         // Per-second rate at which depth relaxes toward the vanilla depth
+	uint MapRes;              // WaterMap texels per side, a power of two
+	float MapSpacing;         // World units between WaterMap texels
+	float EdgeWidth;          // Texels over which the grid edge blends back to vanilla
+	float EdgeRelax;          // Per-step blend toward vanilla at the very edge
+	uint ObstacleRes;         // ObstacleMap texels per side, a power of two (0: no detail)
+	float ObstacleSpacing;    // World units between ObstacleMap texels
+	float RiverSpeed;         // World units per second at full flowmap strength
+	uint FlowmapEnabled;      // RiverFlowmap is bound and replaces Current
+	float2 FlowmapCells;      // Flowmap size in cells
+	int2 FlowmapOffset;       // Added to a cell's coordinates to get its flowmap tile
+	float Vorticity;          // Vorticity confinement strength: keeps eddies behind obstacles alive
+	float SimTime;            // Seconds simulated since the last reset
+	float FoamStrength;       // Scales how much foam the foam pass makes (0: none)
+	float FoamMax;            // Most foam a cell holds
+	int2 SeedGridMin;         // Placement of the level that seeds foam for cells coming into this one
+	uint SeedRes;             // Its texels per side (0: no seed)
+	float SeedCellSize;       // Its world units per texel
+	float2 PlungeOrigin;      // D44: world position of the plunge map's texel (0, 0)
+	float PlungeInverseCell;  // Its texels per world unit
+	uint PlungeSize;          // Its texels per side (0: none)
 };
 
 static const float NO_WATER = -1.0e8;

@@ -209,6 +209,9 @@ namespace FluidFieldSim
 		 */
 		void BuildFogMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
 
+		/** @brief D44: per texel of a ground map's lattice, how strongly the falls plunge into the water there (0 to 1). */
+		void BuildPlungeMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
+
 		/** @brief Prints each cell's summary to the game console too, not only the log. */
 		void SetConsoleSummary(bool a_print) { consoleSummary = a_print; }
 
@@ -319,7 +322,8 @@ namespace FluidFieldSim
 		static constexpr float FOG_SPACING = 64.0f;         ///< World units between the falls' fog sources (D37)
 		static constexpr float FOG_RADIUS = 56.0f;          ///< World units round a source that it fogs
 		static constexpr float FOG_RATE = 2.5f;             ///< Fog made per second at a source's centre, in resting amounts
-		static constexpr float FOG_SOURCE_RADIUS = 90.0f;   ///< World units round each strike, drop and plunge that its fog spreads (D39)
+		static constexpr float FOG_SOURCE_RADIUS = 70.0f;   ///< World units round each seam point that its fog spreads (D44)
+		static constexpr float PLUNGE_FOAM_RADIUS = 40.0f;  ///< World units round each plunge point the water below foams (D44)
 		static constexpr float FOG_PLUNGE_RADIUS = 180.0f;  ///< World units round each plunge that its fog spreads (D41)
 		static constexpr float PLUNGE_SPLASH = 220.0f;      ///< World units per second the plunge pushes the simulated water down at its strongest
 		static constexpr float PLUNGE_PULL = 0.35f;         ///< Fraction of the falling water's speed the water below is pulled along at
@@ -332,6 +336,7 @@ namespace FluidFieldSim
 		std::vector<FallSurfaceVertex> surfaceVertices;
 		std::vector<uint32_t> surfaceIndices;
 		std::vector<FallEmitter> surfaceEmitters;
+		const WaterSurfaces* waterSurfaces = nullptr;  ///< Set each update: the engine's water, for the pools' extent (D45)
 		std::vector<FallPlunge> surfacePlunges;
 		std::vector<std::array<float, 8>> mistVolumes;
 		mutable std::unordered_map<const RE::BSGeometry*, std::array<float, 2>> textureScales;  ///< GatherSources: each lit mesh's world units per texture repeat

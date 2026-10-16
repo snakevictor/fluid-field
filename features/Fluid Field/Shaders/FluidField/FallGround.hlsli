@@ -241,6 +241,13 @@ namespace FallGround
 		const float agree = solvedHere ? saturate(dot(liftedDirection, downDirection) * 4.0) : 1.0;
 		float3 direction = solvedHere ? lerp(liftedDirection, downDirection, steep * agree) : downDirection;
 		direction /= max(length(direction), 1e-4);
+		// D44: water never runs uphill: where the solve or a fold of the mesh points up the surface (a
+		// drop straight into rock), only its level part is kept, or the way down where none is left
+		if (direction.z > 0.0) {
+			direction.z = 0.0;
+			const float level = length(direction);
+			direction = level > 0.3 ? direction / level : downDirection;
+		}
 		const float speed = lerp(solvedSpeed, max(solvedSpeed, 1.0), steep * agree) * FlowSpeed;
 		// Gravity (D33): the speed gained from the drop below the head, along the course
 		const float drop = water > 0.0 ? max(head - a_position.z, 0.0) : 0.0;

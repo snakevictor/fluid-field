@@ -183,7 +183,7 @@ namespace FluidFieldSim
 		uint32_t mistCount = 0;
 		uint64_t mistVersion = UINT64_MAX;
 		static constexpr uint32_t MAX_MIST_VOLUMES = 64;
-		static constexpr uint32_t FOG_STEPS = 96;  ///< Over FallFog.hlsl's FOG_RANGE: about 25 units a step, finer than the fog is thick
+		static constexpr uint32_t FOG_STEPS = 32;  ///< Over the seams' height band only (D44)  ///< Over FallFog.hlsl's FOG_RANGE: about 25 units a step, finer than the fog is thick
 		winrt::com_ptr<ID3D11Buffer> emitters;
 		winrt::com_ptr<ID3D11ShaderResourceView> emittersSRV;
 		uint32_t emitterCapacity = 0;

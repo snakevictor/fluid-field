@@ -9,6 +9,7 @@
 #include "UnifiedWater.h"
 #include "UnifiedWater/Flowmap.h"
 
+#include <DirectXPackedVector.h>
 #include <bit>
 #include <numbers>
 
@@ -1102,7 +1103,7 @@ void FluidField::DrawGroundFogAfterWorld()
 			float fogLow, fogHigh;
 			if (fallSites.GetFogBand(fogLow, fogHigh)) {
 				params.fogBottom = fogLow - 20.0f;
-				params.fogTop = fogHigh + std::max(settings.FallFogHeight, 420.0f);  // Above the sources' rise (FallFog.hlsl SOURCE_LIFT + 3 SOURCE_SPREAD)
+				params.fogTop = fogHigh + 240.0f;  // Above the seams' fog (FallFog.hlsl SOURCE_LIFT + 3 SOURCE_SPREAD)
 			} else {
 				params.fogDensity = 0.0f;
 			}
@@ -1111,7 +1112,7 @@ void FluidField::DrawGroundFogAfterWorld()
 				logger::info("[Fluid Field] Waterfall fog band {:.0f}..{:.0f} (density {:.4f}), camera z {:.0f}", params.fogBottom, params.fogTop, params.fogDensity,
 					globals::game::frameBufferCached.GetCameraPosAdjust().z);
 			}
-			fallSurface.UploadMist(globals::d3d::device, globals::d3d::context, fallSites.GetMistVolumes(), fallSites.GetSurfaceVersion());
+			fallSurface.UploadMist(globals::d3d::device, globals::d3d::context, {}, fallSites.GetSurfaceVersion());  // D44: fog only at the seams
 			// The fog reads the falls' ground and pools (b13, t120, t122) and the simulated water (t66, t67)
 			ID3D11Buffer* fallConstants = fallGroundOn.get();
 			globals::d3d::context->PSSetConstantBuffers(13, 1, &fallConstants);
@@ -1340,6 +1341,14 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 	}
 	// The near level takes over the far level's foam for cells coming into it, so foam does not
 	// drop out and rebuild as the player approaches
+	// The falls' plunges foam the water along their whole width (D44)
+	if (settings.Waterfalls && settings.GroundWaterfalls && fallPlungeSRV) {
+		params.plungeMap = fallPlungeSRV.get();
+		params.plungeOrigin[0] = fallGroundOrigin[0];
+		params.plungeOrigin[1] = fallGroundOrigin[1];
+		params.plungeInverseCell = 1.0f / FALL_GROUND_CELL;
+		params.plungeSize = FALL_GROUND_SIZE;
+	}
 	if (a_near && settings.FarWater && farWater.solver.HasMap() && waterShaderData.FarEnabled) {
 		params.seedFoam = farWater.solver.GetFlowSRV();
 		params.seedGridMin[0] = farWater.gridMin[0];
@@ -1446,6 +1455,8 @@ void FluidField::ReleaseFallGround()
 	fallGroundSRV = nullptr;
 	fallStreamTexture = nullptr;
 	fallStreamSRV = nullptr;
+	fallPlungeTexture = nullptr;
+	fallPlungeSRV = nullptr;
 	fallGroundOn = nullptr;
 	fallGroundOff = nullptr;
 	fallGroundVersion = UINT64_MAX;
@@ -1465,6 +1476,15 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		const D3D11_SUBRESOURCE_DATA offData{ &off, 0, 0 };
 		D3D11_TEXTURE2D_DESC streamDesc = desc;
 		streamDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+		D3D11_TEXTURE2D_DESC plungeDesc = desc;
+		plungeDesc.Format = DXGI_FORMAT_R16_FLOAT;
+		if (FAILED(device->CreateTexture2D(&plungeDesc, nullptr, fallPlungeTexture.put())) || FAILED(device->CreateShaderResourceView(fallPlungeTexture.get(), nullptr, fallPlungeSRV.put()))) {
+			fallPlungeTexture = nullptr;
+			fallPlungeSRV = nullptr;
+		} else {
+			Util::SetResourceName(fallPlungeTexture.get(), "FluidField::FallPlunge");
+			Util::SetResourceName(fallPlungeSRV.get(), "FluidField::FallPlunge SRV");
+		}
 		desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;  // The rock, the pools' surface (D36), the fog sources' strength and height (D39)
 		if (FAILED(device->CreateTexture2D(&desc, nullptr, fallGroundTexture.put())) || FAILED(device->CreateShaderResourceView(fallGroundTexture.get(), nullptr, fallGroundSRV.put())) ||
 			FAILED(device->CreateTexture2D(&streamDesc, nullptr, fallStreamTexture.put())) || FAILED(device->CreateShaderResourceView(fallStreamTexture.get(), nullptr, fallStreamSRV.put())) ||
@@ -1500,6 +1520,13 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 			interleaved[i * 4 + 3] = fallFogScratch[i * 2 + 1];
 		}
 		context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, interleaved.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
+		if (fallPlungeTexture) {
+			fallSites.BuildPlungeMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallPlungeScratch);
+			std::vector<uint16_t> halves(fallPlungeScratch.size());
+			for (std::size_t i = 0; i < halves.size(); i++)
+				halves[i] = DirectX::PackedVector::XMConvertFloatToHalf(fallPlungeScratch[i]);
+			context->UpdateSubresource(fallPlungeTexture.get(), 0, nullptr, halves.data(), FALL_GROUND_SIZE * sizeof(uint16_t), 0);
+		}
 		fallSites.BuildStreamMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallStreamScratch);
 		context->UpdateSubresource(fallStreamTexture.get(), 0, nullptr, fallStreamScratch.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
 	}
@@ -1529,7 +1556,8 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
 			fallGroundData.TexScale[0] = fallGroundData.TexScale[1] = 0.0f;
 		}
 		// D38: the vertex shaders' camera offset (Lighting's has none of its own), the same in every pass
-		const auto eye = globals::game::frameBufferCached.GetCameraPosAdjust();
+		// D44: this pass's own (reflections render from a mirrored camera; the main camera's offset cut them wrong)
+		const auto eye = globals::game::shadowState->GetRuntimeData().posAdjust.getEye();
 		fallGroundData.CameraOffset[0] = eye.x;
 		fallGroundData.CameraOffset[1] = eye.y;
 		fallGroundData.CameraOffset[2] = eye.z;

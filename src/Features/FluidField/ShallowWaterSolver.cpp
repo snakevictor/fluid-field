@@ -261,9 +261,13 @@ namespace FluidFieldSim
 			.foamMax = params.foamMax,
 			.seedGridMin = { params.seedGridMin[0], params.seedGridMin[1] },
 			.seedRes = params.seedFoam ? params.seedRes : 0u,
-			.seedCellSize = params.seedCellSize
+			.seedCellSize = params.seedCellSize,
+			.plungeOrigin = { params.plungeOrigin[0], params.plungeOrigin[1] },
+			.plungeInverseCell = params.plungeInverseCell,
+			.plungeSize = params.plungeMap ? params.plungeSize : 0u
 		};
 		seedFoamSRV = params.seedFoam;
+		plungeSRV = params.plungeMap;
 		UpdateBuffer(context, waterConstants.get(), &waterData, sizeof(waterData));
 
 		if (emitterCount > 0)
@@ -347,13 +351,13 @@ namespace FluidFieldSim
 	void ShallowWaterSolver::Foam(ID3D11DeviceContext* context)
 	{
 		// Last step's foam goes in its own slot, beside the state at t0..t3
-		ID3D11ShaderResourceView* previous[2] = { foam[currentFoam].srv.get(), seedFoamSRV };
-		context->CSSetShaderResources(FOAM_SLOT, 2, previous);
+		ID3D11ShaderResourceView* previous[3] = { foam[currentFoam].srv.get(), seedFoamSRV, plungeSRV };
+		context->CSSetShaderResources(FOAM_SLOT, 3, previous);
 		ID3D11ShaderResourceView* srvs[] = { depth[currentDepth].srv.get(), velocity[currentVelocity].srv.get(), cellMap[currentCellMap].srv.get(), emitterSRV.get() };
 		ID3D11UnorderedAccessView* uavs[] = { foam[currentFoam ^ 1].uav.get() };
 		Dispatch(context, foamCS.get(), srvs, uavs);
-		ID3D11ShaderResourceView* nullSRVs[2] = {};
-		context->CSSetShaderResources(FOAM_SLOT, 2, nullSRVs);
+		ID3D11ShaderResourceView* nullSRVs[3] = {};
+		context->CSSetShaderResources(FOAM_SLOT, 3, nullSRVs);
 		currentFoam ^= 1;
 	}
 

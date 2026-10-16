@@ -27,6 +27,21 @@ StructuredBuffer<Emitter> Emitters : register(t3);
 Texture2D<float> FoamIn : register(t7);
 // Another level's flow output (foam in z): cells coming into this grid take its foam
 Texture2D<float4> SeedFlow : register(t8);
+// D44: where waterfalls plunge into the water, 0 to 1 (FallSites::BuildPlungeMap)
+Texture2D<float> PlungeMap : register(t9);
+
+/** How strongly a waterfall plunges into the water at a world position, bilinear; 0 without a map. */
+float Plunge(float2 worldXY)
+{
+	if (PlungeSize == 0)
+		return 0.0;
+	const float2 texel = (worldXY - PlungeOrigin) * PlungeInverseCell;
+	const int2 c = int2(floor(texel));
+	if (any(c < 0) || any(c + 1 >= int(PlungeSize)))
+		return 0.0;
+	const float2 t = texel - float2(c);
+	return lerp(lerp(PlungeMap.Load(int3(c, 0)), PlungeMap.Load(int3(c + int2(1, 0), 0)), t.x), lerp(PlungeMap.Load(int3(c + int2(0, 1), 0)), PlungeMap.Load(int3(c + int2(1, 1), 0)), t.x), t.y);
+}
 
 /** Foam from the seeding level at a world position, bilinear; 0 without one or outside it. */
 float SeedFoam(float2 worldXY)
@@ -55,6 +70,8 @@ static const float WALL_RATE = 0.3;
 static const float BREAKING_RATE = 0.15;
 static const float WAKE_RATE = 1.5;
 static const float SPLASH_RATE = 6.0;
+/** D44: foam made per second where a waterfall plunges in at full strength: it stays white there. */
+static const float PLUNGE_RATE = 3.0;
 
 /** The eight neighbour directions, for finding obstacles around a cell. */
 static const int2 NEIGHBOURS[8] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1), int2(1, 1), int2(-1, 1), int2(1, -1), int2(-1, -1) };
@@ -138,6 +155,9 @@ float SampleFoam(float2 position)
 	// depth the Froude number is already about 1.3, and eddies shear at 1 to 2 per second
 	float made = SHEAR_RATE * saturate((shear - 2.0) / 4.0) + IMPACT_RATE * saturate((impact - 30.0) / 120.0) +
 	             WALL_RATE * wallRush + BREAKING_RATE * saturate((froude - 1.5) / 1.5);
+
+	// Waterfalls plunging in (D44): white along their whole width, carried off downstream by the flow
+	made += PLUNGE_RATE * Plunge((float2(GridMin + logical) + 0.5) * CellSize);
 
 	// Actors: a wake whitens the water behind the actor, a splash much more
 	for (uint i = 0; i < EmitterCount; i++) {
