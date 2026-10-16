@@ -157,8 +157,6 @@ namespace FluidFieldSim
 		static constexpr float STREAM_INFLOW_BAND = 64.0f;   ///< Water within this of the site's top comes in there
 		static constexpr float STREAM_OUTFLOW_BAND = 32.0f;  ///< Water within this of the site's bottom leaves there
 		static constexpr float NO_SURFACE = -1.0e7f;
-		static constexpr int SURFACE_CLOSE_PASSES = 2;      ///< Passes closing slits of rock barely at the falls' surface
-		static constexpr int SURFACE_CLOSE_NEIGHBOURS = 5;  ///< Of a cell's eight neighbours, how many must be water to close it
 
 		/** @brief Counts for the menu: sites by kind. */
 		uint32_t CountKind(Kind a_kind) const;
@@ -201,6 +199,20 @@ namespace FluidFieldSim
 		std::unordered_set<const RE::BSGeometry*> grounded;
 		std::unordered_set<std::string> loggedParts;  ///< Diagnostics: falling-water mesh parts already logged
 
+		/** @brief A triangle of vanilla's falling-water surface, in world space. */
+		struct SourceTriangle
+		{
+			float position[3][3];
+			float normal[3][3];  ///< Smooth, facing up
+			float uv[3][2];
+			uint32_t piece;  ///< Which vanilla mesh it is from
+		};
+		struct SurfaceMesh
+		{
+			std::vector<FallSurfaceVertex> vertices;
+			std::vector<uint32_t> indices;
+			uint32_t culled = 0;  ///< Source triangles dropped where another piece lies on them
+		};
 		/** @brief A site's steady flow, solved on its capture's lattice on a worker thread. */
 		struct Stream
 		{
@@ -212,9 +224,26 @@ namespace FluidFieldSim
 			bool ready = false;
 			std::vector<FallSurfaceVertex> vertices;  ///< Its surface mesh, built once the flow is solved
 			std::vector<uint32_t> indices;
+			std::vector<SourceTriangle> sources;  ///< Vanilla's falling-water triangles, gathered when the solve starts
+			std::future<SurfaceMesh> meshPending;
+			bool meshReady = false;
 		};
-		/** @brief Builds a site's surface mesh from its solved flow: a vertex per water cell, triangles between them. */
-		static void BuildSurface(Stream& a_stream);
+		/** @brief Vanilla's falling-water surfaces at a site: each model's lit surface, else its largest effect layer. */
+		void GatherSources(const Site& a_site, std::vector<SourceTriangle>& a_sources) const;
+		/**
+		 * @brief One merged surface for a site (D30): vanilla's pieces, where two lie on each other only
+		 * the upper kept, each subdivided evenly to about SURFACE_EDGE, welded where they meet, with the
+		 * solved flow's coordinates at every vertex. Runs on a worker thread.
+		 */
+		static SurfaceMesh BuildMergedSurface(const FallStream::Result& a_flow, float a_originX, float a_originY, const std::vector<SourceTriangle>& a_sources);
+		static constexpr float SURFACE_EDGE = 12.0f;       ///< Target edge length of the subdivided surface, world units
+		static constexpr uint32_t SURFACE_MAX_SPLIT = 10;  ///< Most pieces a source edge is split into
+		static constexpr float SURFACE_WELD = 1.0f;        ///< Vertices this close are one
+		static constexpr float MERGE_FACE_UP = 0.35f;      ///< Only pieces at least this level are merged (curtains are left)
+		static constexpr float MERGE_BUCKET = 64.0f;       ///< World units per bucket when finding overlaps
+		static constexpr float MERGE_ABOVE = 40.0f;        ///< Another piece up to this far above covers a triangle
+		static constexpr float MERGE_BELOW = 4.0f;         ///< ...or this far below (nearly coplanar)
+		std::vector<std::future<SurfaceMesh>> retiredMeshes;
 		/** @brief Gathers every site's surface into one list. */
 		void RefreshSurfaces();
 		std::vector<FallSurfaceVertex> surfaceVertices;

@@ -18,7 +18,10 @@ struct SurfaceVertex
 	float Foam;       // 0 to 1
 	float Edge;       // 0 at the water's edge to 1 inside
 	float3 Normal;
-	float Depth;  // Water above the rock, world units
+	float Depth;     // Water above the rock, world units
+	float2 UV;       // Vanilla's texture coordinates
+	float FlowUsed;  // How much the flow's texture coordinates are used (none on steep water)
+	float Pad;
 };
 
 cbuffer FallSurfaceCB : register(b7)
@@ -35,8 +38,9 @@ cbuffer FallSurfaceCB : register(b7)
 	float ShallowDepth;  // Water shallower than this over rock waves and mounds
 	float ContactWidth;  // World units over which the water fades where it meets rock in front of it
 	float Brightness;
-	uint DebugMode;  // 0 off; 1: speed as red, foam as green, edge as blue; 2: the streamlines as bands
-	float3 Pad;
+	uint DebugMode;       // 0 off; 1: speed as red, foam as green, edge as blue; 2: the streamlines as bands
+	float VanillaScroll;  // Repeats per second vanilla's texture scrolls along v
+	float2 Pad;
 };
 
 StructuredBuffer<SurfaceVertex> Vertices : register(t100);
@@ -57,6 +61,8 @@ struct VSOutput
 	float Speed: TEXCOORD2;
 	float Foam: TEXCOORD3;
 	float Edge: TEXCOORD4;
+	float2 UV: TEXCOORD5;
+	float FlowUsed: TEXCOORD6;
 };
 
 VSOutput VSMain(uint vertexID : SV_VertexID)
@@ -80,6 +86,8 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 	output.Speed = v.Speed;
 	output.Foam = v.Foam;
 	output.Edge = v.Edge;
+	output.UV = v.UV;
+	output.FlowUsed = v.FlowUsed;
 	return output;
 }
 
@@ -87,6 +95,8 @@ float4 PSMain(VSOutput input) : SV_Target
 {
 	// Along the flow the texture scrolls with the water, stretching where it speeds up
 	const float2 uv = float2(input.Across / UScale, (input.Travel - Time) * BaseSpeed / VScale);
+	// Vanilla's own coordinates where the flow's are not used (steep water, off the flow)
+	const float2 vanillaUV = float2(input.UV.x, input.UV.y - Time * VanillaScroll);
 
 	// Debug views
 	if (DebugMode == 1)
@@ -105,14 +115,14 @@ float4 PSMain(VSOutput input) : SV_Target
 	float3 geometric = normalize(input.Normal);
 	const float3 tangent = normalize(dPdx * dUVdy.y - dPdy * dUVdx.y);
 	const float3 bitangent = normalize(cross(geometric, tangent));
-	const float3 detail = NormalMap.Sample(Wrap, uv).xyz * 2.0 - 1.0;
+	const float3 detail = lerp(NormalMap.Sample(Wrap, vanillaUV).xyz, NormalMap.Sample(Wrap, uv).xyz, input.FlowUsed) * 2.0 - 1.0;
 	float3 normal = normalize(tangent * detail.x + bitangent * detail.y + geometric * max(detail.z, 0.3));
 	const float3 view = normalize(input.WorldPosition);
 	if (dot(normal, view) > 0.0)
 		normal = -normal;
 
 	// Vanilla's falling-water texture as how white the water is: clear water tinted, its streaks white
-	const float4 texel = Diffuse.Sample(Wrap, uv);
+	const float4 texel = lerp(Diffuse.Sample(Wrap, vanillaUV), Diffuse.Sample(Wrap, uv), input.FlowUsed);
 	const float whiteness = saturate(smoothstep(0.15, 0.85, dot(texel.rgb, float3(0.3, 0.5, 0.2))) + saturate(input.Foam) * 0.6);
 	const float3 albedo = Color::Diffuse(lerp(float3(0.55, 0.72, 0.8), float3(0.92, 0.95, 0.97), whiteness));
 	const float3 sunDirection = normalize(SharedData::DirLightDirection.xyz);

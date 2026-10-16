@@ -69,7 +69,7 @@ namespace FluidFieldSim
 		static constexpr float STALL_SPEED = 0.45f;    ///< Slower than this beside rock: water piles up or eddies, and foams
 		static constexpr float SQUEEZE_SPEED = 1.35f;  ///< Faster than this: squeezed through a gap, and foams
 		static constexpr int32_t ROCK_REACH = 3;       ///< Cells from rock within which stalled water foams
-		static constexpr float BASE_SPEED = 220.0f;    ///< World units per second of free-flowing water (unit drive)
+		static constexpr float BASE_SPEED = 420.0f;    ///< World units per second of free-flowing water (unit drive)
 		static constexpr float SLOWEST = 0.25f;        ///< Slowest speed counted in the travel time, as a fraction of free flow
 		static constexpr uint32_t TRAVEL_ROUNDS = 24;  ///< Rounds of four sweeps for the travel time
 		static constexpr int32_t EDGE_CELLS = 2;       ///< Cells over which the water fades in from its edge

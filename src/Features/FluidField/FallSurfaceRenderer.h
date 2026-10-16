@@ -19,13 +19,16 @@ namespace FluidFieldSim
 		float edge;         ///< 0 at the water's edge to 1 inside
 		float normal[3];
 		float depth;  ///< Water above the rock, world units
+		float uv[2];  ///< Vanilla's texture coordinates, where the flow's are not used
+		float flow;   ///< 0 to 1: how much the flow's texture coordinates are used (none on steep water)
+		float pad;
 	};
-	static_assert(sizeof(FallSurfaceVertex) == 48);
+	static_assert(sizeof(FallSurfaceVertex) == 64);
 
 	/**
-	 * @brief Draws the falls' own water surface (D30) after the world: one dense mesh per site from its
-	 * steady flow, displaced by the flow in the vertex shader, with vanilla's falling-water textures
-	 * laid along the streamlines and the travel time. Depth tested against the scene without writing,
+	 * @brief Draws the falls' own water surface (D30) after the world: one merged mesh per site, made of
+	 * vanilla's falling-water meshes subdivided, displaced by the flow in the vertex shader, with
+	 * vanilla's falling-water textures laid along the streamlines and the travel time. Depth tested against the scene without writing,
 	 * premultiplied-alpha blended. Every piece of pipeline state it touches is saved and restored.
 	 */
 	class FallSurfaceRenderer
@@ -63,7 +66,8 @@ namespace FluidFieldSim
 		static constexpr float BULGE_HEIGHT = 6.0f;    ///< The water mounds over rock just under it, world units
 		static constexpr float SHALLOW_DEPTH = 40.0f;  ///< Water shallower than this over rock waves and mounds
 		static constexpr float CONTACT_WIDTH = 8.0f;   ///< World units over which the water fades where it meets rock in front of it
-		static constexpr float BRIGHTNESS = 0.3f;      ///< Light at this point of the frame, as the ground fog and the old curtains needed
+		static constexpr float BRIGHTNESS = 0.3f;
+		static constexpr float VANILLA_SCROLL = 0.6f;  ///< Repeats per second vanilla's texture scrolls along v, where the flow's is not used      ///< Light at this point of the frame, as the ground fog and the old curtains needed
 
 	private:
 		bool EnsureShaders();
@@ -84,7 +88,8 @@ namespace FluidFieldSim
 			float contactWidth;
 			float brightness;
 			uint32_t debugMode;
-			float pad[3];
+			float vanillaScroll;
+			float pad[2];
 		};
 
 		winrt::com_ptr<ID3D11Buffer> vertices;

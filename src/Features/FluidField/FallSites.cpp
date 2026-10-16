@@ -1,7 +1,10 @@
 #include "FallSites.h"
 
 #include "EngineGrid.h"
+#include "FallSurfaceRenderer.h"
+
 #include "WaterSurfaces.h"
+#include <DirectXPackedVector.h>
 
 #include <algorithm>
 #include <array>
@@ -175,7 +178,7 @@ namespace FluidFieldSim
 		if (replaceSurface) {
 			for (const auto& site : sites) {
 				const auto it = site.captureKey ? streams.find(site.captureKey) : streams.end();
-				if (it == streams.end() || !it->second.ready || it->second.vertices.empty())
+				if (it == streams.end() || !it->second.meshReady || it->second.vertices.empty())
 					continue;
 				for (const uint32_t member : site.members) {
 					if (refs[member].cls == FxClass::Body)
@@ -379,6 +382,8 @@ namespace FluidFieldSim
 		stream.originY = a_capture.GetOriginY();
 		stream.siteId = a_site.id;
 		stream.ready = false;
+		stream.meshReady = false;
+		GatherSources(a_site, stream.sources);
 		stream.pending = std::async(std::launch::async, [input = std::move(input)]() { return FallStream::Solve(input); });
 	}
 
@@ -386,6 +391,7 @@ namespace FluidFieldSim
 	{
 		// Retired solves finish on their own; let them go once done
 		std::erase_if(retired, [](std::future<FallStream::Result>& a_future) { return a_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; });
+		std::erase_if(retiredMeshes, [](std::future<SurfaceMesh>& a_future) { return a_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; });
 		bool changed = false;
 		for (const auto& site : sites) {
 			if (!site.captureKey)
@@ -399,11 +405,24 @@ namespace FluidFieldSim
 				continue;
 			}
 			auto& stream = it->second;
+			// The merged surface, once its build is done
+			if (stream.ready && !stream.meshReady && stream.meshPending.valid() && stream.meshPending.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+				SurfaceMesh mesh = stream.meshPending.get();
+				stream.vertices.swap(mesh.vertices);
+				stream.indices.swap(mesh.indices);
+				stream.meshReady = true;
+				changed = true;
+				logger::info("[Fluid Field] Waterfall site #{} surface: {} source triangles ({} under another piece dropped), {} vertices, {} triangles", stream.siteId,
+					stream.sources.size(), mesh.culled, stream.vertices.size(), stream.indices.size() / 3);
+				continue;
+			}
 			if (stream.ready || !stream.pending.valid() || stream.pending.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
 				continue;
 			stream.result = stream.pending.get();
 			stream.ready = true;
-			BuildSurface(stream);
+			stream.meshPending = std::async(std::launch::async, [flow = stream.result, originX = stream.originX, originY = stream.originY, sources = stream.sources]() {
+				return BuildMergedSurface(flow, originX, originY, sources);
+			});
 			changed = true;
 			float speed = 0.0f, foam = 0.0f;
 			uint32_t water = 0;
@@ -414,9 +433,8 @@ namespace FluidFieldSim
 				foam += stream.result.foam[i] > 0.5f ? 1.0f : 0.0f;
 				water++;
 			}
-			logger::info("[Fluid Field] Waterfall site #{} flow: solved in {} sweeps (last change {:.3f}), mean speed {:.2f}, {:.0f} foam cells of {}; surface {} vertices, {} triangles",
-				stream.siteId, stream.result.iterations, stream.result.residual, water ? speed / static_cast<float>(water) : 0.0f, foam, water, stream.vertices.size(),
-				stream.indices.size() / 3);
+			logger::info("[Fluid Field] Waterfall site #{} flow: solved in {} sweeps (last change {:.3f}), mean speed {:.2f}, {:.0f} foam cells of {}", stream.siteId,
+				stream.result.iterations, stream.result.residual, water ? speed / static_cast<float>(water) : 0.0f, foam, water);
 		}
 		if (changed) {
 			groundVersion++;
@@ -425,111 +443,313 @@ namespace FluidFieldSim
 		}
 	}
 
-	void FallSites::BuildSurface(Stream& a_stream)
+	void FallSites::GatherSources(const Site& a_site, std::vector<SourceTriangle>& a_sources) const
 	{
-		const auto& result = a_stream.result;
-		const auto w = static_cast<int32_t>(result.width);
-		const auto h = static_cast<int32_t>(result.height);
-		const float cell = FallCapture::CELL;
-		a_stream.vertices.clear();
-		a_stream.indices.clear();
-		std::vector<uint32_t> slot(static_cast<std::size_t>(w) * h, UINT32_MAX);
-		const auto index = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * w + a_x; };
-
-		// The surface's cells: the water, with slits of rock barely at its surface closed (a cell that is
-		// not water but mostly surrounded by it takes its neighbours' values); real boulders stay open
-		FallStream::Result closed = result;
-		std::vector<uint8_t> covered = result.water;
-		for (int pass = 0; pass < SURFACE_CLOSE_PASSES; pass++) {
-			std::vector<uint8_t> next = covered;
-			for (int32_t y = 1; y + 1 < h; y++) {
-				for (int32_t x = 1; x + 1 < w; x++) {
-					const std::size_t i = index(x, y);
-					if (covered[i])
+		a_sources.clear();
+		uint32_t piece = 0;
+		for (const uint32_t member : a_site.members) {
+			if (refs[member].cls != FxClass::Body)
+				continue;
+			auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refs[member].formID);
+			auto* root = ref ? ref->Get3D() : nullptr;
+			if (!root)
+				continue;
+			// The water's own surface: the lit one where the model has it, else its largest effect layer
+			std::vector<RE::BSGeometry*> lit;
+			RE::BSGeometry* largest = nullptr;
+			uint32_t largestCount = 0;
+			RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+				auto* triShape = a_geometry->AsTriShape();
+				auto* renderer = a_geometry->GetGeometryRuntimeData().rendererData;
+				if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || triShape->GetTrishapeRuntimeData().triangleCount == 0)
+					return RE::BSVisit::BSVisitControl::kContinue;
+				auto* property = a_geometry->GetGeometryRuntimeData().shaderProperty.get();
+				if (property && netimmerse_cast<RE::BSLightingShaderProperty*>(property)) {
+					lit.push_back(a_geometry);
+				} else if (property && netimmerse_cast<RE::BSEffectShaderProperty*>(property) && triShape->GetTrishapeRuntimeData().triangleCount > largestCount) {
+					largest = a_geometry;
+					largestCount = triShape->GetTrishapeRuntimeData().triangleCount;
+				}
+				return RE::BSVisit::BSVisitControl::kContinue;
+			});
+			if (lit.empty() && largest)
+				lit.push_back(largest);
+			for (auto* geometry : lit) {
+				auto* triShape = geometry->AsTriShape();
+				auto* renderer = geometry->GetGeometryRuntimeData().rendererData;
+				const auto& counts = triShape->GetTrishapeRuntimeData();
+				const uint32_t stride = renderer->vertexDesc.GetSize();
+				const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+				const bool hasUV = renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV);
+				const uint32_t uvOffset = hasUV ? renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0) : 0;
+				if (stride < positionOffset + 12)
+					continue;
+				const auto& transform = geometry->world;
+				std::vector<RE::NiPoint3> positions(counts.vertexCount);
+				std::vector<std::array<float, 2>> uvs(counts.vertexCount, { 0.0f, 0.0f });
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					const uint8_t* data = renderer->rawVertexData + static_cast<std::size_t>(v) * stride;
+					float local[3];
+					std::memcpy(local, data + positionOffset, sizeof(local));
+					positions[v] = transform * RE::NiPoint3(local[0], local[1], local[2]);
+					if (hasUV) {
+						const auto* uv = reinterpret_cast<const uint16_t*>(data + uvOffset);
+						uvs[v] = { DirectX::PackedVector::XMConvertHalfToFloat(uv[0]), DirectX::PackedVector::XMConvertHalfToFloat(uv[1]) };
+					}
+				}
+				// Smooth normals: each vertex's faces, area weighted
+				std::vector<RE::NiPoint3> normals(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+				for (uint32_t t = 0; t < counts.triangleCount; t++) {
+					const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(t) * 3;
+					if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
 						continue;
-					int count = 0;
-					float sums[8]{};
-					for (int32_t dy = -1; dy <= 1; dy++) {
-						for (int32_t dx = -1; dx <= 1; dx++) {
-							const std::size_t j = index(x + dx, y + dy);
-							if ((dx == 0 && dy == 0) || !covered[j])
-								continue;
-							count++;
-							sums[0] += closed.level[j];
-							sums[1] += closed.psi[j];
-							sums[2] += closed.travel[j];
-							sums[3] += closed.speed[j];
-							sums[4] += closed.foam[j];
-							sums[5] += closed.edge[j];
-							sums[6] += closed.depth[j];
+					const RE::NiPoint3 face = (positions[index[1]] - positions[index[0]]).Cross(positions[index[2]] - positions[index[0]]);
+					for (int k = 0; k < 3; k++)
+						normals[index[k]] += face;
+				}
+				for (auto& normal : normals) {
+					const float length = normal.Length();
+					// Upward, so every piece agrees which side is the top
+					normal = length > 1e-6f ? normal / length : RE::NiPoint3(0.0f, 0.0f, 1.0f);
+					if (normal.z < 0.0f)
+						normal = -normal;
+				}
+				for (uint32_t t = 0; t < counts.triangleCount; t++) {
+					const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(t) * 3;
+					if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+						continue;
+					SourceTriangle triangle{};
+					for (int k = 0; k < 3; k++) {
+						const auto& p = positions[index[k]];
+						const auto& n = normals[index[k]];
+						triangle.position[k][0] = p.x;
+						triangle.position[k][1] = p.y;
+						triangle.position[k][2] = p.z;
+						triangle.normal[k][0] = n.x;
+						triangle.normal[k][1] = n.y;
+						triangle.normal[k][2] = n.z;
+						triangle.uv[k][0] = uvs[index[k]][0];
+						triangle.uv[k][1] = uvs[index[k]][1];
+					}
+					triangle.piece = piece;
+					a_sources.push_back(triangle);
+				}
+				piece++;
+			}
+		}
+	}
+
+	FallSites::SurfaceMesh FallSites::BuildMergedSurface(const FallStream::Result& a_flow, float a_originX, float a_originY, const std::vector<SourceTriangle>& a_sources)
+	{
+		SurfaceMesh mesh;
+		const auto w = static_cast<int32_t>(a_flow.width);
+		const auto h = static_cast<int32_t>(a_flow.height);
+		const float cell = FallCapture::CELL;
+
+		// The flow under a point, bilinear over its water cells; the weight is how much water is around
+		struct Flow
+		{
+			float across, travel, speed, foam, edge, depth, water;
+		};
+		const auto flowAt = [&](float a_x, float a_y) {
+			Flow flow{};
+			const float fx = (a_x - a_originX) / cell;
+			const float fy = (a_y - a_originY) / cell;
+			const auto ix = static_cast<int32_t>(std::floor(fx));
+			const auto iy = static_cast<int32_t>(std::floor(fy));
+			const float tx = fx - static_cast<float>(ix);
+			const float ty = fy - static_cast<float>(iy);
+			float weight = 0.0f;
+			for (int32_t dy = 0; dy <= 1; dy++) {
+				for (int32_t dx = 0; dx <= 1; dx++) {
+					const int32_t x = ix + dx;
+					const int32_t y = iy + dy;
+					if (x < 0 || y < 0 || x >= w || y >= h)
+						continue;
+					const std::size_t i = static_cast<std::size_t>(y) * w + x;
+					const float k = (dx ? tx : 1.0f - tx) * (dy ? ty : 1.0f - ty);
+					flow.water += a_flow.water[i] ? k : 0.0f;
+					if (!a_flow.water[i])
+						continue;
+					flow.across += a_flow.psi[i] * k;
+					flow.travel += a_flow.travel[i] * k;
+					flow.speed += a_flow.speed[i] * k;
+					flow.foam += a_flow.foam[i] * k;
+					flow.edge += a_flow.edge[i] * k;
+					flow.depth += a_flow.depth[i] * k;
+					weight += k;
+				}
+			}
+			if (weight > 1e-4f) {
+				const float inverse = 1.0f / weight;
+				flow.across *= inverse;
+				flow.travel *= inverse;
+				flow.speed *= inverse;
+				flow.foam *= inverse;
+				flow.edge *= inverse;
+				flow.depth *= inverse;
+			}
+			return flow;
+		};
+
+		// Where two pieces lie on each other, only the upper one stays: the doubled layers, and their
+		// seams, go. Steep parts (curtains) are left as they are
+		const auto faceUp = [](const SourceTriangle& a_t) {
+			const float ax = a_t.position[1][0] - a_t.position[0][0], ay = a_t.position[1][1] - a_t.position[0][1], az = a_t.position[1][2] - a_t.position[0][2];
+			const float bx = a_t.position[2][0] - a_t.position[0][0], by = a_t.position[2][1] - a_t.position[0][1], bz = a_t.position[2][2] - a_t.position[0][2];
+			const float nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+			const float length = std::sqrt(nx * nx + ny * ny + nz * nz);
+			return length > 1e-6f ? std::abs(nz) / length : 0.0f;
+		};
+		const auto heightAt = [](const SourceTriangle& a_t, float a_x, float a_y, float& a_z) {
+			const auto& a = a_t.position[0];
+			const auto& b = a_t.position[1];
+			const auto& c = a_t.position[2];
+			const float area = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+			if (std::abs(area) < 1e-3f)
+				return false;
+			const float w0 = ((b[0] - a_x) * (c[1] - a_y) - (c[0] - a_x) * (b[1] - a_y)) / area;
+			const float w1 = ((c[0] - a_x) * (a[1] - a_y) - (a[0] - a_x) * (c[1] - a_y)) / area;
+			const float w2 = 1.0f - w0 - w1;
+			if (w0 < -1e-3f || w1 < -1e-3f || w2 < -1e-3f)
+				return false;
+			a_z = w0 * a[2] + w1 * b[2] + w2 * c[2];
+			return true;
+		};
+		std::unordered_map<int64_t, std::vector<uint32_t>> buckets;
+		const auto bucketKey = [](int32_t a_x, int32_t a_y) { return (static_cast<int64_t>(a_x) << 32) ^ static_cast<uint32_t>(a_y); };
+		for (uint32_t t = 0; t < a_sources.size(); t++) {
+			const auto& triangle = a_sources[t];
+			if (faceUp(triangle) < MERGE_FACE_UP)
+				continue;
+			float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
+			for (int k = 0; k < 3; k++) {
+				for (int a = 0; a < 2; a++) {
+					lo[a] = std::min(lo[a], triangle.position[k][a]);
+					hi[a] = std::max(hi[a], triangle.position[k][a]);
+				}
+			}
+			for (auto by = static_cast<int32_t>(std::floor(lo[1] / MERGE_BUCKET)); by <= static_cast<int32_t>(std::floor(hi[1] / MERGE_BUCKET)); by++) {
+				for (auto bx = static_cast<int32_t>(std::floor(lo[0] / MERGE_BUCKET)); bx <= static_cast<int32_t>(std::floor(hi[0] / MERGE_BUCKET)); bx++)
+					buckets[bucketKey(bx, by)].push_back(t);
+			}
+		}
+		std::vector<uint8_t> kept(a_sources.size(), 1);
+		for (uint32_t t = 0; t < a_sources.size(); t++) {
+			const auto& triangle = a_sources[t];
+			if (faceUp(triangle) < MERGE_FACE_UP)
+				continue;
+			// Covered at its centre and at its corners pulled a little inward
+			bool covered = true;
+			for (int probe = 0; probe < 4 && covered; probe++) {
+				float px = 0.0f, py = 0.0f, pz = 0.0f;
+				for (int k = 0; k < 3; k++) {
+					const float weight = probe == 3 ? 1.0f / 3.0f : (k == probe ? 0.6f : 0.2f);
+					px += triangle.position[k][0] * weight;
+					py += triangle.position[k][1] * weight;
+					pz += triangle.position[k][2] * weight;
+				}
+				bool found = false;
+				const auto it = buckets.find(bucketKey(static_cast<int32_t>(std::floor(px / MERGE_BUCKET)), static_cast<int32_t>(std::floor(py / MERGE_BUCKET))));
+				if (it != buckets.end()) {
+					for (const uint32_t other : it->second) {
+						if (a_sources[other].piece == triangle.piece)
+							continue;
+						float oz;
+						if (!heightAt(a_sources[other], px, py, oz))
+							continue;
+						const float above = oz - pz;
+						if (above < -MERGE_BELOW || above > MERGE_ABOVE)
+							continue;
+						if (above > 0.5f || (std::abs(above) <= 0.5f && a_sources[other].piece < triangle.piece)) {
+							found = true;
+							break;
 						}
 					}
-					if (count < SURFACE_CLOSE_NEIGHBOURS)
-						continue;
-					const float k = 1.0f / static_cast<float>(count);
-					closed.level[i] = sums[0] * k;
-					closed.psi[i] = sums[1] * k;
-					closed.travel[i] = sums[2] * k;
-					closed.speed[i] = sums[3] * k;
-					closed.foam[i] = std::max(sums[4] * k, 0.5f);  // Water over rock at its surface churns white
-					closed.edge[i] = sums[5] * k;
-					closed.depth[i] = 0.0f;
-					next[i] = 1;
 				}
+				covered = found;
 			}
-			covered.swap(next);
+			if (covered)
+				kept[t] = 0;
 		}
 
-		const auto wet = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < w && a_y < h && covered[index(a_x, a_y)]; };
-		for (int32_t y = 0; y < h; y++) {
-			for (int32_t x = 0; x < w; x++) {
-				const std::size_t i = index(x, y);
-				if (!covered[i])
-					continue;
-				// The normal from the surface around, over water only
-				const float here = closed.level[i];
-				const auto at = [&](int32_t a_x, int32_t a_y) { return wet(a_x, a_y) ? closed.level[index(a_x, a_y)] : here; };
-				const float sx = (at(x + 1, y) - at(x - 1, y)) / (2.0f * cell);
-				const float sy = (at(x, y + 1) - at(x, y - 1)) / (2.0f * cell);
-				const float length = std::sqrt(sx * sx + sy * sy + 1.0f);
-				FallSurfaceVertex vertex{};
-				vertex.position[0] = a_stream.originX + static_cast<float>(x) * cell;
-				vertex.position[1] = a_stream.originY + static_cast<float>(y) * cell;
-				vertex.position[2] = here;
-				vertex.across = closed.psi[i];
-				vertex.travel = closed.travel[i];
-				vertex.speed = closed.speed[i];
-				vertex.foam = closed.foam[i];
-				vertex.edge = closed.edge[i];
-				vertex.normal[0] = -sx / length;
-				vertex.normal[1] = -sy / length;
-				vertex.normal[2] = 1.0f / length;
-				vertex.depth = closed.depth[i];
-				slot[i] = static_cast<uint32_t>(a_stream.vertices.size());
-				a_stream.vertices.push_back(vertex);
+		// Each piece subdivided evenly, so it has no cracks of its own; vertices welded where pieces meet
+		std::vector<uint32_t> splits;
+		for (const auto& triangle : a_sources) {
+			if (splits.size() <= triangle.piece)
+				splits.resize(triangle.piece + 1, 1);
+			float longest = 0.0f;
+			for (int k = 0; k < 3; k++) {
+				const auto& a = triangle.position[k];
+				const auto& b = triangle.position[(k + 1) % 3];
+				longest = std::max(longest, std::sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) + (b[2] - a[2]) * (b[2] - a[2])));
 			}
+			splits[triangle.piece] = std::max(splits[triangle.piece], std::clamp(static_cast<uint32_t>(std::ceil(longest / SURFACE_EDGE)), 1u, SURFACE_MAX_SPLIT));
 		}
-		// Two triangles per square of water; a triangle where three of its corners are water
-		for (int32_t y = 0; y + 1 < h; y++) {
-			for (int32_t x = 0; x + 1 < w; x++) {
-				const uint32_t a = slot[index(x, y)];
-				const uint32_t b = slot[index(x + 1, y)];
-				const uint32_t c = slot[index(x, y + 1)];
-				const uint32_t d = slot[index(x + 1, y + 1)];
-				const auto triangle = [&](uint32_t a_0, uint32_t a_1, uint32_t a_2) {
-					if (a_0 == UINT32_MAX || a_1 == UINT32_MAX || a_2 == UINT32_MAX)
-						return;
-					a_stream.indices.insert(a_stream.indices.end(), { a_0, a_1, a_2 });
-				};
-				if (a != UINT32_MAX && d != UINT32_MAX) {
-					triangle(a, b, d);
-					triangle(a, d, c);
-				} else {
-					triangle(a, b, c);
-					triangle(b, d, c);
+		std::unordered_map<int64_t, uint32_t> welded;
+		const auto weldKey = [](const float a_p[3]) {
+			const auto qx = static_cast<int64_t>(std::lround(a_p[0] / SURFACE_WELD)) & 0x1FFFFF;
+			const auto qy = static_cast<int64_t>(std::lround(a_p[1] / SURFACE_WELD)) & 0x1FFFFF;
+			const auto qz = static_cast<int64_t>(std::lround(a_p[2] / SURFACE_WELD)) & 0x1FFFFF;
+			return (qx << 42) | (qy << 21) | qz;
+		};
+		const auto vertexFor = [&](const SourceTriangle& a_t, float a_u, float a_v) {
+			const float w0 = 1.0f - a_u - a_v;
+			FallSurfaceVertex vertex{};
+			for (int k = 0; k < 3; k++) {
+				vertex.position[k] = a_t.position[0][k] * w0 + a_t.position[1][k] * a_u + a_t.position[2][k] * a_v;
+				vertex.normal[k] = a_t.normal[0][k] * w0 + a_t.normal[1][k] * a_u + a_t.normal[2][k] * a_v;
+			}
+			const auto key = weldKey(vertex.position);
+			if (const auto it = welded.find(key); it != welded.end())
+				return it->second;
+			const float length = std::sqrt(vertex.normal[0] * vertex.normal[0] + vertex.normal[1] * vertex.normal[1] + vertex.normal[2] * vertex.normal[2]);
+			for (float& component : vertex.normal)
+				component = length > 1e-6f ? component / length : 0.0f;
+			vertex.uv[0] = a_t.uv[0][0] * w0 + a_t.uv[1][0] * a_u + a_t.uv[2][0] * a_v;
+			vertex.uv[1] = a_t.uv[0][1] * w0 + a_t.uv[1][1] * a_u + a_t.uv[2][1] * a_v;
+			const Flow flow = flowAt(vertex.position[0], vertex.position[1]);
+			vertex.across = flow.across;
+			vertex.travel = flow.travel;
+			vertex.speed = flow.speed;
+			vertex.foam = flow.foam;
+			vertex.edge = 1.0f;
+			vertex.depth = flow.depth;
+			// The flow is solved from above: on steep water, or off the flow, vanilla's own texture stays
+			const float upward = std::abs(vertex.normal[2]);
+			vertex.flow = std::clamp((flow.water - 0.3f) / 0.5f, 0.0f, 1.0f) * std::clamp((upward - 0.35f) / 0.25f, 0.0f, 1.0f);
+			const auto index = static_cast<uint32_t>(mesh.vertices.size());
+			mesh.vertices.push_back(vertex);
+			welded.emplace(key, index);
+			return index;
+		};
+		for (uint32_t t = 0; t < a_sources.size(); t++) {
+			if (!kept[t])
+				continue;
+			const auto& triangle = a_sources[t];
+			const uint32_t n = splits[triangle.piece];
+			const float step = 1.0f / static_cast<float>(n);
+			std::vector<uint32_t> grid((n + 1) * (n + 2) / 2);
+			const auto at = [&](uint32_t a_i, uint32_t a_j) -> uint32_t& { return grid[a_i * (n + 1) - a_i * (a_i - 1) / 2 + a_j]; };
+			for (uint32_t i = 0; i <= n; i++) {
+				for (uint32_t j = 0; j + i <= n; j++)
+					at(i, j) = vertexFor(triangle, static_cast<float>(i) * step, static_cast<float>(j) * step);
+			}
+			for (uint32_t i = 0; i < n; i++) {
+				for (uint32_t j = 0; j + i < n; j++) {
+					const uint32_t a = at(i, j), b = at(i + 1, j), c = at(i, j + 1);
+					if (a != b && b != c && a != c)
+						mesh.indices.insert(mesh.indices.end(), { a, b, c });
+					if (i + j + 1 < n) {
+						const uint32_t d = at(i + 1, j + 1);
+						if (b != d && d != c && b != c)
+							mesh.indices.insert(mesh.indices.end(), { b, d, c });
+					}
 				}
 			}
 		}
+		mesh.culled = static_cast<uint32_t>(std::count(kept.begin(), kept.end(), static_cast<uint8_t>(0)));
+		return mesh;
 	}
 
 	void FallSites::RefreshSurfaces()
@@ -537,7 +757,7 @@ namespace FluidFieldSim
 		surfaceVertices.clear();
 		surfaceIndices.clear();
 		for (const auto& [key, stream] : streams) {
-			if (!stream.ready || stream.vertices.empty())
+			if (!stream.meshReady || stream.vertices.empty())
 				continue;
 			const auto base = static_cast<uint32_t>(surfaceVertices.size());
 			surfaceVertices.insert(surfaceVertices.end(), stream.vertices.begin(), stream.vertices.end());
@@ -1003,6 +1223,8 @@ namespace FluidFieldSim
 			}
 			if (it->second.pending.valid())
 				retired.push_back(std::move(it->second.pending));
+			if (it->second.meshPending.valid())
+				retiredMeshes.push_back(std::move(it->second.meshPending));
 			it = streams.erase(it);
 		}
 		RefreshGrounded();
