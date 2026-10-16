@@ -74,6 +74,8 @@ about it.
 
 -   **Vanilla's falling-water models are a lit surface under effect overlays** (2026-10-15). `FXWaterfallBody*.nif` holds an inner surface drawn by the lighting shader (BSLightingShaderProperty, no effect texture), a white-water sheet (BSEffectShader, FXWhiteWater01), streak layers (FXfluidTile01) and spray particle systems (NiParticleSystem). The water you see is mostly the inner surface; the effect layers read brown and ragged on their own. Changing only the effect shader touches the overlays. `FXWaterfallThin*.nif` has no lit surface: only streak layers and particles.
 
+-   **Lit geometry must keep its exact vertex position** (2026-10-15). BSLightingShader surfaces are drawn after a depth prepass and the colour pass depth-tests against it for equality. Recomputing the clip position in Lighting.hlsl, even mathematically the same (`mul(ViewProj, worldPosition)` instead of `mul(modelView, inputPosition)`), changed the depth in the last bits and the surface drew as a flat brown. Displace lit geometry only in a pass that also displaces its prepass, or not at all; change its look in the pixel shader.
+
 ## Repository conventions
 
 -   **There is no `AI-INSTRUCTIONS.md`** (2026-10-13, Phase 0). `AGENTS.md` fills that role and points to `.claude/CLAUDE.md`. `.github/copilot-instructions.md` still mentions `AI-INSTRUCTIONS.md`; that is upstream text and we left it alone.

@@ -1004,6 +1004,7 @@
     "feature.fluid_field.waterfall_captures": "Waterfall ground captured: %u of %u",
     "feature.fluid_field.waterfall_debug": "Waterfall Debug",
     "feature.fluid_field.waterfall_debug_fields": "Speed, Foam, Water",
+    "feature.fluid_field.waterfall_debug_no_stream": "Grounding Only",
     "feature.fluid_field.waterfall_debug_off": "Off",
     "feature.fluid_field.waterfall_debug_streamlines": "Streamlines",
     "feature.fluid_field.waterfall_debug_tooltip": "Paints grounded waterfalls with their steady flow. Speed, Foam, Water: red for its speed, green where it foams, blue where it has water (black: none, as on rock). Streamlines: the flow's streamlines as bands, which vanilla's streaks follow; they should part round boulders and close up behind them.",

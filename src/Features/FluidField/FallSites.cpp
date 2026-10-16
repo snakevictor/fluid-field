@@ -458,6 +458,33 @@ namespace FluidFieldSim
 					const char* model = ModelOf(ref->GetBaseObject());
 					const std::string key = std::format("{}|{}", model ? model : "?", a_geometry->name.c_str());
 					if (loggedParts.insert(key).second) {
+						// The lit surface's textures and the range of its texture coordinates
+						std::string extra;
+						if (auto* lighting = property ? netimmerse_cast<RE::BSLightingShaderProperty*>(property) : nullptr) {
+							auto* base = static_cast<RE::BSLightingShaderMaterialBase*>(lighting->GetBaseMaterial());
+							if (base && base->textureSet)
+								extra += std::format(", diffuse '{}', normal '{}'", base->textureSet->GetTexturePath(RE::BSTextureSet::Texture::kDiffuse),
+									base->textureSet->GetTexturePath(RE::BSTextureSet::Texture::kNormal));
+							if (base)
+								extra += std::format(", uv offset {:.3f},{:.3f} scale {:.3f},{:.3f}", base->texCoordOffset[0].x, base->texCoordOffset[0].y, base->texCoordScale[0].x,
+									base->texCoordScale[0].y);
+						}
+						auto* renderer = a_geometry->GetGeometryRuntimeData().rendererData;
+						if (triShape && renderer && renderer->rawVertexData && renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV)) {
+							const uint32_t stride = renderer->vertexDesc.GetSize();
+							const uint32_t uvOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
+							float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
+							for (uint32_t v = 0; v < triShape->GetTrishapeRuntimeData().vertexCount; v++) {
+								const auto* uv = reinterpret_cast<const uint16_t*>(renderer->rawVertexData + static_cast<std::size_t>(v) * stride + uvOffset);
+								for (int k = 0; k < 2; k++) {
+									const float value = DirectX::PackedVector::XMConvertHalfToFloat(uv[k]);
+									lo[k] = std::min(lo[k], value);
+									hi[k] = std::max(hi[k], value);
+								}
+							}
+							extra += std::format(", vertex uv {:.2f}..{:.2f} x {:.2f}..{:.2f}", lo[0], hi[0], lo[1], hi[1]);
+						}
+						logger::info("[Fluid Field]   fall part {} '{}'{}", model ? model : "?", a_geometry->name.c_str(), extra);
 						logger::info("[Fluid Field]   fall part {}: '{}' ({}, {}, layer {}), {} vertices, {} triangles, texture '{}', greyscale '{}', shader flags {:016X}, culled {}",
 							model ? model : "?", a_geometry->name.c_str(), a_geometry->GetRTTI() ? a_geometry->GetRTTI()->GetName() : "?",
 							property && property->GetRTTI() ? property->GetRTTI()->GetName() : "no shader", static_cast<int>(LayerOf(a_geometry)),

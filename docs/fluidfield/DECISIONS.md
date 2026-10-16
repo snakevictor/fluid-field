@@ -676,8 +676,12 @@ Entry format:
     move to it: CS's Lighting.hlsl, under `FLUID_FIELD` and only for flagged
     draws (BSLightingShader SetupGeometry), bends its vertices onto the rock
     and replaces its texture's across coordinate with the stream function.
-    The camera position is passed in the fall constants, since the lighting
-    vertex shader has no FrameBuffer. Every D26 to D28 effect-shader change had
-    been applied to the overlay layers only.
+    Every D26 to D28 effect-shader change had been applied to the overlay
+    layers only. The lit surface gets the streamline texture only, in the
+    pixel shader: it is drawn after a depth prepass with an equal depth test,
+    so any change to its vertex position (even recomputing it with a
+    different formula) fails that test and leaves the surface brown. Tested
+    at the White River falls: clean water whose streaks part round the
+    boulders.
 -   Decided by: @Victor ("leave only the water surface for us to work on")
 -   References: D26, D28

@@ -1,5 +1,6 @@
-// Fluid Field waterfall grounding (D26) and flow (D28, D29): vanilla's falling-water meshes (their
-// lit inner surface, and their effect-shaded layers when shown) bent onto the rock they run over, their streaks laid along the falls' steady streamlines so they part round rock
+// Fluid Field waterfall grounding (D26) and flow (D28, D29): vanilla's falling-water meshes bent onto
+// the rock they run over (effect-shaded layers only: the lit surface is drawn after a depth prepass
+// its position must match exactly), their streaks laid along the falls' steady streamlines so they part round rock
 // and close up behind it, foamed where the flow piles against rock or squeezes past it, and softened
 // where they cut into rock. FluidField binds the constants, the captured ground
 // (FallSites::BuildGroundMap) and the flow (FallSites::BuildStreamMap) only for the draws of grounded
@@ -20,11 +21,11 @@ namespace FallGround
 		float ContactWidth;  // World units over which the water fades where it cuts into rock
 		float LiftMost;      // Water deeper than this inside rock is left there (a boulder hides it); shallower is lifted onto it
 		float FoamStrength;  // How white the foam is
-		uint DebugMode;      // 0 off; 1: speed as red, foam as green, water as blue; 2: the streamlines as bands
+		uint DebugMode;      // 0 off; 1: speed as red, foam as green, water as blue; 2: the streamlines as bands; 3: grounding without the streamline texture
 		float UScale;        // World units across the flow per repeat of vanilla's texture
 		float SteepFrom;     // The surface's upward normal below which the water is too steep for the flow (vanilla's streaks)
 		float SteepTo;       // ...and above which the flow's streaks are used in full
-		float3 CameraPos;    // The main camera's position: world positions here are relative to it
+		float3 Pad;
 	};
 
 	Texture2D<float> Heights : register(t120);

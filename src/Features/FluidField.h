@@ -88,6 +88,7 @@ struct FluidField : OverlayFeature
 		float FoamStrength = 1.0f;           ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
 		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
 		bool Waterfalls = true;              ///< Waterfalls landing on the simulated water drive it (D22)
+		int WaterfallDebug = 0;              ///< Debug: 1 the flow's speed, foam and water; 2 its streamlines; 3 grounding without the streamline texture
 		uint32_t FallLayerMask = 0x1;        ///< Which parts of vanilla's falling-water models show while waterfall effects are hidden (bits: inner surface, white-water sheet, streaks, particles)
 		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
@@ -304,7 +305,7 @@ private:
 		float UScale;
 		float SteepFrom;
 		float SteepTo;
-		float CameraPos[3];
+		float Pad[3];
 	};
 	static_assert(sizeof(FallGroundData) == 64);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
@@ -333,7 +334,6 @@ private:
 	void ReleaseFallGround();
 	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
 	bool hideFallEffects = true;                             ///< Debug: hides vanilla's mist, skirt, splash and rapids meshes; not saved
-	int fallGroundDebug = 0;                                 ///< Debug: 1 the flow's speed, foam and water; 2 its streamlines alone; not saved
 	float waterfallTime = 0.0f;                              ///< Seconds simulated, for the waterfalls' pulsing
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 

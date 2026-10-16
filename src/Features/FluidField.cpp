@@ -58,7 +58,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Waterfalls,
 	WaterfallStrength,
 	GroundWaterfalls,
-	FallLayerMask)
+	FallLayerMask,
+	WaterfallDebug)
 
 void FluidField::DrawSettings()
 {
@@ -323,8 +324,9 @@ void FluidField::DrawSettings()
 	ImGui::Checkbox(T(TKEY("show_layer_overlay"), "Show Layer Overlay"), &showDebugOverlay);
 	ImGui::Checkbox(T(TKEY("show_waterfall_sites"), "Show Waterfall Sites"), &showFallSites);
 	{
-		const char* fallDebugModes[] = { T(TKEY("waterfall_debug_off"), "Off"), T(TKEY("waterfall_debug_fields"), "Speed, Foam, Water"), T(TKEY("waterfall_debug_streamlines"), "Streamlines") };
-		ImGui::Combo(T(TKEY("waterfall_debug"), "Waterfall Debug"), &fallGroundDebug, fallDebugModes, IM_ARRAYSIZE(fallDebugModes));
+		const char* fallDebugModes[] = { T(TKEY("waterfall_debug_off"), "Off"), T(TKEY("waterfall_debug_fields"), "Speed, Foam, Water"), T(TKEY("waterfall_debug_streamlines"), "Streamlines"),
+			T(TKEY("waterfall_debug_no_stream"), "Grounding Only") };
+		ImGui::Combo(T(TKEY("waterfall_debug"), "Waterfall Debug"), &settings.WaterfallDebug, fallDebugModes, IM_ARRAYSIZE(fallDebugModes));
 		ImGui::Checkbox(T(TKEY("hide_waterfall_effects"), "Hide Waterfall Effects"), &hideFallEffects);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("hide_waterfall_effects_tooltip"), "Hides vanilla's mist, skirt, splash and rapids meshes and the falls' spray particles, so the falling water can be judged alone."));
@@ -1449,11 +1451,9 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		fallSites.BuildStreamMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallStreamScratch);
 		context->UpdateSubresource(fallStreamTexture.get(), 0, nullptr, fallStreamScratch.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
 	}
-	// Every frame: the camera moves
-	const auto& eye = globals::game::frameBufferCached.GetCameraPosAdjust();
 	const FallGroundData on{ { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET,
-		FALL_GROUND_CONTACT, FALL_GROUND_LIFT_MOST, FALL_FOAM_STRENGTH, static_cast<uint32_t>(fallGroundDebug), FALL_STREAM_U_SCALE,
-		FALL_STREAM_STEEP_FROM, FALL_STREAM_STEEP_TO, { eye.x, eye.y, eye.z } };
+		FALL_GROUND_CONTACT, FALL_GROUND_LIFT_MOST, FALL_FOAM_STRENGTH, static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 3)), FALL_STREAM_U_SCALE,
+		FALL_STREAM_STEEP_FROM, FALL_STREAM_STEEP_TO, {} };
 	context->UpdateSubresource(fallGroundOn.get(), 0, nullptr, &on, 0, 0);
 }
 

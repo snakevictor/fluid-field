@@ -745,7 +745,7 @@ PS_OUTPUT main(PS_INPUT input)
 	{
 #	if defined(FLUID_FIELD)
 		// Fluid Field (D28): falling water's streaks laid along the falls' streamlines
-		[branch] if (FallGround::Enabled)
+		[branch] if (FallGround::Enabled && FallGround::DebugMode < 3)
 		{
 			float2 uvStream;
 			float weight;
