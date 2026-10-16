@@ -199,6 +199,11 @@ namespace FluidFieldSim
 		result.speed.assign(count, 0.0f);
 		result.foam.assign(count, 0.0f);
 		result.water.assign(count, 0);
+		result.vx.assign(count, 0.0f);
+		result.vy.assign(count, 0.0f);
+		result.level.assign(count, 0.0f);
+		result.depth.assign(count, 0.0f);
+		result.edge.assign(count, 0.0f);
 		std::vector<uint8_t> nearRock(count, 0);
 		for (int32_t y = 0; y < h; y++) {
 			for (int32_t x = 0; x < w; x++) {
@@ -233,6 +238,147 @@ namespace FluidFieldSim
 				const float stall = nearRock[i] && drive > 0.5f ? std::clamp((STALL_SPEED - speed) / STALL_SPEED, 0.0f, 1.0f) : 0.0f;
 				const float squeeze = std::clamp((speed - SQUEEZE_SPEED) * 2.0f, 0.0f, 1.0f);
 				result.foam[i] = std::max(stall, squeeze);
+				result.vx[i] = u;
+				result.vy[i] = v;
+			}
+		}
+
+		// The surface for the mesh: the raw one smoothed over a cell, so the facets of vanilla's meshes
+		// do not show, and the depth over the rock
+		for (int32_t y = 0; y < h; y++) {
+			for (int32_t x = 0; x < w; x++) {
+				const std::size_t i = index(x, y);
+				if (!open(x, y))
+					continue;
+				float sum = 0.0f, weight = 0.0f;
+				for (int32_t dy = -1; dy <= 1; dy++) {
+					for (int32_t dx = -1; dx <= 1; dx++) {
+						if (!open(x + dx, y + dy))
+							continue;
+						const float k = (dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f);
+						sum += a_input.surface[index(x + dx, y + dy)] * k;
+						weight += k;
+					}
+				}
+				result.level[i] = sum / weight;
+				result.depth[i] = a_input.bed.size() == count ? std::max(result.level[i] - a_input.bed[i], 0.0f) : 0.0f;
+			}
+		}
+
+		// The edge: how far each water cell is from rock or a bank, by breadth-first steps; and how far
+		// from where the falls meet still water (where they come in and leave), which foams
+		{
+			const auto distanceFrom = [&](auto&& a_isSource, int32_t a_reach, std::vector<int32_t>& a_steps) {
+				a_steps.assign(count, a_reach + 1);
+				std::deque<std::pair<int32_t, int32_t>> frontier;
+				for (int32_t y = 0; y < h; y++) {
+					for (int32_t x = 0; x < w; x++) {
+						if (a_isSource(x, y)) {
+							a_steps[index(x, y)] = 0;
+							frontier.emplace_back(x, y);
+						}
+					}
+				}
+				while (!frontier.empty()) {
+					const auto [x, y] = frontier.front();
+					frontier.pop_front();
+					const int32_t next = a_steps[index(x, y)] + 1;
+					if (next > a_reach)
+						continue;
+					for (int k = 0; k < 4; k++) {
+						const int32_t nx = x + DX[k];
+						const int32_t ny = y + DY[k];
+						if (!inside(nx, ny) || a_steps[index(nx, ny)] <= next)
+							continue;
+						a_steps[index(nx, ny)] = next;
+						frontier.emplace_back(nx, ny);
+					}
+				}
+			};
+			std::vector<int32_t> steps;
+			distanceFrom([&](int32_t a_x, int32_t a_y) { return !open(a_x, a_y); }, EDGE_CELLS, steps);
+			for (std::size_t i = 0; i < count; i++)
+				result.edge[i] = result.water[i] ? std::clamp((static_cast<float>(steps[i]) - 0.5f) / static_cast<float>(EDGE_CELLS), 0.0f, 1.0f) : 0.0f;
+			distanceFrom([&](int32_t a_x, int32_t a_y) { const auto kind = a_input.kind[index(a_x, a_y)]; return kind == Inflow || kind == Outflow; }, MEET_CELLS, steps);
+			for (std::size_t i = 0; i < count; i++) {
+				if (result.water[i])
+					result.foam[i] = std::max(result.foam[i], std::clamp(1.0f - static_cast<float>(steps[i]) / static_cast<float>(MEET_CELLS + 1), 0.0f, 1.0f));
+			}
+		}
+
+		// The travel time: each cell is reached from the point one cell upstream along the flow (fast
+		// sweeping in four orders, so information crosses the grid in any direction)
+		{
+			constexpr float UNREACHED = 1.0e9f;
+			result.travel.assign(count, UNREACHED);
+			for (std::size_t i = 0; i < count; i++) {
+				if (a_input.kind[i] == Inflow)
+					result.travel[i] = 0.0f;
+			}
+			const auto sample = [&](float a_x, float a_y, float& a_value) {
+				const auto ix = static_cast<int32_t>(std::floor(a_x));
+				const auto iy = static_cast<int32_t>(std::floor(a_y));
+				const float tx = a_x - static_cast<float>(ix);
+				const float ty = a_y - static_cast<float>(iy);
+				float sum = 0.0f, weight = 0.0f;
+				for (int32_t dy = 0; dy <= 1; dy++) {
+					for (int32_t dx = 0; dx <= 1; dx++) {
+						if (!open(ix + dx, iy + dy))
+							continue;
+						const float value = result.travel[index(ix + dx, iy + dy)];
+						if (value >= UNREACHED)
+							continue;
+						const float k = (dx ? tx : 1.0f - tx) * (dy ? ty : 1.0f - ty);
+						sum += value * k;
+						weight += k;
+					}
+				}
+				if (weight < 1e-3f)
+					return false;
+				a_value = sum / weight;
+				return true;
+			};
+			for (uint32_t round = 0; round < TRAVEL_ROUNDS; round++) {
+				for (int order = 0; order < 4; order++) {
+					const bool flipX = (order & 1) != 0;
+					const bool flipY = (order & 2) != 0;
+					for (int32_t yy = 0; yy < h; yy++) {
+						const int32_t y = flipY ? h - 1 - yy : yy;
+						for (int32_t xx = 0; xx < w; xx++) {
+							const int32_t x = flipX ? w - 1 - xx : xx;
+							const std::size_t i = index(x, y);
+							if (!result.water[i] || a_input.kind[i] == Inflow)
+								continue;
+							const float speed = result.speed[i];
+							if (speed < 1e-4f)
+								continue;
+							float upstream;
+							if (!sample(static_cast<float>(x) - result.vx[i] / speed, static_cast<float>(y) - result.vy[i] / speed, upstream))
+								continue;
+							result.travel[i] = std::min(result.travel[i], upstream + cell / (BASE_SPEED * std::max(speed, SLOWEST)));
+						}
+					}
+				}
+			}
+			// Water nothing reaches (cut off by rock from where it comes in) takes its neighbours' time
+			for (int pass = 0; pass < 8; pass++) {
+				for (int32_t y = 0; y < h; y++) {
+					for (int32_t x = 0; x < w; x++) {
+						const std::size_t i = index(x, y);
+						if (!result.water[i] || result.travel[i] < UNREACHED)
+							continue;
+						for (int k = 0; k < 4; k++) {
+							if (open(x + DX[k], y + DY[k]) && result.travel[index(x + DX[k], y + DY[k])] < UNREACHED) {
+								result.travel[i] = result.travel[index(x + DX[k], y + DY[k])];
+								break;
+							}
+						}
+					}
+				}
+			}
+			for (float& value : result.travel) {
+				if (value >= UNREACHED)
+					value = 0.0f;
 			}
 		}
 		return result;

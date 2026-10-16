@@ -2,6 +2,7 @@
 
 #include "FallCapture.h"
 #include "FallStream.h"
+#include "FallSurfaceRenderer.h"
 
 #include <cstdint>
 #include <future>
@@ -124,6 +125,19 @@ namespace FluidFieldSim
 		void BuildStreamMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
 
 		/**
+		 * @brief D30: the falls' own water surfaces, one mesh per site whose flow is solved, all in one
+		 * list; changes with GetSurfaceVersion.
+		 */
+		const std::vector<FallSurfaceVertex>& GetSurfaceVertices() const { return surfaceVertices; }
+		const std::vector<uint32_t>& GetSurfaceIndices() const { return surfaceIndices; }
+		uint64_t GetSurfaceVersion() const { return surfaceVersion; }
+		/** @brief Vanilla's falling-water textures (from the lit surface of its models), for the fall surfaces; null until one is seen. */
+		ID3D11ShaderResourceView* GetSurfaceDiffuse() const;
+		ID3D11ShaderResourceView* GetSurfaceNormal() const;
+		/** @brief Whether the fall surfaces replace vanilla's falling-water meshes: those of sites with a surface are hidden. */
+		void SetReplaceSurface(bool a_replace);
+
+		/**
 		 * @brief Debug: hides vanilla's mist, skirt, splash and rapids meshes, and the spray particles
 		 * inside the falling-water models, so the falling water
 		 * can be judged alone. Shown again when turned off, and on Clear.
@@ -194,7 +208,19 @@ namespace FluidFieldSim
 			float originY = 0.0f;
 			uint32_t siteId = 0;
 			bool ready = false;
+			std::vector<FallSurfaceVertex> vertices;  ///< Its surface mesh, built once the flow is solved
+			std::vector<uint32_t> indices;
 		};
+		/** @brief Builds a site's surface mesh from its solved flow: a vertex per water cell, triangles between them. */
+		static void BuildSurface(Stream& a_stream);
+		/** @brief Gathers every site's surface into one list. */
+		void RefreshSurfaces();
+		std::vector<FallSurfaceVertex> surfaceVertices;
+		std::vector<uint32_t> surfaceIndices;
+		uint64_t surfaceVersion = 0;
+		bool replaceSurface = false;
+		RE::NiPointer<RE::NiSourceTexture> surfaceDiffuse;
+		RE::NiPointer<RE::NiSourceTexture> surfaceNormal;
 		std::unordered_map<uint64_t, Stream> streams;          ///< By Site::captureKey
 		std::vector<std::future<FallStream::Result>> retired;  ///< Solves of sites that went away, left to finish
 		/** @brief Vanilla's falling-water meshes of a site seen from above, and its pools, on a lattice; NO_SURFACE where none. */

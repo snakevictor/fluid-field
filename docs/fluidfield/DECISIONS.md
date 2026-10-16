@@ -685,3 +685,30 @@ Entry format:
     boulders.
 -   Decided by: @Victor ("leave only the water surface for us to work on")
 -   References: D26, D28
+
+## D30: The falls' own dense surface, built from their flow
+
+-   Date: 2026-10-15
+-   Phase / spike: D28 and D29 follow-up
+-   Decision: Each site's solved flow (D28) builds one dense mesh, a vertex
+    per 16-unit water cell, on the falls' surface (vanilla's meshes seen
+    from above, lightly smoothed): one surface per site, so the seams where
+    vanilla's meshes overlap are gone. Its texture coordinates follow the
+    flow: across is the stream function, along is the travel time from where
+    the water comes in (solved by fast sweeping), scrolling with time, so
+    vanilla's water texture is laid on the flow without shear and stretches
+    where the water speeds up. The vertex shader displaces it: a mound over
+    rock just under the water, standing waves where fast water runs shallow,
+    ripples carried downstream. It is drawn after the world by FluidField
+    (FallSurfaceRenderer, FallSurface.hlsl) with vanilla's falling-water
+    textures, lit by the sun and the sky; vanilla's falling-water models are
+    hidden at sites with a surface (Replace Waterfall Surface). Where the
+    falls meet still water (where they come in and leave) the water foams
+    over two cells, masking the join.
+-   Alternatives rejected: displacing or tessellating vanilla's lit surface
+    (its depth prepass must match exactly, D29); swapping its renderer
+    buffers for a denser mesh (ownership on cell unload).
+-   Decided by: @Victor ("now we need a higher poly mesh for the water as
+    well as some sort of tesselation/displacement based on the flow"; "fix
+    the fucking seams betwen the meshes")
+-   References: D28, D29

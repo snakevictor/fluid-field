@@ -957,6 +957,8 @@
     "feature.fluid_field.rays_per_frame": "Rays Per Frame",
     "feature.fluid_field.replace_vanilla_foam": "Replace Vanilla Foam",
     "feature.fluid_field.replace_vanilla_foam_tooltip": "Hides vanilla's placed rapids foam, splash and spray effects where the water is simulated. Waterfalls and low mist stay.",
+    "feature.fluid_field.replace_waterfall_surface": "Replace Waterfall Surface",
+    "feature.fluid_field.replace_waterfall_surface_tooltip": "Draws each waterfall's own dense water surface, built from its flow over the rock, in place of vanilla's falling-water meshes: one seamless surface that parts round rock and waves over it. Needs Ground Waterfalls.",
     "feature.fluid_field.reset_field": "Reset Field",
     "feature.fluid_field.resource_create_failed": "Fluid Field could not create its textures, so the simulation is off. Check CommunityShaders.log.",
     "feature.fluid_field.river_speed": "River Speed",

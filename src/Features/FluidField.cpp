@@ -58,6 +58,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Waterfalls,
 	WaterfallStrength,
 	GroundWaterfalls,
+	ReplaceWaterfallSurface,
 	FallLayerMask,
 	WaterfallDebug)
 
@@ -278,6 +279,10 @@ void FluidField::DrawSettings()
 	}
 	ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Waterfall Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	ImGui::Checkbox(T(TKEY("ground_waterfalls"), "Ground Waterfalls"), &settings.GroundWaterfalls);
+	ImGui::Checkbox(T(TKEY("replace_waterfall_surface"), "Replace Waterfall Surface"), &settings.ReplaceWaterfallSurface);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("replace_waterfall_surface_tooltip"), "Draws each waterfall's own dense water surface, built from its flow over the rock, in place of vanilla's falling-water meshes: one seamless surface that parts round rock and waves over it. Needs Ground Waterfalls."));
+	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("ground_waterfalls_tooltip"), "Bends vanilla's waterfall meshes onto the rock they run over, flows them around rocks in their way, and softens them into the rock with foam where they meet it. Off shows vanilla's waterfalls unchanged."));
 	}
@@ -552,6 +557,7 @@ void FluidField::ClearShaderCache()
 	groundFogFailed = false;
 	nearWater.solver.ReleaseShaders();
 	waterShaderFailed = false;
+	fallSurface.ReleaseShaders();
 }
 
 bool FluidField::EnsureSolver()
@@ -865,6 +871,8 @@ void FluidField::Prepass()
 			// Waterfall sites reconstructed from vanilla's layout (D25)
 			fallSites.SetConsoleSummary(showFallSites);
 			fallSites.SetHideEffects(hideFallEffects, settings.FallLayerMask);
+			fallSites.SetReplaceSurface(settings.GroundWaterfalls && settings.ReplaceWaterfallSurface);
+			fallSurfaceTime += deltaTime;
 			fallSites.Update(water);
 			UpdateFallGround(playerPos);
 		} else {
@@ -943,6 +951,7 @@ void FluidField::ReleaseWater()
 	waterfalls.Clear();
 	fallSites.Clear();
 	ReleaseFallGround();
+	fallSurface.Release();
 	waterShaderData = {};
 }
 
@@ -1087,6 +1096,31 @@ void FluidField::DrawGroundFogAfterWorld()
 	auto* renderer = globals::game::renderer;
 	if (!renderer)
 		return;
+
+	// The falls' own water surfaces (D30), before the ground fog lies over their base
+	if (settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && settings.ReplaceWaterfallSurface && cameraSnapshot) {
+		fallSurface.Upload(globals::d3d::device, globals::d3d::context, fallSites.GetSurfaceVertices(), fallSites.GetSurfaceIndices(), fallSites.GetSurfaceVersion());
+		const auto& shadow = globals::game::shadowState->GetRuntimeData();
+		const auto colorIndex = static_cast<uint32_t>(shadow.renderTargets[0]);
+		const auto depthIndex = shadow.depthStencil;
+		if (fallSurface.HasMesh() && colorIndex < RE::RENDER_TARGET::kTOTAL && depthIndex < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
+			auto& depth = renderer->GetDepthStencilData().depthStencils[depthIndex];
+			FluidFieldSim::FallSurfaceRenderer::DrawParams params;
+			params.target = renderer->GetRuntimeData().renderTargets[colorIndex].RTV;
+			params.depth = depth.readOnlyViews[0];
+			params.sceneDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
+			params.camera = cameraSnapshot.get();
+			params.shared = globals::state->sharedDataCB->CB();
+			params.features = globals::state->featureDataCB->CB();
+			params.diffuse = fallSites.GetSurfaceDiffuse();
+			params.normal = fallSites.GetSurfaceNormal();
+			params.time = fallSurfaceTime;
+			params.debugMode = settings.WaterfallDebug == 1 || settings.WaterfallDebug == 2 ? static_cast<uint32_t>(settings.WaterfallDebug) : 0u;
+			globals::profiler->BeginPass("FluidField::FallSurfaces");
+			fallSurface.Draw(globals::d3d::device, globals::d3d::context, params);
+			globals::profiler->EndPass();
+		}
+	}
 
 	if (!settings.InteractiveFog || !fogReady)
 		return;

@@ -17,7 +17,10 @@ namespace FluidFieldSim
 	 *
 	 * The result is a stream function: its contours are the streamlines. With the drive a unit speed,
 	 * it reads in world units across the flow, so a texture's across coordinate can be replaced by it
-	 * and its streaks follow the streamlines.
+	 * and its streaks follow the streamlines. With it comes the travel time along the streamlines from
+	 * where the water comes in (by fast sweeping), the texture's along coordinate: together they lay a
+	 * texture on the flow without shear. Where the falls meet still water (where they come in and
+	 * leave), the water foams over MEET_CELLS, masking the join.
 	 */
 	class FallStream
 	{
@@ -36,6 +39,7 @@ namespace FluidFieldSim
 			uint32_t height = 0;
 			float cell = 16.0f;          ///< World units per cell
 			std::vector<float> surface;  ///< Water surface height per cell (any value on walls)
+			std::vector<float> bed;      ///< Rock height per cell
 			std::vector<uint8_t> kind;   ///< Cell per cell
 		};
 
@@ -47,6 +51,11 @@ namespace FluidFieldSim
 			std::vector<float> speed;  ///< Flow speed per cell, 1 for free unit flow; 0 on walls
 			std::vector<float> foam;   ///< 0 to 1: where the water piles against rock, behind it, and where it squeezes through
 			std::vector<uint8_t> water;
+			std::vector<float> vx, vy;  ///< Flow velocity per cell (unit drive)
+			std::vector<float> level;   ///< The water surface, lightly smoothed over the water (for the mesh)
+			std::vector<float> depth;   ///< Water surface above the rock
+			std::vector<float> travel;  ///< Seconds the water takes to reach each cell from where it comes in, at BASE_SPEED
+			std::vector<float> edge;    ///< 0 at the water's edge (beside rock or a bank) to 1 EDGE_CELLS in
 			uint32_t iterations = 0;
 			float residual = 0.0f;  ///< Largest pressure change in the last sweep, world units
 		};
@@ -60,6 +69,11 @@ namespace FluidFieldSim
 		static constexpr float STALL_SPEED = 0.45f;    ///< Slower than this beside rock: water piles up or eddies, and foams
 		static constexpr float SQUEEZE_SPEED = 1.35f;  ///< Faster than this: squeezed through a gap, and foams
 		static constexpr int32_t ROCK_REACH = 3;       ///< Cells from rock within which stalled water foams
+		static constexpr float BASE_SPEED = 220.0f;    ///< World units per second of free-flowing water (unit drive)
+		static constexpr float SLOWEST = 0.25f;        ///< Slowest speed counted in the travel time, as a fraction of free flow
+		static constexpr uint32_t TRAVEL_ROUNDS = 24;  ///< Rounds of four sweeps for the travel time
+		static constexpr int32_t EDGE_CELLS = 2;       ///< Cells over which the water fades in from its edge
+		static constexpr int32_t MEET_CELLS = 2;       ///< Cells of foam where the falls meet still water (where they come in and leave)
 
 		static Result Solve(const Input& a_input);
 	};

@@ -170,6 +170,26 @@ namespace FluidFieldSim
 	void FallSites::RefreshHiddenEffects()
 	{
 		std::unordered_map<const RE::NiAVObject*, RE::NiPointer<RE::NiAVObject>> wanted;
+		// D30: the falling-water models of sites whose own surface draws
+		std::unordered_set<uint32_t> replaced;
+		if (replaceSurface) {
+			for (const auto& site : sites) {
+				const auto it = site.captureKey ? streams.find(site.captureKey) : streams.end();
+				if (it == streams.end() || !it->second.ready || it->second.vertices.empty())
+					continue;
+				for (const uint32_t member : site.members) {
+					if (refs[member].cls == FxClass::Body)
+						replaced.insert(refs[member].formID);
+				}
+			}
+		}
+		for (const auto& ref : refs) {
+			if (!replaced.contains(ref.formID))
+				continue;
+			auto* object = RE::TESForm::LookupByID<RE::TESObjectREFR>(ref.formID);
+			if (auto* root = object ? object->Get3D() : nullptr)
+				wanted.emplace(root, RE::NiPointer<RE::NiAVObject>(root));
+		}
 		if (hideEffects) {
 			for (const auto& ref : refs) {
 				auto* object = RE::TESForm::LookupByID<RE::TESObjectREFR>(ref.formID);
@@ -180,6 +200,8 @@ namespace FluidFieldSim
 					wanted.emplace(root, RE::NiPointer<RE::NiAVObject>(root));
 					continue;
 				}
+				if (replaced.contains(ref.formID))
+					continue;
 				// The falling-water models carry layers of their own (and spray particles): show only the
 				// layers in the mask
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
@@ -303,6 +325,11 @@ namespace FluidFieldSim
 		input.cell = FallCapture::CELL;
 		RasterSurface(a_site, a_capture.GetOriginX(), a_capture.GetOriginY(), FallCapture::CELL, static_cast<int32_t>(input.width), static_cast<int32_t>(input.height), input.surface);
 		input.kind.assign(input.surface.size(), FallStream::Wall);
+		input.bed.assign(input.surface.size(), 0.0f);
+		for (uint32_t y = 0; y < input.height; y++) {
+			for (uint32_t x = 0; x < input.width; x++)
+				input.bed[static_cast<std::size_t>(y) * input.width + x] = a_capture.At(x, y);
+		}
 		uint32_t water = 0, inflow = 0, outflow = 0;
 		for (uint32_t y = 0; y < input.height; y++) {
 			for (uint32_t x = 0; x < input.width; x++) {
@@ -376,6 +403,7 @@ namespace FluidFieldSim
 				continue;
 			stream.result = stream.pending.get();
 			stream.ready = true;
+			BuildSurface(stream);
 			changed = true;
 			float speed = 0.0f, foam = 0.0f;
 			uint32_t water = 0;
@@ -386,11 +414,110 @@ namespace FluidFieldSim
 				foam += stream.result.foam[i] > 0.5f ? 1.0f : 0.0f;
 				water++;
 			}
-			logger::info("[Fluid Field] Waterfall site #{} flow: solved in {} sweeps (last change {:.3f}), mean speed {:.2f}, {:.0f} foam cells of {}", stream.siteId,
-				stream.result.iterations, stream.result.residual, water ? speed / static_cast<float>(water) : 0.0f, foam, water);
+			logger::info("[Fluid Field] Waterfall site #{} flow: solved in {} sweeps (last change {:.3f}), mean speed {:.2f}, {:.0f} foam cells of {}; surface {} vertices, {} triangles",
+				stream.siteId, stream.result.iterations, stream.result.residual, water ? speed / static_cast<float>(water) : 0.0f, foam, water, stream.vertices.size(),
+				stream.indices.size() / 3);
 		}
-		if (changed)
+		if (changed) {
 			groundVersion++;
+			RefreshSurfaces();
+			RefreshHiddenEffects();
+		}
+	}
+
+	void FallSites::BuildSurface(Stream& a_stream)
+	{
+		const auto& result = a_stream.result;
+		const auto w = static_cast<int32_t>(result.width);
+		const auto h = static_cast<int32_t>(result.height);
+		const float cell = FallCapture::CELL;
+		a_stream.vertices.clear();
+		a_stream.indices.clear();
+		std::vector<uint32_t> slot(static_cast<std::size_t>(w) * h, UINT32_MAX);
+		const auto index = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * w + a_x; };
+		const auto wet = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < w && a_y < h && result.water[index(a_x, a_y)]; };
+		for (int32_t y = 0; y < h; y++) {
+			for (int32_t x = 0; x < w; x++) {
+				const std::size_t i = index(x, y);
+				if (!result.water[i])
+					continue;
+				// The normal from the surface around, over water only
+				const float here = result.level[i];
+				const auto at = [&](int32_t a_x, int32_t a_y) { return wet(a_x, a_y) ? result.level[index(a_x, a_y)] : here; };
+				const float sx = (at(x + 1, y) - at(x - 1, y)) / (2.0f * cell);
+				const float sy = (at(x, y + 1) - at(x, y - 1)) / (2.0f * cell);
+				const float length = std::sqrt(sx * sx + sy * sy + 1.0f);
+				FallSurfaceVertex vertex{};
+				vertex.position[0] = a_stream.originX + static_cast<float>(x) * cell;
+				vertex.position[1] = a_stream.originY + static_cast<float>(y) * cell;
+				vertex.position[2] = here;
+				vertex.across = result.psi[i];
+				vertex.travel = result.travel[i];
+				vertex.speed = result.speed[i];
+				vertex.foam = result.foam[i];
+				vertex.edge = result.edge[i];
+				vertex.normal[0] = -sx / length;
+				vertex.normal[1] = -sy / length;
+				vertex.normal[2] = 1.0f / length;
+				vertex.depth = result.depth[i];
+				slot[i] = static_cast<uint32_t>(a_stream.vertices.size());
+				a_stream.vertices.push_back(vertex);
+			}
+		}
+		// Two triangles per square of water; a triangle where three of its corners are water
+		for (int32_t y = 0; y + 1 < h; y++) {
+			for (int32_t x = 0; x + 1 < w; x++) {
+				const uint32_t a = slot[index(x, y)];
+				const uint32_t b = slot[index(x + 1, y)];
+				const uint32_t c = slot[index(x, y + 1)];
+				const uint32_t d = slot[index(x + 1, y + 1)];
+				const auto triangle = [&](uint32_t a_0, uint32_t a_1, uint32_t a_2) {
+					if (a_0 == UINT32_MAX || a_1 == UINT32_MAX || a_2 == UINT32_MAX)
+						return;
+					a_stream.indices.insert(a_stream.indices.end(), { a_0, a_1, a_2 });
+				};
+				if (a != UINT32_MAX && d != UINT32_MAX) {
+					triangle(a, b, d);
+					triangle(a, d, c);
+				} else {
+					triangle(a, b, c);
+					triangle(b, d, c);
+				}
+			}
+		}
+	}
+
+	void FallSites::RefreshSurfaces()
+	{
+		surfaceVertices.clear();
+		surfaceIndices.clear();
+		for (const auto& [key, stream] : streams) {
+			if (!stream.ready || stream.vertices.empty())
+				continue;
+			const auto base = static_cast<uint32_t>(surfaceVertices.size());
+			surfaceVertices.insert(surfaceVertices.end(), stream.vertices.begin(), stream.vertices.end());
+			for (const uint32_t i : stream.indices)
+				surfaceIndices.push_back(base + i);
+		}
+		surfaceVersion++;
+	}
+
+	ID3D11ShaderResourceView* FallSites::GetSurfaceDiffuse() const
+	{
+		return surfaceDiffuse && surfaceDiffuse->rendererTexture ? surfaceDiffuse->rendererTexture->resourceView : nullptr;
+	}
+
+	ID3D11ShaderResourceView* FallSites::GetSurfaceNormal() const
+	{
+		return surfaceNormal && surfaceNormal->rendererTexture ? surfaceNormal->rendererTexture->resourceView : nullptr;
+	}
+
+	void FallSites::SetReplaceSurface(bool a_replace)
+	{
+		if (a_replace == replaceSurface)
+			return;
+		replaceSurface = a_replace;
+		RefreshHiddenEffects();
 	}
 
 	void FallSites::BuildStreamMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
@@ -453,6 +580,13 @@ namespace FluidFieldSim
 						grounded.insert(a_geometry);
 					// Diagnostics: what each part of a falling-water mesh is, once per model and part
 					auto* property = a_geometry->GetGeometryRuntimeData().shaderProperty.get();
+					// D30: vanilla's falling-water textures, from the lit surface
+					if (auto* lit = property && !surfaceDiffuse ? netimmerse_cast<RE::BSLightingShaderProperty*>(property) : nullptr) {
+						if (auto* base = static_cast<RE::BSLightingShaderMaterialBase*>(lit->GetBaseMaterial()); base && base->diffuseTexture) {
+							surfaceDiffuse = base->diffuseTexture;
+							surfaceNormal = base->normalTexture;
+						}
+					}
 					auto* effect = property ? netimmerse_cast<RE::BSEffectShaderProperty*>(property) : nullptr;
 					auto* material = effect ? static_cast<RE::BSEffectShaderMaterial*>(effect->GetBaseMaterial()) : nullptr;
 					const char* model = ModelOf(ref->GetBaseObject());
