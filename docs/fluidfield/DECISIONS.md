@@ -1182,3 +1182,33 @@ Entry format:
     for every fall (slow falls never reached the rim before, leaving a dark
     slit).
 -   References: D40, D49, D50, D51
+
+## D53: Pools stop at lips and curtains; always downstream; spray at drops and rock; translucent falls
+
+-   Date: 2026-10-17
+-   Phase / spike: @Victor's review screenshots 529-536
+-   Decision: The holes in the falls (529, 532, 533, 536) were D52's flood
+    running under curtains: the top-down raster skipped near-vertical
+    triangles, so cells under a curtain falling from a pool read as deep
+    water at its level and the falls there were cut. The raster now also
+    keeps each cell's lowest and highest falls, edges included, and a cell
+    is not a pool's (seed or flood) where, within 3 cells, the falls drop
+    48+ below its level with none standing above it (the bottom pool is
+    exempt: nothing drops out of it). Backflow (531): the solve never runs
+    up the smoothed surface where it slopes (at least COURSE_FORWARD of free
+    flow down it), and in the shader steep water always runs down its slope
+    (D34's "agree" no longer lets the solve lead there); water the solve
+    sends up a face turns down it. Spray: the drops throw again (where the
+    water above reaches the falls), water the solve sees piling against or
+    squeezing past rock throws (530: a boulder in a run that no piece dips
+    into), slow water throws more (0.45 + 0.55 speed) and the default is
+    200 per emitter. Translucency: the falls' lit surface is switched to
+    alpha blending through its own NiAlphaProperty while grounded (restored
+    after), and the lit shader gives it patches of thin, see-through water
+    carried by the flow, opaque where thick or white; the menu's
+    Translucency slider (0 keeps vanilla's opaque draw). First run: the lit
+    surface (FXWaterfallBody\*Inner/SlopeMesh) has no alpha property at all,
+    so nothing was switched; its sibling layers carry 0x10ED (SrcAlpha /
+    InvSrcAlpha blending), the one to borrow next. Vanilla's geometry
+    stays (the thin, slow little falls are noted, not removed).
+-   References: D34, D37, D44, D52

@@ -93,11 +93,12 @@ struct FluidField : OverlayFeature
 		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		bool HideUnderwaterFalls = true;     ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
 		bool FallWhitening = true;           ///< The falls whiten with their foam and speed (D34)
+		float FallTranslucency = 0.5f;       ///< D53: how see-through the falls' thin water is (0: opaque, drawn as vanilla's)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		float FallFlowPeriod = 0.5f;         ///< Seconds per cycle of the falls' flowmap (D32): shorter stretches the texture less, pulses more
 		float FallFlowMost = 2.5f;           ///< Most texture repeats the flowmap moves the texture per cycle
 		float FallAcceleration = 0.6f;       ///< How much of gravity's pull the falling water keeps as speed (D33; 0: the solved flow only)
-		int SprayAmount = 120;               ///< Spray droplets alive per emitter at once (D31)
+		int SprayAmount = 200;               ///< Spray droplets alive per emitter at once (D31)
 		float SpraySize = 1.4f;              ///< Spray droplet width, world units
 		float SprayOpacity = 0.2f;           ///< How opaque each droplet is
 		int MistAmount = 0;                  ///< Mist puffs alive per emitter at once
@@ -322,7 +323,7 @@ private:
 		float SteepTo;
 		float TexOffset[2];
 		float Gravity;
-		float Pad;
+		float Translucency;
 		float TexScale[2];
 		uint32_t HideUnderwater;
 		float PoolFoamHeight;

@@ -102,3 +102,5 @@ and the G-buffer shows blank there (milky, then tan). ShaderCache's Utility defi
 add feature defines at all until D40, so a feature's #if in Utility.hlsl was dead code. Also: CS
 compiles shader permutations asynchronously, so the first seconds after a load or a settings change
 render with older shaders; wait 5 to 10 s before judging a capture.
+
+-   **The falls' lit surface has no NiAlphaProperty** (2026-10-17, D53). `FXWaterfallBodyTallInner01` and `FXWaterfallBodySlopeMesh01` (BSLightingShaderProperty, flags `0000802182400381`: no alpha bits) carry no alpha property, so they draw opaque with a depth pre-pass. The effect layers of the same models (`FXWaterfallBodySlopeFoam`, `L2_whiteCrossStream04`, `PCloudSplash*`) carry alpha flags `0x10ED`: blending on, SrcAlpha / InvSrcAlpha, test off, threshold 128.

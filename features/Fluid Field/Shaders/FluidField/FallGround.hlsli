@@ -13,24 +13,24 @@ namespace FallGround
 {
 	cbuffer FallGroundCB : register(b13)
 	{
-		float2 Origin;       // World position of texel (0, 0)
-		float InverseCell;   // Texels per world unit
-		float Size;          // Texels along each side
-		uint Enabled;        // This draw is a grounded mesh
-		float Offset;        // How far above the rock the water lies
-		float ContactWidth;  // World units over which the water fades where it cuts into rock
-		float LiftMost;      // Water deeper than this inside rock is left there (a boulder hides it); shallower is lifted onto it
-		float FoamStrength;  // How white the foam is
-		uint DebugMode;      // 0 off; 1: speed as red, foam as green, water as blue; 2: the flow's direction; 3: grounding with vanilla's own texture
-		float Time;          // Seconds
-		float FlowSpeed;     // World units per second of free-flowing water (speed 1)
-		float FlowPeriod;    // Seconds per cycle of the flowmap's two phases
-		float FlowMost;      // Most texture repeats the texture moves per cycle
-		float SteepFrom;     // The surface's upward normal below which the water falls straight down its slope
-		float SteepTo;       // ...and above which it follows the solved flow
-		float2 TexOffset;    // This mesh's texture scroll (vanilla's), taken back out of its coordinates
-		float Gravity;       // World units per second squared the falling water gains speed by (D33)
-		float Pad;
+		float2 Origin;         // World position of texel (0, 0)
+		float InverseCell;     // Texels per world unit
+		float Size;            // Texels along each side
+		uint Enabled;          // This draw is a grounded mesh
+		float Offset;          // How far above the rock the water lies
+		float ContactWidth;    // World units over which the water fades where it cuts into rock
+		float LiftMost;        // Water deeper than this inside rock is left there (a boulder hides it); shallower is lifted onto it
+		float FoamStrength;    // How white the foam is
+		uint DebugMode;        // 0 off; 1: speed as red, foam as green, water as blue; 2: the flow's direction; 3: grounding with vanilla's own texture
+		float Time;            // Seconds
+		float FlowSpeed;       // World units per second of free-flowing water (speed 1)
+		float FlowPeriod;      // Seconds per cycle of the flowmap's two phases
+		float FlowMost;        // Most texture repeats the texture moves per cycle
+		float SteepFrom;       // The surface's upward normal below which the water falls straight down its slope
+		float SteepTo;         // ...and above which it follows the solved flow
+		float2 TexOffset;      // This mesh's texture scroll (vanilla's), taken back out of its coordinates
+		float Gravity;         // World units per second squared the falling water gains speed by (D33)
+		float Translucency;    // D53: how see-through the falls' thin water is (0: opaque; only on blended draws)
 		float2 TexScale;       // This mesh's world units per texture repeat along u and v (D35); 0 unknown
 		uint HideUnderwater;   // Falling water under the pools' surface is not drawn (D36)
 		float PoolFoamHeight;  // World units above the water below over which the falls foam into it
@@ -230,20 +230,20 @@ namespace FallGround
 		const float3 downhill = float3(0.0, 0.0, -1.0) + normal * normal.z;
 		const float steep = 1.0 - smoothstep(SteepFrom, SteepTo, normal.z);
 		const float water = smoothstep(0.3, 0.8, result.stream.w);
-		// The solved course leads (D34): steep water turns down its slope only where that agrees with
-		// it, as Bethesda's meshes bulge and fold and their slope can point back up the falls
+		// D53: steep water runs down its slope, always: on a fold of Bethesda's meshes too, it moves down
+		// the screen, never back up the falls (D34 let the solve lead where the two disagreed)
 		const float3 liftedDirection = lifted / max(length(lifted), 1e-4);
 		const float3 downDirection = downhill / max(length(downhill), 1e-4);
 		const bool solvedHere = water > 0.0 && solvedSpeed > 1e-3;
 		const float agree = solvedHere ? saturate(dot(liftedDirection, downDirection) * 4.0) : 1.0;
-		float3 direction = solvedHere ? lerp(liftedDirection, downDirection, steep * agree) : downDirection;
+		float3 direction = solvedHere ? lerp(liftedDirection, downDirection, steep) : downDirection;
 		direction /= max(length(direction), 1e-4);
-		// D44: water never runs uphill: where the solve or a fold of the mesh points up the surface (a
-		// drop straight into rock), only its level part is kept, or the way down where none is left
+		// D44: water never runs uphill: where the solve points up the surface, it turns down it, the more
+		// the steeper it pointed up
 		if (direction.z > 0.0) {
-			direction.z = 0.0;
-			const float level = length(direction);
-			direction = level > 0.3 ? direction / level : downDirection;
+			const float3 level = float3(direction.xy, 0.0);
+			direction = lerp(level, downDirection, saturate(direction.z * 3.0));
+			direction = length(direction) > 0.3 ? normalize(direction) : downDirection;
 		}
 		const float speed = lerp(solvedSpeed, max(solvedSpeed, 1.0), steep * agree) * FlowSpeed;
 		// Gravity (D33): the speed gained from the drop below the head, along the course
@@ -322,6 +322,18 @@ namespace FallGround
 		const float n = lerp(a, b, a_flow.blendB);
 		// Ridges of the noise: thin lines where it crosses its middle
 		return 1.0 - saturate(abs(n - 0.5) * 2.6);
+	}
+
+	/**
+	 * D53: how thick the falling water is, 0 to 1, in patches: broad soft blobs carried by the flow in
+	 * its two phases, so thin, see-through sheets and thick runs stream down the falls together.
+	 */
+	float Thickness(FlowSample a_flow)
+	{
+		const float2 stretch = float2(0.45, 0.9);
+		const float a = LaceNoise(a_flow.uvA * stretch + 5.3) * 0.65 + LaceNoise(a_flow.uvA * stretch * 2.3 + 1.7) * 0.35;
+		const float b = LaceNoise(a_flow.uvB * stretch + 17.1) * 0.65 + LaceNoise(a_flow.uvB * stretch * 2.3 + 9.4) * 0.35;
+		return lerp(a, b, a_flow.blendB);
 	}
 
 	/**

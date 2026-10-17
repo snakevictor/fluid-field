@@ -1543,6 +1543,16 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			rawBaseColor.rgb = float3(saturate(length(fallFlow.stream.xy) * 0.5), saturate(fallFlow.stream.z), fallFlow.stream.w);
 		else if (FallGround::DebugMode == 2)
 			rawBaseColor.rgb = (0.5 + 0.5 * fallFlow.velocity / max(length(fallFlow.velocity), 1e-3)) * saturate(length(fallFlow.velocity) / FallGround::FlowSpeed);
+#			if !defined(DEFERRED)
+		// D53: translucent in patches, as falling water is: thin sheets show what is behind them, thick
+		// runs and white water do not (blended draws only: Translucency is 0 on the others)
+		[branch] if (FallGround::Translucency > 0.0 && FallGround::DebugMode == 0)
+		{
+			const float thick = smoothstep(0.3, 0.7, FallGround::Thickness(fallFlow));
+			const float solid = max(thick, saturate(white * 1.5) * cover);
+			rawBaseColor.a = lerp(1.0 - FallGround::Translucency, 1.0, solid);
+		}
+#			endif
 		baseColor = float4(Color::Diffuse(rawBaseColor.rgb), rawBaseColor.a);
 	}
 #		endif

@@ -72,7 +72,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	// D47: the faster the water that throws it, the more spray, thrown harder, bigger and denser: slow
 	// water barely throws any, fast water throws it all
 	const float fast = saturate(emitter.Speed / FAST_WATER);
-	const bool active = r3 < emitter.Strength * (0.15 + 0.85 * fast);
+	const bool active = r3 < emitter.Strength * (0.45 + 0.55 * fast);  // D53: slow water throws some too, so spray is not all in a few places
 	const uint kind = uint(round(emitter.Kind));
 
 	// A frame across the surface, for the random spread

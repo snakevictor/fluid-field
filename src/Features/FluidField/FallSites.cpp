@@ -204,10 +204,29 @@ namespace FluidFieldSim
 		hiddenEffects.swap(wanted);
 	}
 
+	void FallSites::SetTranslucent(bool a_translucent)
+	{
+		if (a_translucent == translucent)
+			return;
+		translucent = a_translucent;
+		RefreshGrounded();
+	}
+
+	void FallSites::RestoreAlpha()
+	{
+		for (auto& [alpha, original] : blendedAlpha) {
+			if (original.first)
+				original.first->alphaFlags = original.second;
+		}
+		blendedAlpha.clear();
+		translucentGeometry.clear();
+	}
+
 	void FallSites::Clear()
 	{
 		hideEffects = false;
 		RefreshHiddenEffects();
+		RestoreAlpha();
 		grounded.clear();
 		groundVersion++;
 		refs.clear();
@@ -225,16 +244,43 @@ namespace FluidFieldSim
 		return it != captures.end() ? &it->second : nullptr;
 	}
 
-	void FallSites::RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface, bool a_planes) const
+	void FallSites::RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface, bool a_planes,
+		std::vector<float>* a_lowest, std::vector<float>* a_highest) const
 	{
 		a_surface.assign(static_cast<std::size_t>(a_width) * a_height, NO_SURFACE);
+		if (a_lowest)
+			a_lowest->assign(a_surface.size(), FLT_MAX);
+		if (a_highest)
+			a_highest->assign(a_surface.size(), NO_SURFACE);
 		const auto window = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * a_width + a_x; };
 		const auto range = [&](float a_min, float a_max, float a_origin, int32_t a_count, int32_t& a_from, int32_t& a_to) {
 			a_from = std::max(0, static_cast<int32_t>(std::ceil((a_min - a_origin) / a_spacing)));
 			a_to = std::min(a_count - 1, static_cast<int32_t>(std::floor((a_max - a_origin) / a_spacing)));
 		};
 		// The falling water seen from above: the highest of its triangles over each point
+		// D53: the lowest and highest of the falls over each cell, curtains too: along every edge, by the nearest cell
+		const auto extremes = [&](const RE::NiPoint3& a, const RE::NiPoint3& b) {
+			const float run = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y));
+			const auto steps = static_cast<int32_t>(std::ceil(run / (a_spacing * 0.5f))) + 1;
+			for (int32_t s = 0; s <= steps; s++) {
+				const float f = static_cast<float>(s) / static_cast<float>(steps);
+				const auto x = static_cast<int32_t>(std::lround((a.x + (b.x - a.x) * f - a_originX) / a_spacing));
+				const auto y = static_cast<int32_t>(std::lround((a.y + (b.y - a.y) * f - a_originY) / a_spacing));
+				if (x < 0 || y < 0 || x >= a_width || y >= a_height)
+					continue;
+				const float z = a.z + (b.z - a.z) * f;
+				if (a_lowest)
+					(*a_lowest)[window(x, y)] = std::min((*a_lowest)[window(x, y)], z);
+				if (a_highest)
+					(*a_highest)[window(x, y)] = std::max((*a_highest)[window(x, y)], z);
+			}
+		};
 		const auto raster = [&](const RE::NiPoint3& a, const RE::NiPoint3& b, const RE::NiPoint3& c) {
+			if (a_lowest || a_highest) {
+				extremes(a, b);
+				extremes(b, c);
+				extremes(c, a);
+			}
 			const float area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
 			if (std::abs(area) < 1e-3f)
 				return;  // Edge-on from above: a vertical curtain adds nothing to the surface
@@ -251,7 +297,12 @@ namespace FluidFieldSim
 					if (w0 < -1e-4f || w1 < -1e-4f || w2 < -1e-4f)
 						continue;
 					float& stored = a_surface[window(x, y)];
-					stored = std::max(stored, w0 * a.z + w1 * b.z + w2 * c.z);
+					const float z = w0 * a.z + w1 * b.z + w2 * c.z;
+					stored = std::max(stored, z);
+					if (a_lowest)
+						(*a_lowest)[window(x, y)] = std::min((*a_lowest)[window(x, y)], z);
+					if (a_highest)
+						(*a_highest)[window(x, y)] = std::max((*a_highest)[window(x, y)], z);
 				}
 			}
 		};
@@ -307,7 +358,9 @@ namespace FluidFieldSim
 		input.width = a_capture.GetWidth();
 		input.height = a_capture.GetHeight();
 		input.cell = FallCapture::CELL;
-		RasterSurface(a_site, a_capture.GetOriginX(), a_capture.GetOriginY(), FallCapture::CELL, static_cast<int32_t>(input.width), static_cast<int32_t>(input.height), input.surface, false);
+		std::vector<float> lowest, highest;
+		RasterSurface(a_site, a_capture.GetOriginX(), a_capture.GetOriginY(), FallCapture::CELL, static_cast<int32_t>(input.width), static_cast<int32_t>(input.height), input.surface, false, &lowest,
+			&highest);
 		input.kind.assign(input.surface.size(), FallStream::Wall);
 		input.bed.assign(input.surface.size(), 0.0f);
 		for (uint32_t y = 0; y < input.height; y++) {
@@ -325,6 +378,35 @@ namespace FluidFieldSim
 			const auto ch = static_cast<int32_t>(input.height);
 			std::vector<float> levels(input.surface.size(), NO_SURFACE);
 			std::vector<std::size_t> open;
+			// D53: the lowest and highest of the falls round each cell (POOL_LIP_REACH): where they drop
+			// away below a pool's level with none coming in from above it, the cell is the pool's lip or
+			// the air under a curtain falling from it, which the top-down rock calls deep water
+			std::vector<float> lowNear(input.surface.size(), FLT_MAX), highNear(input.surface.size(), NO_SURFACE);
+			{
+				std::vector<float> lowRow(input.surface.size(), FLT_MAX), highRow(input.surface.size(), NO_SURFACE);
+				for (int32_t y = 0; y < ch; y++) {
+					for (int32_t x = 0; x < cw; x++) {
+						const std::size_t i = static_cast<std::size_t>(y) * cw + x;
+						for (int32_t d = std::max(0, x - POOL_LIP_REACH); d <= std::min(cw - 1, x + POOL_LIP_REACH); d++) {
+							lowRow[i] = std::min(lowRow[i], lowest[static_cast<std::size_t>(y) * cw + d]);
+							highRow[i] = std::max(highRow[i], highest[static_cast<std::size_t>(y) * cw + d]);
+						}
+					}
+				}
+				for (int32_t y = 0; y < ch; y++) {
+					for (int32_t x = 0; x < cw; x++) {
+						const std::size_t i = static_cast<std::size_t>(y) * cw + x;
+						for (int32_t d = std::max(0, y - POOL_LIP_REACH); d <= std::min(ch - 1, y + POOL_LIP_REACH); d++) {
+							lowNear[i] = std::min(lowNear[i], lowRow[static_cast<std::size_t>(d) * cw + x]);
+							highNear[i] = std::max(highNear[i], highRow[static_cast<std::size_t>(d) * cw + x]);
+						}
+					}
+				}
+			}
+			const auto dropsAway = [&](std::size_t a_i, float a_level) {
+				return lowNear[a_i] < a_level - POOL_LIP_DROP && highNear[a_i] < a_level + POOL_BAND && a_level > a_site.bottom + POOL_BAND;
+			};
+			uint32_t lips = 0;
 			for (int32_t y = 0; y < ch; y++) {
 				for (int32_t x = 0; x < cw; x++) {
 					const std::size_t i = static_cast<std::size_t>(y) * cw + x;
@@ -343,6 +425,10 @@ namespace FluidFieldSim
 					const bool meshAtLevel = mesh > NO_SURFACE && mesh >= level - POOL_BAND;
 					const bool bottomPool = level <= a_site.bottom + POOL_BAND;  // D50: the pool the falls end in: nothing lower to mistake it for
 					const bool shallowBed = bed >= level - POOL_SHALLOW;
+					if (dropsAway(i, level)) {
+						lips++;
+						continue;
+					}
 					if (meshAtLevel || shallowBed || bottomPool) {
 						input.cover[i] = level;
 						open.push_back(i);
@@ -367,7 +453,7 @@ namespace FluidFieldSim
 						continue;
 					const float bed = input.bed[j];
 					const float mesh = input.surface[j];
-					if (bed <= FallCapture::NONE || bed >= level - POOL_COVER || (mesh > NO_SURFACE && mesh < level - POOL_BAND))
+					if (bed <= FallCapture::NONE || bed >= level - POOL_COVER || (mesh > NO_SURFACE && mesh < level - POOL_BAND) || dropsAway(j, level))
 						continue;
 					input.cover[j] = level;
 					open.push_back(j);
@@ -375,6 +461,8 @@ namespace FluidFieldSim
 			}
 			for (std::size_t i = 0; i < input.surface.size(); i++)
 				input.surface[i] = std::max(input.surface[i], input.cover[i]);
+			logger::info("[Fluid Field] Waterfall site #{} pools: {} cells, {} kept out as lips and curtains", a_site.id,
+				std::count_if(input.cover.begin(), input.cover.end(), [](float a_cover) { return a_cover > NO_SURFACE; }), lips);
 		}
 		uint32_t water = 0, inflow = 0, outflow = 0;
 		for (uint32_t y = 0; y < input.height; y++) {
@@ -1020,7 +1108,22 @@ namespace FluidFieldSim
 						continue;
 					const float p[3] = { a_originX + static_cast<float>(x) * cell, a_originY + static_cast<float>(y) * cell, here };
 					const float n[3] = { 0.0f, 0.0f, 1.0f };
-					(void)p;  // D52: drops throw no spray (collisions do)
+					offer(p, n, std::clamp(drop / (LIP_DROP * 3.0f), 0.5f, 1.0f), FallEmitterKind::Lip, EMITTER_SPACING);  // D53: where the water above goes over
+				}
+			}
+		}
+
+		// D53: rock in the water's way, as the solve sees it: water piling against rock or squeezed past it
+		// (a boulder standing out of a run, where no piece of the falls dips into it) throws spray too
+		if (a_flow.rockFoam.size() == static_cast<std::size_t>(w) * h) {
+			for (int32_t y = 0; y < h; y++) {
+				for (int32_t x = 0; x < w; x++) {
+					const std::size_t i = static_cast<std::size_t>(y) * w + x;
+					if (!a_flow.water[i] || a_flow.rockFoam[i] < OBSTACLE_FOAM)
+						continue;
+					const float p[3] = { a_originX + static_cast<float>(x) * cell, a_originY + static_cast<float>(y) * cell, a_flow.level[i] };
+					const float n[3] = { 0.0f, 0.0f, 1.0f };
+					offer(p, n, std::clamp(0.4f + 0.6f * a_flow.rockFoam[i], 0.0f, 1.0f), FallEmitterKind::Strike, OBSTACLE_SPACING);
 				}
 			}
 		}
@@ -1591,6 +1694,7 @@ namespace FluidFieldSim
 	{
 		// D26: the falling-water meshes of every site with captured ground are grounded on it
 		grounded.clear();
+		RestoreAlpha();
 		for (const auto& site : sites) {
 			const FallCapture* capture = GetCapture(site);
 			if (!capture || !capture->IsComplete())
@@ -1608,6 +1712,17 @@ namespace FluidFieldSim
 					auto* triShape = a_geometry->AsTriShape();
 					if (triShape && triShape->GetTrishapeRuntimeData().triangleCount > 0)
 						grounded.insert(a_geometry);
+					// D53: the lit surface drawn blended, so it can be translucent in patches, as falling water is.
+					// Its own alpha property is switched (the model's, shared by every copy of it) and restored after
+					auto* lit = a_geometry->GetGeometryRuntimeData().shaderProperty.get();
+					auto* alphaProperty = a_geometry->GetGeometryRuntimeData().alphaProperty.get();
+					if (translucent && triShape && lit && netimmerse_cast<RE::BSLightingShaderProperty*>(lit) && alphaProperty) {
+						blendedAlpha.try_emplace(alphaProperty, RE::NiPointer<RE::NiAlphaProperty>(alphaProperty), alphaProperty->alphaFlags);
+						alphaProperty->SetAlphaBlending(true);
+						alphaProperty->SetSrcBlendMode(RE::NiAlphaProperty::AlphaFunction::kSrcAlpha);
+						alphaProperty->SetDestBlendMode(RE::NiAlphaProperty::AlphaFunction::kInvSrcAlpha);
+						translucentGeometry.insert(a_geometry);
+					}
 					// Diagnostics: what each part of a falling-water mesh is, once per model and part
 					auto* property = a_geometry->GetGeometryRuntimeData().shaderProperty.get();
 					auto* effect = property ? netimmerse_cast<RE::BSEffectShaderProperty*>(property) : nullptr;
@@ -1617,6 +1732,11 @@ namespace FluidFieldSim
 					if (loggedParts.insert(key).second) {
 						// The lit surface's textures and the range of its texture coordinates
 						std::string extra;
+						if (auto* alpha = a_geometry->GetGeometryRuntimeData().alphaProperty.get())
+							extra += std::format(", alpha flags {:04X} (blend {}, test {}), threshold {}", blendedAlpha.contains(alpha) ? blendedAlpha.at(alpha).second : alpha->alphaFlags,
+								alpha->GetAlphaBlending(), alpha->GetAlphaTesting(), alpha->alphaThreshold);
+						else
+							extra += ", no alpha property";
 						if (auto* lighting = property ? netimmerse_cast<RE::BSLightingShaderProperty*>(property) : nullptr) {
 							auto* base = static_cast<RE::BSLightingShaderMaterialBase*>(lighting->GetBaseMaterial());
 							if (base && base->textureSet)

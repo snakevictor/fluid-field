@@ -112,6 +112,13 @@ namespace FluidFieldSim
 		 * Pointers are compared only, never followed.
 		 */
 		bool IsGrounded(const RE::BSGeometry* a_geometry) const { return grounded.contains(a_geometry); }
+		/**
+		 * @brief D53: whether the falls' lit surfaces are drawn alpha-blended (their own alpha property
+		 * switched to blending while grounded), so the shader can make them translucent in patches.
+		 */
+		void SetTranslucent(bool a_translucent);
+		/** @brief Whether a grounded geometry draws blended (SetTranslucent took on it). */
+		bool IsTranslucent(const RE::BSGeometry* a_geometry) const { return translucentGeometry.contains(a_geometry); }
 		/** @brief Changes whenever the captured ground or the grounded meshes change. */
 		uint64_t GetGroundVersion() const { return groundVersion; }
 		/**
@@ -217,6 +224,11 @@ namespace FluidFieldSim
 		std::unordered_map<uint64_t, std::string> cellSummaries;  ///< Last summary logged per cell
 		std::unordered_map<uint64_t, FallCapture> captures;       ///< By Site::captureKey
 		std::unordered_set<const RE::BSGeometry*> grounded;
+		bool translucent = false;
+		std::unordered_set<const RE::BSGeometry*> translucentGeometry;
+		/** @brief The alpha properties switched to blending, with their own flags to restore. */
+		std::unordered_map<RE::NiAlphaProperty*, std::pair<RE::NiPointer<RE::NiAlphaProperty>, uint16_t>> blendedAlpha;
+		void RestoreAlpha();
 		std::unordered_set<std::string> loggedParts;  ///< Diagnostics: falling-water mesh parts already logged
 
 		/** @brief A triangle of vanilla's falling-water surface, in world space. */
@@ -305,6 +317,8 @@ namespace FluidFieldSim
 		static constexpr float POOL_BAND = 24.0f;           ///< D40: a pool's water is where vanilla's falling water lies at its level, within this...
 		static constexpr float TOP_POOL_CUT = 24.0f;        ///< D50: how much deeper the falls are cut under the pool they come from
 		static constexpr float POOL_SHALLOW = 160.0f;       ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
+		static constexpr int32_t POOL_LIP_REACH = 3;        ///< D53: cells round a pool's cell its falls are looked at: a fall dropping away below the level...
+		static constexpr float POOL_LIP_DROP = 48.0f;       ///< ...this far, with none coming in from above it, is the pool's lip or a curtain under it: not the pool's water
 		static constexpr float BURIED_MARGIN = 120.0f;      ///< As FallGround.hlsli BURIED (D49)
 		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;  ///< World units round each point where the falls meet a pool that the water foams (D44, D47)
 		static constexpr float PLUNGE_FOAM_BAND = 40.0f;    ///< The falls' vertices this close to a pool's surface meet it (D47, D50)
@@ -326,7 +340,8 @@ namespace FluidFieldSim
 		std::unordered_map<uint64_t, Stream> streams;          ///< By Site::captureKey
 		std::vector<std::future<FallStream::Result>> retired;  ///< Solves of sites that went away, left to finish
 		/** @brief Vanilla's falling-water meshes of a site seen from above, and its pools, on a lattice; NO_SURFACE where none. */
-		void RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface, bool a_planes = true) const;
+		void RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface, bool a_planes = true,
+			std::vector<float>* a_lowest = nullptr, std::vector<float>* a_highest = nullptr) const;
 		void StartStream(const Site& a_site, const FallCapture& a_capture);
 		/** @brief Starts the flows of newly captured sites and collects finished ones. */
 		void PollStreams();

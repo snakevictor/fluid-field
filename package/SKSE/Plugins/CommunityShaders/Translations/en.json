@@ -884,6 +884,8 @@
     "feature.fluid_field.fall_layer_streaks": "Vanilla Streak Layers",
     "feature.fluid_field.fall_layer_surface": "Vanilla Water Surface",
     "feature.fluid_field.fall_layers_tooltip": "Which parts of vanilla's waterfall models show. The sheet and streak layers smear when the flow moves them.",
+    "feature.fluid_field.fall_translucency": "Translucency",
+    "feature.fluid_field.fall_translucency_tooltip": "How see-through the falls' thin water is, in patches that stream with it; white water stays opaque. 0 draws them opaque, as vanilla does.",
     "feature.fluid_field.fall_view": "Waterfall Overlay",
     "feature.fluid_field.fall_view_intersections": "Intersections",
     "feature.fluid_field.fall_view_meshes": "Fall Meshes",

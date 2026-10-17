@@ -61,6 +61,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GroundWaterfalls,
 	HideUnderwaterFalls,
 	FallWhitening,
+	FallTranslucency,
 	FallLayerMask,
 	FallFlowPeriod,
 	FallFlowMost,
@@ -138,6 +139,8 @@ void FluidField::DrawSettings()
 		ImGui::SeparatorText(T(TKEY("waterfall_look"), "Water"));
 		ImGui::Checkbox(T(TKEY("fall_whitening"), "Foam on the Falls"), &settings.FallWhitening);
 		tooltip(T(TKEY("fall_whitening_tooltip"), "White water on the falls where they strike rock, where vanilla's pieces meet, into the water below and where they fall fast."));
+		ImGui::SliderFloat(T(TKEY("fall_translucency"), "Translucency"), &settings.FallTranslucency, 0.0f, 0.9f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("fall_translucency_tooltip"), "How see-through the falls' thin water is, in patches that stream with it; white water stays opaque. 0 draws them opaque, as vanilla does."));
 		ImGui::Checkbox(T(TKEY("hide_underwater_falls"), "Hide Buried Falls"), &settings.HideUnderwaterFalls);
 		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes under the water above or below them, or deep in the rock."));
 		ImGui::SliderFloat(T(TKEY("fall_acceleration"), "Fall Acceleration"), &settings.FallAcceleration, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -844,6 +847,7 @@ void FluidField::Prepass()
 			// Waterfall sites reconstructed from vanilla's layout (D25)
 			fallSites.SetConsoleSummary(showFallSites);
 			fallSites.SetHideEffects(hideFallEffects, settings.FallLayerMask);
+			fallSites.SetTranslucent(settings.GroundWaterfalls && settings.FallTranslucency > 0.0f);
 			fallSurfaceTime += deltaTime;
 			fallSites.Update(water);
 			UpdateFallGround(playerPos);
@@ -1529,6 +1533,7 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
 		fallGroundData.CameraOffset[0] = eye.x;
 		fallGroundData.CameraOffset[1] = eye.y;
 		fallGroundData.CameraOffset[2] = eye.z;
+		fallGroundData.Translucency = fallSites.IsTranslucent(a_pass->geometry) ? std::clamp(settings.FallTranslucency, 0.0f, 0.9f) : 0.0f;
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (SUCCEEDED(context->Map(fallGroundOn.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
 			std::memcpy(mapped.pData, &fallGroundData, sizeof(fallGroundData));
