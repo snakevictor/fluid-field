@@ -66,6 +66,8 @@ float Hash(uint a_value)
 
 /** D47: water this fast (world units per second) throws spray at full rate. */
 static const float FAST_WATER = 700.0;
+/** D48: droplets closer to the camera than this vanish (fading in over four times as far). */
+static const float NEAR_FADE = 60.0;
 
 struct VSOutput
 {
@@ -137,11 +139,11 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 		else if (kind == 1)
 			v0 = (up * (0.4 + 1.0 * r2) + spread * (0.2 + 0.5 * r1)) * SpraySpeed * (0.5 + 1.5 * fast) + flat * emitter.Speed * 0.2;  // Thrown up and out
 		else
-			v0 = flowVelocity * 0.4 + (up * 0.8 + spread * 0.6) * max(emitter.Speed, 150.0) * (0.25 + 0.6 * r2) * (0.6 + 0.8 * fast);  // Kicked up where it strikes
+			v0 = flowVelocity * 0.5 + (up * 0.8 + spread * 0.3) * min(max(emitter.Speed, 150.0), 600.0) * (0.15 + 0.35 * r2) * (0.6 + 0.6 * fast);  // Kicked up where it strikes, staying near the water
 		position += v0 * age + float3(0, 0, -0.5 * Gravity * age * age);
 		motion = v0 + float3(0, 0, -Gravity * age);
-		size = SpraySize * (0.5 + 1.0 * r2) * (1.0 + 1.2 * fast);
-		alpha = SprayOpacity * (0.6 + 1.4 * fast) * smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.55, 1.0, t));
+		size = SpraySize * (0.5 + 1.0 * r2);
+		alpha = SprayOpacity * (0.7 + 0.3 * fast) * smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.55, 1.0, t));
 	}
 
 	VSOutput output;
@@ -154,6 +156,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 
 	// A camera-facing quad; a droplet's is stretched along its motion as seen from the camera
 	const float3 relative = position - FrameBuffer::CameraPosAdjust.xyz;
+	alpha *= smoothstep(NEAR_FADE, NEAR_FADE * 4.0, length(relative));  // D48
 	const float3 toCamera = -relative / max(length(relative), 1e-3);
 	float3 right = normalize(float3(FrameBuffer::CameraView[0].x, FrameBuffer::CameraView[0].y, FrameBuffer::CameraView[0].z));
 	float3 viewUp = normalize(float3(FrameBuffer::CameraView[1].x, FrameBuffer::CameraView[1].y, FrameBuffer::CameraView[1].z));

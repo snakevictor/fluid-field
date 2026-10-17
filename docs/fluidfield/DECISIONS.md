@@ -1076,3 +1076,27 @@ Entry format:
     per emitter. The flowmap's contrast boost applies to colour only (boosted
     normals sparkled harshly).
 -   References: D36, D44, D45, D46
+
+## D48: Spray toned back; pools foam as lace; the falls cut deeper under the pools
+
+-   Date: 2026-10-17
+-   Phase / spike: @Victor's review screenshots 471-479
+-   Decision: D47's speed-scaled spray grew droplets to 2.2x and opacity to
+    nearly 3x: close to the camera they were blobs, and strikes threw them
+    far from the water. Speed now drives only how many are thrown and how
+    hard (opacity 0.7-1x, size unscaled); strikes kick spray up near the
+    water (capped speed, 0.5x and 0.3x strength) instead of across; droplets
+    within 60 units of the camera fade out; 120 per emitter. Plunge foam is
+    made at 1/s (was 3), so the pools' foam breaks into lace instead of a
+    flat white sheet. The falls are cut 40 units under the pools' surface
+    (was 8; through the clear water the cut showed as rock behind a slit) and
+    48 units inside the lowest ground nearby (was 30).
+-   Next (investigated, not built): denser falls geometry. Hardware
+    tessellation would need identical hull/domain shaders in the depth
+    pre-pass and the lit pass, with the engine owning the topology; the
+    robust route is to replace each vanilla fall BSTriShape's vertex/index
+    buffers with a subdivided copy (FallSites already subdivides them),
+    so every pass (pre-pass, lit, shadows, reflections) draws the same dense
+    mesh, then displace by the flow in a function shared by Lighting.hlsl
+    and Utility.hlsl.
+-   References: D36, D44, D47

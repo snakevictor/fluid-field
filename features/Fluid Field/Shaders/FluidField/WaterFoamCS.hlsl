@@ -71,7 +71,7 @@ static const float BREAKING_RATE = 0.15;
 static const float WAKE_RATE = 1.5;
 static const float SPLASH_RATE = 6.0;
 /** D44: foam made per second where a waterfall plunges in at full strength: it stays white there. */
-static const float PLUNGE_RATE = 3.0;
+static const float PLUNGE_RATE = 1.0;  // D48: was 3, which saturated the pool into a flat white sheet
 
 /** The eight neighbour directions, for finding obstacles around a cell. */
 static const int2 NEIGHBOURS[8] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1), int2(1, 1), int2(-1, 1), int2(1, -1), int2(-1, -1) };

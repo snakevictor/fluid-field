@@ -1063,7 +1063,7 @@ namespace FluidFieldSim
 					plunge.strength = strength;
 				}
 			} else if (!atLevel && flow.rockFoam > OBSTACLE_FOAM) {
-				offer(vertex.position, vertex.normal, flow.rockFoam, FallEmitterKind::Strike, OBSTACLE_SPACING);
+				offer(vertex.position, vertex.normal, flow.rockFoam * 0.5f, FallEmitterKind::Strike, OBSTACLE_SPACING);  // D48: a light kick
 			}
 		}
 		for (const auto& [key, plunge] : plunges)
@@ -1361,7 +1361,7 @@ namespace FluidFieldSim
 				if (n <= 1e-6f)
 					normal[2] = 1.0f;
 				const float p[3] = { seam[0], seam[1], seam[2] };
-				offer(p, normal, seamKinds[i] == 0 ? 1.0f : 0.6f, FallEmitterKind::Strike, EMITTER_SPACING);
+				offer(p, normal, seamKinds[i] == 0 ? 0.5f : 0.3f, FallEmitterKind::Strike, EMITTER_SPACING);  // D48: a light kick
 			}
 		}
 		mesh.emitters.reserve(chosen.size());
