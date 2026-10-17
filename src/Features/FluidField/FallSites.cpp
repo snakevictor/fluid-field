@@ -1922,39 +1922,7 @@ namespace FluidFieldSim
 				for (int k = 0; k < 3; k++)
 					normals[index[k]] += face;
 			}
-			// D57: the open edges, and which way each of their vertices faces out of the mesh, along its surface
-			std::unordered_map<uint32_t, std::pair<int, uint32_t>> edges;  // Edge (low << 16 | high) -> uses, opposite vertex
-			for (uint32_t i = 0; i < counts.triangleCount; i++) {
-				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
-				if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
-					continue;
-				for (int k = 0; k < 3; k++) {
-					const uint32_t a = index[k], b = index[(k + 1) % 3];
-					auto& edge = edges[(std::min(a, b) << 16) | std::max(a, b)];
-					edge.first++;
-					edge.second = index[(k + 2) % 3];
-				}
-			}
-			std::vector<RE::NiPoint3> outward(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
-			for (const auto& [key, edge] : edges) {
-				if (edge.first != 1)
-					continue;
-				const uint32_t a = key >> 16, b = key & 0xFFFF;
-				const RE::NiPoint3 along = positions[b] - positions[a];
-				const float run = along.SqrLength();
-				if (run < 1e-6f)
-					continue;
-				RE::NiPoint3 away = (positions[a] + positions[b]) * 0.5f - positions[edge.second];
-				away = away - along * (away.Dot(along) / run);
-				const float length = away.Length();
-				if (length < 1e-4f)
-					continue;
-				outward[a] += away / length;
-				outward[b] += away / length;
-			}
-			const RE::NiMatrix3 toModel = geometry->world.rotate.Transpose();
-			const float toModelScale = geometry->world.scale > 1e-6f ? 1.0f / geometry->world.scale : 1.0f;
-			const auto base = static_cast<uint32_t>(vertexClips.size() / 4);
+			const auto base = static_cast<uint32_t>(vertexClips.size());
 			{
 				const RE::BSReadLockGuard lock(bhkWorld->worldLock);
 				for (uint32_t v = 0; v < counts.vertexCount; v++) {
@@ -1963,32 +1931,13 @@ namespace FluidFieldSim
 					vertexClips.push_back(RockClip(world, positions[v], length > 1e-6f ? normals[v] / length : RE::NiPoint3(0.0f, 0.0f, 1.0f), inside));
 					clipTested++;
 					clipInside += inside ? 1 : 0;
-					// An open edge short of the rock reaches it: straight out along the surface, or out and down
-					RE::NiPoint3 shift(0.0f, 0.0f, 0.0f);
-					const float out = outward[v].Length();
-					if (out > 1e-3f && !inside) {
-						const RE::NiPoint3 direction = outward[v] / out;
-						RE::NiPoint3 lower(direction.x, direction.y, direction.z - 0.6f);
-						lower = lower / std::max(lower.Length(), 1e-4f);
-						const float straight = RockAlong(world, positions[v], direction, EDGE_REACH);
-						const float down = RockAlong(world, positions[v], lower, EDGE_REACH);
-						const bool useStraight = straight >= 0.0f && (down < 0.0f || straight <= down);
-						const float reach = useStraight ? straight : down;
-						if (reach > 1.0f) {
-							shift = (useStraight ? direction : lower) * (reach + EDGE_INTO);
-							edgesReached++;
-						}
-					}
-					const RE::NiPoint3 local = (toModel * shift) * toModelScale;
-					vertexClips.insert(vertexClips.end(), { local.x, local.y, local.z });
 				}
 			}
 			vertexClipBase[geometry.get()] = base;
 			vertexClipVersion++;
 		}
 		if (clipQueue.empty())
-			logger::info("[Fluid Field] Waterfall rock cut: {} vertices of {} lit meshes tested, {} inside rock, {} open-edge vertices reaching the rock", clipTested, vertexClipBase.size(), clipInside,
-				edgesReached);
+			logger::info("[Fluid Field] Waterfall rock cut: {} vertices of {} lit meshes tested, {} inside rock", clipTested, vertexClipBase.size(), clipInside);
 	}
 
 	void FallSites::CaptureStep()

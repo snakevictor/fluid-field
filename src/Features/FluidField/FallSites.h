@@ -120,9 +120,8 @@ namespace FluidFieldSim
 		/** @brief Whether a grounded geometry draws blended (SetTranslucent took on it). */
 		bool IsTranslucent(const RE::BSGeometry* a_geometry) const { return translucentGeometry.contains(a_geometry); }
 		/**
-		 * @brief D56: where a lit falls mesh's per-vertex data starts in GetVertexClips (in fours), once tested.
-		 * Each vertex has how far it stands out of the rock (negative inside it), for SV_ClipDistance, and
-		 * (D57) how far it moves in model space so an open edge reaches the rock vanilla left it short of.
+		 * @brief D56: where a lit falls mesh's per-vertex rock cut starts in GetVertexClips, once tested.
+		 * Each value is how far the vertex stands out of the rock (negative inside it), for SV_ClipDistance.
 		 */
 		bool GetVertexClip(const RE::BSGeometry* a_geometry, uint32_t& a_base) const
 		{
@@ -263,9 +262,6 @@ namespace FluidFieldSim
 		static constexpr float CLIP_RANGE = 32.0f;   ///< The most a vertex counts as in or out, so the cut stays near the rock's face
 		static constexpr float CLIP_INSIDE = 2.0f;   ///< D57: how far a buried vertex counts under the cut
 		static constexpr double CLIP_BUDGET_MS = 3.0;
-		static constexpr float EDGE_REACH = 64.0f;  ///< D57: world units an open edge of the falls reaches for rock vanilla left it short of
-		static constexpr float EDGE_INTO = 6.0f;    ///< ...and how far into it it then goes, so no seam shows
-		uint32_t edgesReached = 0;
 		std::unordered_set<std::string> loggedParts;  ///< Diagnostics: falling-water mesh parts already logged
 
 		/** @brief A triangle of vanilla's falling-water surface, in world space. */

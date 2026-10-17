@@ -751,7 +751,7 @@ PS_OUTPUT main(PS_INPUT input)
 			// D36: falling water under the pools' surface is the pool's, and not drawn
 			if (FallGround::Buried(input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz))
 				discard;
-			const FallGround::FlowSample flow = FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, 0.0, 0.0, 0.0);
+			const FallGround::FlowSample flow = FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, 0.0);
 			fallStream = flow.stream;
 			fallVelocity = flow.velocity;
 			baseTexColor = lerp(TexBaseSampler.Sample(SampBaseSampler, flow.uvA), TexBaseSampler.Sample(SampBaseSampler, flow.uvB), flow.blendB);

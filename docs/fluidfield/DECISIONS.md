@@ -1317,3 +1317,25 @@ Entry format:
         ripples opened a gap under a cut at the surface, the black dashes
         along the line (602).
 -   References: D47, D49, D56
+
+## D58: One continuous scroll on the falls; phases only for a deviation; bilinear pool cut
+
+-   Date: 2026-10-17
+-   Phase / spike: @Victor's review screenshots 611-624; a code audit
+    (subagent) and a technique survey (scratchpad research/waterfall_techniques.md)
+-   Decision: The curtains' marbling was the flowmap itself, not the solve
+    and not doubled meshes (checked: every vanilla lit falls mesh is one
+    sheet, and placed pieces overlap 2-8%): its two phases show two
+    different patches of the texture (offset 0.31, 0.17), cross-faded in
+    position-dependent bands and boosted by the contrast blend, even where
+    the flow is uniform. The falls now scroll as one continuous sample down
+    +v at vanilla's rate; the two phases carry only a deviation from it
+    (Flow's a_deviation, zero until the per-mesh bake, D59) and fade out
+    without one. The contrast boost is colour only. The pool is read
+    bilinear over pool texels (nearest stepped the cut every 16 units, the
+    saw-tooth at 611) and the clip distance is held to +-48 (a 1e6 far
+    value dragged the cut onto the submerged corner); the pool cut is 8
+    again; the falls' whitening fades back out under the pool instead of a
+    solid white band seen through it. The open-edge reach (D57) is removed:
+    it did not close 603, which foam will cover later.
+-   References: D32, D46, D56, D57

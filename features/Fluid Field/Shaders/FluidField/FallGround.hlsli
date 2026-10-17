@@ -42,36 +42,16 @@ namespace FallGround
 
 	Texture2D<float2> Heights : register(t120);  // The captured rock, and the pools' surface (D36)
 	Texture2D<float> SceneDepth : register(t121);
-	Texture2D<float4> Stream : register(t122);  // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
-	// D56, D57: per vertex of the falls' lit meshes: how far it stands out of the rock (negative inside), and
-	// how far it is moved in its own model space to reach the rock where vanilla's open edge falls short
-	StructuredBuffer<float4> VertexData : register(t123);
+	Texture2D<float4> Stream : register(t122);            // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
+	StructuredBuffer<float> VertexClip : register(t123);  // D56: per vertex of the falls' lit meshes, how far it stands out of the rock (negative inside)
 
 	static const uint NO_VERTEX_CLIP = 0xFFFFFFFF;
+	/** D58: the most a vertex counts as above or under the cut, world units. */
+	static const float CLIP_MOST = 48.0;
 	/** D56: vanilla's scroll when this mesh's has not been measured yet (texture coordinates per second; the bodies run 0.12 to 0.17). */
 	static const float DEFAULT_SCROLL = 0.15;
-	/** D56: the solve slows or quickens vanilla's flow within these, as a fraction of it: stalled against rock, squeezed past it. */
-	static const float SLOWEST_FLOW = 0.5;
-	static const float FASTEST_FLOW = 1.6;
-	/**
-	 * D57: the most the solve turns the flow aside, as across-to-down: little on steep water (the solve,
-	 * from above, knows nothing of a curtain's face), much on flat runs, where it follows the channel
-	 * round rock (3.7: 75 degrees). It never turns it back.
-	 */
-	static const float STEEP_TURN = 0.0;
-	static const float FLAT_TURN = 3.7;
-	/** D57: the surface's upward normal from which the solve leads (flat water) and below which it has no say (a curtain). */
-	static const float SOLVE_FROM = 0.45;
-	static const float SOLVE_TO = 0.8;
-
-	/** D57: how far a vertex of the falls' lit meshes is moved in model space (its open edge reaching the rock), or 0. */
-	float3 VertexShift(uint a_vertex)
-	{
-		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
-			return 0.0;
-		return VertexData[VertexBase + a_vertex].yzw;
-	}
-
+	/** D58: a deviation moving the texture this far per cycle shows in full; less fades back to the single scroll. */
+	static const float DEVIATION_SHOWN = 0.05;
 	static const float NONE = -1.0e6;  // Below this, no ground is captured
 
 	/** The captured ground under a world position, bilinear; false where any texel around it is unknown. */
@@ -96,12 +76,22 @@ namespace FallGround
 	/** The pools' surface over a world position (the water the falls leave and land in), or false where there is none (D36). */
 	bool Pool(float2 a_position, out float a_height)
 	{
-		const int2 texel = int2(floor((a_position - Origin) * InverseCell + 0.5));
+		// D58: bilinear over the pool's own texels: the nearest texel stepped the cut every 16 units, a saw-tooth
 		a_height = 0.0;
-		if (any(texel < 0) || any(texel >= int(Size)))
+		const float2 texel = (a_position - Origin) * InverseCell;
+		const int2 base = int2(floor(texel));
+		if (any(base < 0) || any(base + 1 >= int(Size)))
 			return false;
-		a_height = Heights.Load(int3(texel, 0)).y;
-		return a_height > NONE;
+		const float2 t = texel - float2(base);
+		const float4 corner = float4((1.0 - t.x) * (1.0 - t.y), t.x * (1.0 - t.y), (1.0 - t.x) * t.y, t.x * t.y);
+		const float4 h = float4(Heights.Load(int3(base, 0)).y, Heights.Load(int3(base + int2(1, 0), 0)).y, Heights.Load(int3(base + int2(0, 1), 0)).y,
+			Heights.Load(int3(base + int2(1, 1), 0)).y);
+		const float4 k = corner * (h > NONE);
+		const float total = dot(k, 1.0);
+		if (total < 0.2)
+			return false;
+		a_height = dot(k, h) / total;
+		return true;
 	}
 
 	/** D37: falling water this far under the captured rock and ground is buried in it. */
@@ -109,7 +99,7 @@ namespace FallGround
 	/** D47: how far round a point the ground is looked at for its lowest (the map is a 16-unit top-down grid). */
 	static const float BURIED_REACH = 14.0;
 	/** D47: the falls are cut this far under the pools' surface, so the pool's water overlaps the cut. */
-	static const float POOL_CUT = 20.0;  // D49: under the pools the falls are hidden, the dense foam at the waterline covering the line; D57: deep enough that the shallow water's ripples never open a gap under the cut
+	static const float POOL_CUT = 8.0;  // D49: under the pools the falls are hidden, the foam at the waterline covering the line; D58: with the pool read bilinear, shallow again
 
 	/** D47: the lowest captured ground round a world position: at a cliff edge, the cliff foot's, not its top's. */
 	bool LowestGround(float2 a_position, out float a_height)
@@ -156,15 +146,16 @@ namespace FallGround
 		if (!HideUnderwater)
 			return 1.0;
 		const float3 position = a_position + CameraOffset;
-		float distance = 1.0e6;
+		// D58: held within CLIP_MOST, so a far value never drags the cut across a triangle onto its other corner
+		float distance = CLIP_MOST;
 		float pool;
 		if (Pool(position.xy, pool))
 			distance = min(distance, position.z - (pool - POOL_CUT));
 		// D56: the rock per vertex, tested against the game's collision (FallSites::ClipStep): the top-down
 		// ground map called everything under an overhang buried, and holed the falls there
 		if (VertexBase != NO_VERTEX_CLIP)
-			distance = min(distance, VertexData[VertexBase + a_vertex].x);
-		return distance;
+			distance = min(distance, VertexClip[VertexBase + a_vertex]);
+		return clamp(distance, -CLIP_MOST, CLIP_MOST);
 	}
 
 	/**
@@ -237,81 +228,55 @@ namespace FallGround
 	};
 
 	/**
-	 * A pixel of falling water carried by the falls' flow (D32), as a flowmap: its texture moves in two
-	 * phases half a cycle apart that cross-fade, each reset once a cycle before it stretches too far.
+	 * A pixel of falling water carried by the falls' flow (D32).
 	 *
 	 * D56: forward is the mesh's own: every falls mesh's v increases downstream and vanilla scrolls its
-	 * texture toward +v, faster in world terms where the artist stretched the texture down the drops. That
-	 * scroll is the base, always forward however the mesh arches or folds. The solved flow, lifted onto the
-	 * surface, only turns it aside (round rock, at most MOST_TURN) and slows or quickens it (stalled
-	 * against rock, squeezed past it); it never turns it back.
+	 * texture toward +v, faster in world terms where the artist stretched the texture down the drops.
+	 * D58: that forward is one continuous scroll, a single sample: the two phases of a flowmap (D32) each
+	 * show a different patch of the texture, and cross-fading them where the flow is the same everywhere
+	 * only marbled the curtains. The phases carry only a deviation from it (a_deviation, texture
+	 * coordinates per second on top of the scroll), and fade out where there is none.
 	 */
-	FlowSample Flow(float2 a_uv, float3 a_position, float3 a_normal, float3 a_tangent, float3 a_bitangent)
+	FlowSample Flow(float2 a_uv, float3 a_position, float2 a_deviation)
 	{
 		FlowSample result;
 		result.stream = StreamAt(a_position.xy);
+		const float2 uvStill = (a_uv - TexOffset) * InverseScale;
+		const float forward = Scroll.y > 1e-3 ? Scroll.y * InverseScale.y : DEFAULT_SCROLL;
+		const float2 uvBase = uvStill - float2(0.0, frac(forward * Time));
+		result.uvA = uvBase;
+		result.uvB = uvBase;
+		result.blendB = 0.0;
+		result.strength = 1.0;
+		result.velocity = 0.0;
+
+		// The surface's world motion per texture coordinate along u and along v (v runs downstream)
 		const float3 dpx = ddx(a_position);
 		const float3 dpy = ddy(a_position);
 		const float2 dux = ddx(a_uv);
 		const float2 duy = ddy(a_uv);
-		const float2 uvStill = (a_uv - TexOffset) * InverseScale;
-		result.uvA = uvStill;
-		result.uvB = uvStill + float2(0.31, 0.17);
-		result.blendB = 0.0;
-		result.strength = 0.0;
-		result.velocity = 0.0;
 		const float det = dux.x * duy.y - dux.y * duy.x;
-		if (abs(det) <= 1e-12)
-			return result;
-		// The surface's world motion per texture coordinate along u and along v (v runs downstream)
-		const float3 tu = (dpx * duy.y - dpy * dux.y) / det;
-		const float3 tv = (dpy * dux.x - dpx * duy.x) / det;
-
-		// The solved flow lifted onto the surface, measured across (along u) and down (along v) it, in world
-		// units: through the mesh's smooth frame where the draw has it (D35), else through this triangle's
-		const bool smoothFrame = dot(a_normal, a_normal) > 0.25 && TexScale.x > 0.0 && TexScale.y > 0.0;
-		float3 normal = smoothFrame ? normalize(a_normal) : normalize(cross(dpx, dpy));
-		normal *= normal.z < 0.0 ? -1.0 : 1.0;
-		const float2 solved = result.stream.xy;
-		const float water = smoothstep(0.3, 0.8, result.stream.w);
-		const float3 lifted = float3(solved, -dot(normal.xy, solved) / max(normal.z, 0.15));
-		float3 alongU = tu / max(length(tu), 1e-6);
-		float3 alongV = tv / max(length(tv), 1e-6);
-		float aspect = length(tv) / max(length(tu), 1e-6);  // World units per v over per u
-		if (smoothFrame) {
-			const float3 a = normalize(a_tangent);
-			const float3 b = normalize(a_bitangent);
-			const bool swapped = abs(dot(tu, b)) > abs(dot(tu, a));
-			alongU = (swapped ? b : a) * (dot(swapped ? b : a, tu) < 0.0 ? -1.0 : 1.0);
-			alongV = (swapped ? a : b) * (dot(swapped ? a : b, tv) < 0.0 ? -1.0 : 1.0);
-			aspect = TexScale.y / TexScale.x;
+		if (abs(det) > 1e-12) {
+			const float3 tu = (dpx * duy.y - dpy * dux.y) / det;
+			const float3 tv = (dpy * dux.x - dpx * duy.x) / det;
+			result.velocity = tu * a_deviation.x + tv * (forward + a_deviation.y);
 		}
-		const float across = dot(lifted, alongU);
-		const float down = dot(lifted, alongV);
 
-		// Vanilla's forward, slowed or quickened by the solve and turned aside by it, never back
-		// D57: the solve leads on flat water only: from above it sees a curtain's face edge-on, and its turn
-		// there sheared the texture into marble
-		const float say = water * smoothstep(SOLVE_FROM, SOLVE_TO, normal.z);
-		const float mostTurn = lerp(STEEP_TURN, FLAT_TURN, say);
-		const float forward = (Scroll.y > 1e-3 ? Scroll.y : DEFAULT_SCROLL) * lerp(1.0, clamp(length(solved), SLOWEST_FLOW, FASTEST_FLOW), say);
-		const float turn = say * clamp(across / max(down, 0.25 * length(float2(across, down)) + 1e-4), -mostTurn, mostTurn);
-		const float2 uvVelocity = float2(turn * forward * aspect, forward);
-		result.velocity = tu * uvVelocity.x + tv * uvVelocity.y;
-		result.strength = 1.0;
-
-		float2 travel = uvVelocity * FlowPeriod;  // Texture moved per cycle
+		// The deviation in two phases, staggered over the surface so the resets do not all land at once
+		float2 travel = a_deviation * FlowPeriod;
 		const float most = length(travel);
 		travel *= most > FlowMost ? FlowMost / most : 1.0;
-
-		// Two phases, staggered over the surface by a smooth offset so the resets do not all land at once
-		const float stagger = 0.25 * (sin(dot(a_position, float3(0.0021, 0.0027, 0.0013))) + sin(dot(a_position, float3(-0.0017, 0.0012, 0.0024))));
-		const float cycle = Time / FlowPeriod + stagger;
-		const float phaseA = frac(cycle);
-		const float phaseB = frac(cycle + 0.5);
-		result.uvA = uvStill - travel * (phaseA - 0.5);
-		result.uvB = uvStill - travel * (phaseB - 0.5) + float2(0.31, 0.17);
-		result.blendB = abs(1.0 - 2.0 * phaseA);
+		const float weight = saturate(most / DEVIATION_SHOWN);
+		[branch] if (weight > 0.0)
+		{
+			const float stagger = 0.25 * (sin(dot(a_position, float3(0.0021, 0.0027, 0.0013))) + sin(dot(a_position, float3(-0.0017, 0.0012, 0.0024))));
+			const float cycle = Time / FlowPeriod + stagger;
+			const float phaseA = frac(cycle);
+			const float phaseB = frac(cycle + 0.5);
+			result.uvA = uvBase - travel * (phaseA - 0.5);
+			result.uvB = uvBase - travel * (phaseB - 0.5) + float2(0.31, 0.17);
+			result.blendB = abs(1.0 - 2.0 * phaseA) * weight;
+		}
 		return result;
 	}
 

@@ -154,9 +154,6 @@ VS_OUTPUT main(VS_INPUT input)
 	VS_OUTPUT vsout;
 
 	precise float4 inputPosition = float4(input.Position.xyz, 1.0);
-#	if defined(FLUID_FIELD)
-	inputPosition.xyz += FallGround::VertexShift(input.VertexID);  // D57: the falls' open edges reaching the rock
-#	endif
 
 #	if defined(LODLANDNOISE) || defined(LODLANDSCAPE)
 	inputPosition = LodLandscape::AdjustLodLandscapeVertexPositionMS(inputPosition, float4x4(World, float4(0, 0, 0, 1)), HighDetailRange);
@@ -1054,13 +1051,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	{
 		// D36: falling water under the pools' surface is the pool's, and not drawn
 		fallPool = FallGround::Pool(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy, fallPoolHeight);
-#		if !defined(MODELSPACENORMALS)
-		// The mesh's interpolated frame: tangent, bitangent and normal are the columns of TBN (D35)
-		fallFlow = FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, float3(input.TBN0.z, input.TBN1.z, input.TBN2.z),
-			float3(input.TBN0.x, input.TBN1.x, input.TBN2.x), float3(input.TBN0.y, input.TBN1.y, input.TBN2.y));
-#		else
-		fallFlow = FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, 0.0, 0.0, 0.0);
-#		endif
+		fallFlow = FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, 0.0);
 		uv = fallFlow.uvA;
 	}
 #	endif
@@ -1516,8 +1507,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// mean (the smallest mip) by 1 / sqrt(wA^2 + wB^2), the variance-preserving blend
 		const float contrast = rsqrt(max((1.0 - fallFlow.blendB) * (1.0 - fallFlow.blendB) + fallFlow.blendB * fallFlow.blendB, 0.25));
 		const float4 colorMean = TexColorSampler.SampleLevel(SampColorSampler, fallFlow.uvA, 12.0);
-		rawBaseColor = colorMean + (lerp(rawBaseColor, TexColorSampler.SampleBias(SampColorSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB) - colorMean) * contrast;
-		normalColor = lerp(normalColor, TexNormalSampler.SampleBias(SampNormalSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB);  // D47: plain: boosted normals sparkled harshly
+		rawBaseColor.rgb = colorMean.rgb + (lerp(rawBaseColor, TexColorSampler.SampleBias(SampColorSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB).rgb - colorMean.rgb) * contrast;  // D58: colour only
+		normalColor = lerp(normalColor, TexNormalSampler.SampleBias(SampNormalSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB);                                                       // D47: plain: boosted normals sparkled harshly
 		rawBaseColor = saturate(rawBaseColor);
 		normalColor = saturate(normalColor);
 		[flatten] if (fallFlow.strength < 1.0)
@@ -1527,15 +1518,18 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		}
 		// White water (D34): aerated where it falls fast, foamed where it piles against rock, squeezes past
 		// it, meets still water or where vanilla's pieces meet; broken up by the texture's own streaks
-		const float fast = smoothstep(2.5, 6.0, length(fallFlow.velocity) / FallGround::FlowSpeed);
 		// The foam map's cells are coarse (16 units): softened over its neighbourhood, so it does not show as blocks
 		const float2 fallXY = input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy;
 		const float foamSoft = 0.2 * (fallFlow.stream.z + FallGround::StreamAt(fallXY + float2(14.0, 6.0)).z + FallGround::StreamAt(fallXY - float2(14.0, 6.0)).z +
 										 FallGround::StreamAt(fallXY + float2(-6.0, 14.0)).z + FallGround::StreamAt(fallXY + float2(6.0, -14.0)).z);
-		float white = FallGround::Whitening ? saturate(max(foamSoft, fast * 0.35)) * fallFlow.strength : 0.0;
-		// D36: wholly white where the falls meet the water below, thinning up the falls
+		float white = FallGround::Whitening ? saturate(foamSoft) * fallFlow.strength : 0.0;
+		// D36: wholly white where the falls meet the water below, thinning up the falls; D58: and back out
+		// under it, so the part under the pool's see-through surface is not a solid white band
 		[flatten] if (fallPool && FallGround::Whitening)
-			white = max(white, 1.0 - saturate((input.WorldPosition.z + FrameBuffer::CameraPosAdjust.z - fallPoolHeight) / FallGround::PoolFoamHeight));
+		{
+			const float above = input.WorldPosition.z + FrameBuffer::CameraPosAdjust.z - fallPoolHeight;
+			white = max(white, above >= 0.0 ? 1.0 - saturate(above / FallGround::PoolFoamHeight) : 1.0 - saturate(-above / FallGround::POOL_CUT));
+		}
 		// D42: foam as lace, filaments streaming with the water: few and thin where the water is barely
 		// white, joining up where it is white, solid where it is wholly white (the plunge, against rock)
 		const float lace = FallGround::Lace(fallFlow);
