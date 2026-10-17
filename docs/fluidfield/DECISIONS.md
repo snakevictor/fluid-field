@@ -1147,3 +1147,18 @@ Entry format:
     Waterfalls menu is Water, Spray, Fog and an Advanced tree (flow cycle and
     stretch, mist cards, vanilla layers).
 -   References: D30, D37, D40, D44, D47, D48, D49
+
+## D51: Waterfall fog removed; spray count restored, placed at collisions
+
+-   Date: 2026-10-17
+-   Decision: The waterfall fog (D38-D44) is removed altogether
+    (FallFog.hlsl, its draw, the fog-source map and the ground map's fog
+    channels: the ground map is RG32F again, rock and pools), until a
+    better approach is chosen (@Victor: "the waterfall fog's implementation
+    was shit ... remove this current version altogether"). Spray count is
+    back to 120 per emitter (fewer was not the ask; better placement was):
+    drops now shed only 0.1-0.4 strength, so the spray comes from where the
+    water collides (plunges, impacts, vanilla's splash and skirt positions),
+    not from every lip. Vanilla's splash and skirt meshes stay hidden; only
+    their positions are used (D50).
+-   References: D38, D44, D49, D50

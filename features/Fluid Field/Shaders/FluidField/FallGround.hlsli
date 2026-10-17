@@ -38,7 +38,7 @@ namespace FallGround
 		uint Whitening;        // The falls whiten with their foam and speed (D34); 0 for the debug comparison (D39)
 	};
 
-	Texture2D<float4> Heights : register(t120);  // The captured rock, the pools' surface (D36), and the falls' fog sources: strength and height (D39)
+	Texture2D<float2> Heights : register(t120);  // The captured rock, and the pools' surface (D36)
 	Texture2D<float> SceneDepth : register(t121);
 	Texture2D<float4> Stream : register(t122);  // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
 
@@ -72,30 +72,6 @@ namespace FallGround
 			return false;
 		a_height = Heights.Load(int3(texel, 0)).y;
 		return a_height > NONE;
-	}
-
-	/**
-	 * D39: the falls' fog sources over a world position, where their water strikes rock or other water,
-	 * drops and plunges: how strongly (0 to 1), and the height they stand at.
-	 */
-	float FogSource(float2 a_position, out float a_height)
-	{
-		// Bilinear, so the fog has no blocks of the map's cells
-		a_height = 0.0;
-		const float2 texel = (a_position - Origin) * InverseCell;
-		const int2 base = int2(floor(texel));
-		if (any(base < 0) || any(base + 1 >= int(Size)))
-			return 0.0;
-		const float2 t = texel - float2(base);
-		const float4 m00 = Heights.Load(int3(base, 0));
-		const float4 m10 = Heights.Load(int3(base + int2(1, 0), 0));
-		const float4 m01 = Heights.Load(int3(base + int2(0, 1), 0));
-		const float4 m11 = Heights.Load(int3(base + int2(1, 1), 0));
-		const float4 w = float4((1.0 - t.x) * (1.0 - t.y), t.x * (1.0 - t.y), (1.0 - t.x) * t.y, t.x * t.y);
-		const float strength = m00.z * w.x + m10.z * w.y + m01.z * w.z + m11.z * w.w;
-		const float weighted = m00.z * w.x + m10.z * w.y + m01.z * w.z + m11.z * w.w;
-		a_height = weighted > 1e-4 ? (m00.w * m00.z * w.x + m10.w * m10.z * w.y + m01.w * m01.z * w.z + m11.w * m11.z * w.w) / weighted : 0.0;
-		return strength;
 	}
 
 	/** D37: falling water this far under the captured rock and ground is buried in it. */

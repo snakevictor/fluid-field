@@ -55,8 +55,8 @@ namespace FluidFieldSim
 	};
 
 	/**
-	 * @brief Draws the falls' effects after the world (D31, D38): stateless GPU spray thrown from the
-	 * emitters, and the waterfall fog marched through its height band. Depth tested against the scene
+	 * @brief Draws the falls' spray after the world (D31): stateless GPU particles thrown from the
+	 * emitters. Depth tested against the scene
 	 * without writing, premultiplied-alpha blended. Every piece of pipeline state it touches is saved and
 	 * restored. (D30's own merged falls surface was drawn here too, until D32 returned to vanilla's meshes.)
 	 */
@@ -81,9 +81,6 @@ namespace FluidFieldSim
 			float spraySize = 1.4f;
 			float sprayOpacity = 0.2f;
 			float mistOpacity = 0.06f;
-			float fogDensity = 0.0f;  ///< Waterfall fog (D38): extinction per world unit at full strength; 0 off
-			float fogBottom = 0.0f;   ///< The fog's height band (D41)
-			float fogTop = 0.0f;
 		};
 		void Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params);
 
@@ -99,13 +96,11 @@ namespace FluidFieldSim
 		static constexpr float MIST_SIZE = 100.0f;
 		static constexpr float MIST_RISE = 40.0f;           ///< World units per second
 		static constexpr float PARTICLE_GRAVITY = 1100.0f;  ///< D50: droplets turn down sooner than free fall (they read as too floaty)
-		static constexpr uint32_t FOG_STEPS = 32;           ///< Over the fog's height band only (D44)
 
 	private:
 		bool EnsureShaders();
 		bool EnsureStates(ID3D11Device* a_device);
 		void DrawParticles(ID3D11DeviceContext* a_context, uint32_t a_perEmitter);
-		void DrawFog(ID3D11DeviceContext* a_context);
 
 		// Matches FallEffectsCB in FluidField/FallEffects.hlsli
 		struct alignas(16) Constants
@@ -127,13 +122,9 @@ namespace FluidFieldSim
 			float mistRise;
 			float mistOpacity;
 			float gravity;
-			float fogDensity;
-			uint32_t fogSteps;
-			float fogBottom;
-			float fogTop;
 			float pad[3];
 		};
-		static_assert(sizeof(Constants) == 96);
+		static_assert(sizeof(Constants) == 80);
 
 		winrt::com_ptr<ID3D11Buffer> emitters;
 		winrt::com_ptr<ID3D11ShaderResourceView> emittersSRV;
@@ -144,8 +135,6 @@ namespace FluidFieldSim
 		winrt::com_ptr<ID3D11Buffer> constants;
 		winrt::com_ptr<ID3D11VertexShader> sprayVertexShader;
 		winrt::com_ptr<ID3D11PixelShader> sprayPixelShader;
-		winrt::com_ptr<ID3D11VertexShader> fogVertexShader;
-		winrt::com_ptr<ID3D11PixelShader> fogPixelShader;
 		winrt::com_ptr<ID3D11BlendState> blend;
 		winrt::com_ptr<ID3D11DepthStencilState> depthState;
 		winrt::com_ptr<ID3D11RasterizerState> raster;

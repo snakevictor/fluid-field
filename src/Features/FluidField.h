@@ -97,12 +97,11 @@ struct FluidField : OverlayFeature
 		float FallFlowPeriod = 0.5f;         ///< Seconds per cycle of the falls' flowmap (D32): shorter stretches the texture less, pulses more
 		float FallFlowMost = 2.5f;           ///< Most texture repeats the flowmap moves the texture per cycle
 		float FallAcceleration = 0.6f;       ///< How much of gravity's pull the falling water keeps as speed (D33; 0: the solved flow only)
-		int SprayAmount = 40;                ///< Spray droplets alive per emitter at once (D31)
+		int SprayAmount = 120;               ///< Spray droplets alive per emitter at once (D31)
 		float SpraySize = 1.4f;              ///< Spray droplet width, world units
 		float SprayOpacity = 0.2f;           ///< How opaque each droplet is
 		int MistAmount = 0;                  ///< Mist puffs alive per emitter at once
 		float MistOpacity = 0.06f;           ///< How dense each mist puff is
-		float FallFog = 0.0f;                ///< How thick the waterfall fog is (D38; 0 off)
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
 		bool InteractiveFog = true;          ///< Ground fog that actors and the weather's wind move (D21)
 		float FogDensity = 0.08f;            ///< Ground fog extinction per world unit inside the layer, in its banks
@@ -339,7 +338,6 @@ private:
 	static constexpr float FALL_GROUND_LIFT_MOST = 8.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
 	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
 	static constexpr float FALL_POOL_FOAM = 26.0f;          ///< World units above the water below over which the falls foam into it (D36)
-	static constexpr float FALL_FOG_DENSITY = 0.004f;       ///< Waterfall fog's extinction per world unit at strength 1 over wholly white water (D38)
 	static constexpr float FALL_GRAVITY = 687.0f;           ///< World units per second squared (Skyrim's)
 	static constexpr float FALL_STREAM_STEEP_FROM = 0.35f;  ///< Upward normal below which the water falls straight down its slope (the flow is solved from above)
 	static constexpr float FALL_STREAM_STEEP_TO = 0.6f;
@@ -356,10 +354,9 @@ private:
 	bool fallGroundBound = false;  ///< The last effect draw bound the grounding
 	std::vector<float> fallGroundScratch;
 	std::vector<float> fallPoolScratch;
-	std::vector<float> fallFogScratch;
 	winrt::com_ptr<ID3D11Texture2D> fallPlungeTexture;  ///< FallSites::BuildPlungeMap, for the water's foam (D44)
 	winrt::com_ptr<ID3D11ShaderResourceView> fallPlungeSRV;
-	std::vector<float> fallPlungeScratch;  ///< FallSites::BuildFogMap: per texel strength and height (D39)  ///< FallSites::BuildPoolMap, interleaved with the ground into the ground map's second channel
+	std::vector<float> fallPlungeScratch;
 	/** @brief Rebuilds the ground and flow maps when the sites change or the player moves far; uploads the constants. */
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
 	void ReleaseFallGround();

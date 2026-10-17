@@ -70,7 +70,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SprayOpacity,
 	MistAmount,
 	MistOpacity,
-	FallFog,
 	WaterfallDebug)
 
 void FluidField::DrawSettings()
@@ -151,10 +150,6 @@ void FluidField::DrawSettings()
 		tooltip(T(TKEY("spray_amount_tooltip"), "Droplets alive per emitter at once. Faster water throws more of them."));
 		ImGui::SliderFloat(T(TKEY("spray_size"), "Size"), &settings.SpraySize, 0.5f, 12.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat(T(TKEY("spray_opacity"), "Opacity"), &settings.SprayOpacity, 0.02f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-
-		ImGui::SeparatorText(T(TKEY("waterfall_fog_header"), "Fog"));
-		ImGui::SliderFloat(T(TKEY("fall_fog"), "Waterfall Fog"), &settings.FallFog, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("fall_fog_tooltip"), "Fog churning where the falls strike and where their pieces meet. Separate from the ground fog. 0 turns it off."));
 
 		if (ImGui::TreeNode(T(TKEY("waterfall_advanced"), "Advanced"))) {
 			ImGui::SliderFloat(T(TKEY("fall_flow_period"), "Flow Cycle"), &settings.FallFlowPeriod, 0.1f, 2.0f, "%.2f s", ImGuiSliderFlags_AlwaysClamp);
@@ -261,10 +256,10 @@ void FluidField::DrawSettings()
 		ImGui::SeparatorText(T(TKEY("debug_waterfalls"), "Waterfalls"));
 		{
 			const char* fallDebugModes[] = { T(TKEY("waterfall_debug_off"), "Off"), T(TKEY("waterfall_debug_fields"), "Speed, Foam, Water"), T(TKEY("waterfall_debug_direction"), "Flow Direction"),
-				T(TKEY("waterfall_debug_vanilla"), "Vanilla Texture, Fog Sources") };
+				T(TKEY("waterfall_debug_vanilla"), "Vanilla Texture (No Flow)") };
 			settings.WaterfallDebug = std::clamp(settings.WaterfallDebug, 0, 3);
 			ImGui::Combo(T(TKEY("waterfall_debug"), "Waterfall Shading"), &settings.WaterfallDebug, fallDebugModes, IM_ARRAYSIZE(fallDebugModes));
-			tooltip(T(TKEY("waterfall_debug_tooltip"), "Paints the falling water with its solved flow. Speed, Foam, Water: red for speed, green for foam, blue for water. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster. Vanilla Texture, Fog Sources: the falls without the flow, and the waterfall fog green where it rises."));
+			tooltip(T(TKEY("waterfall_debug_tooltip"), "Paints the falling water with its solved flow. Speed, Foam, Water: red for speed, green for foam, blue for water. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster. Vanilla Texture: the falls without the flow."));
 			const char* fallViews[] = { T(TKEY("fall_view_off"), "Off"), T(TKEY("fall_view_meshes"), "Fall Meshes"), T(TKEY("fall_view_intersections"), "Intersections") };
 			ImGui::Combo(T(TKEY("fall_view"), "Waterfall Overlay"), &fallDebugView, fallViews, IM_ARRAYSIZE(fallViews));
 			tooltip(T(TKEY("fall_view_tooltip"),
@@ -1074,7 +1069,7 @@ void FluidField::DrawGroundFogAfterWorld()
 	if (!renderer)
 		return;
 
-	// The falls' spray and fog (D31, D38), before the ground fog lies over their base
+	// The falls' spray (D31), before the ground fog lies over their base
 	if (settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && cameraSnapshot) {
 		fallSurface.Upload(globals::d3d::device, globals::d3d::context, fallSites.GetSurfaceEmitters(), fallSites.GetSurfaceVersion());
 		const auto& shadow = globals::game::shadowState->GetRuntimeData();
@@ -1096,20 +1091,6 @@ void FluidField::DrawGroundFogAfterWorld()
 			params.spraySize = settings.SpraySize;
 			params.sprayOpacity = settings.SprayOpacity;
 			params.mistOpacity = settings.MistOpacity;
-			// The fog's band: the heights of the seams and impacts it rises from, plus its rise
-			float fogLow, fogHigh;
-			if (settings.FallFog > 0.0f && fallSites.GetFogBand(fogLow, fogHigh)) {
-				params.fogDensity = settings.FallFog * FALL_FOG_DENSITY;
-				params.fogBottom = fogLow - 20.0f;
-				params.fogTop = fogHigh + 240.0f;  // Above the fog's rise (FallFog.hlsl SOURCE_LIFT + 3 SOURCE_SPREAD)
-			}
-			// The fog reads the falls' ground, pools and flow (b13, t120, t122) and the simulated water (t66, t67)
-			ID3D11Buffer* fallConstants = fallGroundOn.get();
-			globals::d3d::context->PSSetConstantBuffers(13, 1, &fallConstants);
-			ID3D11ShaderResourceView* fallMaps[3] = { fallGroundSRV.get(), nullptr, fallStreamSRV.get() };
-			globals::d3d::context->PSSetShaderResources(120, 3, fallMaps);
-			BindWaterOutputs(globals::d3d::context);
-			fallGroundBound = true;
 			globals::profiler->BeginPass("FluidField::FallEffects");
 			fallSurface.Draw(globals::d3d::device, globals::d3d::context, params);
 			globals::profiler->EndPass();
@@ -1475,7 +1456,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 			Util::SetResourceName(fallPlungeTexture.get(), "FluidField::FallPlunge");
 			Util::SetResourceName(fallPlungeSRV.get(), "FluidField::FallPlunge SRV");
 		}
-		desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;  // The rock, the pools' surface (D36), the fog sources' strength and height (D39)
+		desc.Format = DXGI_FORMAT_R32G32_FLOAT;  // The rock, and the pools' surface (D36)
 		if (FAILED(device->CreateTexture2D(&desc, nullptr, fallGroundTexture.put())) || FAILED(device->CreateShaderResourceView(fallGroundTexture.get(), nullptr, fallGroundSRV.put())) ||
 			FAILED(device->CreateTexture2D(&streamDesc, nullptr, fallStreamTexture.put())) || FAILED(device->CreateShaderResourceView(fallStreamTexture.get(), nullptr, fallStreamSRV.put())) ||
 			FAILED(device->CreateBuffer(&onDesc, &offData, fallGroundOn.put())) || FAILED(device->CreateBuffer(&cbDesc, &offData, fallGroundOff.put()))) {
@@ -1501,15 +1482,12 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		fallGroundOrigin[1] = std::floor((a_playerPos.y - half) / FALL_GROUND_CELL) * FALL_GROUND_CELL;
 		fallSites.BuildGroundMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallGroundScratch);
 		fallSites.BuildPoolMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallPoolScratch);
-		fallSites.BuildFogMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallFogScratch);
-		std::vector<float> interleaved(fallGroundScratch.size() * 4);
+		std::vector<float> interleaved(fallGroundScratch.size() * 2);
 		for (std::size_t i = 0; i < fallGroundScratch.size(); i++) {
-			interleaved[i * 4] = fallGroundScratch[i];
-			interleaved[i * 4 + 1] = fallPoolScratch[i];
-			interleaved[i * 4 + 2] = fallFogScratch[i * 2];
-			interleaved[i * 4 + 3] = fallFogScratch[i * 2 + 1];
+			interleaved[i * 2] = fallGroundScratch[i];
+			interleaved[i * 2 + 1] = fallPoolScratch[i];
 		}
-		context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, interleaved.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
+		context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, interleaved.data(), FALL_GROUND_SIZE * 2 * sizeof(float), 0);
 		if (fallPlungeTexture) {
 			fallSites.BuildPlungeMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallPlungeScratch);
 			std::vector<uint16_t> halves(fallPlungeScratch.size());

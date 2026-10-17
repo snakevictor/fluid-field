@@ -142,9 +142,6 @@ namespace FluidFieldSim
 		void AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_time, float a_strength,
 			uint32_t a_maxEmitters, bool a_foam) const;
 
-		/** @brief D41, D44: the lowest and highest heights the falls' fog rises from (the seams and impacts); false if none. */
-		bool GetFogBand(float& a_low, float& a_high) const;
-
 		/** @brief D35: world units per texture repeat along u and v of a falling-water mesh (its own texel density), or false if unknown. */
 		bool GetTextureScale(const RE::BSGeometry* a_geometry, float a_scale[2]) const;
 		uint64_t GetSurfaceVersion() const { return surfaceVersion; }
@@ -186,13 +183,6 @@ namespace FluidFieldSim
 		 * of any site covering it, else FallCapture::NONE. Falling water under it is hidden.
 		 */
 		void BuildPoolMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const;
-
-		/**
-		 * @brief D39: the falls' fog sources over a ground map's lattice: per texel, two floats: how
-		 * strongly fog rises there (0 to 1; strikes on rock and other water, drops, plunges) and the
-		 * height it rises from.
-		 */
-		void BuildFogMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
 
 		/** @brief D44: per texel of a ground map's lattice, how strongly the falls plunge into the water there (0 to 1). */
 		void BuildPlungeMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
@@ -314,7 +304,6 @@ namespace FluidFieldSim
 		static constexpr float VANILLA_SPAWN_SPACING = 48.0f;  ///< D50: world units between spray emitters over a vanilla splash or skirt
 		static constexpr float POOL_SHALLOW = 160.0f;          ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
 		static constexpr float BURIED_MARGIN = 120.0f;         ///< As FallGround.hlsli BURIED (D49)
-		static constexpr float FOG_SOURCE_RADIUS = 70.0f;      ///< World units round each seam point that its fog spreads (D44)
 		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;     ///< World units round each point where the falls meet a pool that the water foams (D44, D47)
 		static constexpr float PLUNGE_FOAM_BAND = 40.0f;       ///< The falls' vertices this close to a pool's surface meet it (D47, D50)
 		static constexpr float FOG_PLUNGE_RADIUS = 180.0f;     ///< World units round each plunge that its fog spreads (D41)

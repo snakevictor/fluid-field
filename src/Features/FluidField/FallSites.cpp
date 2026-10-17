@@ -991,7 +991,7 @@ namespace FluidFieldSim
 						continue;
 					const float p[3] = { a_originX + static_cast<float>(x) * cell, a_originY + static_cast<float>(y) * cell, here };
 					const float n[3] = { 0.0f, 0.0f, 1.0f };
-					offer(p, n, std::clamp(drop / (LIP_DROP * 3.0f), 0.3f, 1.0f), FallEmitterKind::Lip, EMITTER_SPACING);
+					offer(p, n, std::clamp(drop / (LIP_DROP * 6.0f), 0.1f, 0.4f), FallEmitterKind::Lip, EMITTER_SPACING);  // D51: a drop only sheds a little; collisions throw the spray
 				}
 			}
 		}
@@ -1485,20 +1485,6 @@ namespace FluidFieldSim
 				.velocity = { plunge->direction[0] * pull, plunge->direction[1] * pull },
 				.pad1 = { 60.0f * plunge->strength * a_strength, a_foam ? 4.0f * std::max(plunge->strength, 0.6f) * a_strength : 0.0f } });
 		}
-	}
-
-	bool FallSites::GetFogBand(float& a_low, float& a_high) const
-	{
-		// D44: the seams' heights only, where the fog is made
-		a_low = FLT_MAX;
-		a_high = -FLT_MAX;
-		for (const auto& [key, stream] : streams) {
-			for (const auto& seam : stream.seamPoints) {
-				a_low = std::min(a_low, seam[2]);
-				a_high = std::max(a_high, seam[2]);
-			}
-		}
-		return a_low <= a_high;
 	}
 
 	bool FallSites::GetTextureScale(const RE::BSGeometry* a_geometry, float a_scale[2]) const
@@ -1999,35 +1985,6 @@ namespace FluidFieldSim
 					const float cut = cover >= stream.top - POOL_BAND ? cover - TOP_POOL_CUT : cover;
 					float& stored = a_heights[static_cast<std::size_t>(y + offsetY) * a_size + static_cast<std::size_t>(x + offsetX)];
 					stored = std::max(stored, cut);
-				}
-			}
-		}
-	}
-
-	void FallSites::BuildFogMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
-	{
-		// D44: fog only where vanilla's falling-water meshes collide (their seams: an open edge against
-		// another piece, or two crossing), strongest along the seam, soft round it
-		a_field.assign(static_cast<std::size_t>(a_size) * a_size * 2, 0.0f);
-		const auto reach = static_cast<int32_t>(std::ceil(FOG_SOURCE_RADIUS / a_cell));
-		for (const auto& [key, stream] : streams) {
-			for (const auto& seam : stream.seamPoints) {
-				const auto cx = static_cast<int32_t>(std::lround((seam[0] - a_originX) / a_cell));
-				const auto cy = static_cast<int32_t>(std::lround((seam[1] - a_originY) / a_cell));
-				for (int32_t y = cy - reach; y <= cy + reach; y++) {
-					for (int32_t x = cx - reach; x <= cx + reach; x++) {
-						if (x < 0 || y < 0 || x >= static_cast<int32_t>(a_size) || y >= static_cast<int32_t>(a_size))
-							continue;
-						const float dx = a_originX + static_cast<float>(x) * a_cell - seam[0];
-						const float dy = a_originY + static_cast<float>(y) * a_cell - seam[1];
-						const float falloff = std::clamp(1.0f - std::sqrt(dx * dx + dy * dy) / FOG_SOURCE_RADIUS, 0.0f, 1.0f);
-						const float strength = falloff * (2.0f - falloff);
-						const std::size_t i = (static_cast<std::size_t>(y) * a_size + x) * 2;
-						if (strength > a_field[i]) {
-							a_field[i] = strength;
-							a_field[i + 1] = seam[2];
-						}
-					}
 				}
 			}
 		}

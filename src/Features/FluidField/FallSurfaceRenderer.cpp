@@ -34,23 +34,19 @@ namespace FluidFieldSim
 	{
 		sprayVertexShader = nullptr;
 		sprayPixelShader = nullptr;
-		fogVertexShader = nullptr;
-		fogPixelShader = nullptr;
 		shaderFailed = false;
 	}
 
 	bool FallSurfaceRenderer::EnsureShaders()
 	{
-		if (sprayVertexShader && sprayPixelShader && fogVertexShader && fogPixelShader)
+		if (sprayVertexShader && sprayPixelShader)
 			return true;
 		if (shaderFailed)
 			return false;
 		sprayVertexShader.attach(reinterpret_cast<ID3D11VertexShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSpray.hlsl", {}, "vs_5_0", "VSMain")));
 		sprayPixelShader.attach(reinterpret_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSpray.hlsl", {}, "ps_5_0", "PSMain")));
-		fogVertexShader.attach(reinterpret_cast<ID3D11VertexShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallFog.hlsl", {}, "vs_5_0", "VSMain")));
-		fogPixelShader.attach(reinterpret_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallFog.hlsl", {}, "ps_5_0", "PSMain")));
-		if (!sprayVertexShader || !sprayPixelShader || !fogVertexShader || !fogPixelShader) {
-			logger::error("[Fluid Field] Waterfall effect shaders failed to compile; no spray or waterfall fog");
+		if (!sprayVertexShader || !sprayPixelShader) {
+			logger::error("[Fluid Field] Waterfall spray shaders failed to compile; no spray");
 			ReleaseShaders();
 			shaderFailed = true;
 			return false;
@@ -124,13 +120,13 @@ namespace FluidFieldSim
 
 	void FallSurfaceRenderer::Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params)
 	{
-		if ((emitterCount == 0 && a_params.fogDensity <= 0.0f) || !a_params.target || !a_params.depth || !a_params.camera || !EnsureShaders() || !EnsureStates(a_device))
+		if (emitterCount == 0 || !a_params.target || !a_params.depth || !a_params.camera || !EnsureShaders() || !EnsureStates(a_device))
 			return;
 		const uint32_t perEmitter = std::max(a_params.sprayPerEmitter + a_params.mistPerEmitter, 1u);
 
 		const Constants data{ a_params.time, FallStream::BASE_SPEED, BRIGHTNESS, a_params.debugMode, std::min(emitterCount, MAX_PARTICLES / perEmitter), a_params.sprayPerEmitter,
 			a_params.mistPerEmitter, SPRAY_LIFE, SPRAY_SPEED, a_params.spraySize, SPRAY_STRETCH, a_params.sprayOpacity, MIST_LIFE, MIST_SIZE, MIST_RISE, a_params.mistOpacity,
-			PARTICLE_GRAVITY, a_params.fogDensity, FOG_STEPS, a_params.fogBottom, a_params.fogTop, {} };
+			PARTICLE_GRAVITY, {} };
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (FAILED(a_context->Map(constants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
 			return;
@@ -183,8 +179,6 @@ namespace FluidFieldSim
 		a_context->PSSetConstantBuffers(CAMERA_SLOT, 1, &a_params.camera);
 		a_context->PSSetShaderResources(SCENE_DEPTH_SLOT, 1, &a_params.sceneDepth);
 		DrawParticles(a_context, perEmitter);
-		if (a_params.fogDensity > 0.0f)
-			DrawFog(a_context);
 
 		// Restore
 		ID3D11RenderTargetView* targets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT];
@@ -210,14 +204,6 @@ namespace FluidFieldSim
 		a_context->VSSetShaderResources(EMITTERS_SLOT, 1, &vsEmitters);
 		ID3D11ShaderResourceView* psDepth = savedPSDepth.get();
 		a_context->PSSetShaderResources(SCENE_DEPTH_SLOT, 1, &psDepth);
-	}
-
-	void FallSurfaceRenderer::DrawFog(ID3D11DeviceContext* a_context)
-	{
-		// One screen-filling triangle; the vertices come from their index alone
-		a_context->VSSetShader(fogVertexShader.get(), nullptr, 0);
-		a_context->PSSetShader(fogPixelShader.get(), nullptr, 0);
-		a_context->Draw(3, 0);
 	}
 
 	void FallSurfaceRenderer::DrawParticles(ID3D11DeviceContext* a_context, uint32_t a_perEmitter)
