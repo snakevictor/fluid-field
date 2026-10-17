@@ -328,7 +328,8 @@ private:
 		float CameraOffset[3];
 		uint32_t Whitening;
 		uint32_t HideDraw;
-		float GroundPad[3];
+		float InverseScale[2];
+		float GroundPad;
 	};
 	static_assert(sizeof(FallGroundData) == 128);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;

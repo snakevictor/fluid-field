@@ -1289,3 +1289,31 @@ Entry format:
         does not draw at all once blended, so the blended pass needs the
         mesh registered with it (not done; Translucency stays 0).
 -   References: D32, D33, D34, D37, D38, D44, D53, D54, D55
+
+## D57: The solve leads on flat water only; rock by ray parity; open edges reach the rock; deeper pool cut
+
+-   Date: 2026-10-17
+-   Phase / spike: @Victor's review screenshots 598-604
+-   Decision:
+    -   The solve turned the flow aside on curtains too (598-601): from above
+        it sees a curtain edge-on, and its turn sheared the texture into
+        marble. It now has a say only where the surface is flat (upward
+        normal from 0.45, fully at 0.8). There it can turn the flow up to 75
+        degrees, so runs follow their channel round rock instead of
+        plunging into it (604). Vanilla's animated texture scale is taken
+        out with its scroll.
+    -   Inside rock is ray parity: rays from outside toward the vertex
+        (down, down and in, along its face) that all cross rock an odd
+        number of times. D56's test of the hit's facing never fired. A
+        buried vertex counts 2 under the cut against 38 over it, so on the
+        large triangles the cut stays at the rock's face (a deeper value
+        notched black gaps along it). First run: 325 of 1188 vertices
+        inside.
+    -   Open edges of the lit meshes that stop short of the rock (603, a
+        vanilla gap) reach it: each open-edge vertex looks out along the
+        surface, and out and down, up to 64 units, and moves 6 past the rock
+        (26 vertices), in both passes through the per-vertex buffer.
+    -   The pool cut is 20 under the surface (was 2): the shallow water's
+        ripples opened a gap under a cut at the surface, the black dashes
+        along the line (602).
+-   References: D47, D49, D56

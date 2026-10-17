@@ -127,6 +127,9 @@ VS_OUTPUT main(VS_INPUT input)
 #	else
 
 	precise float4 positionMS = float4(input.PositionMS.xyz, 1.0);
+#		if defined(FLUID_FIELD)
+	positionMS.xyz += FallGround::VertexShift(input.VertexID);  // D57: as the lit pass
+#		endif
 	float4 positionCS = float4(0, 0, 0, 0);
 
 	float3 normalMS = float3(1, 1, 1);

@@ -36,13 +36,16 @@ namespace FallGround
 		float3 CameraOffset;   // FrameBuffer::CameraPosAdjust, for the vertex shaders that have none (D38)
 		uint Whitening;        // The falls whiten with their foam and speed (D34); 0 for the debug comparison (D39)
 		uint HideDraw;         // D56: this draw shows nothing of the falls (a blended mesh's depth pre-pass)
-		float3 GroundPad;
+		float2 InverseScale;   // D57: undoes vanilla's animated texture scale (its slow zoom), with TexOffset its scroll
+		float GroundPad;
 	};
 
 	Texture2D<float2> Heights : register(t120);  // The captured rock, and the pools' surface (D36)
 	Texture2D<float> SceneDepth : register(t121);
-	Texture2D<float4> Stream : register(t122);            // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
-	StructuredBuffer<float> VertexClip : register(t123);  // D56: per vertex of the falls' lit meshes, how far it stands out of the rock (negative inside)
+	Texture2D<float4> Stream : register(t122);  // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
+	// D56, D57: per vertex of the falls' lit meshes: how far it stands out of the rock (negative inside), and
+	// how far it is moved in its own model space to reach the rock where vanilla's open edge falls short
+	StructuredBuffer<float4> VertexData : register(t123);
 
 	static const uint NO_VERTEX_CLIP = 0xFFFFFFFF;
 	/** D56: vanilla's scroll when this mesh's has not been measured yet (texture coordinates per second; the bodies run 0.12 to 0.17). */
@@ -50,8 +53,24 @@ namespace FallGround
 	/** D56: the solve slows or quickens vanilla's flow within these, as a fraction of it: stalled against rock, squeezed past it. */
 	static const float SLOWEST_FLOW = 0.5;
 	static const float FASTEST_FLOW = 1.6;
-	/** D56: the most the solve turns the flow aside, as across-to-down (0.7: 35 degrees): it bends round rock, it never turns back. */
-	static const float MOST_TURN = 0.7;
+	/**
+	 * D57: the most the solve turns the flow aside, as across-to-down: little on steep water (the solve,
+	 * from above, knows nothing of a curtain's face), much on flat runs, where it follows the channel
+	 * round rock (3.7: 75 degrees). It never turns it back.
+	 */
+	static const float STEEP_TURN = 0.0;
+	static const float FLAT_TURN = 3.7;
+	/** D57: the surface's upward normal from which the solve leads (flat water) and below which it has no say (a curtain). */
+	static const float SOLVE_FROM = 0.45;
+	static const float SOLVE_TO = 0.8;
+
+	/** D57: how far a vertex of the falls' lit meshes is moved in model space (its open edge reaching the rock), or 0. */
+	float3 VertexShift(uint a_vertex)
+	{
+		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
+			return 0.0;
+		return VertexData[VertexBase + a_vertex].yzw;
+	}
 
 	static const float NONE = -1.0e6;  // Below this, no ground is captured
 
@@ -90,7 +109,7 @@ namespace FallGround
 	/** D47: how far round a point the ground is looked at for its lowest (the map is a 16-unit top-down grid). */
 	static const float BURIED_REACH = 14.0;
 	/** D47: the falls are cut this far under the pools' surface, so the pool's water overlaps the cut. */
-	static const float POOL_CUT = 2.0;  // D49: under the pools the falls are hidden; the dense foam at the waterline covers the line
+	static const float POOL_CUT = 20.0;  // D49: under the pools the falls are hidden, the dense foam at the waterline covering the line; D57: deep enough that the shallow water's ripples never open a gap under the cut
 
 	/** D47: the lowest captured ground round a world position: at a cliff edge, the cliff foot's, not its top's. */
 	bool LowestGround(float2 a_position, out float a_height)
@@ -144,7 +163,7 @@ namespace FallGround
 		// D56: the rock per vertex, tested against the game's collision (FallSites::ClipStep): the top-down
 		// ground map called everything under an overhang buried, and holed the falls there
 		if (VertexBase != NO_VERTEX_CLIP)
-			distance = min(distance, VertexClip[VertexBase + a_vertex]);
+			distance = min(distance, VertexData[VertexBase + a_vertex].x);
 		return distance;
 	}
 
@@ -235,7 +254,7 @@ namespace FallGround
 		const float3 dpy = ddy(a_position);
 		const float2 dux = ddx(a_uv);
 		const float2 duy = ddy(a_uv);
-		const float2 uvStill = a_uv - TexOffset;
+		const float2 uvStill = (a_uv - TexOffset) * InverseScale;
 		result.uvA = uvStill;
 		result.uvB = uvStill + float2(0.31, 0.17);
 		result.blendB = 0.0;
@@ -271,8 +290,12 @@ namespace FallGround
 		const float down = dot(lifted, alongV);
 
 		// Vanilla's forward, slowed or quickened by the solve and turned aside by it, never back
-		const float forward = (Scroll.y > 1e-3 ? Scroll.y : DEFAULT_SCROLL) * lerp(1.0, clamp(length(solved), SLOWEST_FLOW, FASTEST_FLOW), water);
-		const float turn = water * clamp(across / max(down, 0.3 * length(float2(across, down)) + 1e-4), -MOST_TURN, MOST_TURN);
+		// D57: the solve leads on flat water only: from above it sees a curtain's face edge-on, and its turn
+		// there sheared the texture into marble
+		const float say = water * smoothstep(SOLVE_FROM, SOLVE_TO, normal.z);
+		const float mostTurn = lerp(STEEP_TURN, FLAT_TURN, say);
+		const float forward = (Scroll.y > 1e-3 ? Scroll.y : DEFAULT_SCROLL) * lerp(1.0, clamp(length(solved), SLOWEST_FLOW, FASTEST_FLOW), say);
+		const float turn = say * clamp(across / max(down, 0.25 * length(float2(across, down)) + 1e-4), -mostTurn, mostTurn);
 		const float2 uvVelocity = float2(turn * forward * aspect, forward);
 		result.velocity = tu * uvVelocity.x + tv * uvVelocity.y;
 		result.strength = 1.0;

@@ -154,6 +154,9 @@ VS_OUTPUT main(VS_INPUT input)
 	VS_OUTPUT vsout;
 
 	precise float4 inputPosition = float4(input.Position.xyz, 1.0);
+#	if defined(FLUID_FIELD)
+	inputPosition.xyz += FallGround::VertexShift(input.VertexID);  // D57: the falls' open edges reaching the rock
+#	endif
 
 #	if defined(LODLANDNOISE) || defined(LODLANDSCAPE)
 	inputPosition = LodLandscape::AdjustLodLandscapeVertexPositionMS(inputPosition, float4x4(World, float4(0, 0, 0, 1)), HighDetailRange);

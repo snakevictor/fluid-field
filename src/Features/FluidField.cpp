@@ -1478,11 +1478,11 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	if (fallSites.GetVertexClipVersion() != fallClipVersion && !fallSites.GetVertexClips().empty()) {
 		fallClipVersion = fallSites.GetVertexClipVersion();
 		const auto& clips = fallSites.GetVertexClips();
-		D3D11_BUFFER_DESC clipDesc{ .ByteWidth = static_cast<UINT>(clips.size() * sizeof(float)), .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, .StructureByteStride = sizeof(float) };
+		D3D11_BUFFER_DESC clipDesc{ .ByteWidth = static_cast<UINT>(clips.size() * sizeof(float)), .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, .StructureByteStride = 4 * sizeof(float) };
 		const D3D11_SUBRESOURCE_DATA clipData{ clips.data(), 0, 0 };
 		D3D11_SHADER_RESOURCE_VIEW_DESC clipView{ .Format = DXGI_FORMAT_UNKNOWN, .ViewDimension = D3D11_SRV_DIMENSION_BUFFER };
 		clipView.Buffer.FirstElement = 0;
-		clipView.Buffer.NumElements = static_cast<UINT>(clips.size());
+		clipView.Buffer.NumElements = static_cast<UINT>(clips.size() / 4);
 		fallClipBuffer = nullptr;
 		fallClipSRV = nullptr;
 		if (FAILED(device->CreateBuffer(&clipDesc, &clipData, fallClipBuffer.put())) || FAILED(device->CreateShaderResourceView(fallClipBuffer.get(), &clipView, fallClipSRV.put()))) {
@@ -1523,7 +1523,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	fallGroundData = { { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET,
 		FALL_GROUND_CONTACT, FALL_GROUND_LIFT_MOST, FALL_FOAM_STRENGTH, static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 3)), fallSurfaceTime,
 		FluidFieldSim::FallStream::BASE_SPEED, std::max(settings.FallFlowPeriod, 0.05f), std::max(settings.FallFlowMost, 0.1f), {}, {}, UINT32_MAX, 0.0f, {},
-		settings.HideUnderwaterFalls ? 1u : 0u, FALL_POOL_FOAM, {}, settings.FallWhitening ? 1u : 0u, 0u, {} };
+		settings.HideUnderwaterFalls ? 1u : 0u, FALL_POOL_FOAM, {}, settings.FallWhitening ? 1u : 0u, 0u, { 1.0f, 1.0f }, 0.0f };
 }
 
 void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly)
@@ -1559,7 +1559,10 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly)
 		}
 		// D56: the per-vertex rock cut, and a blended mesh kept out of the depth pre-pass (it would hide itself)
 		uint32_t vertexBase = 0;
-		fallGroundData.VertexBase = fallClipSRV && fallSites.GetVertexClip(a_pass->geometry, vertexBase) && vertexBase < fallSites.GetVertexClips().size() ? vertexBase : UINT32_MAX;
+		fallGroundData.VertexBase = fallClipSRV && fallSites.GetVertexClip(a_pass->geometry, vertexBase) && vertexBase < fallSites.GetVertexClips().size() / 4 ? vertexBase : UINT32_MAX;
+		// D57: vanilla's slow zoom of the texture taken out too, with its scroll
+		fallGroundData.InverseScale[0] = material && material->texCoordScale[buffer].x > 1e-4f ? 1.0f / material->texCoordScale[buffer].x : 1.0f;
+		fallGroundData.InverseScale[1] = material && material->texCoordScale[buffer].y > 1e-4f ? 1.0f / material->texCoordScale[buffer].y : 1.0f;
 		fallGroundData.HideDraw = a_depthOnly && fallSites.IsTranslucent(a_pass->geometry) ? 1u : 0u;
 		// D35: the mesh's texel density, for the flowmap's smooth frame (0: the shader measures it per triangle)
 		float scale[2];

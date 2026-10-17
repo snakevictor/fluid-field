@@ -1809,57 +1809,77 @@ namespace FluidFieldSim
 		groundVersion++;
 	}
 
+	float FallSites::RockAlong(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, int* a_crossings, float* a_last) const
+	{
+		// Through anything not rock (the falls' own collision is water), counting the rock crossed on the way
+		const float scale = RE::bhkWorld::GetWorldScale();
+		float first = -1.0f;
+		float from = 0.0f;
+		for (int step = 0; step < 8 && from < a_reach; step++) {
+			const RE::NiPoint3 start = a_from + a_direction * from;
+			const RE::NiPoint3 end = a_from + a_direction * a_reach;
+			RE::hkpWorldRayCastInput input;
+			input.from = RE::hkVector4(start.x * scale, start.y * scale, start.z * scale, 0.0f);
+			input.to = RE::hkVector4(end.x * scale, end.y * scale, end.z * scale, 0.0f);
+			RE::hkpWorldRayCastOutput output;
+			a_world->CastRay(input, output);
+			if (!output.HasHit())
+				break;
+			const float hit = from + (a_reach - from) * output.hitFraction;
+			const auto layer = output.rootCollidable->GetCollisionLayer();
+			const bool solid = layer == RE::COL_LAYER::kStatic || layer == RE::COL_LAYER::kAnimStatic || layer == RE::COL_LAYER::kTerrain || layer == RE::COL_LAYER::kGround;
+			const auto* ref = RE::TESHavokUtilities::FindCollidableRef(*output.rootCollidable);
+			const char* model = ref ? ModelOf(ref->GetBaseObject()) : nullptr;
+			const std::string name = model ? Lowercase(model) : std::string();
+			if (solid && name.find("fxwaterfall") == std::string::npos && name.find("fxrapids") == std::string::npos) {
+				if (first < 0.0f)
+					first = hit;
+				if (a_crossings)
+					(*a_crossings)++;
+				if (a_last)
+					*a_last = hit;
+				if (!a_crossings)
+					break;
+			}
+			from = hit + 0.5f;
+		}
+		return first;
+	}
+
 	float FallSites::RockClip(RE::hkpWorld* a_world, const RE::NiPoint3& a_point, const RE::NiPoint3& a_normal, bool& a_inside) const
 	{
-		// Rays out of the point: straight up, up and out of the water's face, and out of its face. A ray that
-		// meets rock from behind (its face turned away) started inside it. Rock seen from in front, or none,
-		// is outside: under an overhang the water shows (the top-down ground map hid it, D56)
+		// D57: inside rock where rays from outside it (straight down onto the point, down and in, and in along
+		// its face) all cross rock an odd number of times on the way. D56 asked which way the rock's face
+		// turned at the first hit; Havok's normals never said "from behind", so nothing was ever inside. All
+		// three must agree: under an overhang the ray from above crosses it, the one along the face does not
 		RE::NiPoint3 out = a_normal;
 		if (out.z < 0.0f)
 			out = -out;
-		RE::NiPoint3 directions[3] = { { 0.0f, 0.0f, 1.0f }, RE::NiPoint3(out.x, out.y, out.z + 1.0f), out };
-		const float scale = RE::bhkWorld::GetWorldScale();
-		int inside = 0;
-		float above = CLIP_REACH;
+		const RE::NiPoint3 directions[3] = { { 0.0f, 0.0f, 1.0f }, RE::NiPoint3(out.x, out.y, out.z + 1.0f), out };
+		int inside = 0, tried = 0;
+		float depth = CLIP_RANGE;
 		for (int k = 0; k < 3; k++) {
 			RE::NiPoint3 direction = directions[k];
 			const float length = direction.Length();
 			if (length < 1e-4f)
 				continue;
 			direction = direction / length;
-			float from = 0.5f;
-			for (int step = 0; step < 6 && from < CLIP_REACH; step++) {
-				const RE::NiPoint3 start = a_point + direction * from;
-				const RE::NiPoint3 end = a_point + direction * CLIP_REACH;
-				RE::hkpWorldRayCastInput input;
-				input.from = RE::hkVector4(start.x * scale, start.y * scale, start.z * scale, 0.0f);
-				input.to = RE::hkVector4(end.x * scale, end.y * scale, end.z * scale, 0.0f);
-				RE::hkpWorldRayCastOutput output;
-				a_world->CastRay(input, output);
-				if (!output.HasHit())
-					break;
-				const float hit = from + (CLIP_REACH - from) * output.hitFraction;
-				const auto layer = output.rootCollidable->GetCollisionLayer();
-				const bool solid = layer == RE::COL_LAYER::kStatic || layer == RE::COL_LAYER::kAnimStatic || layer == RE::COL_LAYER::kTerrain || layer == RE::COL_LAYER::kGround;
-				const auto* ref = RE::TESHavokUtilities::FindCollidableRef(*output.rootCollidable);
-				const char* model = ref ? ModelOf(ref->GetBaseObject()) : nullptr;
-				const std::string name = model ? Lowercase(model) : std::string();
-				// The falls' own collision is water, not rock
-				if (!solid || name.find("fxwaterfall") != std::string::npos || name.find("fxrapids") != std::string::npos) {
-					from = hit + 1.0f;
-					continue;
-				}
-				float normal[4];
-				_mm_storeu_ps(normal, output.normal.quad);
-				if (normal[0] * direction.x + normal[1] * direction.y + normal[2] * direction.z > 0.0f)
-					inside++;
+			// From outside, toward the point: the last crossing is the rock's face nearest the point
+			int crossings = 0;
+			float last = 0.0f;
+			RockAlong(a_world, a_point + direction * CLIP_REACH, -direction, CLIP_REACH - 0.5f, &crossings, &last);
+			tried++;
+			if (crossings % 2 == 1) {
+				inside++;
 				if (k == 0)
-					above = hit;
-				break;
+					depth = std::min(CLIP_REACH - last, CLIP_RANGE);
 			}
 		}
-		a_inside = inside >= 2;
-		return a_inside ? CLIP_MARGIN - std::min(above, CLIP_RANGE) : CLIP_MARGIN + CLIP_RANGE;
+		a_inside = tried > 0 && inside == tried;
+		// The cut sits just short of a buried vertex (2 against 38): Bethesda's triangles are large, and a deep
+		// value pulled the cut far across them, out of the rock, notching black gaps along it
+		(void)depth;
+		return a_inside ? -CLIP_INSIDE : CLIP_MARGIN + CLIP_RANGE;
 	}
 
 	void FallSites::ClipStep()
@@ -1902,7 +1922,39 @@ namespace FluidFieldSim
 				for (int k = 0; k < 3; k++)
 					normals[index[k]] += face;
 			}
-			const auto base = static_cast<uint32_t>(vertexClips.size());
+			// D57: the open edges, and which way each of their vertices faces out of the mesh, along its surface
+			std::unordered_map<uint32_t, std::pair<int, uint32_t>> edges;  // Edge (low << 16 | high) -> uses, opposite vertex
+			for (uint32_t i = 0; i < counts.triangleCount; i++) {
+				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+				if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+					continue;
+				for (int k = 0; k < 3; k++) {
+					const uint32_t a = index[k], b = index[(k + 1) % 3];
+					auto& edge = edges[(std::min(a, b) << 16) | std::max(a, b)];
+					edge.first++;
+					edge.second = index[(k + 2) % 3];
+				}
+			}
+			std::vector<RE::NiPoint3> outward(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+			for (const auto& [key, edge] : edges) {
+				if (edge.first != 1)
+					continue;
+				const uint32_t a = key >> 16, b = key & 0xFFFF;
+				const RE::NiPoint3 along = positions[b] - positions[a];
+				const float run = along.SqrLength();
+				if (run < 1e-6f)
+					continue;
+				RE::NiPoint3 away = (positions[a] + positions[b]) * 0.5f - positions[edge.second];
+				away = away - along * (away.Dot(along) / run);
+				const float length = away.Length();
+				if (length < 1e-4f)
+					continue;
+				outward[a] += away / length;
+				outward[b] += away / length;
+			}
+			const RE::NiMatrix3 toModel = geometry->world.rotate.Transpose();
+			const float toModelScale = geometry->world.scale > 1e-6f ? 1.0f / geometry->world.scale : 1.0f;
+			const auto base = static_cast<uint32_t>(vertexClips.size() / 4);
 			{
 				const RE::BSReadLockGuard lock(bhkWorld->worldLock);
 				for (uint32_t v = 0; v < counts.vertexCount; v++) {
@@ -1911,13 +1963,32 @@ namespace FluidFieldSim
 					vertexClips.push_back(RockClip(world, positions[v], length > 1e-6f ? normals[v] / length : RE::NiPoint3(0.0f, 0.0f, 1.0f), inside));
 					clipTested++;
 					clipInside += inside ? 1 : 0;
+					// An open edge short of the rock reaches it: straight out along the surface, or out and down
+					RE::NiPoint3 shift(0.0f, 0.0f, 0.0f);
+					const float out = outward[v].Length();
+					if (out > 1e-3f && !inside) {
+						const RE::NiPoint3 direction = outward[v] / out;
+						RE::NiPoint3 lower(direction.x, direction.y, direction.z - 0.6f);
+						lower = lower / std::max(lower.Length(), 1e-4f);
+						const float straight = RockAlong(world, positions[v], direction, EDGE_REACH);
+						const float down = RockAlong(world, positions[v], lower, EDGE_REACH);
+						const bool useStraight = straight >= 0.0f && (down < 0.0f || straight <= down);
+						const float reach = useStraight ? straight : down;
+						if (reach > 1.0f) {
+							shift = (useStraight ? direction : lower) * (reach + EDGE_INTO);
+							edgesReached++;
+						}
+					}
+					const RE::NiPoint3 local = (toModel * shift) * toModelScale;
+					vertexClips.insert(vertexClips.end(), { local.x, local.y, local.z });
 				}
 			}
 			vertexClipBase[geometry.get()] = base;
 			vertexClipVersion++;
 		}
 		if (clipQueue.empty())
-			logger::info("[Fluid Field] Waterfall rock cut: {} vertices of {} lit meshes tested, {} inside rock", clipTested, vertexClipBase.size(), clipInside);
+			logger::info("[Fluid Field] Waterfall rock cut: {} vertices of {} lit meshes tested, {} inside rock, {} open-edge vertices reaching the rock", clipTested, vertexClipBase.size(), clipInside,
+				edgesReached);
 	}
 
 	void FallSites::CaptureStep()
