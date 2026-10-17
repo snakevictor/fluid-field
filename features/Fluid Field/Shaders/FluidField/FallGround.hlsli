@@ -37,21 +37,28 @@ namespace FallGround
 		uint Whitening;        // The falls whiten with their foam and speed (D34); 0 for the debug comparison (D39)
 		uint HideDraw;         // D56: this draw shows nothing of the falls (a blended mesh's depth pre-pass)
 		float2 InverseScale;   // D57: undoes vanilla's animated texture scale (its slow zoom), with TexOffset its scroll
-		float GroundPad;
+		uint BakeOn;           // D59: this mesh has a flow bake (FlowBake)
+		float4 BakeRect;       // D59: the bake's texture coordinates: its least u and v, and one over its extent
 	};
 
 	Texture2D<float2> Heights : register(t120);  // The captured rock, and the pools' surface (D36)
 	Texture2D<float> SceneDepth : register(t121);
-	Texture2D<float4> Stream : register(t122);            // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
-	StructuredBuffer<float> VertexClip : register(t123);  // D56: per vertex of the falls' lit meshes, how far it stands out of the rock (negative inside)
+	Texture2D<float4> Stream : register(t122);  // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
+	StructuredBuffer<float> VertexClip : register(t123);
+	// D59: this mesh's flow, solved on its own texture grid (FallSites::SolveBake): across and down in texture
+	// coordinates per unit of vanilla's scroll, foam (rock, edges), and seconds the water has run
+	Texture2D<float4> FlowBake : register(t124);  // D56: per vertex of the falls' lit meshes, how far it stands out of the rock (negative inside)
 
 	static const uint NO_VERTEX_CLIP = 0xFFFFFFFF;
 	/** D58: the most a vertex counts as above or under the cut, world units. */
 	static const float CLIP_MOST = 48.0;
 	/** D56: vanilla's scroll when this mesh's has not been measured yet (texture coordinates per second; the bodies run 0.12 to 0.17). */
 	static const float DEFAULT_SCROLL = 0.15;
-	/** D58: a deviation moving the texture this far per cycle shows in full; less fades back to the single scroll. */
-	static const float DEVIATION_SHOWN = 0.05;
+	/** D59: the most a deviation moves the texture per cycle (texture repeats): more blurs the cross-fade. */
+	static const float DEVIATION_MOST = 0.3;
+	/** D59: seconds of running for the water to be most of the way aerated, and how white aerated water gets. */
+	static const float AERATION_SECONDS = 1.2;
+	static const float AERATION_WHITE = 0.3;
 	static const float NONE = -1.0e6;  // Below this, no ground is captured
 
 	/** The captured ground under a world position, bilinear; false where any texel around it is unknown. */
@@ -225,6 +232,9 @@ namespace FallGround
 		float strength;   // 0: vanilla's own texture (coordinates unchanged), 1: the flowmap in full
 		float3 velocity;  // World units per second, along the surface
 		float4 stream;    // StreamAt
+		float foam;       // D59: the bake's foam: where the water piles against rock, squeezes past it, and frays at its edges
+		float runTime;    // D59: seconds the water has run since it came onto this mesh (0 without a bake)
+		float pace;       // D59: the water's speed against vanilla's (1 without a bake)
 	};
 
 	/**
@@ -237,12 +247,35 @@ namespace FallGround
 	 * only marbled the curtains. The phases carry only a deviation from it (a_deviation, texture
 	 * coordinates per second on top of the scroll), and fade out where there is none.
 	 */
-	FlowSample Flow(float2 a_uv, float3 a_position, float2 a_deviation)
+	/** D59: this mesh's flow bake at a texture coordinate (vanilla's own, unscrolled), bilinear; vanilla's forward where there is none. */
+	float4 BakeAt(float2 a_uv)
+	{
+		if (!BakeOn)
+			return float4(0.0, 1.0, 0.0, 0.0);
+		uint width, height;
+		FlowBake.GetDimensions(width, height);
+		const float2 texel = (a_uv - BakeRect.xy) * BakeRect.zw * float2(width, height) - 0.5;
+		const int2 base = clamp(int2(floor(texel)), 0, int2(width, height) - 2);
+		const float2 t = saturate(texel - float2(base));
+		const float4 a = FlowBake.Load(int3(base, 0));
+		const float4 b = FlowBake.Load(int3(base + int2(1, 0), 0));
+		const float4 c = FlowBake.Load(int3(base + int2(0, 1), 0));
+		const float4 d = FlowBake.Load(int3(base + int2(1, 1), 0));
+		return lerp(lerp(a, b, t.x), lerp(c, d, t.x), t.y);
+	}
+
+	FlowSample Flow(float2 a_uv, float3 a_position)
 	{
 		FlowSample result;
 		result.stream = StreamAt(a_position.xy);
 		const float2 uvStill = (a_uv - TexOffset) * InverseScale;
 		const float forward = Scroll.y > 1e-3 ? Scroll.y * InverseScale.y : DEFAULT_SCROLL;
+		// D59: the mesh's own flow, solved on its texture grid, as a deviation from vanilla's forward
+		const float4 baked = BakeAt(uvStill);
+		const float2 a_deviation = float2(baked.x, baked.y - 1.0) * forward;
+		result.foam = baked.z;
+		result.runTime = baked.w;
+		result.pace = length(baked.xy);
 		const float2 uvBase = uvStill - float2(0.0, frac(forward * Time));
 		result.uvA = uvBase;
 		result.uvB = uvBase;
@@ -262,20 +295,23 @@ namespace FallGround
 			result.velocity = tu * a_deviation.x + tv * (forward + a_deviation.y);
 		}
 
-		// The deviation in two phases, staggered over the surface so the resets do not all land at once
+		// The deviation in two phases, staggered over the surface so the resets do not all land at once.
+		// D59: always cross-faded in full (fading the second phase out where the deviation is small left the
+		// first one's reset showing: the texture jumped back every cycle), and both phases are the same patch
+		// of the texture, only a deviation apart: they never marble (D58), and are not contrast boosted
 		float2 travel = a_deviation * FlowPeriod;
 		const float most = length(travel);
-		travel *= most > FlowMost ? FlowMost / most : 1.0;
-		const float weight = saturate(most / DEVIATION_SHOWN);
-		[branch] if (weight > 0.0)
+		const float travelMost = min(FlowMost, DEVIATION_MOST);
+		travel *= most > travelMost ? travelMost / most : 1.0;
+		[branch] if (most > 1e-4)
 		{
 			const float stagger = 0.25 * (sin(dot(a_position, float3(0.0021, 0.0027, 0.0013))) + sin(dot(a_position, float3(-0.0017, 0.0012, 0.0024))));
 			const float cycle = Time / FlowPeriod + stagger;
 			const float phaseA = frac(cycle);
 			const float phaseB = frac(cycle + 0.5);
 			result.uvA = uvBase - travel * (phaseA - 0.5);
-			result.uvB = uvBase - travel * (phaseB - 0.5) + float2(0.31, 0.17);
-			result.blendB = abs(1.0 - 2.0 * phaseA) * weight;
+			result.uvB = uvBase - travel * (phaseB - 0.5);
+			result.blendB = abs(1.0 - 2.0 * phaseA);
 		}
 		return result;
 	}

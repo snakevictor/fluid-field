@@ -1428,6 +1428,8 @@ void FluidField::ReleaseFallGround()
 	fallClipBuffer = nullptr;
 	fallClipSRV = nullptr;
 	fallClipVersion = UINT64_MAX;
+	fallBakeSRVs.clear();
+	fallBakeVersion = UINT64_MAX;
 	fallPlungeTexture = nullptr;
 	fallPlungeSRV = nullptr;
 	fallGroundOn = nullptr;
@@ -1494,6 +1496,26 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		}
 	}
 
+	// D59: the lit meshes' flow bakes, one texture each
+	if (fallSites.GetFlowBakeVersion() != fallBakeVersion) {
+		fallBakeVersion = fallSites.GetFlowBakeVersion();
+		const auto& bakes = fallSites.GetFlowBakes();
+		std::erase_if(fallBakeSRVs, [&](const auto& a_entry) { return !bakes.contains(a_entry.first); });
+		for (const auto& [geometry, bake] : bakes) {
+			if (fallBakeSRVs.contains(geometry))
+				continue;
+			D3D11_TEXTURE2D_DESC bakeDesc{ .Width = bake.width, .Height = bake.height, .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R16G16B16A16_FLOAT, .SampleDesc = { 1, 0 }, .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = 0 };
+			const D3D11_SUBRESOURCE_DATA bakeData{ bake.texels.data(), bake.width * 4 * sizeof(uint16_t), 0 };
+			winrt::com_ptr<ID3D11Texture2D> texture;
+			winrt::com_ptr<ID3D11ShaderResourceView> view;
+			if (FAILED(device->CreateTexture2D(&bakeDesc, &bakeData, texture.put())) || FAILED(device->CreateShaderResourceView(texture.get(), nullptr, view.put())))
+				continue;
+			Util::SetResourceName(texture.get(), "FluidField::FallFlowBake");
+			Util::SetResourceName(view.get(), "FluidField::FallFlowBake SRV");
+			fallBakeSRVs[geometry] = view;
+		}
+	}
+
 	// Recentred on the player when the captures change, or when the player has moved far
 	constexpr float half = 0.5f * FALL_GROUND_SIZE * FALL_GROUND_CELL;
 	const float dx = a_playerPos.x - (fallGroundOrigin[0] + half);
@@ -1523,7 +1545,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	fallGroundData = { { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET,
 		FALL_GROUND_CONTACT, FALL_GROUND_LIFT_MOST, FALL_FOAM_STRENGTH, static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 3)), fallSurfaceTime,
 		FluidFieldSim::FallStream::BASE_SPEED, std::max(settings.FallFlowPeriod, 0.05f), std::max(settings.FallFlowMost, 0.1f), {}, {}, UINT32_MAX, 0.0f, {},
-		settings.HideUnderwaterFalls ? 1u : 0u, FALL_POOL_FOAM, {}, settings.FallWhitening ? 1u : 0u, 0u, { 1.0f, 1.0f }, 0.0f };
+		settings.HideUnderwaterFalls ? 1u : 0u, FALL_POOL_FOAM, {}, settings.FallWhitening ? 1u : 0u, 0u, { 1.0f, 1.0f }, 0u, {} };
 }
 
 void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly)
@@ -1564,6 +1586,21 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly)
 		fallGroundData.InverseScale[0] = material && material->texCoordScale[buffer].x > 1e-4f ? 1.0f / material->texCoordScale[buffer].x : 1.0f;
 		fallGroundData.InverseScale[1] = material && material->texCoordScale[buffer].y > 1e-4f ? 1.0f / material->texCoordScale[buffer].y : 1.0f;
 		fallGroundData.HideDraw = a_depthOnly && fallSites.IsTranslucent(a_pass->geometry) ? 1u : 0u;
+		// D59: this mesh's flow bake, where it is solved
+		ID3D11ShaderResourceView* bakeView = nullptr;
+		fallGroundData.BakeOn = 0;
+		if (const auto it = fallBakeSRVs.find(a_pass->geometry); it != fallBakeSRVs.end()) {
+			const auto& bakes = fallSites.GetFlowBakes();
+			if (const auto bake = bakes.find(a_pass->geometry); bake != bakes.end()) {
+				bakeView = it->second.get();
+				fallGroundData.BakeOn = 1;
+				fallGroundData.BakeRect[0] = bake->second.uvMin[0];
+				fallGroundData.BakeRect[1] = bake->second.uvMin[1];
+				fallGroundData.BakeRect[2] = 1.0f / std::max(bake->second.uvSize[0], 1e-4f);
+				fallGroundData.BakeRect[3] = 1.0f / std::max(bake->second.uvSize[1], 1e-4f);
+			}
+		}
+		context->PSSetShaderResources(124, 1, &bakeView);
 		// D35: the mesh's texel density, for the flowmap's smooth frame (0: the shader measures it per triangle)
 		float scale[2];
 		if (fallSites.GetTextureScale(a_pass->geometry, scale) && material && material->texCoordScale[buffer].x > 1e-4f && material->texCoordScale[buffer].y > 1e-4f) {

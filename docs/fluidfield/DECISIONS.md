@@ -1339,3 +1339,30 @@ Entry format:
     solid white band seen through it. The open-edge reach (D57) is removed:
     it did not close 603, which foam will cover later.
 -   References: D32, D46, D56, D57
+
+## D59: Each falls mesh's flow solved on its own texture grid; aeration with run time
+
+-   Date: 2026-10-17
+-   Phase / spike: the plan after D58 (steps 2 and 3), from the technique survey
+-   Decision: The top-down solve cannot see a boulder through a curtain. Each
+    lit falls mesh now gets its flow solved once on its own texture grid
+    (u across, v down, every vanilla falls mesh's v runs downstream), at
+    about 10 world units per texel (at most 192 a side): the mesh is laid
+    into the grid by its texture coordinates, each texel tested against the
+    game's collision, and the existing solve (D28) run over it as a sheet
+    tilted down +v, coming in at its top edge and leaving at its bottom,
+    the rock as walls. The flow never runs back (at least 0.3 of vanilla's
+    forward) nor turns more than 60 degrees, is softened over a texel, and
+    is stored per mesh as an RGBA16F texture (t124): across and down per
+    unit of vanilla's scroll, foam (rock, edges) and run time. The shader
+    takes it as the deviation from vanilla's forward (D58); the two phases
+    are now the same patch of the texture and always cross-fade in full
+    (fading the second out left the first's reset showing: the texture
+    jumped back every cycle), at most 0.3 repeats apart, with no contrast
+    boost. A texel is rock only where rock lies on both sides of the sheet
+    and more than 24 units deep: a curtain before a cliff has the cliff on
+    one side only, and vanilla's sheets dip into the rock they lie on (the
+    first runs called a third of every curtain rock). The water whitens
+    with the time it has run (aeration, to 0.3) and fast, thin water is a
+    little brighter. Debug mode 1 shows the bake on baked meshes.
+-   References: D28, D56, D57, D58

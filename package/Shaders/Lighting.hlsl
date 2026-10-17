@@ -1051,7 +1051,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	{
 		// D36: falling water under the pools' surface is the pool's, and not drawn
 		fallPool = FallGround::Pool(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy, fallPoolHeight);
-		fallFlow = FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, 0.0);
+		fallFlow = FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
 		uv = fallFlow.uvA;
 	}
 #	endif
@@ -1505,7 +1505,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// D46: the two phases blended keeping the texture's contrast: a plain cross-fade averages them toward
 		// the texture's mean and washes the streaks out mid-blend. Each blend is scaled back out from the
 		// mean (the smallest mip) by 1 / sqrt(wA^2 + wB^2), the variance-preserving blend
-		const float contrast = rsqrt(max((1.0 - fallFlow.blendB) * (1.0 - fallFlow.blendB) + fallFlow.blendB * fallFlow.blendB, 0.25));
+		const float contrast = 1.0;  // D59: the phases are the same patch now, only a deviation apart: nothing to restore
 		const float4 colorMean = TexColorSampler.SampleLevel(SampColorSampler, fallFlow.uvA, 12.0);
 		rawBaseColor.rgb = colorMean.rgb + (lerp(rawBaseColor, TexColorSampler.SampleBias(SampColorSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB).rgb - colorMean.rgb) * contrast;  // D58: colour only
 		normalColor = lerp(normalColor, TexNormalSampler.SampleBias(SampNormalSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB);                                                       // D47: plain: boosted normals sparkled harshly
@@ -1522,7 +1522,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		const float2 fallXY = input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy;
 		const float foamSoft = 0.2 * (fallFlow.stream.z + FallGround::StreamAt(fallXY + float2(14.0, 6.0)).z + FallGround::StreamAt(fallXY - float2(14.0, 6.0)).z +
 										 FallGround::StreamAt(fallXY + float2(-6.0, 14.0)).z + FallGround::StreamAt(fallXY + float2(6.0, -14.0)).z);
-		float white = FallGround::Whitening ? saturate(foamSoft) * fallFlow.strength : 0.0;
+		// D59: the water starts glassy where it comes onto the falls and whitens as it runs and falls (air
+		// worked into it), foams where it piles against rock, squeezes past it and frays at its edges
+		const float aerated = 1.0 - exp(-fallFlow.runTime / FallGround::AERATION_SECONDS);
+		float white = FallGround::Whitening ? saturate(max(max(foamSoft, fallFlow.foam), aerated * FallGround::AERATION_WHITE)) * fallFlow.strength : 0.0;
 		// D36: wholly white where the falls meet the water below, thinning up the falls; D58: and back out
 		// under it, so the part under the pool's see-through surface is not a solid white band
 		[flatten] if (fallPool && FallGround::Whitening)
@@ -1538,8 +1541,16 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		const float3 waterHue = rawBaseColor.rgb / max(max(rawBaseColor.r, max(rawBaseColor.g, rawBaseColor.b)), 0.05);
 		const float3 foamColor = lerp(float3(0.9, 0.9, 0.9), waterHue * 0.9, 0.25);  // Mostly white (D44: the water's own hue tinted it blue)
 		rawBaseColor.rgb = lerp(rawBaseColor.rgb, foamColor, white > 0.0 ? cover * 0.9 : 0.0);
+		// D59: thin, fast water lets the light through: a little brighter, in its own hue
+		rawBaseColor.rgb *= 1.0 + 0.2 * saturate((fallFlow.pace - 1.1) * 2.0) * (1.0 - cover);
 		// Debug (D40): 1 the solved flow's speed (red), foam (green) and water (blue); 2 the texture's direction of motion
-		[branch] if (FallGround::DebugMode == 1)
+		// D59: on a baked mesh, 1 shows the bake instead: red the flow turned aside (half: straight down), green its pace, blue its foam
+		[branch] if (FallGround::DebugMode == 1 && FallGround::BakeOn)
+		{
+			const float4 baked = FallGround::BakeAt((fallUvVanilla - FallGround::TexOffset) * FallGround::InverseScale);
+			rawBaseColor.rgb = float3(saturate(0.5 + baked.x), saturate(baked.y * 0.5), saturate(baked.z));
+		}
+		else if (FallGround::DebugMode == 1)
 			rawBaseColor.rgb = float3(saturate(length(fallFlow.stream.xy) * 0.5), saturate(fallFlow.stream.z), fallFlow.stream.w);
 		else if (FallGround::DebugMode == 2)
 			rawBaseColor.rgb = (0.5 + 0.5 * fallFlow.velocity / max(length(fallFlow.velocity), 1e-3)) * saturate(length(fallFlow.velocity) / FallGround::FlowSpeed);

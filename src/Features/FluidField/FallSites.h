@@ -132,6 +132,26 @@ namespace FluidFieldSim
 			return true;
 		}
 		const std::vector<float>& GetVertexClips() const { return vertexClips; }
+
+		/**
+		 * @brief D59: a lit falls mesh's flow, solved once on its own texture grid (u across, v down), with the
+		 * rock in it found by rays against the game's collision: so the water parts round a boulder through a
+		 * curtain as well as on a flat run, which the top-down solve cannot see. Per texel, as halves: the
+		 * flow's across and down parts in texture coordinates per unit of vanilla's scroll (1, 0 is vanilla's own
+		 * forward... stored as across, down), foam (water piling against rock, squeezing past it, its edges),
+		 * and the seconds the water has run from where it comes in.
+		 */
+		struct FlowBake
+		{
+			uint32_t width = 0;
+			uint32_t height = 0;
+			float uvMin[2]{};
+			float uvSize[2]{};
+			std::vector<uint16_t> texels;  ///< RGBA16F, width x height
+		};
+		const std::unordered_map<const RE::BSGeometry*, FlowBake>& GetFlowBakes() const { return flowBakes; }
+		/** @brief Changes whenever GetFlowBakes changes. */
+		uint64_t GetFlowBakeVersion() const { return flowBakeVersion; }
 		/** @brief Changes whenever GetVertexClips grows. */
 		uint64_t GetVertexClipVersion() const { return vertexClipVersion; }
 		/** @brief Changes whenever the captured ground or the grounded meshes change. */
@@ -262,6 +282,32 @@ namespace FluidFieldSim
 		static constexpr float CLIP_RANGE = 32.0f;   ///< The most a vertex counts as in or out, so the cut stays near the rock's face
 		static constexpr float CLIP_INSIDE = 2.0f;   ///< D57: how far a buried vertex counts under the cut
 		static constexpr double CLIP_BUDGET_MS = 3.0;
+		static constexpr float BAKE_TEXEL = 10.0f;        ///< D59: world units per texel of a mesh's flow bake
+		static constexpr uint32_t BAKE_MOST_SIDE = 192;   ///< ...and the most texels along a side
+		static constexpr float BAKE_ROCK_MARGIN = 24.0f;  ///< A texel this far inside rock is still water (vanilla's sheets dip into the rock they lie on)
+		static constexpr double BAKE_BUDGET_MS = 3.0;
+		static constexpr float BAKE_LEAST_DOWN = 0.3f;  ///< The flow keeps at least this much of vanilla's forward...
+		static constexpr float BAKE_MOST_TURN = 1.7f;   ///< ...and turns aside at most this across per down (60 degrees)
+		/** @brief D59: a mesh's flow bake in progress: its texture grid rasterised, its texels being tested against the rock. */
+		struct BakeJob
+		{
+			RE::NiPointer<RE::BSGeometry> geometry;
+			uint32_t width = 0, height = 0;
+			float uvMin[2]{}, uvSize[2]{};
+			std::vector<RE::NiPoint3> position, normal;
+			std::vector<uint8_t> covered, rock;
+			std::size_t next = 0;
+		};
+		std::vector<RE::NiPointer<RE::BSGeometry>> bakeQueue;
+		std::unique_ptr<BakeJob> bakeJob;
+		std::vector<std::pair<RE::NiPointer<RE::BSGeometry>, std::future<FlowBake>>> bakesPending;
+		std::unordered_map<const RE::BSGeometry*, FlowBake> flowBakes;
+		uint64_t flowBakeVersion = 0;
+		uint32_t bakedRockTexels = 0, bakedTexels = 0;
+		/** @brief D59: rasterises the next queued mesh, tests its texels against the rock, then solves it off the main thread. */
+		void BakeStep();
+		static std::unique_ptr<BakeJob> StartBake(RE::BSGeometry* a_geometry);
+		static FlowBake SolveBake(const BakeJob& a_job);
 		std::unordered_set<std::string> loggedParts;  ///< Diagnostics: falling-water mesh parts already logged
 
 		/** @brief A triangle of vanilla's falling-water surface, in world space. */

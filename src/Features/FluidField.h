@@ -329,9 +329,10 @@ private:
 		uint32_t Whitening;
 		uint32_t HideDraw;
 		float InverseScale[2];
-		float GroundPad;
+		uint32_t BakeOn;
+		float BakeRect[4];
 	};
-	static_assert(sizeof(FallGroundData) == 128);
+	static_assert(sizeof(FallGroundData) == 144);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
 	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must be FallCapture::CELL: the flows are copied texel for texel
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
@@ -347,6 +348,8 @@ private:
 	winrt::com_ptr<ID3D11Buffer> fallClipBuffer;  ///< D56: the falls' per-vertex rock cut (FallSites::GetVertexClips)
 	winrt::com_ptr<ID3D11ShaderResourceView> fallClipSRV;
 	uint64_t fallClipVersion = UINT64_MAX;
+	std::unordered_map<const RE::BSGeometry*, winrt::com_ptr<ID3D11ShaderResourceView>> fallBakeSRVs;  ///< D59: each lit falls mesh's flow bake
+	uint64_t fallBakeVersion = UINT64_MAX;
 	/** @brief D56: vanilla's scroll of a falls material, measured from its texture offset over time. */
 	struct FallScroll
 	{
