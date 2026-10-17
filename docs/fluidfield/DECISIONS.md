@@ -1100,3 +1100,23 @@ Entry format:
     mesh, then displace by the flow in a function shared by Lighting.hlsl
     and Utility.hlsl.
 -   References: D36, D44, D47
+
+## D49: Impacts replace rock-foam spray; falls hidden under the pools again; ground cut only when deeply buried; no mist cards
+
+-   Date: 2026-10-17
+-   Phase / spike: @Victor's review screenshots 488-499
+-   Decision: Spray, foam on the falls and fog now come from impacts:
+    vertices at least 0.7 flat with water steeper than 0.5 within two cells
+    upstream standing 30+ units above them (where falling water lands, and
+    where vanilla hid the join with foam cards). They replace the solver's
+    rock-foam strikes, which marked wide bands of slow water beside rock and
+    threw spray from there. Vanilla's mist and splash refs no longer emit
+    (spray out of nowhere); mist cards are off by default (no 2D cards).
+    D48's 40-unit cut under the pools showed the falls through the clear
+    water: back to 2 units, with a solid foam rim at the waterline (the
+    plunge map near 1 makes 5/s more foam) hiding the cut. The ground cut
+    only removes water 120+ units under the lowest ground nearby: the ground
+    map sees overhangs from above and cut water running under them, while
+    the rock's own depth already hides water behind it. Emitters are hidden
+    by the same margin.
+-   References: D36, D44, D47, D48

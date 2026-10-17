@@ -71,7 +71,9 @@ static const float BREAKING_RATE = 0.15;
 static const float WAKE_RATE = 1.5;
 static const float SPLASH_RATE = 6.0;
 /** D44: foam made per second where a waterfall plunges in at full strength: it stays white there. */
-static const float PLUNGE_RATE = 1.0;  // D48: was 3, which saturated the pool into a flat white sheet
+static const float PLUNGE_RATE = 1.0;
+/** D49: extra foam right where the falls meet the water (the plunge map near 1): solid, hiding where the falls are cut. */
+static const float PLUNGE_RIM_RATE = 5.0;  // D48: was 3, which saturated the pool into a flat white sheet
 
 /** The eight neighbour directions, for finding obstacles around a cell. */
 static const int2 NEIGHBOURS[8] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1), int2(1, 1), int2(-1, 1), int2(1, -1), int2(-1, -1) };
@@ -157,7 +159,8 @@ float SampleFoam(float2 position)
 	             WALL_RATE * wallRush + BREAKING_RATE * saturate((froude - 1.5) / 1.5);
 
 	// Waterfalls plunging in (D44): white along their whole width, carried off downstream by the flow
-	made += PLUNGE_RATE * Plunge((float2(GridMin + logical) + 0.5) * CellSize);
+	const float plunge = Plunge((float2(GridMin + logical) + 0.5) * CellSize);
+	made += PLUNGE_RATE * plunge + PLUNGE_RIM_RATE * smoothstep(0.7, 0.95, plunge);  // D49: lace round it, solid at the line itself
 
 	// Actors: a wake whitens the water behind the actor, a splash much more
 	for (uint i = 0; i < EmitterCount; i++) {

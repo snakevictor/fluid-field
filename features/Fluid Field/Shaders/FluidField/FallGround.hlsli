@@ -99,11 +99,11 @@ namespace FallGround
 	}
 
 	/** D37: falling water this far under the captured rock and ground is buried in it. */
-	static const float BURIED = 48.0;
+	static const float BURIED = 120.0;  // D49: only deeply buried water: the ground map sees overhangs from above, and the rock's depth hides the rest
 	/** D47: how far round a point the ground is looked at for its lowest (the map is a 16-unit top-down grid). */
 	static const float BURIED_REACH = 14.0;
 	/** D47: the falls are cut this far under the pools' surface, so the pool's water overlaps the cut. */
-	static const float POOL_CUT = 40.0;  // D48: deep enough that the clear water shows the falls going in, not rock behind a cut
+	static const float POOL_CUT = 2.0;  // D49: under the pools the falls are hidden; the dense foam at the waterline covers the line
 
 	/** D47: the lowest captured ground round a world position: at a cliff edge, the cliff foot's, not its top's. */
 	bool LowestGround(float2 a_position, out float a_height)

@@ -475,8 +475,8 @@ namespace FluidFieldSim
 				uint32_t kinds[3]{};
 				for (const auto& emitter : stream.emitters)
 					kinds[std::clamp(static_cast<int>(emitter.kind), 0, 2)]++;
-				logger::info("[Fluid Field] Waterfall site #{} surface: {} source triangles ({} under another piece dropped), {} vertices, {} triangles, {} seam points; emitters: {} at drops, {} at plunges, {} striking; {} plunge pushes",
-					stream.siteId, stream.sources.size(), mesh.culled, stream.vertices.size(), stream.indices.size() / 3, mesh.seams, kinds[0], kinds[1], kinds[2], stream.plunges.size());
+				logger::info("[Fluid Field] Waterfall site #{} surface: {} source triangles ({} under another piece dropped), {} vertices, {} triangles, {} seam points ({} impacts); emitters: {} at drops, {} at plunges and impacts, {} striking; {} plunge pushes",
+					stream.siteId, stream.sources.size(), mesh.culled, stream.vertices.size(), stream.indices.size() / 3, mesh.seams, mesh.impacts, kinds[0], kinds[1], kinds[2], stream.plunges.size());
 				continue;
 			}
 			if (stream.ready || !stream.pending.valid() || stream.pending.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
@@ -1062,9 +1062,67 @@ namespace FluidFieldSim
 					plunge.direction[1] = horizontal > 1e-3f ? direction[1] / horizontal : 0.0f;
 					plunge.strength = strength;
 				}
-			} else if (!atLevel && flow.rockFoam > OBSTACLE_FOAM) {
-				offer(vertex.position, vertex.normal, flow.rockFoam * 0.5f, FallEmitterKind::Strike, OBSTACLE_SPACING);  // D48: a light kick
 			}
+		}
+
+		// D49: impacts, where falling water lands: a flatter vertex with steep water just upstream of it,
+		// standing well above it. Each throws spray up and out by how far the water fell, whitens the falls
+		// round it and makes fog, as vanilla's foam cards there pretended to
+		std::vector<std::array<float, 6>> impacts;  // Position, strength, unused x2
+		{
+			std::vector<float> cellSteep(static_cast<std::size_t>(w) * h, 1.0f);
+			std::vector<float> cellTop(static_cast<std::size_t>(w) * h, -FLT_MAX);
+			const auto cellOf = [&](const float a_p[3], int32_t& a_x, int32_t& a_y) {
+				a_x = static_cast<int32_t>(std::floor((a_p[0] - a_originX) / cell));
+				a_y = static_cast<int32_t>(std::floor((a_p[1] - a_originY) / cell));
+				return a_x >= 0 && a_y >= 0 && a_x < w && a_y < h;
+			};
+			for (const auto& vertex : mesh.vertices) {
+				int32_t x, y;
+				if (!cellOf(vertex.position, x, y) || buried(vertex.position, true))
+					continue;
+				const std::size_t i = static_cast<std::size_t>(y) * w + x;
+				cellSteep[i] = std::min(cellSteep[i], vertex.normal[2]);
+				cellTop[i] = std::max(cellTop[i], vertex.position[2]);
+			}
+			std::unordered_map<int64_t, std::array<float, 6>> best;
+			for (const auto& vertex : mesh.vertices) {
+				if (vertex.normal[2] < IMPACT_FLAT)
+					continue;
+				int32_t x, y;
+				if (!cellOf(vertex.position, x, y) || buried(vertex.position, true))
+					continue;
+				const Flow flow = flowAt(vertex.position[0], vertex.position[1]);
+				const float speed = std::sqrt(flow.vx * flow.vx + flow.vy * flow.vy);
+				// Upstream: against the flow, or every way round where the flow says little
+				float drop = 0.0f;
+				for (int32_t dy = -IMPACT_CELLS; dy <= IMPACT_CELLS; dy++) {
+					for (int32_t dx = -IMPACT_CELLS; dx <= IMPACT_CELLS; dx++) {
+						const int32_t nx = x + dx, ny = y + dy;
+						if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= h)
+							continue;
+						if (speed > 0.05f && (static_cast<float>(dx) * flow.vx + static_cast<float>(dy) * flow.vy) > 0.0f)
+							continue;  // Downstream
+						const std::size_t j = static_cast<std::size_t>(ny) * w + nx;
+						if (cellSteep[j] < IMPACT_STEEP)
+							drop = std::max(drop, cellTop[j] - vertex.position[2]);
+					}
+				}
+				if (drop < IMPACT_DROP)
+					continue;
+				const float strength = std::clamp(drop / (IMPACT_DROP * 4.0f), 0.35f, 1.0f);
+				const auto key = (static_cast<int64_t>(std::floor(vertex.position[0] / IMPACT_SPACING)) << 32) ^
+				                 static_cast<uint32_t>(static_cast<int32_t>(std::floor(vertex.position[1] / IMPACT_SPACING)));
+				auto [it, added] = best.try_emplace(key);
+				if (added || it->second[3] < strength)
+					it->second = { vertex.position[0], vertex.position[1], vertex.position[2], strength, 0.0f, 0.0f };
+			}
+			for (const auto& [key, impact] : best) {
+				impacts.push_back(impact);
+				const float n[3] = { 0.0f, 0.0f, 1.0f };
+				offer(impact.data(), n, impact[3], FallEmitterKind::Plunge, IMPACT_SPACING);
+			}
+			mesh.impacts = static_cast<uint32_t>(impacts.size());
 		}
 		for (const auto& [key, plunge] : plunges)
 			mesh.plunges.push_back(plunge);
@@ -1327,6 +1385,10 @@ namespace FluidFieldSim
 					}
 				}
 			}
+			for (const auto& impact : impacts) {
+				seams.push_back({ impact[0], impact[1], impact[2], 0.0f, 0.0f, 1.0f });
+				seamKinds.push_back(2);
+			}
 			mesh.seams = static_cast<uint32_t>(seams.size());
 			for (std::size_t i = 0; i < seams.size(); i++)
 				mesh.seamPoints.push_back({ seams[i][0], seams[i][1], seams[i][2], static_cast<float>(seamKinds[i]) });
@@ -1353,6 +1415,8 @@ namespace FluidFieldSim
 
 			// Spray and mist along the seams, where the water strikes the other piece (less where two cross)
 			for (std::size_t i = 0; i < seams.size(); i++) {
+				if (seamKinds[i] == 2)
+					continue;  // An impact: it threw its own
 				const auto& seam = seams[i];
 				float normal[3] = { seam[3], seam[4], seam[5] };
 				const float n = std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
@@ -1391,16 +1455,7 @@ namespace FluidFieldSim
 					volume[4 + k] = std::max(0.5f * (ref.max[k] - ref.min[k]), 16.0f);
 				}
 				volume[3] = strength;
-				mistVolumes.push_back(volume);
-				FallEmitter emitter{};
-				emitter.position[0] = volume[0];
-				emitter.position[1] = volume[1];
-				emitter.position[2] = ref.min[2];
-				emitter.normal[2] = 1.0f;
-				emitter.strength = strength;
-				emitter.speed = 120.0f;
-				emitter.kind = static_cast<float>(FallEmitterKind::Plunge);
-				surfaceEmitters.push_back(emitter);
+				mistVolumes.push_back(volume);  // D49: no emitters from vanilla's mist boxes (they threw spray out of nowhere)
 			}
 		}
 		for (const auto& [key, stream] : streams) {

@@ -100,7 +100,7 @@ struct FluidField : OverlayFeature
 		int SprayAmount = 120;               ///< Spray droplets alive per emitter at once (D31)
 		float SpraySize = 1.4f;              ///< Spray droplet width, world units
 		float SprayOpacity = 0.2f;           ///< How opaque each droplet is
-		int MistAmount = 2;                  ///< Mist puffs alive per emitter at once
+		int MistAmount = 0;                  ///< Mist puffs alive per emitter at once
 		float MistOpacity = 0.06f;           ///< How dense each mist puff is
 		float FallFog = 1.0f;                ///< How thick the waterfall fog is (D38; 0 off)
 		float FallFogHeight = 90.0f;         ///< World units the waterfall fog stands above the water where it is thickest

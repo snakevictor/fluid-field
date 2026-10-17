@@ -260,6 +260,7 @@ namespace FluidFieldSim
 			uint32_t culled = 0;                           ///< Source triangles dropped where another piece lies on them
 			std::vector<float> seamFoam;                   ///< Per flow cell, 0 to 1: foam where vanilla's pieces meet (D34)
 			uint32_t seams = 0;                            ///< Points found along the seams
+			uint32_t impacts = 0;                          ///< Where falling water lands (D49)
 			std::vector<FallPlunge> plunges;               ///< Where falling water meets the water below (D35)
 			std::vector<std::array<float, 4>> seamPoints;  ///< Position and kind (0: an open edge against another piece, 1: two pieces crossing), for the debug view
 			std::vector<std::array<float, 6>> waterLines;  ///< Where vanilla's pieces cross a water level, as segments, for the debug view
@@ -314,12 +315,17 @@ namespace FluidFieldSim
 		static constexpr float PLUNGE_WATER_SPACING = 40.0f;  ///< World units between the plunge's pushes on the simulated water
 		static constexpr float OBSTACLE_FOAM = 0.6f;          ///< Rock foam at least this much throws spray
 		static constexpr float OBSTACLE_SPACING = 28.0f;
+		static constexpr float IMPACT_FLAT = 0.7f;   ///< D49: a vertex at least this flat (upward normal) can be where water lands...
+		static constexpr float IMPACT_STEEP = 0.5f;  ///< ...with water this steep within IMPACT_CELLS upstream...
+		static constexpr int32_t IMPACT_CELLS = 2;
+		static constexpr float IMPACT_DROP = 30.0f;         ///< ...standing at least this far above it
+		static constexpr float IMPACT_SPACING = 24.0f;      ///< World units between impact points
 		static constexpr float FALL_VIEW_RANGE = 2500.0f;   ///< World units round the camera the fall debug views draw (D36)
 		static constexpr float SEAM_CROSSING_ANGLE = 0.9f;  ///< Pieces crossing with their faces closer than this (cosine) lie along each other: no seam shows (D36)
 		static constexpr float POOL_COVER = 2.0f;           ///< Water lying under a pool's surface by more than this is the pool's (D36)
 		static constexpr float POOL_BAND = 24.0f;           ///< D40: a pool's water is where vanilla's falling water lies at its level, within this...
 		static constexpr float POOL_SHALLOW = 160.0f;       ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
-		static constexpr float BURIED_MARGIN = 6.0f;        ///< Vanilla's meshes deeper than this under the captured rock and ground are buried (D37)
+		static constexpr float BURIED_MARGIN = 120.0f;      ///< As FallGround.hlsli BURIED (D49)
 		static constexpr float FOG_SPACING = 64.0f;         ///< World units between the falls' fog sources (D37)
 		static constexpr float FOG_RADIUS = 56.0f;          ///< World units round a source that it fogs
 		static constexpr float FOG_RATE = 2.5f;             ///< Fog made per second at a source's centre, in resting amounts
