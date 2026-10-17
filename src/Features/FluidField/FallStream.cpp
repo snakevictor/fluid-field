@@ -512,6 +512,10 @@ namespace FluidFieldSim
 							const float speed = result.speed[i];
 							if (!result.water[i] || speed < 1e-4f)
 								continue;
+							// D54: water that has come through a pool starts again from its level: a fall's speed
+							// does not carry past the pool it plunges into
+							if (a_input.cover.size() == count && a_input.cover[i] >= result.level[i] - POOL_HEAD_BAND)
+								continue;
 							float upstream;
 							if (sample(static_cast<float>(x) - result.vx[i] / speed, static_cast<float>(y) - result.vy[i] / speed, upstream))
 								result.head[i] = std::clamp(upstream - HEAD_LOSS * cell, result.head[i], result.level[i] + HEAD_MOST);

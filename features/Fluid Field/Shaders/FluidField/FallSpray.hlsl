@@ -104,11 +104,11 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	} else {
 		float3 v0;
 		if (kind == 0)
-			v0 = flowVelocity * (0.85 + 0.3 * r1) + spread * emitter.Speed * 0.05 + up * 20.0 * r2;  // Runs on off the drop
+			v0 = flowVelocity * (0.2 + 0.15 * r1) + spread * 25.0 + up * 15.0 * r2;  // D54: shed off the drop, falling close by the sheet, not flung out with it
 		else if (kind == 1)
 			v0 = (up * (0.4 + 0.8 * r2) + spread * (0.3 + 0.5 * r1)) * SpraySpeed * (0.6 + 0.6 * fast) + flat * emitter.Speed * 0.15;  // Thrown up and out
 		else
-			v0 = flowVelocity * 0.4 + (up * 0.8 + spread * 0.3) * min(max(emitter.Speed, 150.0), 400.0) * (0.12 + 0.25 * r2) * (0.6 + 0.4 * fast);  // Kicked up where it strikes, staying near the water
+			v0 = flowVelocity * 0.15 + (up * 0.8 + spread * 0.4) * min(max(emitter.Speed, 150.0), 400.0) * (0.12 + 0.25 * r2) * (0.6 + 0.4 * fast);  // D54: less carried on  // Kicked up where it strikes, staying near the water
 		position += v0 * age + float3(0, 0, -0.5 * Gravity * age * age);
 		motion = v0 + float3(0, 0, -Gravity * age);
 		size = SpraySize * (0.5 + 1.0 * r2);

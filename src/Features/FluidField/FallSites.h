@@ -228,6 +228,7 @@ namespace FluidFieldSim
 		std::unordered_set<const RE::BSGeometry*> translucentGeometry;
 		/** @brief The alpha properties switched to blending, with their own flags to restore. */
 		std::unordered_map<RE::NiAlphaProperty*, std::pair<RE::NiPointer<RE::NiAlphaProperty>, uint16_t>> blendedAlpha;
+		std::vector<RE::NiPointer<RE::BSGeometry>> borrowedAlpha;  ///< D54: lit surfaces given their own layers' alpha property, to give back
 		void RestoreAlpha();
 		std::unordered_set<std::string> loggedParts;  ///< Diagnostics: falling-water mesh parts already logged
 
@@ -300,7 +301,7 @@ namespace FluidFieldSim
 		static constexpr float PLUNGE_HEAD = 40.0f;           ///< Water that has fallen at least this far below its head plunges
 		static constexpr float PLUNGE_STEEP = 0.8f;           ///< Water this steep (upward normal) at a pool's level plunges whatever its head (D46)
 		static constexpr float PLUNGE_SPACING = 16.0f;        ///< World units between plunge emitters
-		static constexpr float PLUNGE_WATER_SPACING = 40.0f;  ///< World units between the plunge's pushes on the simulated water
+		static constexpr float PLUNGE_WATER_SPACING = 24.0f;  ///< World units between the plunge's pushes on the simulated water
 		static constexpr float OBSTACLE_FOAM = 0.6f;          ///< Rock foam at least this much throws spray
 		static constexpr float OBSTACLE_SPACING = 28.0f;
 		static constexpr float IMPACT_FLAT = 0.7f;   ///< D49: a vertex at least this flat (upward normal) can be where water lands...
@@ -323,8 +324,8 @@ namespace FluidFieldSim
 		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;  ///< World units round each point where the falls meet a pool that the water foams (D44, D47)
 		static constexpr float PLUNGE_FOAM_BAND = 40.0f;    ///< The falls' vertices this close to a pool's surface meet it (D47, D50)
 		static constexpr float FOG_PLUNGE_RADIUS = 180.0f;  ///< World units round each plunge that its fog spreads (D41)
-		static constexpr float PLUNGE_SPLASH = 220.0f;      ///< World units per second the plunge pushes the simulated water down at its strongest
-		static constexpr float PLUNGE_PULL = 0.35f;         ///< Fraction of the falling water's speed the water below is pulled along at
+		static constexpr float PLUNGE_SPLASH = 70.0f;       ///< World units per second the plunge pushes the simulated water down at its strongest
+		static constexpr float PLUNGE_PULL = 0.2f;          ///< Fraction of the falling water's speed the water below is pulled along at
 		static constexpr int FLOW_DILATE_CELLS = 6;         ///< Cells the flow is carried past the water's edge for the surface
 		static constexpr float FALL_SPEED = 600.0f;         ///< World units per second of drop counted into the travel time, so steep water streaks too
 		static constexpr float MEET_FOAM_HEIGHT = 20.0f;    ///< Water within this of a site's level (where it meets a body of water) foams

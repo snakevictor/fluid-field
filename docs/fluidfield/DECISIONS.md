@@ -1212,3 +1212,23 @@ Entry format:
     InvSrcAlpha blending), the one to borrow next. Vanilla's geometry
     stays (the thin, slow little falls are noted, not removed).
 -   References: D34, D37, D44, D52
+
+## D54: Softer rock cut, pools reset the head, least flow, closer spray, borrowed alpha
+
+-   Date: 2026-10-17
+-   Phase / spike: @Victor's review screenshots 539-558
+-   Decision: A vertex buried in rock counts at most 4 units under the line
+    (BURIED_SOFT), so on Bethesda's large triangles the cut stays near the
+    buried corner instead of hiding the water standing out of the rock
+    (540, 556). Water that comes through a pool restarts its head at the
+    pool's level (557: an apron under the big fall raced with its head).
+    The falls' texture moves at least 0.6 of free flow (the tops leaving a
+    pool showed still, unstretched water: 541, 543, 553-555). Spray shed
+    off drops keeps 0.2-0.35 of the water's motion and strikes 0.15, so it
+    falls by the sheet instead of fanning out (539). The plunge pushes the
+    shallow water less and more evenly (70 / 0.2 / every 24 units): the
+    40-unit pushes dented its surface below the falls' cut, showing dark
+    gaps along the line (558). The lit surface borrows its model's layers'
+    alpha property (0x10ED) to draw blended; it then draws invisible, so
+    Translucency defaults to 0 until that is understood.
+-   References: D37, D47, D49, D53

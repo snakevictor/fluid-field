@@ -219,6 +219,11 @@ namespace FluidFieldSim
 				original.first->alphaFlags = original.second;
 		}
 		blendedAlpha.clear();
+		for (auto& geometry : borrowedAlpha) {
+			if (geometry)
+				geometry->GetGeometryRuntimeData().alphaProperty = RE::NiPointer<RE::NiAlphaProperty>();
+		}
+		borrowedAlpha.clear();
 		translucentGeometry.clear();
 	}
 
@@ -1706,6 +1711,18 @@ namespace FluidFieldSim
 				auto* root = ref ? ref->Get3D() : nullptr;
 				if (!root)
 					continue;
+				// D54: the lit surface has no alpha property of its own; its model's layers blend SrcAlpha /
+				// InvSrcAlpha, and lend it theirs
+				RE::NiAlphaProperty* lend = nullptr;
+				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+					auto* alpha = a_geometry->GetGeometryRuntimeData().alphaProperty.get();
+					if (alpha && alpha->GetAlphaBlending() && !alpha->GetAlphaTesting() && alpha->GetSrcBlendMode() == RE::NiAlphaProperty::AlphaFunction::kSrcAlpha &&
+						alpha->GetDestBlendMode() == RE::NiAlphaProperty::AlphaFunction::kInvSrcAlpha) {
+						lend = alpha;
+						return RE::BSVisit::BSVisitControl::kStop;
+					}
+					return RE::BSVisit::BSVisitControl::kContinue;
+				});
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
 					// Only the water's own surfaces: the models also carry particle spray (no triangles of
 					// their own), which grounding and the streamlines would smear
@@ -1721,6 +1738,10 @@ namespace FluidFieldSim
 						alphaProperty->SetAlphaBlending(true);
 						alphaProperty->SetSrcBlendMode(RE::NiAlphaProperty::AlphaFunction::kSrcAlpha);
 						alphaProperty->SetDestBlendMode(RE::NiAlphaProperty::AlphaFunction::kInvSrcAlpha);
+						translucentGeometry.insert(a_geometry);
+					} else if (translucent && triShape && lit && netimmerse_cast<RE::BSLightingShaderProperty*>(lit) && !alphaProperty && lend) {
+						a_geometry->GetGeometryRuntimeData().alphaProperty = RE::NiPointer<RE::NiAlphaProperty>(lend);
+						borrowedAlpha.emplace_back(a_geometry);
 						translucentGeometry.insert(a_geometry);
 					}
 					// Diagnostics: what each part of a falling-water mesh is, once per model and part

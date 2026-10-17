@@ -78,6 +78,10 @@ namespace FallGround
 	static const float BURIED = 120.0;  // D49: only deeply buried water: the ground map sees overhangs from above, and the rock's depth hides the rest
 	/** D47: how far round a point the ground is looked at for its lowest (the map is a 16-unit top-down grid). */
 	static const float BURIED_REACH = 14.0;
+	/** D54: the most a buried vertex counts as buried, so a cut stays near its buried corner. */
+	static const float BURIED_SOFT = 4.0;
+	/** D54: the least speed falling water's texture moves at, as a fraction of free flow: where it leaves a pool it is already going. */
+	static const float LEAST_FLOW = 0.6;
 	/** D47: the falls are cut this far under the pools' surface, so the pool's water overlaps the cut. */
 	static const float POOL_CUT = 2.0;  // D49: under the pools the falls are hidden; the dense foam at the waterline covers the line
 
@@ -125,8 +129,10 @@ namespace FallGround
 		float pool, ground;
 		if (Pool(position.xy, pool))
 			distance = min(distance, position.z - (pool - POOL_CUT));
+		// D54: the rock's side is held near the line: Bethesda's triangles are large, and a vertex deep in the
+		// rock pulled the cut far across the triangle into water that stands out of it
 		if (LowestGround(position.xy, ground))
-			distance = min(distance, position.z - (ground - BURIED));
+			distance = min(distance, max(position.z - (ground - BURIED), -BURIED_SOFT));
 		return distance;
 	}
 
@@ -245,7 +251,7 @@ namespace FallGround
 			direction = lerp(level, downDirection, saturate(direction.z * 3.0));
 			direction = length(direction) > 0.3 ? normalize(direction) : downDirection;
 		}
-		const float speed = lerp(solvedSpeed, max(solvedSpeed, 1.0), steep * agree) * FlowSpeed;
+		const float speed = max(lerp(solvedSpeed, max(solvedSpeed, 1.0), steep * agree), LEAST_FLOW) * FlowSpeed;
 		// Gravity (D33): the speed gained from the drop below the head, along the course
 		const float drop = water > 0.0 ? max(head - a_position.z, 0.0) : 0.0;
 		const float gained = sqrt(speed * speed + 2.0 * Gravity * drop) - speed;

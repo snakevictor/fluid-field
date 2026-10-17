@@ -80,6 +80,7 @@ namespace FluidFieldSim
 		static constexpr int32_t EDGE_CELLS = 2;         ///< Cells over which the water fades in from its edge
 		static constexpr int32_t MEET_CELLS = 2;         ///< Cells of foam where the falls meet still water (where they come in and leave)
 		static constexpr float HEAD_LOSS = 0.35f;        ///< Height the water's head loses per world unit it runs (friction): a steep drop keeps its speed, a long run slows
+		static constexpr float POOL_HEAD_BAND = 4.0f;    ///< D54: water within this of a pool's surface over it is the pool's: its head is its level
 		static constexpr float HEAD_MOST = 900.0f;       ///< Most height a head stands above the surface
 		static constexpr uint32_t COURSE_SWEEPS = 6000;  ///< Most sweeps for the course potential (D34)
 		static constexpr float COURSE_FORWARD = 0.35f;   ///< Least speed along the course, as a fraction of free flow: the water never runs back
