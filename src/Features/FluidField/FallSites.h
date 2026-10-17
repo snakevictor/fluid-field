@@ -294,24 +294,26 @@ namespace FluidFieldSim
 		static constexpr float IMPACT_FLAT = 0.7f;   ///< D49: a vertex at least this flat (upward normal) can be where water lands...
 		static constexpr float IMPACT_STEEP = 0.5f;  ///< ...with water this steep within IMPACT_CELLS upstream...
 		static constexpr int32_t IMPACT_CELLS = 2;
-		static constexpr float IMPACT_DROP = 30.0f;            ///< ...standing at least this far above it
-		static constexpr float IMPACT_SPACING = 24.0f;         ///< World units between impact points
-		static constexpr float FALL_VIEW_RANGE = 2500.0f;      ///< World units round the camera the fall debug views draw (D36)
-		static constexpr float SEAM_CROSSING_ANGLE = 0.9f;     ///< Pieces crossing with their faces closer than this (cosine) lie along each other: no seam shows (D36)
-		static constexpr float POOL_COVER = 2.0f;              ///< Water lying under a pool's surface by more than this is the pool's (D36)
-		static constexpr float POOL_BAND = 24.0f;              ///< D40: a pool's water is where vanilla's falling water lies at its level, within this...
-		static constexpr float TOP_POOL_CUT = 24.0f;           ///< D50: how much deeper the falls are cut under the pool they come from
-		static constexpr float VANILLA_SPAWN_SPACING = 48.0f;  ///< D50: world units between spray emitters over a vanilla splash or skirt
-		static constexpr float POOL_SHALLOW = 160.0f;          ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
-		static constexpr float BURIED_MARGIN = 120.0f;         ///< As FallGround.hlsli BURIED (D49)
-		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;     ///< World units round each point where the falls meet a pool that the water foams (D44, D47)
-		static constexpr float PLUNGE_FOAM_BAND = 40.0f;       ///< The falls' vertices this close to a pool's surface meet it (D47, D50)
-		static constexpr float FOG_PLUNGE_RADIUS = 180.0f;     ///< World units round each plunge that its fog spreads (D41)
-		static constexpr float PLUNGE_SPLASH = 220.0f;         ///< World units per second the plunge pushes the simulated water down at its strongest
-		static constexpr float PLUNGE_PULL = 0.35f;            ///< Fraction of the falling water's speed the water below is pulled along at
-		static constexpr int FLOW_DILATE_CELLS = 6;            ///< Cells the flow is carried past the water's edge for the surface
-		static constexpr float FALL_SPEED = 600.0f;            ///< World units per second of drop counted into the travel time, so steep water streaks too
-		static constexpr float MEET_FOAM_HEIGHT = 20.0f;       ///< Water within this of a site's level (where it meets a body of water) foams
+		static constexpr float IMPACT_DROP = 30.0f;         ///< ...standing at least this far above it
+		static constexpr float IMPACT_SPACING = 24.0f;      ///< World units between impact points
+		static constexpr float ROCK_HIT_MARGIN = 4.0f;      ///< D52: an edge of the falls this far under the rock is inside it...
+		static constexpr float ROCK_HIT_DEPTH = 12.0f;      ///< ...and one end at least this far in, for a rock hit
+		static constexpr float ROCK_HIT_SPACING = 20.0f;    ///< World units between rock-hit emitters
+		static constexpr float FALL_VIEW_RANGE = 2500.0f;   ///< World units round the camera the fall debug views draw (D36)
+		static constexpr float SEAM_CROSSING_ANGLE = 0.9f;  ///< Pieces crossing with their faces closer than this (cosine) lie along each other: no seam shows (D36)
+		static constexpr float POOL_COVER = 2.0f;           ///< Water lying under a pool's surface by more than this is the pool's (D36)
+		static constexpr float POOL_BAND = 24.0f;           ///< D40: a pool's water is where vanilla's falling water lies at its level, within this...
+		static constexpr float TOP_POOL_CUT = 24.0f;        ///< D50: how much deeper the falls are cut under the pool they come from
+		static constexpr float POOL_SHALLOW = 160.0f;       ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
+		static constexpr float BURIED_MARGIN = 120.0f;      ///< As FallGround.hlsli BURIED (D49)
+		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;  ///< World units round each point where the falls meet a pool that the water foams (D44, D47)
+		static constexpr float PLUNGE_FOAM_BAND = 40.0f;    ///< The falls' vertices this close to a pool's surface meet it (D47, D50)
+		static constexpr float FOG_PLUNGE_RADIUS = 180.0f;  ///< World units round each plunge that its fog spreads (D41)
+		static constexpr float PLUNGE_SPLASH = 220.0f;      ///< World units per second the plunge pushes the simulated water down at its strongest
+		static constexpr float PLUNGE_PULL = 0.35f;         ///< Fraction of the falling water's speed the water below is pulled along at
+		static constexpr int FLOW_DILATE_CELLS = 6;         ///< Cells the flow is carried past the water's edge for the surface
+		static constexpr float FALL_SPEED = 600.0f;         ///< World units per second of drop counted into the travel time, so steep water streaks too
+		static constexpr float MEET_FOAM_HEIGHT = 20.0f;    ///< Water within this of a site's level (where it meets a body of water) foams
 		std::vector<std::future<SurfaceMesh>> retiredMeshes;
 		/** @brief Gathers every site's surface into one list. */
 		void RefreshSurfaces();

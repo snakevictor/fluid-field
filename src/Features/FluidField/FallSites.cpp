@@ -323,6 +323,8 @@ namespace FluidFieldSim
 		{
 			const auto cw = static_cast<int32_t>(input.width);
 			const auto ch = static_cast<int32_t>(input.height);
+			std::vector<float> levels(input.surface.size(), NO_SURFACE);
+			std::vector<std::size_t> open;
 			for (int32_t y = 0; y < ch; y++) {
 				for (int32_t x = 0; x < cw; x++) {
 					const std::size_t i = static_cast<std::size_t>(y) * cw + x;
@@ -333,6 +335,7 @@ namespace FluidFieldSim
 							WaterSurfaces::Source::None)
 							level = height;
 					}
+					levels[i] = level;
 					const float bed = input.bed[i];
 					const float mesh = input.surface[i];
 					if (level <= NO_SURFACE || bed <= FallCapture::NONE || bed >= level - POOL_COVER)
@@ -340,8 +343,34 @@ namespace FluidFieldSim
 					const bool meshAtLevel = mesh > NO_SURFACE && mesh >= level - POOL_BAND;
 					const bool bottomPool = level <= a_site.bottom + POOL_BAND;  // D50: the pool the falls end in: nothing lower to mistake it for
 					const bool shallowBed = bed >= level - POOL_SHALLOW;
-					if (meshAtLevel || shallowBed || bottomPool)
+					if (meshAtLevel || shallowBed || bottomPool) {
 						input.cover[i] = level;
+						open.push_back(i);
+					}
+				}
+			}
+			// D52: from there through the basin: cells at the same level with the rock under it, where no
+			// falls run below the surface (a falls' face under a pool's plane stops the flood), so a deep
+			// middle tier's water is found too
+			while (!open.empty()) {
+				const std::size_t i = open.back();
+				open.pop_back();
+				const auto x = static_cast<int32_t>(i % cw), y = static_cast<int32_t>(i / cw);
+				const float level = input.cover[i];
+				static constexpr int32_t DX[4] = { 1, -1, 0, 0 }, DY[4] = { 0, 0, 1, -1 };
+				for (int k = 0; k < 4; k++) {
+					const int32_t nx = x + DX[k], ny = y + DY[k];
+					if (nx < 0 || ny < 0 || nx >= cw || ny >= ch)
+						continue;
+					const std::size_t j = static_cast<std::size_t>(ny) * cw + nx;
+					if (input.cover[j] > NO_SURFACE || std::abs(levels[j] - level) > 1.0f)
+						continue;
+					const float bed = input.bed[j];
+					const float mesh = input.surface[j];
+					if (bed <= FallCapture::NONE || bed >= level - POOL_COVER || (mesh > NO_SURFACE && mesh < level - POOL_BAND))
+						continue;
+					input.cover[j] = level;
+					open.push_back(j);
 				}
 			}
 			for (std::size_t i = 0; i < input.surface.size(); i++)
@@ -991,7 +1020,7 @@ namespace FluidFieldSim
 						continue;
 					const float p[3] = { a_originX + static_cast<float>(x) * cell, a_originY + static_cast<float>(y) * cell, here };
 					const float n[3] = { 0.0f, 0.0f, 1.0f };
-					offer(p, n, std::clamp(drop / (LIP_DROP * 6.0f), 0.1f, 0.4f), FallEmitterKind::Lip, EMITTER_SPACING);  // D51: a drop only sheds a little; collisions throw the spray
+					(void)p;  // D52: drops throw no spray (collisions do)
 				}
 			}
 		}
@@ -1097,15 +1126,60 @@ namespace FluidFieldSim
 				if (added || it->second[3] < strength)
 					it->second = { vertex.position[0], vertex.position[1], vertex.position[2], strength, 0.0f, 0.0f };
 			}
-			for (const auto& [key, impact] : best) {
-				impacts.push_back(impact);
-				const float n[3] = { 0.0f, 0.0f, 1.0f };
-				offer(impact.data(), n, impact[3], FallEmitterKind::Plunge, IMPACT_SPACING);
-			}
+			for (const auto& [key, impact] : best)
+				impacts.push_back(impact);  // D52: foam only; the spray comes from rock hits and seams
 			mesh.impacts = static_cast<uint32_t>(impacts.size());
 		}
 		for (const auto& [key, plunge] : plunges)
 			mesh.plunges.push_back(plunge);
+
+		// D52: rock hits, where the falls strike something that is not water: an edge of vanilla's falls
+		// that runs from above the captured rock into it. Spray thrown by the water's speed there, foam round it
+		std::vector<std::array<float, 6>> rockHits;
+		{
+			const auto bedAt = [&](float a_x, float a_y, float& a_bed) {
+				const auto x = static_cast<int32_t>(std::lround((a_x - a_originX) / cell));
+				const auto y = static_cast<int32_t>(std::lround((a_y - a_originY) / cell));
+				if (x < 0 || y < 0 || x >= w || y >= h || a_flow.bed.size() != static_cast<std::size_t>(w) * h)
+					return false;
+				a_bed = a_flow.bed[static_cast<std::size_t>(y) * w + x];
+				return a_bed > FallCapture::NONE;
+			};
+			std::unordered_map<int64_t, std::array<float, 6>> best;
+			for (const auto& triangle : a_sources) {
+				for (int k = 0; k < 3; k++) {
+					const float* a = triangle.position[k];
+					const float* b = triangle.position[(k + 1) % 3];
+					float bedA, bedB;
+					if (!bedAt(a[0], a[1], bedA) || !bedAt(b[0], b[1], bedB))
+						continue;
+					const float above = a[2] - bedA, belowB = b[2] - bedB;
+					// One end on or above the rock, the other inside it: the crossing is where the water hits
+					const bool aOut = above > -ROCK_HIT_MARGIN, bOut = belowB > -ROCK_HIT_MARGIN;
+					if (aOut == bOut || std::min(above, belowB) > -ROCK_HIT_DEPTH)
+						continue;
+					const float s = std::clamp(above / (above - belowB), 0.0f, 1.0f);
+					float p[3];
+					for (int c = 0; c < 3; c++)
+						p[c] = a[c] + (b[c] - a[c]) * s;
+					if (buried(p, true))
+						continue;
+					const Flow flow = flowAt(p[0], p[1]);
+					const float fallen = std::max(flow.head - p[2], 0.0f);
+					const float strength = std::clamp(0.4f + fallen / 200.0f, 0.4f, 1.0f);
+					const auto key = (static_cast<int64_t>(std::floor(p[0] / ROCK_HIT_SPACING)) << 32) ^
+					                 static_cast<uint32_t>(static_cast<int32_t>(std::floor(p[1] / ROCK_HIT_SPACING))) ^ (static_cast<int64_t>(std::floor(p[2] / ROCK_HIT_SPACING)) << 48);
+					auto [it, added] = best.try_emplace(key);
+					if (added || it->second[3] < strength)
+						it->second = { p[0], p[1], p[2], strength, triangle.normal[k][0] + triangle.normal[(k + 1) % 3][0], triangle.normal[k][1] + triangle.normal[(k + 1) % 3][1] };
+				}
+			}
+			for (const auto& [key, hit] : best) {
+				rockHits.push_back(hit);
+				const float n[3] = { 0.0f, 0.0f, 1.0f };
+				offer(hit.data(), n, hit[3], FallEmitterKind::Plunge, ROCK_HIT_SPACING);
+			}
+		}
 
 		// Where vanilla's pieces cross each water level, for the debug view (D36)
 		for (const auto& triangle : a_sources) {
@@ -1369,6 +1443,10 @@ namespace FluidFieldSim
 				seams.push_back({ impact[0], impact[1], impact[2], 0.0f, 0.0f, 1.0f });
 				seamKinds.push_back(2);
 			}
+			for (const auto& hit : rockHits) {
+				seams.push_back({ hit[0], hit[1], hit[2], 0.0f, 0.0f, 1.0f });
+				seamKinds.push_back(2);  // Foam round it; it threw its own spray
+			}
 			mesh.seams = static_cast<uint32_t>(seams.size());
 			for (std::size_t i = 0; i < seams.size(); i++)
 				mesh.seamPoints.push_back({ seams[i][0], seams[i][1], seams[i][2], static_cast<float>(seamKinds[i]) });
@@ -1405,7 +1483,7 @@ namespace FluidFieldSim
 				if (n <= 1e-6f)
 					normal[2] = 1.0f;
 				const float p[3] = { seam[0], seam[1], seam[2] };
-				offer(p, normal, seamKinds[i] == 0 ? 0.5f : 0.3f, FallEmitterKind::Strike, EMITTER_SPACING);  // D48: a light kick
+				offer(p, normal, seamKinds[i] == 0 ? 1.0f : 0.7f, FallEmitterKind::Strike, EMITTER_SPACING);  // D52: (b) the falls' pieces clashing
 			}
 		}
 		mesh.emitters.reserve(chosen.size());
@@ -1419,32 +1497,6 @@ namespace FluidFieldSim
 		surfaceVertices.clear();
 		surfaceEmitters.clear();
 		surfacePlunges.clear();
-		// D38: vanilla's own waterfall mist effects drive the falls' fog and mist too: their bounds as fog
-		// volumes, and a mist emitter at each one's foot
-		// D50: vanilla's placed splash and skirt effects mark where the water strikes: spray from their foot
-		for (const auto& site : sites) {
-			for (const uint32_t member : site.members) {
-				const auto& ref = refs[member];
-				if (ref.cls != FxClass::Splash && ref.cls != FxClass::Skirt)
-					continue;
-				const float spanX = ref.max[0] - ref.min[0], spanY = ref.max[1] - ref.min[1];
-				const int nx = std::clamp(static_cast<int>(spanX / VANILLA_SPAWN_SPACING), 1, 8);
-				const int ny = std::clamp(static_cast<int>(spanY / VANILLA_SPAWN_SPACING), 1, 8);
-				for (int iy = 0; iy < ny; iy++) {
-					for (int ix = 0; ix < nx; ix++) {
-						FallEmitter emitter{};
-						emitter.position[0] = ref.min[0] + spanX * (static_cast<float>(ix) + 0.5f) / static_cast<float>(nx);
-						emitter.position[1] = ref.min[1] + spanY * (static_cast<float>(iy) + 0.5f) / static_cast<float>(ny);
-						emitter.position[2] = ref.min[2] + 0.2f * (ref.max[2] - ref.min[2]);
-						emitter.normal[2] = 1.0f;
-						emitter.strength = ref.cls == FxClass::Splash ? 0.8f : 0.5f;
-						emitter.speed = 450.0f;
-						emitter.kind = static_cast<float>(FallEmitterKind::Plunge);
-						surfaceEmitters.push_back(emitter);
-					}
-				}
-			}
-		}
 		for (const auto& [key, stream] : streams) {
 			if (!stream.meshReady || stream.vertices.empty())
 				continue;
@@ -2014,7 +2066,7 @@ namespace FluidFieldSim
 			if (level <= FallCapture::NONE || std::abs(vertex.position[2] - level) > PLUNGE_FOAM_BAND)
 				continue;
 			const float steep = std::clamp((1.0f - vertex.normal[2]) * 2.5f, 0.0f, 1.0f);
-			const float strength = std::clamp(0.45f + 0.55f * std::max(steep, std::clamp(vertex.speed, 0.0f, 1.0f)), 0.0f, 1.0f);
+			const float strength = std::clamp(0.85f + 0.15f * std::max(steep, std::clamp(vertex.speed, 0.0f, 1.0f)), 0.0f, 1.0f);  // D52: the rim is solid for every fall
 			for (int32_t y = cy - reach; y <= cy + reach; y++) {
 				for (int32_t x = cx - reach; x <= cx + reach; x++) {
 					if (x < 0 || y < 0 || x >= n || y >= n)

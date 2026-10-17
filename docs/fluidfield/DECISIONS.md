@@ -1162,3 +1162,23 @@ Entry format:
     not from every lip. Vanilla's splash and skirt meshes stay hidden; only
     their positions are used (D50).
 -   References: D38, D44, D49, D50
+
+## D52: Middle-tier pools flooded in; spray from rock hits and seams; solid rim for every fall
+
+-   Date: 2026-10-17
+-   Phase / spike: @Victor's review screenshots 523-524
+-   Decision: A deep middle tier failed every pool test (the falls above it
+    stand high over its level, its bed is deep, and it is not the lowest
+    pool), so its falls were not cut under the water. Pools now flood from
+    the confirmed cells through the basin: neighbouring cells at the same
+    engine water level with the rock under it, stopping where falls run
+    below the surface (a falls' face under a pool's plane stops the flood).
+    Spray comes only from (a) rock hits, where an edge of vanilla's falls
+    runs from on the rock to 12+ units inside it (the crossing is where the
+    water strikes; strength by the height fallen), (b) seams, the falls'
+    pieces clashing, at full strength again, and the plunges into the
+    pools. Drops, impacts (foam only now) and vanilla's splash and skirt
+    positions no longer throw spray. The plunge foam rim is strength 0.85+
+    for every fall (slow falls never reached the rim before, leaving a dark
+    slit).
+-   References: D40, D49, D50, D51
