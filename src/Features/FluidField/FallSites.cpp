@@ -1042,8 +1042,10 @@ namespace FluidFieldSim
 			}
 			const bool atLevel = std::abs(vertex.position[2] - nearestLevel) < PLUNGE_BAND;
 			const float fallen = flow.head - vertex.position[2];
-			if (atLevel && fallen > PLUNGE_HEAD) {
-				const float strength = std::clamp(fallen / (PLUNGE_HEAD * 4.0f), 0.25f, 1.0f);
+			// D46: or steep water reaching the level (where the solve is slow, its head says little)
+			const bool steepIn = vertex.normal[2] < PLUNGE_STEEP;
+			if (atLevel && (fallen > PLUNGE_HEAD || steepIn)) {
+				const float strength = std::clamp(std::max(fallen / (PLUNGE_HEAD * 4.0f), steepIn ? 0.6f : 0.0f), 0.25f, 1.0f);
 				offer(vertex.position, vertex.normal, strength, FallEmitterKind::Plunge, PLUNGE_SPACING);
 				const auto key = (static_cast<int64_t>(std::floor(vertex.position[0] / PLUNGE_WATER_SPACING)) << 32) ^
 				                 static_cast<uint32_t>(static_cast<int32_t>(std::floor(vertex.position[1] / PLUNGE_WATER_SPACING)));

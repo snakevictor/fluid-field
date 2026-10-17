@@ -1505,8 +1505,16 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		if defined(FLUID_FIELD)
 	[branch] if (fallFlowOn)
 	{
-		rawBaseColor = lerp(rawBaseColor, TexColorSampler.SampleBias(SampColorSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB);
-		normalColor = lerp(normalColor, TexNormalSampler.SampleBias(SampNormalSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB);
+		// D46: the two phases blended keeping the texture's contrast: a plain cross-fade averages them toward
+		// the texture's mean and washes the streaks out mid-blend. Each blend is scaled back out from the
+		// mean (the smallest mip) by 1 / sqrt(wA^2 + wB^2), the variance-preserving blend
+		const float contrast = rsqrt(max((1.0 - fallFlow.blendB) * (1.0 - fallFlow.blendB) + fallFlow.blendB * fallFlow.blendB, 0.25));
+		const float4 colorMean = TexColorSampler.SampleLevel(SampColorSampler, fallFlow.uvA, 12.0);
+		const float4 normalMean = TexNormalSampler.SampleLevel(SampNormalSampler, fallFlow.uvA, 12.0);
+		rawBaseColor = colorMean + (lerp(rawBaseColor, TexColorSampler.SampleBias(SampColorSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB) - colorMean) * contrast;
+		normalColor = normalMean + (lerp(normalColor, TexNormalSampler.SampleBias(SampNormalSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB) - normalMean) * contrast;
+		rawBaseColor = saturate(rawBaseColor);
+		normalColor = saturate(normalColor);
 		[flatten] if (fallFlow.strength < 1.0)
 		{
 			rawBaseColor = lerp(TexColorSampler.SampleBias(SampColorSampler, fallUvVanilla, SharedData::MipBias), rawBaseColor, fallFlow.strength);

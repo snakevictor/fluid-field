@@ -1043,3 +1043,17 @@ Entry format:
     bed shallow under it), and plunges are found against that cover as well
     as the paired levels.
 -   References: D36, D40, D44
+
+## D46: Contrast-preserving flowmap blend; plunges where steep water meets a pool
+
+-   Date: 2026-10-16
+-   Decision: The flowmap's two phases were cross-faded linearly, which
+    averages the texture toward its mean mid-blend: the falls looked flat
+    and milky next to vanilla (A/B at the same view). The lit falls now use
+    the variance-preserving blend: mean (the texture's smallest mip) plus the
+    linear blend's offset from it times 1/sqrt(wA^2 + wB^2), for colour and
+    normal alike; contrast matches vanilla in captures. Plunges are also
+    found where steep water (upward normal under 0.8) reaches a pool's
+    level, whatever its head: on a slow site the head barely grows, and its
+    plunges went unfoamed (site #2: 472 to 712 plunge emitters).
+-   References: D32, D35, D44

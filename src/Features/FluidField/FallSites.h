@@ -309,6 +309,7 @@ namespace FluidFieldSim
 		static constexpr float LIP_DROP = 40.0f;              ///< The surface falling this far within LIP_CELLS is a drop
 		static constexpr float PLUNGE_BAND = 14.0f;           ///< World units round a lower water level where falling water plunges
 		static constexpr float PLUNGE_HEAD = 40.0f;           ///< Water that has fallen at least this far below its head plunges
+		static constexpr float PLUNGE_STEEP = 0.8f;           ///< Water this steep (upward normal) at a pool's level plunges whatever its head (D46)
 		static constexpr float PLUNGE_SPACING = 16.0f;        ///< World units between plunge emitters
 		static constexpr float PLUNGE_WATER_SPACING = 40.0f;  ///< World units between the plunge's pushes on the simulated water
 		static constexpr float OBSTACLE_FOAM = 0.6f;          ///< Rock foam at least this much throws spray
