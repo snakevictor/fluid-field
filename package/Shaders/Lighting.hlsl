@@ -1510,9 +1510,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// mean (the smallest mip) by 1 / sqrt(wA^2 + wB^2), the variance-preserving blend
 		const float contrast = rsqrt(max((1.0 - fallFlow.blendB) * (1.0 - fallFlow.blendB) + fallFlow.blendB * fallFlow.blendB, 0.25));
 		const float4 colorMean = TexColorSampler.SampleLevel(SampColorSampler, fallFlow.uvA, 12.0);
-		const float4 normalMean = TexNormalSampler.SampleLevel(SampNormalSampler, fallFlow.uvA, 12.0);
 		rawBaseColor = colorMean + (lerp(rawBaseColor, TexColorSampler.SampleBias(SampColorSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB) - colorMean) * contrast;
-		normalColor = normalMean + (lerp(normalColor, TexNormalSampler.SampleBias(SampNormalSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB) - normalMean) * contrast;
+		normalColor = lerp(normalColor, TexNormalSampler.SampleBias(SampNormalSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB);  // D47: plain: boosted normals sparkled harshly
 		rawBaseColor = saturate(rawBaseColor);
 		normalColor = saturate(normalColor);
 		[flatten] if (fallFlow.strength < 1.0)

@@ -1057,3 +1057,22 @@ Entry format:
     level, whatever its head: on a slow site the head barely grows, and its
     plunges went unfoamed (site #2: 472 to 712 plunge emitters).
 -   References: D32, D35, D44
+
+## D47: No gaps at cliff edges; plunge foam along the whole intersection; spray by water speed; wider seam foam
+
+-   Date: 2026-10-16
+-   Phase / spike: @Victor's review screenshots 456-462
+-   Decision: Gaps: the buried cut used the ground map at the pixel, but the
+    map is 2.5D at 16 units, so water running down a cliff face lay under
+    the cliff top's cell and was cut. It now cuts only water more than 30
+    units under the lowest ground within 14 units, and 8 units under a
+    pool's surface (the pool's water overlaps the cut, no slit). Plunge foam
+    covers the whole intersection: every vertex of the falls' surface within
+    20 units of the pools' surface foams the water 64 units round it (0.45
+    to 1 by steepness and speed), not only plunge emitters. Seams foam 44
+    units round, solid along the seam. Spray follows the speed of the water
+    that throws it (full at 700 units/s): slow water throws 15% as much,
+    fast water all of it, up to twice as hard, twice as big and denser; 240
+    per emitter. The flowmap's contrast boost applies to colour only (boosted
+    normals sparkled harshly).
+-   References: D36, D44, D45, D46

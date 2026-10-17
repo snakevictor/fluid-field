@@ -99,7 +99,28 @@ namespace FallGround
 	}
 
 	/** D37: falling water this far under the captured rock and ground is buried in it. */
-	static const float BURIED = 6.0;
+	static const float BURIED = 30.0;
+	/** D47: how far round a point the ground is looked at for its lowest (the map is a 16-unit top-down grid). */
+	static const float BURIED_REACH = 14.0;
+	/** D47: the falls are cut this far under the pools' surface, so the pool's water overlaps the cut. */
+	static const float POOL_CUT = 8.0;
+
+	/** D47: the lowest captured ground round a world position: at a cliff edge, the cliff foot's, not its top's. */
+	bool LowestGround(float2 a_position, out float a_height)
+	{
+		float h;
+		if (!Height(a_position, a_height))
+			return false;
+		[unroll] for (int i = 0; i < 4; i++)
+		{
+			const float2 offset = float2(i == 0 ? BURIED_REACH : i == 1 ? -BURIED_REACH :
+																		  0.0,
+				i == 2 ? BURIED_REACH : i == 3 ? -BURIED_REACH :
+												 0.0);
+			a_height = Height(a_position + offset, h) ? min(a_height, h) : a_height;
+		}
+		return true;
+	}
 
 	/** Whether falling water at a world position runs on under the pools or into the rock and ground, where it is not drawn (D36, D37). */
 	bool Buried(float3 a_position)
@@ -107,9 +128,9 @@ namespace FallGround
 		if (!HideUnderwater)
 			return false;
 		float pool, ground;
-		if (Pool(a_position.xy, pool) && a_position.z < pool - 1.0)
+		if (Pool(a_position.xy, pool) && a_position.z < pool - POOL_CUT)
 			return true;
-		return Height(a_position.xy, ground) && a_position.z < ground - BURIED;
+		return LowestGround(a_position.xy, ground) && a_position.z < ground - BURIED;
 	}
 
 	/**
@@ -127,8 +148,8 @@ namespace FallGround
 		float distance = 1.0e6;
 		float pool, ground;
 		if (Pool(position.xy, pool))
-			distance = min(distance, position.z - (pool - 1.0));
-		if (Height(position.xy, ground))
+			distance = min(distance, position.z - (pool - POOL_CUT));
+		if (LowestGround(position.xy, ground))
 			distance = min(distance, position.z - (ground - BURIED));
 		return distance;
 	}

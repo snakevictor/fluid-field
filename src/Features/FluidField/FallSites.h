@@ -304,7 +304,7 @@ namespace FluidFieldSim
 		static constexpr float EMITTER_FOAM = 0.55f;          ///< Foam at least this much throws spray
 		static constexpr float SEAM_STEP = 10.0f;             ///< World units between points tested along a piece's open edges (D34)
 		static constexpr float SEAM_REACH = 20.0f;            ///< An open edge this close to another piece is a seam
-		static constexpr float SEAM_FOAM_RADIUS = 28.0f;      ///< World units round a seam that foam
+		static constexpr float SEAM_FOAM_RADIUS = 44.0f;      ///< World units round a seam that foam (D47: wider, so the seam is covered)
 		static constexpr float LIP_CELLS = 2.0f;              ///< Flow cells downstream the surface is looked at for a drop (D35)
 		static constexpr float LIP_DROP = 40.0f;              ///< The surface falling this far within LIP_CELLS is a drop
 		static constexpr float PLUNGE_BAND = 14.0f;           ///< World units round a lower water level where falling water plunges
@@ -324,7 +324,8 @@ namespace FluidFieldSim
 		static constexpr float FOG_RADIUS = 56.0f;          ///< World units round a source that it fogs
 		static constexpr float FOG_RATE = 2.5f;             ///< Fog made per second at a source's centre, in resting amounts
 		static constexpr float FOG_SOURCE_RADIUS = 70.0f;   ///< World units round each seam point that its fog spreads (D44)
-		static constexpr float PLUNGE_FOAM_RADIUS = 40.0f;  ///< World units round each plunge point the water below foams (D44)
+		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;  ///< World units round each point where the falls meet a pool that the water foams (D44, D47)
+		static constexpr float PLUNGE_FOAM_BAND = 20.0f;    ///< The falls' vertices this close to a pool's surface meet it (D47)
 		static constexpr float FOG_PLUNGE_RADIUS = 180.0f;  ///< World units round each plunge that its fog spreads (D41)
 		static constexpr float PLUNGE_SPLASH = 220.0f;      ///< World units per second the plunge pushes the simulated water down at its strongest
 		static constexpr float PLUNGE_PULL = 0.35f;         ///< Fraction of the falling water's speed the water below is pulled along at

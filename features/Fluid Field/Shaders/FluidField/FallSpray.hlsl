@@ -64,6 +64,9 @@ float Hash(uint a_value)
 	return float(a_value & 0xFFFFFF) / 16777216.0;
 }
 
+/** D47: water this fast (world units per second) throws spray at full rate. */
+static const float FAST_WATER = 700.0;
+
 struct VSOutput
 {
 	float4 Position: SV_POSITION;
@@ -95,7 +98,10 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	const float r0 = Hash(born + 1u), r1 = Hash(born + 2u), r2 = Hash(born + 3u), r3 = Hash(born + 4u);
 
 	// Weaker emitters throw less often
-	const bool active = r3 < emitter.Strength;
+	// D47: the faster the water that throws it, the more spray, thrown harder, bigger and denser: slow
+	// water barely throws any, fast water throws it all
+	const float fast = saturate(emitter.Speed / FAST_WATER);
+	const bool active = r3 < emitter.Strength * (0.15 + 0.85 * fast);
 	const uint kind = uint(round(emitter.Kind));
 
 	// A frame across the surface, for the random spread
@@ -129,13 +135,13 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 		if (kind == 0)
 			v0 = flowVelocity * (0.85 + 0.3 * r1) + spread * emitter.Speed * 0.05 + up * 20.0 * r2;  // Runs on off the drop
 		else if (kind == 1)
-			v0 = up * SpraySpeed * (0.4 + 1.0 * r2) * emitter.Strength + spread * SpraySpeed * (0.2 + 0.5 * r1) + flat * emitter.Speed * 0.2;  // Thrown up and out
+			v0 = (up * (0.4 + 1.0 * r2) + spread * (0.2 + 0.5 * r1)) * SpraySpeed * (0.5 + 1.5 * fast) + flat * emitter.Speed * 0.2;  // Thrown up and out
 		else
-			v0 = flowVelocity * 0.4 + (up * 0.8 + spread * 0.6) * max(emitter.Speed, 150.0) * (0.25 + 0.4 * r2);  // Kicked up where it strikes
+			v0 = flowVelocity * 0.4 + (up * 0.8 + spread * 0.6) * max(emitter.Speed, 150.0) * (0.25 + 0.6 * r2) * (0.6 + 0.8 * fast);  // Kicked up where it strikes
 		position += v0 * age + float3(0, 0, -0.5 * Gravity * age * age);
 		motion = v0 + float3(0, 0, -Gravity * age);
-		size = SpraySize * (0.5 + 1.0 * r2);
-		alpha = SprayOpacity * smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.55, 1.0, t));
+		size = SpraySize * (0.5 + 1.0 * r2) * (1.0 + 1.2 * fast);
+		alpha = SprayOpacity * (0.6 + 1.4 * fast) * smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.55, 1.0, t));
 	}
 
 	VSOutput output;

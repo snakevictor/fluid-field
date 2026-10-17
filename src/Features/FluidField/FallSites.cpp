@@ -1343,7 +1343,8 @@ namespace FluidFieldSim
 							continue;
 						const float ox = a_originX + (static_cast<float>(x) + 0.5f) * cell - seam[0];
 						const float oy = a_originY + (static_cast<float>(y) + 0.5f) * cell - seam[1];
-						const float foam = std::clamp(1.0f - std::sqrt(ox * ox + oy * oy) / SEAM_FOAM_RADIUS, 0.0f, 1.0f);
+						const float falloff = std::clamp(1.0f - std::sqrt(ox * ox + oy * oy) / SEAM_FOAM_RADIUS, 0.0f, 1.0f);
+						const float foam = std::min(falloff * 1.8f, 1.0f);  // Solid along the seam (D47)
 						float& value = mesh.seamFoam[static_cast<std::size_t>(y) * w + x];
 						value = std::max(value, foam);
 					}
@@ -2058,24 +2059,38 @@ namespace FluidFieldSim
 
 	void FallSites::BuildPlungeMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
 	{
-		// D44: where the falls plunge into the water below, along their whole width: the water there
-		// foams, and the simulated flow carries the foam off downstream
+		// D44, D47: where the falls meet the water below, along their whole intersection with it: every
+		// vertex of the falls' surface lying at the pools' surface foams the water round it (steeper and
+		// faster water more), and the simulated flow carries the foam off downstream
 		a_field.assign(static_cast<std::size_t>(a_size) * a_size, 0.0f);
+		std::vector<float> pools;
+		BuildPoolMap(a_originX, a_originY, a_cell, a_size, pools);
 		const auto reach = static_cast<int32_t>(std::ceil(PLUNGE_FOAM_RADIUS / a_cell));
-		for (const auto& emitter : surfaceEmitters) {
-			if (static_cast<FallEmitterKind>(static_cast<uint32_t>(emitter.kind)) != FallEmitterKind::Plunge)
+		const auto n = static_cast<int32_t>(a_size);
+		for (const auto& vertex : surfaceVertices) {
+			const auto cx = static_cast<int32_t>(std::lround((vertex.position[0] - a_originX) / a_cell));
+			const auto cy = static_cast<int32_t>(std::lround((vertex.position[1] - a_originY) / a_cell));
+			if (cx < 1 || cy < 1 || cx >= n - 1 || cy >= n - 1)
 				continue;
-			const auto cx = static_cast<int32_t>(std::lround((emitter.position[0] - a_originX) / a_cell));
-			const auto cy = static_cast<int32_t>(std::lround((emitter.position[1] - a_originY) / a_cell));
+			// The pool's level round the vertex (its own cell may be the falls' own, uncovered)
+			float level = FallCapture::NONE;
+			for (int32_t dy = -1; dy <= 1; dy++) {
+				for (int32_t dx = -1; dx <= 1; dx++)
+					level = std::max(level, pools[static_cast<std::size_t>(cy + dy) * a_size + (cx + dx)]);
+			}
+			if (level <= FallCapture::NONE || std::abs(vertex.position[2] - level) > PLUNGE_FOAM_BAND)
+				continue;
+			const float steep = std::clamp((1.0f - vertex.normal[2]) * 2.5f, 0.0f, 1.0f);
+			const float strength = std::clamp(0.45f + 0.55f * std::max(steep, std::clamp(vertex.speed, 0.0f, 1.0f)), 0.0f, 1.0f);
 			for (int32_t y = cy - reach; y <= cy + reach; y++) {
 				for (int32_t x = cx - reach; x <= cx + reach; x++) {
-					if (x < 0 || y < 0 || x >= static_cast<int32_t>(a_size) || y >= static_cast<int32_t>(a_size))
+					if (x < 0 || y < 0 || x >= n || y >= n)
 						continue;
-					const float dx = a_originX + static_cast<float>(x) * a_cell - emitter.position[0];
-					const float dy = a_originY + static_cast<float>(y) * a_cell - emitter.position[1];
+					const float dx = a_originX + static_cast<float>(x) * a_cell - vertex.position[0];
+					const float dy = a_originY + static_cast<float>(y) * a_cell - vertex.position[1];
 					const float falloff = std::clamp(1.0f - std::sqrt(dx * dx + dy * dy) / PLUNGE_FOAM_RADIUS, 0.0f, 1.0f);
 					float& value = a_field[static_cast<std::size_t>(y) * a_size + x];
-					value = std::max(value, std::max(emitter.strength, 0.5f) * falloff);
+					value = std::max(value, strength * falloff);
 				}
 			}
 		}
