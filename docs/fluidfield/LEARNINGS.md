@@ -76,7 +76,7 @@ about it.
 
 -   **Lit geometry must keep its exact vertex position** (2026-10-15). BSLightingShader surfaces are drawn after a depth prepass and the colour pass depth-tests against it for equality. Recomputing the clip position in Lighting.hlsl, even mathematically the same (`mul(ViewProj, worldPosition)` instead of `mul(modelView, inputPosition)`), changed the depth in the last bits and the surface drew as a flat brown. Displace lit geometry only in a pass that also displaces its prepass, or not at all; change its look in the pixel shader.
 
--   **Vanilla's falling-water texture runs along u** (2026-10-16): on `FXWaterfallBodyTall` u spans 0.08..3.39 against v -2.04..-0.97. Laying a flow's along coordinate on v makes herringbone across the streaks.
+-   **Superseded (D56): vanilla's falling-water texture runs along u** (2026-10-16): on `FXWaterfallBodyTall` u spans 0.08..3.39 against v -2.04..-0.97. Laying a flow's along coordinate on v makes herringbone across the streaks. Wrong: the NIF dissection (research/waterfalls/vanilla-nif-dissection.md) shows v increases downstream over all of every falls mesh, and vanilla scrolls toward +v.
 -   **The ambient SH's directional terms read warm under waterfalls** (2026-10-16): `SharedData::GetAmbient(normal)` came out tan there and made custom water brown. The DC term (`AmbientSHR.x` etc. times 0.886) with the material's own tint matched vanilla's falls; check colours by measuring captures against vanilla in the same view, not by eye.
 
 ## Repository conventions
@@ -104,3 +104,9 @@ compiles shader permutations asynchronously, so the first seconds after a load o
 render with older shaders; wait 5 to 10 s before judging a capture.
 
 -   **The falls' lit surface has no NiAlphaProperty** (2026-10-17, D53). `FXWaterfallBodyTallInner01` and `FXWaterfallBodySlopeMesh01` (BSLightingShaderProperty, flags `0000802182400381`: no alpha bits) carry no alpha property, so they draw opaque with a depth pre-pass. The effect layers of the same models (`FXWaterfallBodySlopeFoam`, `L2_whiteCrossStream04`, `PCloudSplash*`) carry alpha flags `0x10ED`: blending on, SrcAlpha / InvSrcAlpha, test off, threshold 128.
+
+-   **Never compute a scroll as a measured rate times total time** (2026-10-17, D60). Vanilla's falls loop a slow V-scale controller (6.5 s), and frame hitches move any measured rate; `rate * Time` turns each change into a jump of change x session time (half a repeat after five minutes): the texture runs back and forth, worse the longer the session. Integrate the phase once a frame instead.
+-   **Havok ray hits do not say "from behind"** (2026-10-17, D57). The hit normal's facing never told a ray starting inside rock from one outside it; ray parity (count the crossings from a point known to be outside) does. A sheet before a cliff has the cliff on one side only: require rock on both sides of the sheet for "inside" (D59).
+-   **The falls' own collision is water material on the static layer** (2026-10-17, D56). Downward rays for the rock capture hit it under every fall (4622 of 32786 rays) until it was skipped by model path (fxwaterfall, fxrapids).
+-   **`near` and `far` are Windows macros** (2026-10-17). A local named `near` fails to compile in any file that pulls in windows.h; name it something else.
+-   **Judge flow in motion, not in stills** (2026-10-17, D60). A warp that looks right in a still and in the debug view still read as vanilla's motion to the user. To measure motion: `sgtm 0.1`, consecutive captures with `allowTimeScale`, phase correlation on a water-only patch.
