@@ -36,10 +36,9 @@ namespace FluidFieldSim
 
 		/**
 		 * @brief This step's emitters for one water level, in its logical texel coordinates.
-		 * @param a_time Seconds since the start, for the pulsing.
 		 * @param a_strength Scales every effect (0: none).
 		 */
-		void AppendEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_time, float a_strength,
+		void AppendEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_strength,
 			uint32_t a_maxEmitters, bool a_foam) const;
 
 		void Clear();

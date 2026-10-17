@@ -338,10 +338,10 @@ private:
 	static constexpr float FALL_GROUND_CONTACT = 6.0f;    ///< World units over which water fades where it cuts into rock
 	static constexpr float FALL_GROUND_LIFT_MOST = 8.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
 	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
-	static constexpr float FALL_POOL_FOAM = 26.0f;          ///< World units above the water below over which the falls foam into it (D36)
-	static constexpr float FALL_GRAVITY = 687.0f;           ///< World units per second squared (Skyrim's)
-	static constexpr float FALL_STREAM_STEEP_FROM = 0.35f;  ///< Upward normal below which the water falls straight down its slope (the flow is solved from above)
-	static constexpr float FALL_STREAM_STEEP_TO = 0.6f;
+	static constexpr float FALL_POOL_FOAM = 26.0f;         ///< World units above the water below over which the falls foam into it (D36)
+	static constexpr float FALL_GRAVITY = 687.0f;          ///< World units per second squared (Skyrim's)
+	static constexpr float FALL_STREAM_STEEP_FROM = 0.6f;  ///< Upward normal below which the water falls straight down its slope (the flow is solved from above)
+	static constexpr float FALL_STREAM_STEEP_TO = 0.9f;
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> fallGroundSRV;
 	winrt::com_ptr<ID3D11Texture2D> fallStreamTexture;  ///< FallSites::BuildStreamMap: velocity (x, y), foam, water
@@ -364,7 +364,6 @@ private:
 	int fallDebugView = 0;                                   ///< Debug: 1 vanilla's fall meshes, 2 their intersections and the spray emitters (D36); not saved
 	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
 	bool hideFallEffects = true;                             ///< Debug: hides vanilla's mist, skirt, splash and rapids meshes; not saved
-	float waterfallTime = 0.0f;                              ///< Seconds simulated, for the waterfalls' pulsing
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 
 	/** @brief Creates the water layer's GPU resources and shaders as needed. Returns false if it cannot run. */

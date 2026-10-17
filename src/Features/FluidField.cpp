@@ -1294,11 +1294,9 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 	}
 	// Waterfalls drive both levels (D22); wakes come first
 	if (settings.Waterfalls) {
-		if (a_near)
-			waterfallTime += a_deltaTime;
 		// D35: the falls' own plunges first, along their whole width; D22's single pushes after
-		fallSites.AppendWaterEmitters(levelEmitters, a_gridMin, a_cellSize, a_resolution, waterfallTime, settings.WaterfallStrength, FluidFieldSim::ShallowWaterSolver::MAX_EMITTERS, a_near);
-		waterfalls.AppendEmitters(levelEmitters, a_gridMin, a_cellSize, a_resolution, waterfallTime, settings.WaterfallStrength, FluidFieldSim::ShallowWaterSolver::MAX_EMITTERS, a_near);
+		fallSites.AppendWaterEmitters(levelEmitters, a_gridMin, a_cellSize, a_resolution, settings.WaterfallStrength, FluidFieldSim::ShallowWaterSolver::MAX_EMITTERS, a_near);
+		waterfalls.AppendEmitters(levelEmitters, a_gridMin, a_cellSize, a_resolution, settings.WaterfallStrength, FluidFieldSim::ShallowWaterSolver::MAX_EMITTERS, a_near);
 	}
 	const std::span<const FluidFieldSim::WaterEmitter> emitters = levelEmitters;
 

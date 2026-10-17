@@ -1615,7 +1615,7 @@ namespace FluidFieldSim
 		surfaceVersion++;
 	}
 
-	void FallSites::AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_time,
+	void FallSites::AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes,
 		float a_strength, uint32_t a_maxEmitters, bool a_foam) const
 	{
 		if (a_strength <= 0.0f || !(a_cellSize > 0.0f) || surfacePlunges.empty() || a_emitters.size() >= a_maxEmitters)
@@ -1635,13 +1635,10 @@ namespace FluidFieldSim
 		for (const auto& [distance, plunge] : order) {
 			if (a_emitters.size() >= a_maxEmitters)
 				break;
-			// Splashes: each push heaves the water down in short bursts, at its own rhythm, like a body landing in it
-			const float seed = plunge->position[0] * 0.013f + plunge->position[1] * 0.007f;
-			const float burst = std::max(0.0f, std::sin(a_time * 6.3f + seed * 5.0f) * std::sin(a_time * 2.9f + seed * 3.0f));
 			const float pull = std::min(plunge->speed * PLUNGE_PULL, 260.0f) * a_strength;
 			a_emitters.push_back({ .position = { plunge->position[0] / a_cellSize - static_cast<float>(a_gridMin[0]), plunge->position[1] / a_cellSize - static_cast<float>(a_gridMin[1]) },
 				.radius = std::max(0.75f * PLUNGE_WATER_SPACING / a_cellSize, 1.5f),
-				.depthRate = -PLUNGE_SPLASH * burst * plunge->strength * a_strength,
+				.depthRate = 0.0f,  // D55: no dent in the surface (it broke the foam along the falls' cut); the flow and foam only
 				.velocity = { plunge->direction[0] * pull, plunge->direction[1] * pull },
 				.pad1 = { 60.0f * plunge->strength * a_strength, a_foam ? 4.0f * std::max(plunge->strength, 0.6f) * a_strength : 0.0f } });
 		}

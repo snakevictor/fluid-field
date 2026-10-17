@@ -491,7 +491,11 @@ namespace FluidFieldSim
 						if (!open(ix + dx, iy + dy) || !result.water[index(ix + dx, iy + dy)])
 							continue;
 						const float k = (dx ? tx : 1.0f - tx) * (dy ? ty : 1.0f - ty);
-						sum += result.head[index(ix + dx, iy + dy)] * k;
+						// D55: water that has come through a pool starts again from its level: a fall's speed does not
+						// carry past the pool it plunges into (the falls over the pool keep theirs)
+						const std::size_t j = index(ix + dx, iy + dy);
+						const bool pool = a_input.cover.size() == count && a_input.cover[j] >= result.level[j] - POOL_HEAD_BAND;
+						sum += (pool ? result.level[j] : result.head[j]) * k;
 						weight += k;
 					}
 				}
@@ -511,10 +515,6 @@ namespace FluidFieldSim
 							const std::size_t i = index(x, y);
 							const float speed = result.speed[i];
 							if (!result.water[i] || speed < 1e-4f)
-								continue;
-							// D54: water that has come through a pool starts again from its level: a fall's speed
-							// does not carry past the pool it plunges into
-							if (a_input.cover.size() == count && a_input.cover[i] >= result.level[i] - POOL_HEAD_BAND)
 								continue;
 							float upstream;
 							if (sample(static_cast<float>(x) - result.vx[i] / speed, static_cast<float>(y) - result.vy[i] / speed, upstream))

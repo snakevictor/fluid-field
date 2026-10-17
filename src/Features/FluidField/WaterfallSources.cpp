@@ -26,8 +26,6 @@ namespace FluidFieldSim
 		/** @brief Narrowest a fall's plunge counts as, world units. */
 		constexpr float MIN_WIDTH = 96.0f;
 
-		/** @brief Depth pushed in and out at the plunge, world units per second, at full strength. */
-		constexpr float PULSE_DEPTH_RATE = 50.0f;
 		/** @brief Speed the water spreads out from the plunge, world units per second. */
 		constexpr float RADIAL_SPEED = 110.0f;
 		/** @brief Speed the water runs on in the fall's direction, world units per second. */
@@ -53,12 +51,6 @@ namespace FluidFieldSim
 		{
 			const auto* model = a_base ? a_base->As<RE::TESModel>() : nullptr;
 			return model ? model->GetModel() : nullptr;
-		}
-
-		/** @brief A cheap smooth pulse in [-1, 1], different for each fall. */
-		float Pulse(float a_time, float a_seed)
-		{
-			return 0.6f * std::sin(a_time * 2.3f + a_seed) + 0.4f * std::sin(a_time * 5.1f + a_seed * 1.7f);
 		}
 	}
 
@@ -292,7 +284,7 @@ namespace FluidFieldSim
 		}
 	}
 
-	void WaterfallSources::AppendEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_time,
+	void WaterfallSources::AppendEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes,
 		float a_strength, uint32_t a_maxEmitters, bool a_foam) const
 	{
 		if (a_strength <= 0.0f || !(a_cellSize > 0.0f))
@@ -303,11 +295,10 @@ namespace FluidFieldSim
 			const float texel[2] = { fall.plunge[0] / a_cellSize - static_cast<float>(a_gridMin[0]), fall.plunge[1] / a_cellSize - static_cast<float>(a_gridMin[1]) };
 			if (texel[0] < 0.0f || texel[1] < 0.0f || texel[0] >= static_cast<float>(a_gridRes) || texel[1] >= static_cast<float>(a_gridRes))
 				continue;
-			// A heaving, churning plunge: water pushed in and out, spreading out and running downstream
-			const float pulse = Pulse(a_time, static_cast<float>(i) * 2.17f + fall.plunge[0] * 0.001f);
+			// A churning plunge: water spreading out and running downstream
 			a_emitters.push_back({ .position = { texel[0], texel[1] },
 				.radius = std::max(0.5f * fall.width / a_cellSize, 1.5f),
-				.depthRate = PULSE_DEPTH_RATE * pulse * a_strength,
+				.depthRate = 0.0f,  // D55: the falls drive the water's flow and foam, never dent its surface
 				.velocity = { fall.direction[0] * OUTFLOW_SPEED * a_strength, fall.direction[1] * OUTFLOW_SPEED * a_strength },
 				.pad1 = { RADIAL_SPEED * a_strength, a_foam ? FOAM_RATE * a_strength : 0.0f } });
 		}

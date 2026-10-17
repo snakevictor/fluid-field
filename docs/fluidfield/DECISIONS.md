@@ -1232,3 +1232,20 @@ Entry format:
     alpha property (0x10ED) to draw blended; it then draws invisible, so
     Translucency defaults to 0 until that is understood.
 -   References: D37, D47, D49, D53
+
+## D55: The falls drive the shallow water without denting it; pools pass on only their level
+
+-   Date: 2026-10-17
+-   Phase / spike: @Victor's review screenshots 563-569
+-   Decision: The falls no longer push the shallow water's surface down (the
+    plunge pushes and D22's pulse): its dents dropped the surface under the
+    falls' cut and broke the foam along it (566). They drive its flow and
+    foam only. D54's pool head reset is moved to what a pool passes on: the
+    falls over a pool keep their own head (the curtain cells over it had
+    dropped to the pool's level beside cells that had not, and the speed
+    jump marbled the texture near the bottom, 567-569). Moderate slopes
+    follow their slope too (steep from upward normal 0.9, fully at 0.6),
+    against the backflow on crests among rocks (563-565). The blended draw
+    takes the shader's own alpha; the blended falls still draw invisible,
+    so Translucency stays 0 by default.
+-   References: D22, D53, D54

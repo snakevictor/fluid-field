@@ -3114,6 +3114,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #		endif  // ANISOTROPIC_ALPHA
 
+#		if defined(FLUID_FIELD) && !defined(DEFERRED)
+	// D55: blended falls (D53) take the shader's own translucency; vanilla's vertex alpha on their meshes
+	// is not opacity (it drew them invisible)
+	[branch] if (FallGround::Enabled && FallGround::Translucency > 0.0 && FallGround::DebugMode == 0)
+		alpha = baseColor.w;
+#		endif
 	psout.Diffuse.w = alpha;
 #	endif
 
