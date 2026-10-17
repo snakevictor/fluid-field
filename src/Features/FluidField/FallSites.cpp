@@ -176,26 +176,6 @@ namespace FluidFieldSim
 	void FallSites::RefreshHiddenEffects()
 	{
 		std::unordered_map<const RE::NiAVObject*, RE::NiPointer<RE::NiAVObject>> wanted;
-		// D30: the falling-water models of sites whose own surface draws
-		std::unordered_set<uint32_t> replaced;
-		if (replaceSurface) {
-			for (const auto& site : sites) {
-				const auto it = site.captureKey ? streams.find(site.captureKey) : streams.end();
-				if (it == streams.end() || !it->second.meshReady || it->second.vertices.empty())
-					continue;
-				for (const uint32_t member : site.members) {
-					if (refs[member].cls == FxClass::Body)
-						replaced.insert(refs[member].formID);
-				}
-			}
-		}
-		for (const auto& ref : refs) {
-			if (!replaced.contains(ref.formID))
-				continue;
-			auto* object = RE::TESForm::LookupByID<RE::TESObjectREFR>(ref.formID);
-			if (auto* root = object ? object->Get3D() : nullptr)
-				wanted.emplace(root, RE::NiPointer<RE::NiAVObject>(root));
-		}
 		if (hideEffects) {
 			for (const auto& ref : refs) {
 				auto* object = RE::TESForm::LookupByID<RE::TESObjectREFR>(ref.formID);
@@ -206,8 +186,6 @@ namespace FluidFieldSim
 					wanted.emplace(root, RE::NiPointer<RE::NiAVObject>(root));
 					continue;
 				}
-				if (replaced.contains(ref.formID))
-					continue;
 				// The falling-water models carry layers of their own (and spray particles): show only the
 				// layers in the mask
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
@@ -360,8 +338,9 @@ namespace FluidFieldSim
 					if (level <= NO_SURFACE || bed <= FallCapture::NONE || bed >= level - POOL_COVER)
 						continue;
 					const bool meshAtLevel = mesh > NO_SURFACE && mesh >= level - POOL_BAND;
+					const bool bottomPool = level <= a_site.bottom + POOL_BAND;  // D50: the pool the falls end in: nothing lower to mistake it for
 					const bool shallowBed = bed >= level - POOL_SHALLOW;
-					if (meshAtLevel || shallowBed)
+					if (meshAtLevel || shallowBed || bottomPool)
 						input.cover[i] = level;
 				}
 			}
@@ -439,6 +418,7 @@ namespace FluidFieldSim
 		stream.meshReady = false;
 		GatherSources(a_site, stream.sources);
 		stream.levels = a_site.levels;
+		stream.top = a_site.top;
 		stream.pending = std::async(std::launch::async, [input = std::move(input)]() { return FallStream::Solve(input); });
 	}
 
@@ -1437,34 +1417,38 @@ namespace FluidFieldSim
 	void FallSites::RefreshSurfaces()
 	{
 		surfaceVertices.clear();
-		surfaceIndices.clear();
 		surfaceEmitters.clear();
 		surfacePlunges.clear();
 		// D38: vanilla's own waterfall mist effects drive the falls' fog and mist too: their bounds as fog
 		// volumes, and a mist emitter at each one's foot
-		mistVolumes.clear();
+		// D50: vanilla's placed splash and skirt effects mark where the water strikes: spray from their foot
 		for (const auto& site : sites) {
 			for (const uint32_t member : site.members) {
 				const auto& ref = refs[member];
-				if (ref.cls != FxClass::Mist && ref.cls != FxClass::Splash)
+				if (ref.cls != FxClass::Splash && ref.cls != FxClass::Skirt)
 					continue;
-				const float strength = ref.cls == FxClass::Mist ? 0.5f : 0.3f;
-				std::array<float, 8> volume{};
-				for (int k = 0; k < 3; k++) {
-					volume[k] = 0.5f * (ref.min[k] + ref.max[k]);
-					volume[4 + k] = std::max(0.5f * (ref.max[k] - ref.min[k]), 16.0f);
+				const float spanX = ref.max[0] - ref.min[0], spanY = ref.max[1] - ref.min[1];
+				const int nx = std::clamp(static_cast<int>(spanX / VANILLA_SPAWN_SPACING), 1, 8);
+				const int ny = std::clamp(static_cast<int>(spanY / VANILLA_SPAWN_SPACING), 1, 8);
+				for (int iy = 0; iy < ny; iy++) {
+					for (int ix = 0; ix < nx; ix++) {
+						FallEmitter emitter{};
+						emitter.position[0] = ref.min[0] + spanX * (static_cast<float>(ix) + 0.5f) / static_cast<float>(nx);
+						emitter.position[1] = ref.min[1] + spanY * (static_cast<float>(iy) + 0.5f) / static_cast<float>(ny);
+						emitter.position[2] = ref.min[2] + 0.2f * (ref.max[2] - ref.min[2]);
+						emitter.normal[2] = 1.0f;
+						emitter.strength = ref.cls == FxClass::Splash ? 0.8f : 0.5f;
+						emitter.speed = 450.0f;
+						emitter.kind = static_cast<float>(FallEmitterKind::Plunge);
+						surfaceEmitters.push_back(emitter);
+					}
 				}
-				volume[3] = strength;
-				mistVolumes.push_back(volume);  // D49: no emitters from vanilla's mist boxes (they threw spray out of nowhere)
 			}
 		}
 		for (const auto& [key, stream] : streams) {
 			if (!stream.meshReady || stream.vertices.empty())
 				continue;
-			const auto base = static_cast<uint32_t>(surfaceVertices.size());
 			surfaceVertices.insert(surfaceVertices.end(), stream.vertices.begin(), stream.vertices.end());
-			for (const uint32_t i : stream.indices)
-				surfaceIndices.push_back(base + i);
 			surfaceEmitters.insert(surfaceEmitters.end(), stream.emitters.begin(), stream.emitters.end());
 			surfacePlunges.insert(surfacePlunges.end(), stream.plunges.begin(), stream.plunges.end());
 		}
@@ -1503,46 +1487,6 @@ namespace FluidFieldSim
 		}
 	}
 
-	void FallSites::AppendFogEmitters(std::vector<Emitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_strength, uint32_t a_maxEmitters) const
-	{
-		if (a_strength <= 0.0f || !(a_cellSize > 0.0f) || a_emitters.size() >= a_maxEmitters)
-			return;
-		// The plunges and the drops, thinned to one every FOG_SPACING, nearest the grid's centre first
-		struct Source
-		{
-			float x, y, strength;
-		};
-		std::unordered_map<int64_t, Source> thinned;
-		const auto add = [&](float a_x, float a_y, float a_strength) {
-			const auto key = (static_cast<int64_t>(std::floor(a_x / FOG_SPACING)) << 32) ^ static_cast<uint32_t>(static_cast<int32_t>(std::floor(a_y / FOG_SPACING)));
-			auto [it, added] = thinned.try_emplace(key, Source{ a_x, a_y, a_strength });
-			if (!added && it->second.strength < a_strength)
-				it->second = { a_x, a_y, a_strength };
-		};
-		for (const auto& plunge : surfacePlunges)
-			add(plunge.position[0], plunge.position[1], plunge.strength);
-		for (const auto& emitter : surfaceEmitters) {
-			if (static_cast<FallEmitterKind>(static_cast<uint32_t>(emitter.kind)) == FallEmitterKind::Lip)
-				add(emitter.position[0], emitter.position[1], 0.6f * emitter.strength);
-		}
-		const float centre = 0.5f * static_cast<float>(a_gridRes);
-		std::vector<std::pair<float, Source>> order;
-		for (const auto& [key, source] : thinned) {
-			const float tx = source.x / a_cellSize - static_cast<float>(a_gridMin[0]);
-			const float ty = source.y / a_cellSize - static_cast<float>(a_gridMin[1]);
-			if (tx < 0.0f || ty < 0.0f || tx >= static_cast<float>(a_gridRes) || ty >= static_cast<float>(a_gridRes))
-				continue;
-			order.emplace_back((tx - centre) * (tx - centre) + (ty - centre) * (ty - centre), Source{ tx, ty, source.strength });
-		}
-		std::sort(order.begin(), order.end(), [](const auto& a_a, const auto& a_b) { return a_a.first < a_b.first; });
-		for (const auto& [distance, source] : order) {
-			if (a_emitters.size() >= a_maxEmitters)
-				break;
-			// No push on the air and no shove of the fog: only fog made, round the point
-			a_emitters.push_back({ .position = { source.x, source.y }, .radius = std::max(FOG_RADIUS / a_cellSize, 1.0f), .pad0 = 0.0f, .velocity = { 0.0f, 0.0f }, .pad1 = { FOG_RATE * source.strength * a_strength, 0.0f } });
-		}
-	}
-
 	bool FallSites::GetFogBand(float& a_low, float& a_high) const
 	{
 		// D44: the seams' heights only, where the fog is made
@@ -1565,24 +1509,6 @@ namespace FluidFieldSim
 		a_scale[0] = it->second[0];
 		a_scale[1] = it->second[1];
 		return true;
-	}
-
-	ID3D11ShaderResourceView* FallSites::GetSurfaceDiffuse() const
-	{
-		return surfaceDiffuse && surfaceDiffuse->rendererTexture ? surfaceDiffuse->rendererTexture->resourceView : nullptr;
-	}
-
-	ID3D11ShaderResourceView* FallSites::GetSurfaceNormal() const
-	{
-		return surfaceNormal && surfaceNormal->rendererTexture ? surfaceNormal->rendererTexture->resourceView : nullptr;
-	}
-
-	void FallSites::SetReplaceSurface(bool a_replace)
-	{
-		if (a_replace == replaceSurface)
-			return;
-		replaceSurface = a_replace;
-		RefreshHiddenEffects();
 	}
 
 	void FallSites::BuildStreamMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
@@ -1646,13 +1572,6 @@ namespace FluidFieldSim
 						grounded.insert(a_geometry);
 					// Diagnostics: what each part of a falling-water mesh is, once per model and part
 					auto* property = a_geometry->GetGeometryRuntimeData().shaderProperty.get();
-					// D30: vanilla's falling-water textures, from the lit surface
-					if (auto* lit = property && !surfaceDiffuse ? netimmerse_cast<RE::BSLightingShaderProperty*>(property) : nullptr) {
-						if (auto* base = static_cast<RE::BSLightingShaderMaterialBase*>(lit->GetBaseMaterial()); base && base->diffuseTexture) {
-							surfaceDiffuse = base->diffuseTexture;
-							surfaceNormal = base->normalTexture;
-						}
-					}
 					auto* effect = property ? netimmerse_cast<RE::BSEffectShaderProperty*>(property) : nullptr;
 					auto* material = effect ? static_cast<RE::BSEffectShaderMaterial*>(effect->GetBaseMaterial()) : nullptr;
 					const char* model = ModelOf(ref->GetBaseObject());
@@ -2076,8 +1995,10 @@ namespace FluidFieldSim
 					const float cover = stream.result.cover[static_cast<std::size_t>(y) * w + x];
 					if (cover <= NO_SURFACE)
 						continue;
+					// D50: the pool the falls come from is cut deeper: the lip dips under it where its water does not show
+					const float cut = cover >= stream.top - POOL_BAND ? cover - TOP_POOL_CUT : cover;
 					float& stored = a_heights[static_cast<std::size_t>(y + offsetY) * a_size + static_cast<std::size_t>(x + offsetX)];
-					stored = std::max(stored, cover);
+					stored = std::max(stored, cut);
 				}
 			}
 		}

@@ -8,6 +8,7 @@
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/SharedData.hlsli"
+#include "FluidField/FallEffects.hlsli"
 
 struct Emitter
 {
@@ -17,38 +18,6 @@ struct Emitter
 	float Speed;       // World units per second
 	float3 Normal;
 	float Kind;  // 0: a drop (the water leaves the surface running on), 1: a plunge (thrown up and out), 2: a strike on rock or another piece
-};
-
-cbuffer FallSurfaceCB : register(b7)
-{
-	float Time;
-	float UScale;
-	float VScale;
-	float BaseSpeed;
-	float WaveHeight;
-	float WaveLength;
-	float RippleHeight;
-	float RippleLength;
-	float BulgeHeight;
-	float ShallowDepth;
-	float ContactWidth;
-	float Brightness;
-	uint DebugMode;
-	float VanillaScroll;
-	uint EmitterCount;
-	uint SprayPerEmitter;
-	uint MistPerEmitter;
-	float SprayLife;
-	float SpraySpeed;
-	float SpraySize;
-	float MistLife;
-	float MistSize;
-	float MistRise;
-	float Gravity;
-	float MistOpacity;
-	float SprayStretch;
-	float SprayOpacity;
-	float Pad;
 };
 
 StructuredBuffer<Emitter> Emitters : register(t100);
@@ -137,9 +106,9 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 		if (kind == 0)
 			v0 = flowVelocity * (0.85 + 0.3 * r1) + spread * emitter.Speed * 0.05 + up * 20.0 * r2;  // Runs on off the drop
 		else if (kind == 1)
-			v0 = (up * (0.4 + 1.0 * r2) + spread * (0.2 + 0.5 * r1)) * SpraySpeed * (0.5 + 1.5 * fast) + flat * emitter.Speed * 0.2;  // Thrown up and out
+			v0 = (up * (0.4 + 0.8 * r2) + spread * (0.3 + 0.5 * r1)) * SpraySpeed * (0.6 + 0.6 * fast) + flat * emitter.Speed * 0.15;  // Thrown up and out
 		else
-			v0 = flowVelocity * 0.5 + (up * 0.8 + spread * 0.3) * min(max(emitter.Speed, 150.0), 600.0) * (0.15 + 0.35 * r2) * (0.6 + 0.6 * fast);  // Kicked up where it strikes, staying near the water
+			v0 = flowVelocity * 0.4 + (up * 0.8 + spread * 0.3) * min(max(emitter.Speed, 150.0), 400.0) * (0.12 + 0.25 * r2) * (0.6 + 0.4 * fast);  // Kicked up where it strikes, staying near the water
 		position += v0 * age + float3(0, 0, -0.5 * Gravity * age * age);
 		motion = v0 + float3(0, 0, -Gravity * age);
 		size = SpraySize * (0.5 + 1.0 * r2);

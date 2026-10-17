@@ -128,14 +128,11 @@ namespace FluidFieldSim
 		void BuildStreamMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
 
 		/**
-		 * @brief D30: the falls' own water surfaces, one mesh per site whose flow is solved, all in one
-		 * list; changes with GetSurfaceVersion.
+		 * @brief D30: every site's merged falls surface (vanilla's falling-water meshes, subdivided, with
+		 * their flow), all in one list, and their spray emitters; changes with GetSurfaceVersion.
 		 */
 		const std::vector<FallSurfaceVertex>& GetSurfaceVertices() const { return surfaceVertices; }
-		const std::vector<uint32_t>& GetSurfaceIndices() const { return surfaceIndices; }
 		const std::vector<FallEmitter>& GetSurfaceEmitters() const { return surfaceEmitters; }
-		/** @brief D38: vanilla's waterfall mist effects round the sites, as fog volumes: centre and strength, then half extents. */
-		const std::vector<std::array<float, 8>>& GetMistVolumes() const { return mistVolumes; }
 
 		/**
 		 * @brief D35: the plunges' pushes on the simulated water, in a water level's logical texel
@@ -145,24 +142,12 @@ namespace FluidFieldSim
 		void AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_time, float a_strength,
 			uint32_t a_maxEmitters, bool a_foam) const;
 
-		/**
-		 * @brief D37: the falls' fog for the ground fog (D21), in the wind grid's logical texel
-		 * coordinates: fog made continuously round the plunges and drops, which the wind then carries.
-		 * Nearest the grid's centre first, up to a_maxEmitters in all.
-		 */
-		void AppendFogEmitters(std::vector<Emitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_strength, uint32_t a_maxEmitters) const;
-
-		/** @brief D41: the lowest and highest heights the falls' fog rises from (pools, strikes, drops, plunges, vanilla's mist); false if none. */
+		/** @brief D41, D44: the lowest and highest heights the falls' fog rises from (the seams and impacts); false if none. */
 		bool GetFogBand(float& a_low, float& a_high) const;
 
 		/** @brief D35: world units per texture repeat along u and v of a falling-water mesh (its own texel density), or false if unknown. */
 		bool GetTextureScale(const RE::BSGeometry* a_geometry, float a_scale[2]) const;
 		uint64_t GetSurfaceVersion() const { return surfaceVersion; }
-		/** @brief Vanilla's falling-water textures (from the lit surface of its models), for the fall surfaces; null until one is seen. */
-		ID3D11ShaderResourceView* GetSurfaceDiffuse() const;
-		ID3D11ShaderResourceView* GetSurfaceNormal() const;
-		/** @brief Whether the fall surfaces replace vanilla's falling-water meshes: those of sites with a surface are hidden. */
-		void SetReplaceSurface(bool a_replace);
 
 		/**
 		 * @brief Debug: hides vanilla's mist, skirt, splash and rapids meshes, and the spray particles
@@ -282,6 +267,7 @@ namespace FluidFieldSim
 			std::vector<std::array<float, 4>> seamPoints;
 			std::vector<std::array<float, 6>> waterLines;
 			std::vector<SourceTriangle> sources;
+			float top = 0.0f;           ///< The site's top level (D50)
 			std::vector<float> levels;  ///< The site's water levels, where the falls meet bodies of water  ///< Vanilla's falling-water triangles, gathered when the solve starts
 			std::future<SurfaceMesh> meshPending;
 			bool meshReady = false;
@@ -318,40 +304,34 @@ namespace FluidFieldSim
 		static constexpr float IMPACT_FLAT = 0.7f;   ///< D49: a vertex at least this flat (upward normal) can be where water lands...
 		static constexpr float IMPACT_STEEP = 0.5f;  ///< ...with water this steep within IMPACT_CELLS upstream...
 		static constexpr int32_t IMPACT_CELLS = 2;
-		static constexpr float IMPACT_DROP = 30.0f;         ///< ...standing at least this far above it
-		static constexpr float IMPACT_SPACING = 24.0f;      ///< World units between impact points
-		static constexpr float FALL_VIEW_RANGE = 2500.0f;   ///< World units round the camera the fall debug views draw (D36)
-		static constexpr float SEAM_CROSSING_ANGLE = 0.9f;  ///< Pieces crossing with their faces closer than this (cosine) lie along each other: no seam shows (D36)
-		static constexpr float POOL_COVER = 2.0f;           ///< Water lying under a pool's surface by more than this is the pool's (D36)
-		static constexpr float POOL_BAND = 24.0f;           ///< D40: a pool's water is where vanilla's falling water lies at its level, within this...
-		static constexpr float POOL_SHALLOW = 160.0f;       ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
-		static constexpr float BURIED_MARGIN = 120.0f;      ///< As FallGround.hlsli BURIED (D49)
-		static constexpr float FOG_SPACING = 64.0f;         ///< World units between the falls' fog sources (D37)
-		static constexpr float FOG_RADIUS = 56.0f;          ///< World units round a source that it fogs
-		static constexpr float FOG_RATE = 2.5f;             ///< Fog made per second at a source's centre, in resting amounts
-		static constexpr float FOG_SOURCE_RADIUS = 70.0f;   ///< World units round each seam point that its fog spreads (D44)
-		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;  ///< World units round each point where the falls meet a pool that the water foams (D44, D47)
-		static constexpr float PLUNGE_FOAM_BAND = 20.0f;    ///< The falls' vertices this close to a pool's surface meet it (D47)
-		static constexpr float FOG_PLUNGE_RADIUS = 180.0f;  ///< World units round each plunge that its fog spreads (D41)
-		static constexpr float PLUNGE_SPLASH = 220.0f;      ///< World units per second the plunge pushes the simulated water down at its strongest
-		static constexpr float PLUNGE_PULL = 0.35f;         ///< Fraction of the falling water's speed the water below is pulled along at
-		static constexpr int FLOW_DILATE_CELLS = 6;         ///< Cells the flow is carried past the water's edge for the surface
-		static constexpr float FALL_SPEED = 600.0f;         ///< World units per second of drop counted into the travel time, so steep water streaks too
-		static constexpr float MEET_FOAM_HEIGHT = 20.0f;    ///< Water within this of a site's level (where it meets a body of water) foams
+		static constexpr float IMPACT_DROP = 30.0f;            ///< ...standing at least this far above it
+		static constexpr float IMPACT_SPACING = 24.0f;         ///< World units between impact points
+		static constexpr float FALL_VIEW_RANGE = 2500.0f;      ///< World units round the camera the fall debug views draw (D36)
+		static constexpr float SEAM_CROSSING_ANGLE = 0.9f;     ///< Pieces crossing with their faces closer than this (cosine) lie along each other: no seam shows (D36)
+		static constexpr float POOL_COVER = 2.0f;              ///< Water lying under a pool's surface by more than this is the pool's (D36)
+		static constexpr float POOL_BAND = 24.0f;              ///< D40: a pool's water is where vanilla's falling water lies at its level, within this...
+		static constexpr float TOP_POOL_CUT = 24.0f;           ///< D50: how much deeper the falls are cut under the pool they come from
+		static constexpr float VANILLA_SPAWN_SPACING = 48.0f;  ///< D50: world units between spray emitters over a vanilla splash or skirt
+		static constexpr float POOL_SHALLOW = 160.0f;          ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
+		static constexpr float BURIED_MARGIN = 120.0f;         ///< As FallGround.hlsli BURIED (D49)
+		static constexpr float FOG_SOURCE_RADIUS = 70.0f;      ///< World units round each seam point that its fog spreads (D44)
+		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;     ///< World units round each point where the falls meet a pool that the water foams (D44, D47)
+		static constexpr float PLUNGE_FOAM_BAND = 40.0f;       ///< The falls' vertices this close to a pool's surface meet it (D47, D50)
+		static constexpr float FOG_PLUNGE_RADIUS = 180.0f;     ///< World units round each plunge that its fog spreads (D41)
+		static constexpr float PLUNGE_SPLASH = 220.0f;         ///< World units per second the plunge pushes the simulated water down at its strongest
+		static constexpr float PLUNGE_PULL = 0.35f;            ///< Fraction of the falling water's speed the water below is pulled along at
+		static constexpr int FLOW_DILATE_CELLS = 6;            ///< Cells the flow is carried past the water's edge for the surface
+		static constexpr float FALL_SPEED = 600.0f;            ///< World units per second of drop counted into the travel time, so steep water streaks too
+		static constexpr float MEET_FOAM_HEIGHT = 20.0f;       ///< Water within this of a site's level (where it meets a body of water) foams
 		std::vector<std::future<SurfaceMesh>> retiredMeshes;
 		/** @brief Gathers every site's surface into one list. */
 		void RefreshSurfaces();
 		std::vector<FallSurfaceVertex> surfaceVertices;
-		std::vector<uint32_t> surfaceIndices;
 		std::vector<FallEmitter> surfaceEmitters;
 		const WaterSurfaces* waterSurfaces = nullptr;  ///< Set each update: the engine's water, for the pools' extent (D45)
 		std::vector<FallPlunge> surfacePlunges;
-		std::vector<std::array<float, 8>> mistVolumes;
 		mutable std::unordered_map<const RE::BSGeometry*, std::array<float, 2>> textureScales;  ///< GatherSources: each lit mesh's world units per texture repeat
 		uint64_t surfaceVersion = 0;
-		bool replaceSurface = false;
-		RE::NiPointer<RE::NiSourceTexture> surfaceDiffuse;
-		RE::NiPointer<RE::NiSourceTexture> surfaceNormal;
 		std::unordered_map<uint64_t, Stream> streams;          ///< By Site::captureKey
 		std::vector<std::future<FallStream::Result>> retired;  ///< Solves of sites that went away, left to finish
 		/** @brief Vanilla's falling-water meshes of a site seen from above, and its pools, on a lattice; NO_SURFACE where none. */

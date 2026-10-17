@@ -1120,3 +1120,30 @@ Entry format:
     the rock's own depth already hides water behind it. Emitters are hidden
     by the same margin.
 -   References: D36, D44, D47, D48
+
+## D50: Spray reworked again; plunge pools found; vanilla splashes spawn spray; dead code removed; menu tidied
+
+-   Date: 2026-10-17
+-   Phase / spike: @Victor's review screenshots 510-516
+-   Decision: The white streaky veils were the waterfall fog fed by
+    impacts (its wisps stretch down steep water): Waterfall Fog is off by
+    default. Spray is far sparser and falls sooner: 40 per emitter, smeared
+    over 5 ms of motion (was 12), thrown at 150 units/s (was 260, and plunges
+    at up to 2x that), with gravity at 1100 units/s^2 so droplets turn down
+    sooner. Deep plunge pools are pools: the site's lowest level counts
+    wherever the rock lies under it (neither of D40's tests held there: the
+    bed is deep and the falls' surface above the pool stands far above its
+    level), so the plunge pools now foam, whiten the falls and cut their
+    underwater part; the falls' vertices within 40 units of a pool (was 20)
+    count as meeting it. The pool the falls come from is cut 24 units deeper
+    (the lip dipped under it where its water does not show: a hole). Vanilla's
+    placed splash and skirt effects spawn spray from their foot, every 48
+    units over their footprint (artists put them where the water strikes).
+    Cleanup: D30's merged-surface rendering is gone (FallSurface.hlsl, the
+    vertex/index upload, the surface constants, the falls' texture lookup,
+    the replace-surface switch); the spray and fog share a lean constant
+    buffer (FluidField/FallEffects.hlsli); vanilla mist volumes, the ground
+    fog's fall emitters (D37) and Waterfall Fog Height are removed. The
+    Waterfalls menu is Water, Spray, Fog and an Advanced tree (flow cycle and
+    stretch, mist cards, vanilla layers).
+-   References: D30, D37, D40, D44, D47, D48, D49

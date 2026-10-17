@@ -3,13 +3,12 @@
 #include <d3d11.h>
 #include <winrt/base.h>
 
-#include <array>
 #include <cstdint>
 #include <vector>
 
 namespace FluidFieldSim
 {
-	/** @brief One vertex of a fall surface (D30), matching SurfaceVertex in FallSurface.hlsl. */
+	/** @brief One vertex of a site's merged falls surface (D30), on which FallSites finds plunges, impacts and seams. */
 	struct FallSurfaceVertex
 	{
 		float position[3];  ///< World units, on the water surface
@@ -56,17 +55,16 @@ namespace FluidFieldSim
 	};
 
 	/**
-	 * @brief Draws the falls' own water surface (D30) after the world: one merged mesh per site, made of
-	 * vanilla's falling-water meshes subdivided, displaced by the flow in the vertex shader, with
-	 * vanilla's falling-water textures laid along the streamlines and the travel time. Depth tested against the scene without writing,
-	 * premultiplied-alpha blended. Every piece of pipeline state it touches is saved and restored.
+	 * @brief Draws the falls' effects after the world (D31, D38): stateless GPU spray thrown from the
+	 * emitters, and the waterfall fog marched through its height band. Depth tested against the scene
+	 * without writing, premultiplied-alpha blended. Every piece of pipeline state it touches is saved and
+	 * restored. (D30's own merged falls surface was drawn here too, until D32 returned to vanilla's meshes.)
 	 */
 	class FallSurfaceRenderer
 	{
 	public:
-		/** @brief Uploads the mesh and the spray emitters when their version changed. */
-		void Upload(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const std::vector<FallSurfaceVertex>& a_vertices, const std::vector<uint32_t>& a_indices,
-			const std::vector<FallEmitter>& a_emitters, uint64_t a_version);
+		/** @brief Uploads the spray emitters when their version changed. */
+		void Upload(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const std::vector<FallEmitter>& a_emitters, uint64_t a_version);
 
 		struct DrawParams
 		{
@@ -76,52 +74,32 @@ namespace FluidFieldSim
 			ID3D11Buffer* camera = nullptr;                  ///< The main camera's per-frame constants (b12), snapshotted during the deferred passes
 			ID3D11Buffer* shared = nullptr;
 			ID3D11Buffer* features = nullptr;
-			ID3D11ShaderResourceView* diffuse = nullptr;  ///< Vanilla's falling-water textures
-			ID3D11ShaderResourceView* normal = nullptr;
 			float time = 0.0f;
 			uint32_t debugMode = 0;
-			bool drawSurface = true;  ///< false: only the spray and mist, over vanilla's own falling water (D32)
-			uint32_t sprayPerEmitter = SPRAY_PER_EMITTER;
-			uint32_t mistPerEmitter = MIST_PER_EMITTER;
-			float spraySize = SPRAY_SIZE;
-			float mistOpacity = 0.07f;
-			float sprayOpacity = 0.35f;
-			float fogDensity = 0.0f;  ///< Waterfall fog (D38): extinction per world unit over wholly white water; 0 off
-			float fogHeight = 90.0f;
-			float fogBottom = 0.0f;  ///< The fog's height band (D41)
+			uint32_t sprayPerEmitter = 40;
+			uint32_t mistPerEmitter = 0;
+			float spraySize = 1.4f;
+			float sprayOpacity = 0.2f;
+			float mistOpacity = 0.06f;
+			float fogDensity = 0.0f;  ///< Waterfall fog (D38): extinction per world unit at full strength; 0 off
+			float fogBottom = 0.0f;   ///< The fog's height band (D41)
 			float fogTop = 0.0f;
 		};
 		void Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params);
 
-		/** @brief D38: vanilla's waterfall mist effects, as fog volumes: per volume its centre and strength, then its half extents. */
-		void UploadMist(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const std::vector<std::array<float, 8>>& a_volumes, uint64_t a_version);
-
 		void Release();
 		void ReleaseShaders();
-		bool HasMesh() const { return indexCount > 0; }
 
-		static constexpr float U_SCALE = 192.0f;      ///< World units across the flow per repeat of the texture
-		static constexpr float V_SCALE = 384.0f;      ///< World units along the flow (at free speed) per repeat
-		static constexpr float WAVE_HEIGHT = 10.0f;   ///< Standing waves where fast water runs shallow over rock, world units
-		static constexpr float WAVE_LENGTH = 72.0f;   ///< World units along the flow
-		static constexpr float RIPPLE_HEIGHT = 3.0f;  ///< Ripples carried by the flow, world units
-		static constexpr float RIPPLE_LENGTH = 40.0f;
-		static constexpr float BULGE_HEIGHT = 10.0f;   ///< The water mounds over rock just under it, world units
-		static constexpr float SHALLOW_DEPTH = 40.0f;  ///< Water shallower than this over rock waves and mounds
-		static constexpr float CONTACT_WIDTH = 2.0f;   ///< World units over which the water fades where it meets rock in front of it
 		static constexpr float BRIGHTNESS = 0.32f;
-		static constexpr float VANILLA_SCROLL = 0.6f;
-		static constexpr uint32_t SPRAY_PER_EMITTER = 12;  ///< Spray particles alive per emitter at once
-		static constexpr uint32_t MIST_PER_EMITTER = 3;    ///< Mist puffs alive per emitter at once
 		static constexpr uint32_t MAX_PARTICLES = 2000000;
-		static constexpr float SPRAY_STRETCH = 0.012f;  ///< Seconds of motion each droplet is drawn smeared over
+		static constexpr float SPRAY_STRETCH = 0.005f;  ///< Seconds of motion each droplet is drawn smeared over
 		static constexpr float SPRAY_LIFE = 0.9f;       ///< Seconds
-		static constexpr float SPRAY_SPEED = 260.0f;    ///< World units per second thrown up and out at full strength
-		static constexpr float SPRAY_SIZE = 10.0f;      ///< World units across
+		static constexpr float SPRAY_SPEED = 150.0f;    ///< World units per second thrown up and out at full strength
 		static constexpr float MIST_LIFE = 3.0f;
 		static constexpr float MIST_SIZE = 100.0f;
-		static constexpr float MIST_RISE = 40.0f;          ///< World units per second
-		static constexpr float PARTICLE_GRAVITY = 687.0f;  ///< Repeats per second vanilla's texture scrolls along v, where the flow's is not used      ///< Light at this point of the frame, as the ground fog and the old curtains needed
+		static constexpr float MIST_RISE = 40.0f;           ///< World units per second
+		static constexpr float PARTICLE_GRAVITY = 1100.0f;  ///< D50: droplets turn down sooner than free fall (they read as too floaty)
+		static constexpr uint32_t FOG_STEPS = 32;           ///< Over the fog's height band only (D44)
 
 	private:
 		bool EnsureShaders();
@@ -129,75 +107,48 @@ namespace FluidFieldSim
 		void DrawParticles(ID3D11DeviceContext* a_context, uint32_t a_perEmitter);
 		void DrawFog(ID3D11DeviceContext* a_context);
 
+		// Matches FallEffectsCB in FluidField/FallEffects.hlsli
 		struct alignas(16) Constants
 		{
 			float time;
-			float uScale;
-			float vScale;
 			float baseSpeed;
-			float waveHeight;
-			float waveLength;
-			float rippleHeight;
-			float rippleLength;
-			float bulgeHeight;
-			float shallowDepth;
-			float contactWidth;
 			float brightness;
 			uint32_t debugMode;
-			float vanillaScroll;
 			uint32_t emitterCount;
 			uint32_t sprayPerEmitter;
 			uint32_t mistPerEmitter;
 			float sprayLife;
 			float spraySpeed;
 			float spraySize;
+			float sprayStretch;
+			float sprayOpacity;
 			float mistLife;
 			float mistSize;
 			float mistRise;
-			float gravity;
 			float mistOpacity;
-			float sprayStretch;
-			float sprayOpacity;
-			float pad2;
+			float gravity;
 			float fogDensity;
-			float fogHeight;
 			uint32_t fogSteps;
-			uint32_t mistVolumeCount;
 			float fogBottom;
 			float fogTop;
-			float fogPad[2];
+			float pad[3];
 		};
+		static_assert(sizeof(Constants) == 96);
 
-		winrt::com_ptr<ID3D11Buffer> vertices;
-		winrt::com_ptr<ID3D11ShaderResourceView> verticesSRV;
-		winrt::com_ptr<ID3D11Buffer> indices;
-		uint32_t vertexCapacity = 0;
-		uint32_t indexCapacity = 0;
-		uint32_t indexCount = 0;
-		uint64_t uploadedVersion = UINT64_MAX;
-
-		winrt::com_ptr<ID3D11VertexShader> fogVertexShader;
-		winrt::com_ptr<ID3D11PixelShader> fogPixelShader;
-		winrt::com_ptr<ID3D11Buffer> mist;
-		winrt::com_ptr<ID3D11ShaderResourceView> mistSRV;
-		uint32_t mistCount = 0;
-		uint64_t mistVersion = UINT64_MAX;
-		static constexpr uint32_t MAX_MIST_VOLUMES = 64;
-		static constexpr uint32_t FOG_STEPS = 32;  ///< Over the seams' height band only (D44)  ///< Over FallFog.hlsl's FOG_RANGE: about 25 units a step, finer than the fog is thick
 		winrt::com_ptr<ID3D11Buffer> emitters;
 		winrt::com_ptr<ID3D11ShaderResourceView> emittersSRV;
 		uint32_t emitterCapacity = 0;
 		uint32_t emitterCount = 0;
+		uint64_t uploadedVersion = UINT64_MAX;
 
 		winrt::com_ptr<ID3D11Buffer> constants;
-		winrt::com_ptr<ID3D11VertexShader> vertexShader;
-		winrt::com_ptr<ID3D11PixelShader> pixelShader;
 		winrt::com_ptr<ID3D11VertexShader> sprayVertexShader;
 		winrt::com_ptr<ID3D11PixelShader> sprayPixelShader;
+		winrt::com_ptr<ID3D11VertexShader> fogVertexShader;
+		winrt::com_ptr<ID3D11PixelShader> fogPixelShader;
 		winrt::com_ptr<ID3D11BlendState> blend;
 		winrt::com_ptr<ID3D11DepthStencilState> depthState;
 		winrt::com_ptr<ID3D11RasterizerState> raster;
-		winrt::com_ptr<ID3D11SamplerState> sampler;
 		bool shaderFailed = false;
 	};
 }

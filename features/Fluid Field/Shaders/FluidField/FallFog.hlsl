@@ -9,53 +9,14 @@
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/SharedData.hlsli"
+#include "FluidField/FallEffects.hlsli"
 #include "FluidField/FallGround.hlsli"
-
-cbuffer FallSurfaceCB : register(b7)
-{
-	float Time;
-	float UScale;
-	float VScale;
-	float BaseSpeed;
-	float WaveHeight;
-	float WaveLength;
-	float RippleHeight;
-	float RippleLength;
-	float BulgeHeight;
-	float ShallowDepth;
-	float ContactWidth;
-	float Brightness;
-	uint DebugMode;
-	float VanillaScroll;
-	uint EmitterCount;
-	uint SprayPerEmitter;
-	uint MistPerEmitter;
-	float SprayLife;
-	float SpraySpeed;
-	float SpraySize;
-	float MistLife;
-	float MistSize;
-	float MistRise;
-	float Gravity;
-	float MistOpacity;
-	float SprayStretch;
-	float SprayOpacity;
-	float Pad;
-	float FogDensity;  // Extinction per world unit where the water is wholly white
-	float FogHeight;   // World units the fog stands above the water where it is thickest
-	uint FogSteps;     // Samples along each ray
-	uint MistVolumeCount;
-	float FogBottom;  // The lowest and highest world heights the fog reaches (D41): rays are marched only between them
-	float FogTop;
-	float2 FogPad;
-};
 
 Texture2D<float> SceneDepth : register(t103);
 // The water simulation's near level (as the water shader reads it, FluidField/WaterNormal.hlsli): surface
 // slopes, height above vanilla and coverage; and flow and foam. Toroidal storage
 Texture2D<float4> WaterSurfaceTex : register(t66);
 Texture2D<float4> WaterFlowTex : register(t67);
-StructuredBuffer<float4> MistVolumes : register(t104);  // Per volume: centre and strength, then half extents
 
 /** Farthest the fog is marched, world units. */
 static const float FOG_RANGE = 6000.0;

@@ -71,7 +71,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MistAmount,
 	MistOpacity,
 	FallFog,
-	FallFogHeight,
 	WaterfallDebug)
 
 void FluidField::DrawSettings()
@@ -129,47 +128,52 @@ void FluidField::DrawSettings()
 		ImGui::PopID();
 	}
 
-	// Waterfalls: vanilla's falling water moved by its solved flow, with spray, mist and foam
+	// Waterfalls: vanilla's falling water moved by its solved flow, with foam, spray and fog
 	if (ImGui::CollapsingHeader(T(TKEY("waterfalls_header"), "Waterfalls"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		ImGui::PushID("WaterfallsSection");
 		ImGui::Checkbox(T(TKEY("waterfalls"), "Waterfalls"), &settings.Waterfalls);
-		tooltip(T(TKEY("waterfalls_tooltip"), "Waterfalls flow round the rock they run over, throw spray and mist, and churn, push and foam the water they land in."));
+		tooltip(T(TKEY("waterfalls_tooltip"), "Waterfalls churn, push and foam the water they land in."));
 		ImGui::Checkbox(T(TKEY("ground_waterfalls"), "Flowing Waterfalls"), &settings.GroundWaterfalls);
-		tooltip(T(TKEY("ground_waterfalls_tooltip"), "Moves vanilla's waterfall textures with each fall's solved flow, so they part round rocks, and adds its spray and mist. Off shows vanilla's waterfalls unchanged."));
+		tooltip(T(TKEY("ground_waterfalls_tooltip"), "Moves vanilla's waterfall textures with each fall's solved flow, so they part round rocks, and adds foam, spray and fog. Off shows vanilla's waterfalls unchanged."));
+
+		ImGui::SeparatorText(T(TKEY("waterfall_look"), "Water"));
+		ImGui::Checkbox(T(TKEY("fall_whitening"), "Foam on the Falls"), &settings.FallWhitening);
+		tooltip(T(TKEY("fall_whitening_tooltip"), "White water on the falls where they strike rock, where vanilla's pieces meet, into the water below and where they fall fast."));
 		ImGui::Checkbox(T(TKEY("hide_underwater_falls"), "Hide Buried Falls"), &settings.HideUnderwaterFalls);
-		ImGui::Checkbox(T(TKEY("fall_whitening"), "Whiten Falls"), &settings.FallWhitening);
-		tooltip(T(TKEY("fall_whitening_tooltip"), "Whitens the falling water where it foams (against rock, at seams, into the water below) and where it falls fast. Off shows the flowing texture alone, for comparison."));
-		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes that run on under the water above or below them, or into the rock and ground."));
+		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes under the water above or below them, or deep in the rock."));
+		ImGui::SliderFloat(T(TKEY("fall_acceleration"), "Fall Acceleration"), &settings.FallAcceleration, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("fall_acceleration_tooltip"), "How much speed the water gains from the height it has dropped (1: free fall, 0: the solved flow only)."));
 		ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Plunge Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("waterfall_strength_tooltip"), "How hard the falls churn, push and foam the water they land in."));
 
-		ImGui::SeparatorText(T(TKEY("waterfall_flow"), "Flow"));
-		ImGui::SliderFloat(T(TKEY("fall_acceleration"), "Fall Acceleration"), &settings.FallAcceleration, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("fall_acceleration_tooltip"), "How much speed the water gains from the height it has dropped (1: free fall, 0: the solved flow only)."));
-		ImGui::SliderFloat(T(TKEY("fall_flow_period"), "Flow Cycle"), &settings.FallFlowPeriod, 0.1f, 2.0f, "%.2f s", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("fall_flow_period_tooltip"), "How often the moving texture restarts. Shorter stretches it less round rocks but pulses more."));
-		ImGui::SliderFloat(T(TKEY("fall_flow_most"), "Flow Stretch Limit"), &settings.FallFlowMost, 0.2f, 6.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("fall_flow_most_tooltip"), "Most texture repeats the texture moves per cycle; it caps how fast the texture runs."));
+		ImGui::SeparatorText(T(TKEY("waterfall_spray"), "Spray"));
+		ImGui::SliderInt(T(TKEY("spray_amount"), "Amount"), &settings.SprayAmount, 0, 320, "%d", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("spray_amount_tooltip"), "Droplets alive per emitter at once. Faster water throws more of them."));
+		ImGui::SliderFloat(T(TKEY("spray_size"), "Size"), &settings.SpraySize, 0.5f, 12.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat(T(TKEY("spray_opacity"), "Opacity"), &settings.SprayOpacity, 0.02f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 
-		ImGui::SeparatorText(T(TKEY("waterfall_spray"), "Spray and Mist"));
-		ImGui::SliderInt(T(TKEY("spray_amount"), "Spray Amount"), &settings.SprayAmount, 0, 320, "%d", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat(T(TKEY("spray_size"), "Spray Size"), &settings.SpraySize, 0.5f, 12.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat(T(TKEY("spray_opacity"), "Spray Opacity"), &settings.SprayOpacity, 0.02f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderInt(T(TKEY("mist_amount"), "Mist Amount"), &settings.MistAmount, 0, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat(T(TKEY("mist_opacity"), "Mist Opacity"), &settings.MistOpacity, 0.0f, 0.4f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SeparatorText(T(TKEY("waterfall_fog_header"), "Fog"));
 		ImGui::SliderFloat(T(TKEY("fall_fog"), "Waterfall Fog"), &settings.FallFog, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("fall_fog_tooltip"), "Mist hanging over the water the falls run into, as thick as the water is white, drifting with its flow; and where vanilla's waterfall mist stands. Separate from the ground fog. 0 turns it off."));
-		ImGui::SliderFloat(T(TKEY("fall_fog_height"), "Waterfall Fog Height"), &settings.FallFogHeight, 10.0f, 300.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("fall_fog_tooltip"), "Fog churning where the falls strike and where their pieces meet. Separate from the ground fog. 0 turns it off."));
 
-		ImGui::SeparatorText(T(TKEY("waterfall_vanilla_layers"), "Vanilla Layers"));
-		const char* layerNames[] = { T(TKEY("fall_layer_surface"), "Water Surface"), T(TKEY("fall_layer_sheet"), "White-Water Sheet"), T(TKEY("fall_layer_streaks"), "Streak Layers"),
-			T(TKEY("fall_layer_particles"), "Spray Particles") };
-		for (uint32_t bit = 0; bit < 4; bit++) {
-			bool on = (settings.FallLayerMask & (1u << bit)) != 0;
-			if (ImGui::Checkbox(layerNames[bit], &on))
-				settings.FallLayerMask = on ? settings.FallLayerMask | (1u << bit) : settings.FallLayerMask & ~(1u << bit);
+		if (ImGui::TreeNode(T(TKEY("waterfall_advanced"), "Advanced"))) {
+			ImGui::SliderFloat(T(TKEY("fall_flow_period"), "Flow Cycle"), &settings.FallFlowPeriod, 0.1f, 2.0f, "%.2f s", ImGuiSliderFlags_AlwaysClamp);
+			tooltip(T(TKEY("fall_flow_period_tooltip"), "How often the moving texture restarts. Shorter stretches it less round rocks but pulses more."));
+			ImGui::SliderFloat(T(TKEY("fall_flow_most"), "Flow Stretch Limit"), &settings.FallFlowMost, 0.2f, 6.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			tooltip(T(TKEY("fall_flow_most_tooltip"), "Most texture repeats the texture moves per cycle; it caps how fast the texture runs."));
+			ImGui::SliderInt(T(TKEY("mist_amount"), "Mist Cards"), &settings.MistAmount, 0, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
+			tooltip(T(TKEY("mist_amount_tooltip"), "Soft camera-facing mist puffs per emitter (0: none)."));
+			ImGui::SliderFloat(T(TKEY("mist_opacity"), "Mist Card Opacity"), &settings.MistOpacity, 0.0f, 0.4f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+			const char* layerNames[] = { T(TKEY("fall_layer_surface"), "Vanilla Water Surface"), T(TKEY("fall_layer_sheet"), "Vanilla White-Water Sheet"), T(TKEY("fall_layer_streaks"), "Vanilla Streak Layers"),
+				T(TKEY("fall_layer_particles"), "Vanilla Spray Particles") };
+			for (uint32_t bit = 0; bit < 4; bit++) {
+				bool on = (settings.FallLayerMask & (1u << bit)) != 0;
+				if (ImGui::Checkbox(layerNames[bit], &on))
+					settings.FallLayerMask = on ? settings.FallLayerMask | (1u << bit) : settings.FallLayerMask & ~(1u << bit);
+			}
+			tooltip(T(TKEY("fall_layers_tooltip"), "Which parts of vanilla's waterfall models show. The sheet and streak layers smear when the flow moves them."));
+			ImGui::TreePop();
 		}
-		tooltip(T(TKEY("fall_layers_tooltip"), "Which parts of vanilla's waterfall models show. The sheet and streak layers smear when the flow moves them."));
 		ImGui::PopID();
 	}
 
@@ -257,14 +261,14 @@ void FluidField::DrawSettings()
 		ImGui::SeparatorText(T(TKEY("debug_waterfalls"), "Waterfalls"));
 		{
 			const char* fallDebugModes[] = { T(TKEY("waterfall_debug_off"), "Off"), T(TKEY("waterfall_debug_fields"), "Speed, Foam, Water"), T(TKEY("waterfall_debug_direction"), "Flow Direction"),
-				T(TKEY("waterfall_debug_vanilla"), "Vanilla Texture (No Flow)") };
+				T(TKEY("waterfall_debug_vanilla"), "Vanilla Texture, Fog Sources") };
 			settings.WaterfallDebug = std::clamp(settings.WaterfallDebug, 0, 3);
 			ImGui::Combo(T(TKEY("waterfall_debug"), "Waterfall Shading"), &settings.WaterfallDebug, fallDebugModes, IM_ARRAYSIZE(fallDebugModes));
-			tooltip(T(TKEY("waterfall_debug_tooltip"), "Paints the falling water with its solved flow. Speed, Foam, Water: red for speed, green for foam, blue for water. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster."));
+			tooltip(T(TKEY("waterfall_debug_tooltip"), "Paints the falling water with its solved flow. Speed, Foam, Water: red for speed, green for foam, blue for water. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster. Vanilla Texture, Fog Sources: the falls without the flow, and the waterfall fog green where it rises."));
 			const char* fallViews[] = { T(TKEY("fall_view_off"), "Off"), T(TKEY("fall_view_meshes"), "Fall Meshes"), T(TKEY("fall_view_intersections"), "Intersections") };
 			ImGui::Combo(T(TKEY("fall_view"), "Waterfall Overlay"), &fallDebugView, fallViews, IM_ARRAYSIZE(fallViews));
 			tooltip(T(TKEY("fall_view_tooltip"),
-				"Fall Meshes: vanilla's falling-water triangles, one colour per mesh, red where they run inside rock. Intersections: where the meshes meet (yellow: a mesh ends against another; magenta: two cross), where they cross the water above or below (green), and the spray emitters (cyan: drops, blue: plunges, orange: strikes on rock or another mesh). Drawn through everything. Not saved."));
+				"Fall Meshes: vanilla's falling-water triangles, one colour per mesh, red where they run inside rock. Intersections: where the meshes meet (yellow: a mesh ends against another; magenta: two cross), where they cross the water above or below (green), and the spray emitters (cyan: drops, blue: plunges and impacts, orange: seams). Drawn through everything. Not saved."));
 			ImGui::Checkbox(T(TKEY("show_waterfall_sites"), "Show Waterfall Sites"), &showFallSites);
 			tooltip(T(TKEY("show_waterfall_sites_tooltip"), "Draws the waterfall sites found in vanilla's layout: effect meshes by class, each site's water levels (green top, blue bottom, teal tiers) and a label. Also prints each cell's summary to the console."));
 			ImGui::Checkbox(T(TKEY("hide_waterfall_effects"), "Hide Vanilla Waterfall Effects"), &hideFallEffects);
@@ -845,7 +849,6 @@ void FluidField::Prepass()
 			// Waterfall sites reconstructed from vanilla's layout (D25)
 			fallSites.SetConsoleSummary(showFallSites);
 			fallSites.SetHideEffects(hideFallEffects, settings.FallLayerMask);
-			fallSites.SetReplaceSurface(false);
 			fallSurfaceTime += deltaTime;
 			fallSites.Update(water);
 			UpdateFallGround(playerPos);
@@ -1071,14 +1074,13 @@ void FluidField::DrawGroundFogAfterWorld()
 	if (!renderer)
 		return;
 
-	// The falls' own water surfaces (D30), before the ground fog lies over their base
+	// The falls' spray and fog (D31, D38), before the ground fog lies over their base
 	if (settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && cameraSnapshot) {
-		fallSurface.Upload(globals::d3d::device, globals::d3d::context, fallSites.GetSurfaceVertices(), fallSites.GetSurfaceIndices(), fallSites.GetSurfaceEmitters(),
-			fallSites.GetSurfaceVersion());
+		fallSurface.Upload(globals::d3d::device, globals::d3d::context, fallSites.GetSurfaceEmitters(), fallSites.GetSurfaceVersion());
 		const auto& shadow = globals::game::shadowState->GetRuntimeData();
 		const auto colorIndex = static_cast<uint32_t>(shadow.renderTargets[0]);
 		const auto depthIndex = shadow.depthStencil;
-		if (fallSurface.HasMesh() && colorIndex < RE::RENDER_TARGET::kTOTAL && depthIndex < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
+		if (colorIndex < RE::RENDER_TARGET::kTOTAL && depthIndex < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
 			auto& depth = renderer->GetDepthStencilData().depthStencils[depthIndex];
 			FluidFieldSim::FallSurfaceRenderer::DrawParams params;
 			params.target = renderer->GetRuntimeData().renderTargets[colorIndex].RTV;
@@ -1087,40 +1089,28 @@ void FluidField::DrawGroundFogAfterWorld()
 			params.camera = cameraSnapshot.get();
 			params.shared = globals::state->sharedDataCB->CB();
 			params.features = globals::state->featureDataCB->CB();
-			params.diffuse = fallSites.GetSurfaceDiffuse();
-			params.normal = fallSites.GetSurfaceNormal();
 			params.time = fallSurfaceTime;
 			params.debugMode = static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 3));
-			params.drawSurface = false;  // D32: vanilla's own falling water shows; the falls' own surface stays unused
 			params.sprayPerEmitter = static_cast<uint32_t>(std::clamp(settings.SprayAmount, 0, 320));
 			params.mistPerEmitter = static_cast<uint32_t>(std::clamp(settings.MistAmount, 0, 8));
 			params.spraySize = settings.SpraySize;
-			params.mistOpacity = settings.MistOpacity;
 			params.sprayOpacity = settings.SprayOpacity;
-			params.fogDensity = settings.FallFog * FALL_FOG_DENSITY;
-			params.fogHeight = settings.FallFogHeight;
-			// The band the fog can reach: from the lowest pool or source to the highest, plus its rise
+			params.mistOpacity = settings.MistOpacity;
+			// The fog's band: the heights of the seams and impacts it rises from, plus its rise
 			float fogLow, fogHigh;
-			if (fallSites.GetFogBand(fogLow, fogHigh)) {
+			if (settings.FallFog > 0.0f && fallSites.GetFogBand(fogLow, fogHigh)) {
+				params.fogDensity = settings.FallFog * FALL_FOG_DENSITY;
 				params.fogBottom = fogLow - 20.0f;
-				params.fogTop = fogHigh + 240.0f;  // Above the seams' fog (FallFog.hlsl SOURCE_LIFT + 3 SOURCE_SPREAD)
-			} else {
-				params.fogDensity = 0.0f;
+				params.fogTop = fogHigh + 240.0f;  // Above the fog's rise (FallFog.hlsl SOURCE_LIFT + 3 SOURCE_SPREAD)
 			}
-			if (static uint64_t loggedVersion = UINT64_MAX; loggedVersion != fallSites.GetSurfaceVersion()) {
-				loggedVersion = fallSites.GetSurfaceVersion();
-				logger::info("[Fluid Field] Waterfall fog band {:.0f}..{:.0f} (density {:.4f}), camera z {:.0f}", params.fogBottom, params.fogTop, params.fogDensity,
-					globals::game::frameBufferCached.GetCameraPosAdjust().z);
-			}
-			fallSurface.UploadMist(globals::d3d::device, globals::d3d::context, {}, fallSites.GetSurfaceVersion());  // D44: fog only at the seams
-			// The fog reads the falls' ground and pools (b13, t120, t122) and the simulated water (t66, t67)
+			// The fog reads the falls' ground, pools and flow (b13, t120, t122) and the simulated water (t66, t67)
 			ID3D11Buffer* fallConstants = fallGroundOn.get();
 			globals::d3d::context->PSSetConstantBuffers(13, 1, &fallConstants);
 			ID3D11ShaderResourceView* fallMaps[3] = { fallGroundSRV.get(), nullptr, fallStreamSRV.get() };
 			globals::d3d::context->PSSetShaderResources(120, 3, fallMaps);
 			BindWaterOutputs(globals::d3d::context);
 			fallGroundBound = true;
-			globals::profiler->BeginPass("FluidField::FallSurfaces");
+			globals::profiler->BeginPass("FluidField::FallEffects");
 			fallSurface.Draw(globals::d3d::device, globals::d3d::context, params);
 			globals::profiler->EndPass();
 		}
