@@ -335,6 +335,7 @@ private:
 	static_assert(sizeof(FallGroundData) == 144);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
 	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must be FallCapture::CELL: the flows are copied texel for texel
+	static constexpr float DEFAULT_FALL_SCROLL = 0.15f;     ///< D60: vanilla's scroll before it is measured (texture coordinates per second)
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
 	static constexpr float FALL_GROUND_OFFSET = 6.0f;
 	static constexpr float FALL_GROUND_CONTACT = 6.0f;    ///< World units over which water fades where it cuts into rock
@@ -357,6 +358,9 @@ private:
 		float time = 0.0f;
 		float rate = 0.0f;
 		bool known = false;
+		float phase = 0.0f;      ///< D60: the scroll so far, in the mesh's own texture coordinates, wrapped to a repeat
+		float phaseTime = 0.0f;  ///< ...as of this fallSurfaceTime
+		float scale = 1.0f;      ///< ...and vanilla's texture scale along v, averaged (its slow zoom left out)
 	};
 	std::unordered_map<const void*, FallScroll> fallScrolls;
 	std::vector<float> fallStreamScratch;

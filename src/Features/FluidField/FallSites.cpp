@@ -2056,37 +2056,229 @@ namespace FluidFieldSim
 	FallSites::FlowBake FallSites::SolveBake(const BakeJob& a_job)
 	{
 		const uint32_t w = a_job.width, h = a_job.height;
+		const auto iw = static_cast<int32_t>(w), ih = static_cast<int32_t>(h);
 		const std::size_t count = static_cast<std::size_t>(w) * h;
-		const auto index = [&](uint32_t a_x, uint32_t a_y) { return static_cast<std::size_t>(a_y) * w + a_x; };
-		const auto water = [&](int32_t a_x, int32_t a_y) {
-			return a_x >= 0 && a_y >= 0 && a_x < static_cast<int32_t>(w) && a_y < static_cast<int32_t>(h) && a_job.covered[index(a_x, a_y)] && !a_job.rock[index(a_x, a_y)];
-		};
-		const auto open = [&](int32_t a_x, int32_t a_y) {
-			// Off the mesh, not rock: where the water comes in or goes out
-			return a_x < 0 || a_y < 0 || a_x >= static_cast<int32_t>(w) || a_y >= static_cast<int32_t>(h) || !a_job.covered[index(a_x, a_y)];
-		};
-		// The grid as a sheet tilted down +v: the existing solve (D28) then drives the water down it, round the
-		// rock, from where it comes onto the mesh (its top edge) to where it leaves (its bottom edge)
+		const auto index = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * w + a_x; };
+		const auto inside = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < iw && a_y < ih; };
+
+		// D60: rock, without its specks: islands of BAKE_LEAST_ROCK texels or fewer are slivers of the
+		// collision the sheet grazes, not boulders; they only scattered the flow
+		std::vector<uint8_t> rock = a_job.rock;
+		{
+			std::vector<uint8_t> seen(count, 0);
+			std::vector<std::size_t> island, open;
+			for (std::size_t start = 0; start < count; start++) {
+				if (!rock[start] || seen[start])
+					continue;
+				island.clear();
+				open.assign(1, start);
+				seen[start] = 1;
+				while (!open.empty()) {
+					const std::size_t i = open.back();
+					open.pop_back();
+					island.push_back(i);
+					const auto x = static_cast<int32_t>(i % w), y = static_cast<int32_t>(i / w);
+					static constexpr int32_t DX[4] = { 1, -1, 0, 0 }, DY[4] = { 0, 0, 1, -1 };
+					for (int k = 0; k < 4; k++) {
+						const int32_t nx = x + DX[k], ny = y + DY[k];
+						if (!inside(nx, ny) || seen[index(nx, ny)] || !rock[index(nx, ny)])
+							continue;
+						seen[index(nx, ny)] = 1;
+						open.push_back(index(nx, ny));
+					}
+				}
+				if (island.size() <= BAKE_LEAST_ROCK) {
+					for (const std::size_t i : island)
+						rock[i] = 0;
+				}
+			}
+		}
+		const auto water = [&](int32_t a_x, int32_t a_y) { return inside(a_x, a_y) && a_job.covered[index(a_x, a_y)] && !rock[index(a_x, a_y)]; };
+
+		// The grid as a sheet tilted down +v, solved (D28) round the rock: in at each column's first covered
+		// texel, out at its last (the jagged sides are neither: D59 made sources and sinks of them)
 		FallStream::Input input;
 		input.width = w;
 		input.height = h;
 		input.cell = BAKE_TEXEL;
 		input.surface.resize(count);
-		input.bed.assign(count, 0.0f);
+		input.bed.resize(count);
 		input.kind.assign(count, FallStream::Wall);
-		for (uint32_t y = 0; y < h; y++) {
-			for (uint32_t x = 0; x < w; x++) {
-				const std::size_t i = index(x, y);
-				input.surface[i] = -static_cast<float>(y) * BAKE_TEXEL;
-				input.bed[i] = input.surface[i] - 100.0f;
+		for (int32_t y = 0; y < ih; y++) {
+			for (int32_t x = 0; x < iw; x++) {
+				input.surface[index(x, y)] = -static_cast<float>(y) * BAKE_TEXEL;
+				input.bed[index(x, y)] = input.surface[index(x, y)] - 100.0f;
+			}
+		}
+		for (int32_t x = 0; x < iw; x++) {
+			int32_t first = -1, last = -1;
+			for (int32_t y = 0; y < ih; y++) {
+				if (!a_job.covered[index(x, y)])
+					continue;
+				first = first < 0 ? y : first;
+				last = y;
+			}
+			for (int32_t y = std::max(first, 0); first >= 0 && y <= last; y++) {
 				if (!water(x, y))
 					continue;
-				const auto ix = static_cast<int32_t>(x), iy = static_cast<int32_t>(y);
-				input.kind[i] = open(ix, iy - 1) ? FallStream::Inflow : open(ix, iy + 1) ? FallStream::Outflow :
-				                                                                           FallStream::Water;
+				input.kind[index(x, y)] = y == first ? FallStream::Inflow : y == last ? FallStream::Outflow :
+				                                                                        FallStream::Water;
 			}
 		}
 		const FallStream::Result solved = FallStream::Solve(input);
+		const bool have = solved.vx.size() == count;
+
+		// The turn per texel (across over down), clamped (never back, at most BAKE_MOST_TURN), and filled
+		// into rock and off the mesh from the nearest water, so nothing jumps at a rock's edge
+		std::vector<float> turn(count, 0.0f), foam(count, 0.0f), run(count, 0.0f);
+		std::vector<int32_t> from(count, -1);
+		std::vector<std::size_t> frontier;
+		for (std::size_t i = 0; i < count; i++) {
+			const auto x = static_cast<int32_t>(i % w), y = static_cast<int32_t>(i / w);
+			if (!have || !water(x, y) || !solved.water[i])
+				continue;
+			const float down = std::clamp(solved.vy[i], BAKE_LEAST_DOWN, BAKE_MOST_DOWN);
+			turn[i] = std::clamp(solved.vx[i] / down, -BAKE_MOST_TURN, BAKE_MOST_TURN);
+			foam[i] = solved.rockFoam[i];
+			run[i] = std::min(solved.travel[i], 60.0f);
+			from[i] = static_cast<int32_t>(i);
+			frontier.push_back(i);
+		}
+		for (std::size_t head = 0; head < frontier.size(); head++) {
+			const std::size_t i = frontier[head];
+			const auto x = static_cast<int32_t>(i % w), y = static_cast<int32_t>(i / w);
+			static constexpr int32_t DX[4] = { 1, -1, 0, 0 }, DY[4] = { 0, 0, 1, -1 };
+			for (int k = 0; k < 4; k++) {
+				const int32_t nx = x + DX[k], ny = y + DY[k];
+				if (!inside(nx, ny) || from[index(nx, ny)] >= 0)
+					continue;
+				from[index(nx, ny)] = from[i];
+				turn[index(nx, ny)] = turn[i];
+				run[index(nx, ny)] = run[i];
+				frontier.push_back(index(nx, ny));
+			}
+		}
+		const auto blur = [&](std::vector<float>& a_field, int a_passes) {
+			std::vector<float> scratch(count);
+			for (int pass = 0; pass < a_passes; pass++) {
+				for (int32_t y = 0; y < ih; y++) {
+					for (int32_t x = 0; x < iw; x++) {
+						float total = 0.0f, weight = 0.0f;
+						for (int32_t dy = -1; dy <= 1; dy++) {
+							for (int32_t dx = -1; dx <= 1; dx++) {
+								if (!inside(x + dx, y + dy))
+									continue;
+								const float k = (dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f);
+								total += a_field[index(x + dx, y + dy)] * k;
+								weight += k;
+							}
+						}
+						scratch[index(x, y)] = total / weight;
+					}
+				}
+				a_field.swap(scratch);
+			}
+		};
+		// Only round the rock: away from it the solve's sideways drift is the grid's ragged sides, not the
+		// water's, and bent the whole sheet (D60's first run); full within BAKE_BEND_NEAR texels of rock, none past BAKE_BEND_FAR
+		{
+			std::vector<int32_t> steps(count, INT32_MAX);
+			std::vector<std::size_t> open;
+			for (std::size_t i = 0; i < count; i++) {
+				if (rock[i] && a_job.covered[i]) {
+					steps[i] = 0;
+					open.push_back(i);
+				}
+			}
+			for (std::size_t head = 0; head < open.size(); head++) {
+				const std::size_t i = open[head];
+				const auto x = static_cast<int32_t>(i % w), y = static_cast<int32_t>(i / w);
+				static constexpr int32_t DX[4] = { 1, -1, 0, 0 }, DY[4] = { 0, 0, 1, -1 };
+				for (int k = 0; k < 4; k++) {
+					const int32_t nx = x + DX[k], ny = y + DY[k];
+					if (!inside(nx, ny) || steps[index(nx, ny)] <= steps[i] + 1)
+						continue;
+					steps[index(nx, ny)] = steps[i] + 1;
+					open.push_back(index(nx, ny));
+				}
+			}
+			for (std::size_t i = 0; i < count; i++) {
+				const float closeness = std::clamp((BAKE_BEND_FAR - static_cast<float>(steps[i])) / (BAKE_BEND_FAR - BAKE_BEND_NEAR), 0.0f, 1.0f);
+				turn[i] *= closeness * closeness * (3.0f - 2.0f * closeness);
+			}
+		}
+		blur(turn, BAKE_TURN_BLUR);
+
+		// The warp (D60): each streak's across position, carried down the sheet one row at a time by the
+		// turn (a semi-Lagrangian sweep of s = u, the streamlines' label), so a straight scroll down +v runs
+		// along bent streaks: they part round a boulder and close behind it, and nothing moves in time but
+		// the scroll. Kept as the offset from u, partly collapsed (BAKE_WARP_KEEP: the streaks that would wrap
+		// round a rock run partly under it, where it hides them) and smoothed
+		std::vector<float> offset(count, 0.0f);
+		for (int32_t y = 1; y < ih; y++) {
+			for (int32_t x = 0; x < iw; x++) {
+				const float back = static_cast<float>(x) - turn[index(x, y)];
+				const int32_t x0 = std::clamp(static_cast<int32_t>(std::floor(back)), 0, iw - 1);
+				const int32_t x1 = std::min(x0 + 1, iw - 1);
+				const float f = std::clamp(back - static_cast<float>(x0), 0.0f, 1.0f);
+				// s(x, y) = s(back, y - 1), and s = x + offset
+				const float above = (static_cast<float>(x0) + offset[index(x0, y - 1)]) * (1.0f - f) + (static_cast<float>(x1) + offset[index(x1, y - 1)]) * f;
+				offset[index(x, y)] = above - static_cast<float>(x);
+			}
+		}
+		for (float& value : offset)
+			value *= BAKE_WARP_KEEP;
+		blur(offset, BAKE_WARP_BLUR);
+		// Streaks squeezed or spread past [BAKE_LEAST_SPACING, BAKE_MOST_SPACING] ease back to vanilla's there
+		{
+			std::vector<float> trust(count, 1.0f);
+			for (int32_t y = 0; y < ih; y++) {
+				for (int32_t x = 1; x + 1 < iw; x++) {
+					const float spacing = 1.0f + 0.5f * (offset[index(x + 1, y)] - offset[index(x - 1, y)]);
+					trust[index(x, y)] = std::clamp(std::min((spacing - BAKE_LEAST_SPACING * 0.75f) / (BAKE_LEAST_SPACING * 0.25f), (BAKE_MOST_SPACING * 1.25f - spacing) / (BAKE_MOST_SPACING * 0.25f)), 0.0f, 1.0f);
+				}
+			}
+			blur(trust, 2);
+			for (std::size_t i = 0; i < count; i++)
+				offset[i] *= trust[i];
+		}
+
+		// The masks (D60), where the warp would misbehave and real water turns white anyway: the rim of each
+		// rock, the water piling against it and squeezing past it (the solve's foam), and its wake, carried
+		// down the streaks from the rock and fading over BAKE_WAKE_TEXELS
+		std::vector<float> wake(count, 0.0f);
+		for (int32_t y = 0; y < ih; y++) {
+			for (int32_t x = 0; x < iw; x++) {
+				const std::size_t i = index(x, y);
+				if (rock[i] && a_job.covered[i]) {
+					wake[i] = 1.0f;
+					continue;
+				}
+				if (y == 0)
+					continue;
+				const float back = static_cast<float>(x) - turn[i];
+				const int32_t x0 = std::clamp(static_cast<int32_t>(std::floor(back)), 0, iw - 1);
+				const int32_t x1 = std::min(x0 + 1, iw - 1);
+				const float f = std::clamp(back - static_cast<float>(x0), 0.0f, 1.0f);
+				wake[i] = (wake[index(x0, y - 1)] * (1.0f - f) + wake[index(x1, y - 1)] * f) * std::exp(-1.0f / BAKE_WAKE_TEXELS);
+			}
+		}
+		for (int32_t y = 0; y < ih; y++) {
+			for (int32_t x = 0; x < iw; x++) {
+				const std::size_t i = index(x, y);
+				float rim = 0.0f;
+				for (int32_t dy = -2; dy <= 2 && rim < 1.0f; dy++) {
+					for (int32_t dx = -2; dx <= 2; dx++) {
+						if (inside(x + dx, y + dy) && rock[index(x + dx, y + dy)] && a_job.covered[index(x + dx, y + dy)])
+							rim = std::max(rim, 1.0f - 0.3f * static_cast<float>(std::max(std::abs(dx), std::abs(dy))));
+					}
+				}
+				foam[i] = std::max(foam[i], rim);
+			}
+		}
+		blur(foam, 1);
+		blur(wake, 1);
+
 		FlowBake bake;
 		bake.width = w;
 		bake.height = h;
@@ -2094,49 +2286,14 @@ namespace FluidFieldSim
 		bake.uvMin[1] = a_job.uvMin[1];
 		bake.uvSize[0] = a_job.uvSize[0];
 		bake.uvSize[1] = a_job.uvSize[1];
-		std::vector<std::array<float, 4>> field(count, { 0.0f, 1.0f, 0.0f, 0.0f });
-		const bool have = solved.vx.size() == count;
-		for (std::size_t i = 0; have && i < count; i++) {
-			if (!solved.water[i])
-				continue;
-			// Never back, never more than BAKE_MOST_TURN aside: the flow's down part is at least BAKE_LEAST_DOWN
-			float down = std::max(solved.vy[i], BAKE_LEAST_DOWN);
-			float across = std::clamp(solved.vx[i], -BAKE_MOST_TURN * down, BAKE_MOST_TURN * down);
-			const float edgeFoam = 0.7f * (1.0f - solved.edge[i]);
-			field[i] = { across, down, std::max(solved.rockFoam[i], edgeFoam), solved.travel[i] };
-		}
-		// Softened over a texel each way, so the texture does not tear where the flow turns
-		std::vector<std::array<float, 4>> soft = field;
-		for (uint32_t y = 0; y < h; y++) {
-			for (uint32_t x = 0; x < w; x++) {
-				if (!water(x, y))
-					continue;
-				std::array<float, 4> total{};
-				float weight = 0.0f;
-				for (int32_t dy = -1; dy <= 1; dy++) {
-					for (int32_t dx = -1; dx <= 1; dx++) {
-						const int32_t nx = static_cast<int32_t>(x) + dx, ny = static_cast<int32_t>(y) + dy;
-						if (!water(nx, ny))
-							continue;
-						const float k = (dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f);
-						for (int c = 0; c < 4; c++)
-							total[c] += field[index(nx, ny)][c] * k;
-						weight += k;
-					}
-				}
-				for (int c = 0; c < 4; c++)
-					soft[index(x, y)][c] = total[c] / weight;
-				soft[index(x, y)][2] = field[index(x, y)][2];  // Foam stays sharp
-			}
-		}
-		// Across in texture coordinates per unit of vanilla's forward (texels are about square in the world)
-		const float acrossToU = (a_job.uvSize[0] / static_cast<float>(w)) / (a_job.uvSize[1] / static_cast<float>(h));
+		// Across offset in texture coordinates, the wake, foam, and seconds the water has run
+		const float texelU = a_job.uvSize[0] / static_cast<float>(w);
 		bake.texels.resize(count * 4);
 		for (std::size_t i = 0; i < count; i++) {
-			bake.texels[i * 4] = DirectX::PackedVector::XMConvertFloatToHalf(soft[i][0] * acrossToU);
-			bake.texels[i * 4 + 1] = DirectX::PackedVector::XMConvertFloatToHalf(soft[i][1]);
-			bake.texels[i * 4 + 2] = DirectX::PackedVector::XMConvertFloatToHalf(std::clamp(soft[i][2], 0.0f, 1.0f));
-			bake.texels[i * 4 + 3] = DirectX::PackedVector::XMConvertFloatToHalf(std::min(soft[i][3], 60.0f));
+			bake.texels[i * 4] = DirectX::PackedVector::XMConvertFloatToHalf(offset[i] * texelU);
+			bake.texels[i * 4 + 1] = DirectX::PackedVector::XMConvertFloatToHalf(std::clamp(wake[i], 0.0f, 1.0f));
+			bake.texels[i * 4 + 2] = DirectX::PackedVector::XMConvertFloatToHalf(std::clamp(foam[i], 0.0f, 1.0f));
+			bake.texels[i * 4 + 3] = DirectX::PackedVector::XMConvertFloatToHalf(run[i]);
 		}
 		return bake;
 	}

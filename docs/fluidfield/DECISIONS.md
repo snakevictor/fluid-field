@@ -1366,3 +1366,35 @@ Entry format:
     with the time it has run (aeration, to 0.3) and fast, thin water is a
     little brighter. Debug mode 1 shows the bake on baked meshes.
 -   References: D28, D56, D57, D58
+
+## D60: The scroll integrated per material; a static streak warp instead of a flowmap
+
+-   Date: 2026-10-17
+-   Phase / spike: a full review after D59 (history, root cause and technique
+    reports in the scratchpad's research folder)
+-   Decision:
+    -   The back-and-forth since D58 was `forward * Time` with a measured
+        forward: vanilla's slow V zoom (a 6.5 s loop) and frame hitches moved
+        the rate, and every change shifted the curtain by the change times
+        the whole session (half a repeat after five minutes). The scroll is
+        now integrated on the CPU once a frame per material, against an
+        averaged scale, and passed as a phase.
+    -   The flowmap is gone from the falls. Each mesh's bake (D59) now holds
+        a static warp: the streaks' across position carried down the sheet
+        row by row by the solved turn (a semi-Lagrangian sweep of the
+        stream label), only within 14 texels of rock (away from it the
+        solve's drift came from the grid's ragged sides and bent whole
+        sheets), at 75%, smoothed, and eased back to vanilla's where the
+        streaks squeeze below 0.5 or spread past 2. A straight scroll down
+        +v read through it runs along bent streaks; nothing but the scroll
+        moves in time, so it cannot pulse or run back. Rock specks of six
+        texels or fewer are water; turns are clamped to 45 degrees and
+        speeds to 1.6; rock and off-mesh texels take the nearest water's
+        values; inflow and outflow are each column's first and last texel.
+    -   Masks with it: each rock's rim and the water piling against it
+        (foam), and its wake carried down the streaks over 24 texels
+        (whitening). Debug mode 1 shows the streaks' spread, the wake and
+        the foam.
+    -   Measured after a sped-up session (sgtm 8, then 0.1): the texture
+        moves steadily down, step after step.
+-   References: D28, D58, D59

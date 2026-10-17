@@ -1567,8 +1567,16 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly)
 			auto& scroll = fallScrolls[material];
 			const float offset = material->texCoordOffset[buffer].y;
 			const float elapsed = fallSurfaceTime - scroll.time;
+			const float scaleNow = std::max(material->texCoordScale[buffer].y, 1e-4f);
 			if (!scroll.known || elapsed < 0.0f || elapsed > 5.0f) {
-				scroll = { offset, fallSurfaceTime, scroll.rate, true };
+				const bool first = !scroll.known;
+				scroll.offset = offset;
+				scroll.time = fallSurfaceTime;
+				scroll.known = true;
+				if (first) {
+					scroll.phaseTime = fallSurfaceTime;
+					scroll.scale = scaleNow;
+				}
 			} else if (elapsed >= 0.25f) {
 				float delta = offset - scroll.offset;
 				delta -= std::round(delta);
@@ -1577,7 +1585,18 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly)
 				scroll.offset = offset;
 				scroll.time = fallSurfaceTime;
 			}
-			fallGroundData.Scroll[1] = scroll.rate;
+			// D60: the scroll integrated here, once a frame: rate x time jumped the texture whenever the measured
+			// rate moved (vanilla's slow zoom fed it, and a hitch), by the change times the whole session
+			if (scroll.phaseTime != fallSurfaceTime) {
+				const float step = std::clamp(fallSurfaceTime - scroll.phaseTime, 0.0f, 0.25f);
+				scroll.scale += (scaleNow - scroll.scale) * std::min(step * 0.1f, 1.0f);
+				const float rate = (scroll.rate > 1e-3f ? scroll.rate : DEFAULT_FALL_SCROLL) / scroll.scale;
+				scroll.phase += rate * step;
+				scroll.phase -= std::floor(scroll.phase);
+				scroll.phaseTime = fallSurfaceTime;
+			}
+			fallGroundData.Scroll[0] = scroll.phase;
+			fallGroundData.Scroll[1] = (scroll.rate > 1e-3f ? scroll.rate : DEFAULT_FALL_SCROLL) / scroll.scale;
 		}
 		// D56: the per-vertex rock cut, and a blended mesh kept out of the depth pre-pass (it would hide itself)
 		uint32_t vertexBase = 0;

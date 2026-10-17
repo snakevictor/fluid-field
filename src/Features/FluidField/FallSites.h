@@ -136,10 +136,10 @@ namespace FluidFieldSim
 		/**
 		 * @brief D59: a lit falls mesh's flow, solved once on its own texture grid (u across, v down), with the
 		 * rock in it found by rays against the game's collision: so the water parts round a boulder through a
-		 * curtain as well as on a flat run, which the top-down solve cannot see. Per texel, as halves: the
-		 * flow's across and down parts in texture coordinates per unit of vanilla's scroll (1, 0 is vanilla's own
-		 * forward... stored as across, down), foam (water piling against rock, squeezing past it, its edges),
-		 * and the seconds the water has run from where it comes in.
+		 * curtain as well as on a flat run, which the top-down solve cannot see. D60: per texel, as halves: the
+		 * streak warp (how far across, in texture coordinates, the texture is read: a straight scroll down +v
+		 * then runs along bent streaks), the wake of the rock above, foam (the rock's rim, water piling against
+		 * it and squeezing past it), and the seconds the water has run from where it comes in.
 		 */
 		struct FlowBake
 		{
@@ -286,8 +286,18 @@ namespace FluidFieldSim
 		static constexpr uint32_t BAKE_MOST_SIDE = 192;   ///< ...and the most texels along a side
 		static constexpr float BAKE_ROCK_MARGIN = 24.0f;  ///< A texel this far inside rock is still water (vanilla's sheets dip into the rock they lie on)
 		static constexpr double BAKE_BUDGET_MS = 3.0;
-		static constexpr float BAKE_LEAST_DOWN = 0.3f;  ///< The flow keeps at least this much of vanilla's forward...
-		static constexpr float BAKE_MOST_TURN = 1.7f;   ///< ...and turns aside at most this across per down (60 degrees)
+		static constexpr float BAKE_LEAST_DOWN = 0.3f;     ///< The flow keeps at least this much of vanilla's forward...
+		static constexpr float BAKE_MOST_TURN = 1.0f;      ///< ...and turns aside at most this across per down (45 degrees)
+		static constexpr float BAKE_MOST_DOWN = 1.6f;      ///< D60: and runs at most this much of it
+		static constexpr std::size_t BAKE_LEAST_ROCK = 6;  ///< D60: rock islands of this many texels or fewer are specks, taken as water
+		static constexpr float BAKE_BEND_NEAR = 3.0f;      ///< D60: the streaks bend in full this many texels from rock...
+		static constexpr float BAKE_BEND_FAR = 14.0f;      ///< ...and not at all past this
+		static constexpr int BAKE_TURN_BLUR = 4;           ///< D60: passes softening the turn
+		static constexpr int BAKE_WARP_BLUR = 3;           ///< D60: passes softening the warp
+		static constexpr float BAKE_WARP_KEEP = 0.75f;     ///< D60: how much of the full streamline warp is kept (streaks partly run under a rock)
+		static constexpr float BAKE_LEAST_SPACING = 0.5f;  ///< D60: streaks squeezed closer than this, or spread wider than BAKE_MOST_SPACING, ease back to vanilla's
+		static constexpr float BAKE_MOST_SPACING = 2.0f;
+		static constexpr float BAKE_WAKE_TEXELS = 24.0f;  ///< D60: texels down the streaks a rock's wake fades over
 		/** @brief D59: a mesh's flow bake in progress: its texture grid rasterised, its texels being tested against the rock. */
 		struct BakeJob
 		{
