@@ -74,7 +74,7 @@ static const float MIST_VOLUME_SHARE = 0.12;
 static const float SOURCE_LIFT = 30.0;
 static const float SOURCE_SPREAD = 70.0;
 /** How much thicker the fog round the falls' sources is than over merely white water (D41). */
-static const float SOURCE_DENSITY = 3.0;
+static const float SOURCE_DENSITY = 8.0;
 /** World units round the camera kept clear of fog, fading in over five times as far. */
 static const float NEAR_CLEAR = 40.0;
 
@@ -158,7 +158,7 @@ float FogAt(float3 a_position, out float3 a_parts)
 	if (around <= 0.01)
 		return 0.0;
 	const float2 flow = FallGround::StreamAt(a_position.xy).xy * BaseSpeed;
-	const float density = FogDensity * SOURCE_DENSITY * source * around * smoothstep(0.42, 0.78, Wisps(a_position, flow));
+	const float density = FogDensity * SOURCE_DENSITY * source * around * smoothstep(0.34, 0.74, Wisps(a_position, flow));
 	a_parts.y = density;
 	return density;
 }
