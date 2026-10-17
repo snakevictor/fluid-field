@@ -31,6 +31,9 @@ struct VS_INPUT
 	float4 BoneWeights: BLENDWEIGHT0;
 	float4 BoneIndices: BLENDINDICES0;
 #endif
+#if defined(FLUID_FIELD)
+	uint VertexID: SV_VertexID;  // D56: the falls' per-vertex rock cut
+#endif
 };
 
 struct VS_OUTPUT
@@ -152,7 +155,7 @@ VS_OUTPUT main(VS_INPUT input)
 	precise float4x4 modelViewProj = mul(FrameBuffer::CameraViewProj, World);
 	positionCS = mul(modelViewProj, positionMS);
 #			if defined(FLUID_FIELD)
-	vsout.FallClip = FallGround::ClipDistance(mul(World, positionMS).xyz);
+	vsout.FallClip = FallGround::ClipDistance(mul(World, positionMS).xyz, input.VertexID);
 #			endif
 #		endif
 

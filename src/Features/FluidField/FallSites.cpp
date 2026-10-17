@@ -233,6 +233,8 @@ namespace FluidFieldSim
 		RefreshHiddenEffects();
 		RestoreAlpha();
 		grounded.clear();
+		clipQueue.clear();
+		vertexClipBase.clear();
 		groundVersion++;
 		refs.clear();
 		sites.clear();
@@ -1636,11 +1638,14 @@ namespace FluidFieldSim
 			if (a_emitters.size() >= a_maxEmitters)
 				break;
 			const float pull = std::min(plunge->speed * PLUNGE_PULL, 260.0f) * a_strength;
-			a_emitters.push_back({ .position = { plunge->position[0] / a_cellSize - static_cast<float>(a_gridMin[0]), plunge->position[1] / a_cellSize - static_cast<float>(a_gridMin[1]) },
+			// D56: pushed downstream just past the line the falls are cut at, so the push never lowers the water there
+			const float x = plunge->position[0] + plunge->direction[0] * PLUNGE_PUSH_OFFSET;
+			const float y = plunge->position[1] + plunge->direction[1] * PLUNGE_PUSH_OFFSET;
+			a_emitters.push_back({ .position = { x / a_cellSize - static_cast<float>(a_gridMin[0]), y / a_cellSize - static_cast<float>(a_gridMin[1]) },
 				.radius = std::max(0.75f * PLUNGE_WATER_SPACING / a_cellSize, 1.5f),
 				.depthRate = 0.0f,  // D55: no dent in the surface (it broke the foam along the falls' cut); the flow and foam only
 				.velocity = { plunge->direction[0] * pull, plunge->direction[1] * pull },
-				.pad1 = { 60.0f * plunge->strength * a_strength, a_foam ? 4.0f * std::max(plunge->strength, 0.6f) * a_strength : 0.0f } });
+				.pad1 = { PLUNGE_MARK, a_foam ? 4.0f * std::max(plunge->strength, 0.6f) * a_strength : 0.0f } });  // D56: no spreading out (it dented the water)
 		}
 	}
 
@@ -1697,6 +1702,7 @@ namespace FluidFieldSim
 		// D26: the falling-water meshes of every site with captured ground are grounded on it
 		grounded.clear();
 		RestoreAlpha();
+		std::unordered_set<const RE::BSGeometry*> litMeshes;
 		for (const auto& site : sites) {
 			const FallCapture* capture = GetCapture(site);
 			if (!capture || !capture->IsComplete())
@@ -1726,6 +1732,13 @@ namespace FluidFieldSim
 					auto* triShape = a_geometry->AsTriShape();
 					if (triShape && triShape->GetTrishapeRuntimeData().triangleCount > 0)
 						grounded.insert(a_geometry);
+					// D56: the lit surface's vertices are tested against the rock, once
+					if (triShape && triShape->GetTrishapeRuntimeData().triangleCount > 0 && netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get())) {
+						litMeshes.insert(a_geometry);
+						if (!vertexClipBase.contains(a_geometry) &&
+							std::none_of(clipQueue.begin(), clipQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }))
+							clipQueue.emplace_back(a_geometry);
+					}
 					// D53: the lit surface drawn blended, so it can be translucent in patches, as falling water is.
 					// Its own alpha property is switched (the model's, shared by every copy of it) and restored after
 					auto* lit = a_geometry->GetGeometryRuntimeData().shaderProperty.get();
@@ -1791,7 +1804,120 @@ namespace FluidFieldSim
 				});
 			}
 		}
+		// Meshes no longer grounded (their cell unloaded) lose their cut, so a reused address is not mistaken for them
+		std::erase_if(vertexClipBase, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
 		groundVersion++;
+	}
+
+	float FallSites::RockClip(RE::hkpWorld* a_world, const RE::NiPoint3& a_point, const RE::NiPoint3& a_normal, bool& a_inside) const
+	{
+		// Rays out of the point: straight up, up and out of the water's face, and out of its face. A ray that
+		// meets rock from behind (its face turned away) started inside it. Rock seen from in front, or none,
+		// is outside: under an overhang the water shows (the top-down ground map hid it, D56)
+		RE::NiPoint3 out = a_normal;
+		if (out.z < 0.0f)
+			out = -out;
+		RE::NiPoint3 directions[3] = { { 0.0f, 0.0f, 1.0f }, RE::NiPoint3(out.x, out.y, out.z + 1.0f), out };
+		const float scale = RE::bhkWorld::GetWorldScale();
+		int inside = 0;
+		float above = CLIP_REACH;
+		for (int k = 0; k < 3; k++) {
+			RE::NiPoint3 direction = directions[k];
+			const float length = direction.Length();
+			if (length < 1e-4f)
+				continue;
+			direction = direction / length;
+			float from = 0.5f;
+			for (int step = 0; step < 6 && from < CLIP_REACH; step++) {
+				const RE::NiPoint3 start = a_point + direction * from;
+				const RE::NiPoint3 end = a_point + direction * CLIP_REACH;
+				RE::hkpWorldRayCastInput input;
+				input.from = RE::hkVector4(start.x * scale, start.y * scale, start.z * scale, 0.0f);
+				input.to = RE::hkVector4(end.x * scale, end.y * scale, end.z * scale, 0.0f);
+				RE::hkpWorldRayCastOutput output;
+				a_world->CastRay(input, output);
+				if (!output.HasHit())
+					break;
+				const float hit = from + (CLIP_REACH - from) * output.hitFraction;
+				const auto layer = output.rootCollidable->GetCollisionLayer();
+				const bool solid = layer == RE::COL_LAYER::kStatic || layer == RE::COL_LAYER::kAnimStatic || layer == RE::COL_LAYER::kTerrain || layer == RE::COL_LAYER::kGround;
+				const auto* ref = RE::TESHavokUtilities::FindCollidableRef(*output.rootCollidable);
+				const char* model = ref ? ModelOf(ref->GetBaseObject()) : nullptr;
+				const std::string name = model ? Lowercase(model) : std::string();
+				// The falls' own collision is water, not rock
+				if (!solid || name.find("fxwaterfall") != std::string::npos || name.find("fxrapids") != std::string::npos) {
+					from = hit + 1.0f;
+					continue;
+				}
+				float normal[4];
+				_mm_storeu_ps(normal, output.normal.quad);
+				if (normal[0] * direction.x + normal[1] * direction.y + normal[2] * direction.z > 0.0f)
+					inside++;
+				if (k == 0)
+					above = hit;
+				break;
+			}
+		}
+		a_inside = inside >= 2;
+		return a_inside ? CLIP_MARGIN - std::min(above, CLIP_RANGE) : CLIP_MARGIN + CLIP_RANGE;
+	}
+
+	void FallSites::ClipStep()
+	{
+		if (clipQueue.empty())
+			return;
+		auto* tes = RE::TES::GetSingleton();
+		if (!tes)
+			return;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double, std::milli>(CLIP_BUDGET_MS);
+		while (!clipQueue.empty() && std::chrono::steady_clock::now() < deadline) {
+			RE::NiPointer<RE::BSGeometry> geometry = clipQueue.back();
+			clipQueue.pop_back();
+			auto* triShape = geometry ? geometry->AsTriShape() : nullptr;
+			auto* renderer = geometry ? geometry->GetGeometryRuntimeData().rendererData : nullptr;
+			if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || !grounded.contains(geometry.get()))
+				continue;
+			auto* cell = tes->interiorCell ? tes->interiorCell : tes->GetCell(geometry->world.translate);
+			auto* bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
+			auto* world = bhkWorld ? bhkWorld->GetWorld1() : nullptr;
+			if (!world)
+				continue;
+			const auto& counts = triShape->GetTrishapeRuntimeData();
+			const uint32_t stride = renderer->vertexDesc.GetSize();
+			const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+			if (stride < positionOffset + 12)
+				continue;
+			std::vector<RE::NiPoint3> positions(counts.vertexCount);
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				float local[3];
+				std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
+				positions[v] = geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
+			}
+			std::vector<RE::NiPoint3> normals(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+			for (uint32_t i = 0; i < counts.triangleCount; i++) {
+				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+				if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+					continue;
+				const RE::NiPoint3 face = (positions[index[1]] - positions[index[0]]).Cross(positions[index[2]] - positions[index[0]]);
+				for (int k = 0; k < 3; k++)
+					normals[index[k]] += face;
+			}
+			const auto base = static_cast<uint32_t>(vertexClips.size());
+			{
+				const RE::BSReadLockGuard lock(bhkWorld->worldLock);
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					const float length = normals[v].Length();
+					bool inside = false;
+					vertexClips.push_back(RockClip(world, positions[v], length > 1e-6f ? normals[v] / length : RE::NiPoint3(0.0f, 0.0f, 1.0f), inside));
+					clipTested++;
+					clipInside += inside ? 1 : 0;
+				}
+			}
+			vertexClipBase[geometry.get()] = base;
+			vertexClipVersion++;
+		}
+		if (clipQueue.empty())
+			logger::info("[Fluid Field] Waterfall rock cut: {} vertices of {} lit meshes tested, {} inside rock", clipTested, vertexClipBase.size(), clipInside);
 	}
 
 	void FallSites::CaptureStep()
@@ -1834,6 +1960,7 @@ namespace FluidFieldSim
 	{
 		waterSurfaces = &a_water;
 		CaptureStep();
+		ClipStep();
 		PollStreams();
 		if (updatesUntilScan > 0) {
 			updatesUntilScan--;

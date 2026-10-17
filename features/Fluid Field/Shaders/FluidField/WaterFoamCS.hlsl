@@ -73,7 +73,7 @@ static const float SPLASH_RATE = 6.0;
 /** D44: foam made per second where a waterfall plunges in at full strength: it stays white there. */
 static const float PLUNGE_RATE = 1.0;
 /** D49: extra foam right where the falls meet the water (the plunge map near 1): solid, hiding where the falls are cut. */
-static const float PLUNGE_RIM_RATE = 5.0;  // D48: was 3, which saturated the pool into a flat white sheet
+static const float PLUNGE_RIM_RATE = 2.0;  // D48: was 3, which saturated the pool into a flat white sheet; D56: 5 made a flat grey band
 
 /** The eight neighbour directions, for finding obstacles around a cell. */
 static const int2 NEIGHBOURS[8] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1), int2(1, 1), int2(-1, 1), int2(1, -1), int2(-1, -1) };

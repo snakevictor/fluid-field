@@ -56,8 +56,9 @@ namespace FluidFieldSim
 		std::vector<float> heights;
 		std::size_t next = 0;
 		bool complete = false;
-		uint32_t layerHits[64]{};  ///< Ray hits by collision layer, solid or passed through
-		uint32_t misses = 0;       ///< Rays that found nothing solid
-		uint32_t smoothed = 0;     ///< Texels the median moved by more than 16 units
+		uint32_t layerHits[64]{};   ///< Ray hits by collision layer, solid or passed through
+		uint32_t misses = 0;        ///< Rays that found nothing solid
+		uint32_t fallsSkipped = 0;  ///< D56: hits on the falls' own collision, passed through
+		uint32_t smoothed = 0;      ///< Texels the median moved by more than 16 units
 	};
 }

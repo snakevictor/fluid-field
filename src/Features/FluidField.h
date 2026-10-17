@@ -97,7 +97,6 @@ struct FluidField : OverlayFeature
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		float FallFlowPeriod = 0.5f;         ///< Seconds per cycle of the falls' flowmap (D32): shorter stretches the texture less, pulses more
 		float FallFlowMost = 2.5f;           ///< Most texture repeats the flowmap moves the texture per cycle
-		float FallAcceleration = 0.6f;       ///< How much of gravity's pull the falling water keeps as speed (D33; 0: the solved flow only)
 		int SprayAmount = 200;               ///< Spray droplets alive per emitter at once (D31)
 		float SpraySize = 1.4f;              ///< Spray droplet width, world units
 		float SprayOpacity = 0.2f;           ///< How opaque each droplet is
@@ -281,7 +280,7 @@ public:
 	 * grounding and flow (D26, D29) when it is part of a grounded falling-water mesh, and turns it off
 	 * again for the next draw otherwise.
 	 */
-	void SetupFallGeometry(RE::BSRenderPass* a_pass);
+	void SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly = false);
 
 	/**
 	 * @brief Called from the deferred passes: snapshots the main camera for the ground fog drawn
@@ -319,18 +318,19 @@ private:
 		float FlowSpeed;
 		float FlowPeriod;
 		float FlowMost;
-		float SteepFrom;
-		float SteepTo;
+		float Scroll[2];
 		float TexOffset[2];
-		float Gravity;
+		uint32_t VertexBase;
 		float Translucency;
 		float TexScale[2];
 		uint32_t HideUnderwater;
 		float PoolFoamHeight;
 		float CameraOffset[3];
 		uint32_t Whitening;
+		uint32_t HideDraw;
+		float GroundPad[3];
 	};
-	static_assert(sizeof(FallGroundData) == 112);
+	static_assert(sizeof(FallGroundData) == 128);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
 	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must be FallCapture::CELL: the flows are copied texel for texel
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
@@ -338,14 +338,23 @@ private:
 	static constexpr float FALL_GROUND_CONTACT = 6.0f;    ///< World units over which water fades where it cuts into rock
 	static constexpr float FALL_GROUND_LIFT_MOST = 8.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
 	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
-	static constexpr float FALL_POOL_FOAM = 26.0f;         ///< World units above the water below over which the falls foam into it (D36)
-	static constexpr float FALL_GRAVITY = 687.0f;          ///< World units per second squared (Skyrim's)
-	static constexpr float FALL_STREAM_STEEP_FROM = 0.6f;  ///< Upward normal below which the water falls straight down its slope (the flow is solved from above)
-	static constexpr float FALL_STREAM_STEEP_TO = 0.9f;
+	static constexpr float FALL_POOL_FOAM = 26.0f;  ///< World units above the water below over which the falls foam into it (D36)
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> fallGroundSRV;
 	winrt::com_ptr<ID3D11Texture2D> fallStreamTexture;  ///< FallSites::BuildStreamMap: velocity (x, y), foam, water
 	winrt::com_ptr<ID3D11ShaderResourceView> fallStreamSRV;
+	winrt::com_ptr<ID3D11Buffer> fallClipBuffer;  ///< D56: the falls' per-vertex rock cut (FallSites::GetVertexClips)
+	winrt::com_ptr<ID3D11ShaderResourceView> fallClipSRV;
+	uint64_t fallClipVersion = UINT64_MAX;
+	/** @brief D56: vanilla's scroll of a falls material, measured from its texture offset over time. */
+	struct FallScroll
+	{
+		float offset = 0.0f;
+		float time = 0.0f;
+		float rate = 0.0f;
+		bool known = false;
+	};
+	std::unordered_map<const void*, FallScroll> fallScrolls;
 	std::vector<float> fallStreamScratch;
 	winrt::com_ptr<ID3D11Buffer> fallGroundOn;  ///< Constants for grounded draws, rewritten per draw (each mesh's texture scroll)
 	FallGroundData fallGroundData{};

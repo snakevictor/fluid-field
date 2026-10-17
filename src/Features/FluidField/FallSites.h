@@ -119,6 +119,21 @@ namespace FluidFieldSim
 		void SetTranslucent(bool a_translucent);
 		/** @brief Whether a grounded geometry draws blended (SetTranslucent took on it). */
 		bool IsTranslucent(const RE::BSGeometry* a_geometry) const { return translucentGeometry.contains(a_geometry); }
+		/**
+		 * @brief D56: where a lit falls mesh's per-vertex rock cut starts in GetVertexClips, once tested.
+		 * Each value is how far the vertex stands out of the rock (negative inside it), for SV_ClipDistance.
+		 */
+		bool GetVertexClip(const RE::BSGeometry* a_geometry, uint32_t& a_base) const
+		{
+			const auto it = vertexClipBase.find(a_geometry);
+			if (it == vertexClipBase.end())
+				return false;
+			a_base = it->second;
+			return true;
+		}
+		const std::vector<float>& GetVertexClips() const { return vertexClips; }
+		/** @brief Changes whenever GetVertexClips grows. */
+		uint64_t GetVertexClipVersion() const { return vertexClipVersion; }
 		/** @brief Changes whenever the captured ground or the grounded meshes change. */
 		uint64_t GetGroundVersion() const { return groundVersion; }
 		/**
@@ -230,6 +245,20 @@ namespace FluidFieldSim
 		std::unordered_map<RE::NiAlphaProperty*, std::pair<RE::NiPointer<RE::NiAlphaProperty>, uint16_t>> blendedAlpha;
 		std::vector<RE::NiPointer<RE::BSGeometry>> borrowedAlpha;  ///< D54: lit surfaces given their own layers' alpha property, to give back
 		void RestoreAlpha();
+		/** @brief D56: tests the queued lit meshes' vertices against the rock, a few milliseconds a frame. */
+		void ClipStep();
+		/** @brief D56: how far a point on the falls stands out of the rock (negative inside), from rays out of it. */
+		float RockClip(RE::hkpWorld* a_world, const RE::NiPoint3& a_point, const RE::NiPoint3& a_normal, bool& a_inside) const;
+		std::unordered_map<const RE::BSGeometry*, uint32_t> vertexClipBase;
+		std::vector<float> vertexClips;
+		std::vector<RE::NiPointer<RE::BSGeometry>> clipQueue;
+		uint64_t vertexClipVersion = 0;
+		uint32_t clipTested = 0;
+		uint32_t clipInside = 0;
+		static constexpr float CLIP_REACH = 240.0f;  ///< D56: world units each ray out of a vertex looks for rock
+		static constexpr float CLIP_MARGIN = 6.0f;   ///< A vertex this far inside rock still shows (water lying on it)
+		static constexpr float CLIP_RANGE = 32.0f;   ///< The most a vertex counts as in or out, so the cut stays near the rock's face
+		static constexpr double CLIP_BUDGET_MS = 3.0;
 		std::unordered_set<std::string> loggedParts;  ///< Diagnostics: falling-water mesh parts already logged
 
 		/** @brief A triangle of vanilla's falling-water surface, in world space. */
@@ -324,6 +353,8 @@ namespace FluidFieldSim
 		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;  ///< World units round each point where the falls meet a pool that the water foams (D44, D47)
 		static constexpr float PLUNGE_FOAM_BAND = 40.0f;    ///< The falls' vertices this close to a pool's surface meet it (D47, D50)
 		static constexpr float FOG_PLUNGE_RADIUS = 180.0f;  ///< World units round each plunge that its fog spreads (D41)
+		static constexpr float PLUNGE_PUSH_OFFSET = 32.0f;  ///< D56: world units downstream of the falls' line the plunge pushes the water
+		static constexpr float PLUNGE_MARK = 0.001f;        ///< D56: radial speed marking a fall's emitter (its own foam rate) without spreading the water
 		static constexpr float PLUNGE_PULL = 0.2f;          ///< Fraction of the falling water's speed the water below is pulled along at
 		static constexpr int FLOW_DILATE_CELLS = 6;         ///< Cells the flow is carried past the water's edge for the surface
 		static constexpr float FALL_SPEED = 600.0f;         ///< World units per second of drop counted into the travel time, so steep water streaks too

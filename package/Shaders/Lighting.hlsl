@@ -55,6 +55,9 @@ struct VS_INPUT
 #if defined(EYE)
 	float EyeParameter: TEXCOORD2;
 #endif  // EYE
+#if defined(FLUID_FIELD)
+	uint VertexID: SV_VertexID;  // D56: the falls' per-vertex rock cut
+#endif
 };
 
 struct VS_OUTPUT
@@ -283,7 +286,7 @@ VS_OUTPUT main(VS_INPUT input)
 	vsout.ModelPosition = input.Position.xyz;
 
 #	if defined(FLUID_FIELD)
-	vsout.FallClip = FallGround::ClipDistance(worldPosition.xyz);
+	vsout.FallClip = FallGround::ClipDistance(worldPosition.xyz, input.VertexID);
 #	endif
 
 	return vsout;

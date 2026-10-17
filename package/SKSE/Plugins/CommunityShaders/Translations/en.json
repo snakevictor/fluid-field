@@ -873,8 +873,6 @@
     "feature.fluid_field.description": "A real-time fluid simulation around the player that drives interactive water, fog and smoke.",
     "feature.fluid_field.enabled": "Enabled",
     "feature.fluid_field.enabled_tooltip": "Simulates water, wind and ground fog around the player.",
-    "feature.fluid_field.fall_acceleration": "Fall Acceleration",
-    "feature.fluid_field.fall_acceleration_tooltip": "How much speed the water gains from the height it has dropped (1: free fall, 0: the solved flow only).",
     "feature.fluid_field.fall_flow_most": "Flow Stretch Limit",
     "feature.fluid_field.fall_flow_most_tooltip": "Most texture repeats the texture moves per cycle; it caps how fast the texture runs.",
     "feature.fluid_field.fall_flow_period": "Flow Cycle",

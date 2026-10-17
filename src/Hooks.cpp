@@ -265,7 +265,7 @@ namespace UtilityExtensions
 			func(shader, pass, renderFlags);
 			// Fluid Field (D38): the depth pre-pass cuts falling water where the lit pass hides it
 			if (globals::features::fluidField.loaded)
-				globals::features::fluidField.SetupFallGeometry(pass);
+				globals::features::fluidField.SetupFallGeometry(pass, true);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};

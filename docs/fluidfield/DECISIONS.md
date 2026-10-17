@@ -1249,3 +1249,43 @@ Entry format:
     takes the shader's own alpha; the blended falls still draw invisible,
     so Translucency stays 0 by default.
 -   References: D22, D53, D54
+
+## D56: Forward from the mesh itself; rock cut per vertex; the falls' own collision is not rock
+
+-   Date: 2026-10-17
+-   Phase / spike: @Victor's review screenshots 577-586, and a dissection of
+    vanilla's waterfall models (scratchpad ogfalls/report.md)
+-   Decision: A step back from D53-D55, which kept trading one failure for
+    another because the flow's direction came from the wrong source: a
+    top-down height map and the local slope, which arched, folded and
+    curtained meshes defeat (on an arch's back the surface rises from the
+    pool, so "downhill" points back).
+    -   Every vanilla falls mesh's v increases downstream (all of their
+        area) and vanilla scrolls the texture toward +v; the UVs are
+        stretched down the drops, so a constant scroll already accelerates
+        (about 100-150 units/s on the lips, 400-640 on the drops). The
+        flowmap's forward is now that: the mesh's own +v at vanilla's own
+        scroll rate, measured per material from its texture offset. The
+        solve only turns it aside (at most 35 degrees) and slows or
+        quickens it (0.5-1.6x); it never turns it back. The local-downhill
+        rules (D44, D53, D55), the least flow (D54) and the gravity speed
+        from the head (D33) are gone; the Fall Acceleration setting with
+        them.
+    -   The rock cut is per vertex, from rays out of each vertex of the lit
+        meshes against the game's collision (FallSites::ClipStep), read by
+        SV_VertexID in both the depth pre-pass and the lit pass, instead of
+        the top-down ground map, which called everything under an overhang
+        buried and holed the falls there. First run: the test (a ray that
+        meets rock from behind started inside it) found no vertex inside, so
+        nothing is cut in rock; the pools' cut is unchanged.
+    -   The ground capture passed through the falls' own collision (water
+        material on the static layer): 4622 of 32786 rays had taken it for
+        rock, under every fall.
+    -   The plunges no longer spread the shallow water out from points (it
+        lowered the surface at each, the dashes along the line); they push
+        it downstream from 32 units past the line. The plunge rim is lace,
+        not a flat band (rate 2).
+    -   A blended falls mesh is kept out of the depth pre-pass; it still
+        does not draw at all once blended, so the blended pass needs the
+        mesh registered with it (not done; Translucency stays 0).
+-   References: D32, D33, D34, D37, D38, D44, D53, D54, D55

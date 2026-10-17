@@ -27,7 +27,7 @@ namespace FluidFieldSim
 		constexpr float MIN_WIDTH = 96.0f;
 
 		/** @brief Speed the water spreads out from the plunge, world units per second. */
-		constexpr float RADIAL_SPEED = 110.0f;
+		constexpr float RADIAL_SPEED = 0.001f;  // D56: marks a fall's emitter only; spreading out from a point dented the water
 		/** @brief Speed the water runs on in the fall's direction, world units per second. */
 		constexpr float OUTFLOW_SPEED = 60.0f;
 

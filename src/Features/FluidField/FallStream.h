@@ -84,7 +84,6 @@ namespace FluidFieldSim
 		static constexpr float HEAD_MOST = 900.0f;       ///< Most height a head stands above the surface
 		static constexpr uint32_t COURSE_SWEEPS = 6000;  ///< Most sweeps for the course potential (D34)
 		static constexpr float COURSE_FORWARD = 0.35f;   ///< Least speed along the course, as a fraction of free flow: the water never runs back
-		static constexpr float DOWNHILL_FROM = 0.3f;     ///< D53: where the drive is at least this (the surface slopes), the water never runs up it
 		static constexpr float COURSE_START = 0.35f;     ///< Up to this far along the course (0 at the inflow, 1 at the outflow) the water is held to it: no backflow at the falls' start (D37)
 
 		static Result Solve(const Input& a_input);

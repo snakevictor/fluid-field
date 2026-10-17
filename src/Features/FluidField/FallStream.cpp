@@ -318,25 +318,6 @@ namespace FluidFieldSim
 			}
 		}
 
-		// D53: and never up the surface: where it slopes, the water runs down it at least COURSE_FORWARD of
-		// free flow whatever the course and the solve say, so geometry the course reads wrongly cannot send
-		// it back up a face
-		for (std::size_t i = 0; i < count; i++) {
-			if (!result.water[i])
-				continue;
-			const float slope = std::sqrt(gx[i] * gx[i] + gy[i] * gy[i]);
-			if (slope < DOWNHILL_FROM)
-				continue;
-			const float dx = gx[i] / slope, dy = gy[i] / slope;
-			const float along = result.vx[i] * dx + result.vy[i] * dy;
-			const float least = COURSE_FORWARD * slope;
-			if (along >= least)
-				continue;
-			result.vx[i] += dx * (least - along);
-			result.vy[i] += dy * (least - along);
-			result.speed[i] = std::sqrt(result.vx[i] * result.vx[i] + result.vy[i] * result.vy[i]);
-		}
-
 		// The surface for the mesh: the raw one smoothed over a cell, so the facets of vanilla's meshes
 		// do not show, and the depth over the rock
 		for (int32_t y = 0; y < h; y++) {

@@ -14,6 +14,16 @@ namespace FluidFieldSim
 		constexpr uint32_t MAX_SIDE = 512;
 		constexpr int FILL_PASSES = 8;
 
+		/** @brief D56: the falls' own collision (water material on the static layer) is not rock. */
+		bool IsFallingWater(const RE::hkpCollidable& a_collidable)
+		{
+			const auto* ref = RE::TESHavokUtilities::FindCollidableRef(a_collidable);
+			const auto* model = ref && ref->GetBaseObject() ? ref->GetBaseObject()->As<RE::TESModel>() : nullptr;
+			std::string path = model && model->GetModel() ? model->GetModel() : "";
+			std::transform(path.begin(), path.end(), path.begin(), [](unsigned char a_c) { return static_cast<char>(std::tolower(a_c)); });
+			return path.find("fxwaterfall") != std::string::npos || path.find("fxrapids") != std::string::npos;
+		}
+
 		bool IsSolidLayer(RE::COL_LAYER a_layer)
 		{
 			switch (a_layer) {
@@ -77,7 +87,9 @@ namespace FluidFieldSim
 					const float hitZ = fromZ + (bottom - fromZ) * output.hitFraction;
 					if (output.rootCollidable)
 						layerHits[static_cast<uint32_t>(output.rootCollidable->GetCollisionLayer()) & 63]++;
-					if (output.rootCollidable && IsSolidLayer(output.rootCollidable->GetCollisionLayer())) {
+					if (output.rootCollidable && IsSolidLayer(output.rootCollidable->GetCollisionLayer()) && IsFallingWater(*output.rootCollidable))
+						fallsSkipped++;
+					else if (output.rootCollidable && IsSolidLayer(output.rootCollidable->GetCollisionLayer())) {
 						hit = hitZ;
 						break;
 					}
@@ -173,7 +185,7 @@ namespace FluidFieldSim
 
 	std::string FallCapture::DescribeRays() const
 	{
-		std::string text = std::format("{} rays, {} found nothing solid, {} texels moved by the median; hits by layer:", heights.size(), misses, smoothed);
+		std::string text = std::format("{} rays, {} found nothing solid, {} texels moved by the median, {} passed through the falls' own collision; hits by layer:", heights.size(), misses, smoothed, fallsSkipped);
 		for (uint32_t layer = 0; layer < 64; layer++) {
 			if (layerHits[layer])
 				text += std::format(" {}={}", layer, layerHits[layer]);
