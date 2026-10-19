@@ -1,6 +1,7 @@
 #include "FallSites.h"
 
 #include "EngineGrid.h"
+#include "FallSheets.h"
 #include "FallSurfaceRenderer.h"
 
 #include "WaterSurfaces.h"
@@ -1709,6 +1710,7 @@ namespace FluidFieldSim
 		grounded.clear();
 		RestoreAlpha();
 		std::unordered_set<const RE::BSGeometry*> litMeshes;
+		litMeshList.clear();
 		for (const auto& site : sites) {
 			const FallCapture* capture = GetCapture(site);
 			if (!capture || !capture->IsComplete())
@@ -1733,6 +1735,9 @@ namespace FluidFieldSim
 					return RE::BSVisit::BSVisitControl::kContinue;
 				});
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+					// D61: our own sheets (FallSheets) are drawn as they are
+					if (a_geometry->name == FallSheets::SHEET_NAME)
+						return RE::BSVisit::BSVisitControl::kContinue;
 					// Only the water's own surfaces: the models also carry particle spray (no triangles of
 					// their own), which grounding and the streamlines would smear
 					auto* triShape = a_geometry->AsTriShape();
@@ -1741,6 +1746,7 @@ namespace FluidFieldSim
 					// D56: the lit surface's vertices are tested against the rock, once
 					if (triShape && triShape->GetTrishapeRuntimeData().triangleCount > 0 && netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get())) {
 						litMeshes.insert(a_geometry);
+						litMeshList.push_back({ RE::NiPointer<RE::BSGeometry>(a_geometry), site.bottom, site.id, site.levels });
 						if (!vertexClipBase.contains(a_geometry) &&
 							std::none_of(clipQueue.begin(), clipQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }))
 							clipQueue.emplace_back(a_geometry);
@@ -2730,6 +2736,30 @@ namespace FluidFieldSim
 				}
 			}
 		}
+	}
+
+	bool FallSites::PoolLevelAt(float a_x, float a_y, float& a_level) const
+	{
+		bool found = false;
+		for (const auto& [key, stream] : streams) {
+			if (!stream.ready || stream.result.cover.size() != static_cast<std::size_t>(stream.result.width) * stream.result.height)
+				continue;
+			const auto x = static_cast<int32_t>(std::lround((a_x - stream.originX) / FallCapture::CELL));
+			const auto y = static_cast<int32_t>(std::lround((a_y - stream.originY) / FallCapture::CELL));
+			if (x < 0 || y < 0 || x >= static_cast<int32_t>(stream.result.width) || y >= static_cast<int32_t>(stream.result.height))
+				continue;
+			const float cover = stream.result.cover[static_cast<std::size_t>(y) * stream.result.width + x];
+			if (cover <= NO_SURFACE)
+				continue;
+			a_level = found ? std::max(a_level, cover) : cover;
+			found = true;
+		}
+		return found;
+	}
+
+	uint32_t FallSites::CountReadyStreams() const
+	{
+		return static_cast<uint32_t>(std::count_if(streams.begin(), streams.end(), [](const auto& a_entry) { return a_entry.second.ready; }));
 	}
 
 	void FallSites::BuildPoolMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const

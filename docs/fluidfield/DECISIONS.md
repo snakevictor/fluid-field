@@ -1398,3 +1398,44 @@ Entry format:
     -   Measured after a sped-up session (sgtm 8, then 0.1): the texture
         moves steadily down, step after step.
 -   References: D28, D58, D59
+
+## D61: Our own waterfall sheets, one per fall, marched from surface A to surface B (prototype)
+
+-   Date: 2026-10-18
+-   Phase / spike: @Victor's proposal (four points A-D, a tessellated grid
+    deformed by rays against the rock, boulders, water-tight sides, groove
+    filling, a solver), and two research reports (scratchpad research/
+    ownmesh_codebase.md, ownmesh_techniques.md)
+-   Decision: First milestone of the proposal (FallSheets):
+    -   One sheet per fall: a site's lit vanilla pieces whose lips stand at
+        the same water level. Their lips (top edges: v runs downstream),
+        spread across the mean way the water goes, give the lip line A to
+        B; every column starts on the upper water's surface.
+    -   32 guide columns marched together, a step at a time: riding the
+        upper water while over it (the pool map), then ballistic through
+        the air, sliding on the rock (gravity along it, less friction) while
+        it holds the water, off it where it falls away; ending in the first
+        pool, at any of the site's lower water levels, or where it stalls
+        on level rock. Each step every column's heading is drawn halfway
+        toward its neighbours', so the sheet holds together. C and D are
+        results of the march, as the research advised.
+    -   Filled to a 96 x 72 grid, softened, the texture's v the water's
+        travel time at vanilla's scroll (only ever increasing: no flowmap
+        resets).
+    -   Drawn by the engine: a clone of the fall's first vanilla piece gets
+        our vertex and index buffers in its own vertex layout (its renderer
+        data swapped, ours never released by the engine and given back
+        before the clone goes), under the same parent, with vanilla's
+        material; the vanilla pieces are hidden. Both faces for now.
+    -   Findings on the way: the falls' vertex layout reads VF_FULLPREC
+        false although positions are four floats (UV at 16); columns
+        started at vanilla's lip vertices began inside the rock and fell
+        through it; starting upstream on the water, they sank to the
+        riverbed and slid under the upper and middle pools until the
+        pools stopped them.
+    -   Open: columns that stall on ledges leave gaps; a probe that starts
+        inside rock can follow faces inside it; boulders, groove filling,
+        water-tight sides, the solver and shading are not done. Debug
+        dumps (FluidField_sheet\*.bin) and the column overlay (Waterfall
+        Shading debug) are in for the iteration.
+-   References: D30, D31, D56, D59

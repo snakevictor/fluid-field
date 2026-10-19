@@ -975,6 +975,8 @@
     "feature.fluid_field.overlay_scale": "Overlay Scale",
     "feature.fluid_field.overlay_title": "Fluid Field Layers###FluidFieldLayers",
     "feature.fluid_field.overlay_velocity_range": "Velocity Range",
+    "feature.fluid_field.own_fall_sheets": "Generated Falls",
+    "feature.fluid_field.own_fall_sheets_tooltip": "Replaces vanilla's falling water with sheets generated from each fall's lip down the rock to the water below, drawn with vanilla's material.",
     "feature.fluid_field.quality": "Quality",
     "feature.fluid_field.ray_spacing": "Ray Spacing",
     "feature.fluid_field.ray_spacing_tooltip": "World units between rays. Smaller finds smaller rocks and casts more rays. Changing it clears the results.",

@@ -61,6 +61,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GroundWaterfalls,
 	HideUnderwaterFalls,
 	FallWhitening,
+	OwnFallSheets,
 	FallTranslucency,
 	FallLayerMask,
 	FallFlowPeriod,
@@ -140,6 +141,8 @@ void FluidField::DrawSettings()
 		tooltip(T(TKEY("fall_whitening_tooltip"), "White water on the falls where they strike rock, where vanilla's pieces meet, into the water below and where they fall fast."));
 		ImGui::SliderFloat(T(TKEY("fall_translucency"), "Translucency"), &settings.FallTranslucency, 0.0f, 0.9f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("fall_translucency_tooltip"), "How see-through the falls' thin water is, in patches that stream with it; white water stays opaque. 0 draws them opaque, as vanilla does."));
+		ImGui::Checkbox(T(TKEY("own_fall_sheets"), "Generated Falls"), &settings.OwnFallSheets);
+		tooltip(T(TKEY("own_fall_sheets_tooltip"), "Replaces vanilla's falling water with sheets generated from each fall's lip down the rock to the water below, drawn with vanilla's material."));
 		ImGui::Checkbox(T(TKEY("hide_underwater_falls"), "Hide Buried Falls"), &settings.HideUnderwaterFalls);
 		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes under the water above or below them, or deep in the rock."));
 		ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Plunge Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -332,6 +335,9 @@ void FluidField::DrawOverlay()
 {
 	if ((showFallSites || fallDebugView > 0) && loaded && settings.Enabled)
 		fallSites.DrawDebug(ImGui::GetBackgroundDrawList(), FALL_SITES_DEBUG_RANGE, showFallSites, fallDebugView);
+	// D61: the sheets' marched columns
+	if (settings.WaterfallDebug != 0 && loaded && settings.Enabled)
+		fallSheets.DrawDebug(ImGui::GetBackgroundDrawList());
 	if (!(showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews))
 		return;
 
@@ -847,9 +853,11 @@ void FluidField::Prepass()
 			fallSites.SetTranslucent(settings.GroundWaterfalls && settings.FallTranslucency > 0.0f);
 			fallSurfaceTime += deltaTime;
 			fallSites.Update(water);
+			fallSheets.Update(fallSites, settings.GroundWaterfalls && settings.OwnFallSheets);
 			UpdateFallGround(playerPos);
 		} else {
 			waterfalls.Clear();
+			fallSheets.Clear();
 			fallSites.Clear();
 		}
 	} else {
@@ -922,6 +930,7 @@ void FluidField::ReleaseWater()
 	wakeSources.Clear();
 	vanillaFoam.RestoreAll();
 	waterfalls.Clear();
+	fallSheets.Clear();
 	fallSites.Clear();
 	ReleaseFallGround();
 	fallSurface.Release();

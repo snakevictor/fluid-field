@@ -3,6 +3,7 @@
 #include "FluidField/AirSources.h"
 #include "FluidField/BedRaycasts.h"
 #include "FluidField/DepthMapView.h"
+#include "FluidField/FallSheets.h"
 #include "FluidField/FallSites.h"
 #include "FluidField/GroundHeightMap.h"
 #include "FluidField/LandscapeCache.h"
@@ -93,6 +94,7 @@ struct FluidField : OverlayFeature
 		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		bool HideUnderwaterFalls = true;     ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
 		bool FallWhitening = true;           ///< The falls whiten with their foam and speed (D34)
+		bool OwnFallSheets = true;           ///< D61: generate our own waterfall sheets in place of vanilla's lit falls pieces
 		float FallTranslucency = 0.0f;       ///< D53: how see-through the falls' thin water is (0: opaque, drawn as vanilla's)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		float FallFlowPeriod = 0.5f;         ///< Seconds per cycle of the falls' flowmap (D32): shorter stretches the texture less, pulses more
@@ -296,6 +298,7 @@ private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
 	FluidFieldSim::WaterfallSources waterfalls;
 	FluidFieldSim::FallSites fallSites;
+	FluidFieldSim::FallSheets fallSheets;            ///< D61: our own waterfall sheets
 	FluidFieldSim::FallSurfaceRenderer fallSurface;  ///< D30: the falls' own water surfaces
 	float fallSurfaceTime = 0.0f;                    ///< Seconds, for the surfaces' flow
 

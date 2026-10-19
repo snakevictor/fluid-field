@@ -132,6 +132,19 @@ namespace FluidFieldSim
 			return true;
 		}
 		const std::vector<float>& GetVertexClips() const { return vertexClips; }
+		/** @brief D61: a grounded site's lit falls piece, and the water level its site ends in. */
+		struct LitMesh
+		{
+			RE::NiPointer<RE::BSGeometry> geometry;
+			float bottom = 0.0f;
+			uint32_t siteId = 0;
+			std::vector<float> levels;  ///< The site's water levels, highest first
+		};
+		const std::vector<LitMesh>& GetLitMeshes() const { return litMeshList; }
+		/** @brief D61: the surface of the pool over a world point (a site's solved flow's cover), or false where there is none (yet). */
+		bool PoolLevelAt(float a_x, float a_y, float& a_level) const;
+		/** @brief D61: how many sites' flows are solved (their pools known). */
+		uint32_t CountReadyStreams() const;
 
 		/**
 		 * @brief D59: a lit falls mesh's flow, solved once on its own texture grid (u across, v down), with the
@@ -259,6 +272,7 @@ namespace FluidFieldSim
 		std::unordered_map<uint64_t, std::string> cellSummaries;  ///< Last summary logged per cell
 		std::unordered_map<uint64_t, FallCapture> captures;       ///< By Site::captureKey
 		std::unordered_set<const RE::BSGeometry*> grounded;
+		std::vector<LitMesh> litMeshList;
 		bool translucent = false;
 		std::unordered_set<const RE::BSGeometry*> translucentGeometry;
 		/** @brief The alpha properties switched to blending, with their own flags to restore. */
