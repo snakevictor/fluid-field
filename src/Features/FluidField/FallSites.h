@@ -143,6 +143,11 @@ namespace FluidFieldSim
 		const std::vector<LitMesh>& GetLitMeshes() const { return litMeshList; }
 		/** @brief D61: the surface of the pool over a world point (a site's solved flow's cover), or false where there is none (yet). */
 		bool PoolLevelAt(float a_x, float a_y, float& a_level) const;
+		/**
+		 * @brief D63: the footprint of the engine's water object at a level over a point (its mesh's extent), or false
+		 * where none is (cell water covers whole cells and is not counted). a_bounds: min x, min y, max x, max y.
+		 */
+		bool WaterObjectBounds(float a_x, float a_y, float a_level, float a_reach, float a_bounds[4]) const;
 		/** @brief D61: how many sites' flows are solved (their pools known). */
 		uint32_t CountReadyStreams() const;
 

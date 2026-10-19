@@ -64,229 +64,180 @@ namespace FluidFieldSim
 			const float length = a_v.Length();
 			return length > 1e-6f ? a_v / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
 		}
-	}
 
-	void FallSheets::March(RE::hkpWorld* a_world, const FallSites& a_sites, const std::vector<RE::NiPoint3>& a_starts, const std::vector<RE::NiPoint3>& a_headings, const Fall& a_fall,
-		std::vector<Column>& a_columns)
-	{
-		// Every column a step at a time, together:
-		// - on the upper water while over it (its surface, level, at the lip's speed), until the brink;
-		// - through the air on a ballistic arc;
-		// - sliding on the rock (gravity along it, less friction) while it holds the water, off it where it falls away;
-		// - ending in the first pool it enters, at the water below, or where it stalls on level rock.
-		// After each step every column's heading is drawn toward its neighbours', so the sheet holds together
-		const std::size_t n = a_starts.size();
-		struct State
+		/** @brief D62: the engine's own mesh builder (77465, 1.7.104): a BSTriShape with its renderer data from separate arrays; null arrays are left out of its layout. */
+		RE::BSTriShape* BuildShape(uint32_t a_triangles, const uint16_t* a_indices, uint32_t a_vertices, RE::NiPoint3* a_positions, RE::NiPoint2* a_uvs, RE::NiPoint3* a_normals,
+			RE::NiPoint3* a_tangents, RE::NiPoint3* a_bitangents)
 		{
-			RE::NiPoint3 p, velocity, normal{ 0.0f, 0.0f, 1.0f };
-			bool onRock = false, onWater = true, done = false;
-			float time = 0.0f;
-		};
-		std::vector<State> states(n);
-		a_columns.assign(n, {});
-		for (std::size_t k = 0; k < n; k++) {
-			states[k].p = a_starts[k];
-			states[k].velocity = a_headings[k] * LIP_SPEED;
-			a_columns[k].points.assign(1, a_starts[k]);
-			a_columns[k].times.assign(1, 0.0f);
-			a_columns[k].onRock.assign(1, 0);
+			using Build_t = RE::BSTriShape* (*)(uint32_t, const uint16_t*, uint32_t, RE::NiPoint3*, RE::NiPoint2*, void*, RE::NiPoint3*, RE::NiPoint3*, RE::NiPoint3*, void*, void*, void*, void*,
+				void*, void*);
+			static REL::Relocation<Build_t> build{ REL::ID(77465) };
+			return build(a_triangles, a_indices, a_vertices, a_positions, a_uvs, nullptr, a_normals, a_tangents, a_bitangents, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
 		}
-		const RE::NiPoint3 gravity(0.0f, 0.0f, -GRAVITY);
-		for (uint32_t step = 0; step < MOST_STEPS; step++) {
-			bool any = false;
-			for (std::size_t k = 0; k < n; k++) {
-				State& s = states[k];
-				if (s.done)
-					continue;
-				any = true;
-				const float dt = STEP / std::max(s.velocity.Length(), 60.0f);
-				float level = 0.0f;
-				const bool overPool = a_sites.PoolLevelAt(s.p.x, s.p.y, level);
-				if (s.onWater) {
-					// Riding the upper water's surface until it is no longer under the sheet
-					RE::NiPoint3 flat(s.velocity.x, s.velocity.y, 0.0f);
-					const RE::NiPoint3 next = s.p + flat * dt;
-					float nextLevel = 0.0f;
-					if (a_sites.PoolLevelAt(next.x, next.y, nextLevel) && nextLevel >= a_fall.upper - LEVEL_REACH) {
-						s.p = RE::NiPoint3(next.x, next.y, a_fall.upper + 2.0f);
-					} else {
-						s.onWater = false;
-						s.p = next;
-					}
-				} else if (s.onRock) {
-					s.velocity += (gravity - s.normal * gravity.Dot(s.normal)) * dt;
-					s.velocity = s.velocity - s.normal * s.velocity.Dot(s.normal);
-					s.velocity *= std::max(1.0f - FRICTION * dt, 0.0f);
-					RE::NiPoint3 next = s.p + s.velocity * dt;
-					float distance;
-					RE::NiPoint3 wall;
-					const RE::NiPoint3 ahead = Normalized(s.velocity);
-					if (s.velocity.Length() > 1.0f && RockHit(a_world, s.p, ahead, (next - s.p).Length() + FLOW_DEPTH, distance, wall)) {
-						next = s.p + ahead * std::max(distance - FLOW_DEPTH, 0.0f);
-						s.velocity = s.velocity - wall * s.velocity.Dot(wall);
-						s.normal = Normalized(s.normal + wall);
-					}
-					RE::NiPoint3 under;
-					const RE::NiPoint3 probeFrom = next + s.normal * PROBE;
-					const RE::NiPoint3 probeDown = -s.normal;
-					if (RockHit(a_world, probeFrom, probeDown, PROBE * 2.0f, distance, under) && distance < PROBE + FLOW_DEPTH * 2.0f) {
-						s.normal = under;
-						s.p = probeFrom + probeDown * distance + s.normal * FLOW_DEPTH;
-					} else {
-						s.onRock = false;
-						s.p = next;
-					}
-					if (s.normal.z > 0.9f && s.velocity.Length() < STALL_SPEED && step > 4)
-						s.done = true;
-				} else {
-					const RE::NiPoint3 next = s.p + s.velocity * dt + gravity * (0.5f * dt * dt);
-					const RE::NiPoint3 travel = next - s.p;
-					float distance;
-					RE::NiPoint3 hit;
-					if (RockHit(a_world, s.p, Normalized(travel), travel.Length() + FLOW_DEPTH, distance, hit)) {
-						s.p = s.p + Normalized(travel) * distance + hit * FLOW_DEPTH;
-						s.velocity = (s.velocity - hit * s.velocity.Dot(hit)) * 0.7f;
-						s.normal = hit;
-						s.onRock = true;
-					} else {
-						s.p = next;
-						s.velocity += gravity * dt;
-					}
-				}
-				const float speed = s.velocity.Length();
-				if (speed > MOST_SPEED)
-					s.velocity *= MOST_SPEED / speed;
-				s.time += dt;
-				// Into a pool (any but the one it came from), or the water below: ends just under its surface
-				float poolLevel = 0.0f;
-				const bool inPool = !s.onWater && a_sites.PoolLevelAt(s.p.x, s.p.y, poolLevel) && poolLevel < a_fall.upper - LEAST_DROP * 0.5f && s.p.z <= poolLevel;
-				// ...or crossing any of the site's water levels under the upper one (a tier's pool the pool map has
-				// no water for)
-				float crossed = a_fall.lower;
-				for (const float tier : a_fall.levels) {
-					if (s.p.z <= tier && a_columns[k].points.back().z > tier)
-						crossed = std::max(crossed, tier);
-				}
-				if (inPool || s.p.z <= crossed) {
-					s.p.z = (inPool ? poolLevel : crossed) - POOL_TUCK;
-					s.done = true;
-				}
-				(void)overPool;
-				a_columns[k].points.push_back(s.p);
-				a_columns[k].times.push_back(s.time);
-				a_columns[k].onRock.push_back(s.onRock ? 1 : 0);
-			}
-			if (!any)
-				break;
-			// The headings drawn toward the neighbours' (level part only: each keeps its own fall)
-			std::vector<RE::NiPoint3> flat(n);
-			for (std::size_t k = 0; k < n; k++)
-				flat[k] = RE::NiPoint3(states[k].velocity.x, states[k].velocity.y, 0.0f);
-			for (std::size_t k = 0; k < n; k++) {
-				State& s = states[k];
-				if (s.done || s.onWater)
-					continue;
-				RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
-				int count = 0;
-				for (const std::size_t j : { k - 1, k + 1 }) {
-					if (j < n && !states[j].done) {
-						sum += flat[j];
-						count++;
-					}
-				}
-				if (!count)
-					continue;
-				const RE::NiPoint3 own = flat[k];
-				const RE::NiPoint3 blended = own + (sum / static_cast<float>(count) - own) * NEIGHBOUR_PULL;
-				s.velocity.x = blended.x;
-				s.velocity.y = blended.y;
-			}
+
+		/** @brief A copy of a lit property for our shape: two-sided, set up for it as a NIF load would. */
+		void GiveProperty(RE::BSTriShape* a_shape, RE::BSShaderProperty* a_source)
+		{
+			if (!a_source)
+				return;
+			RE::NiCloningProcess cloning;
+			auto* copy = static_cast<RE::BSShaderProperty*>(a_source->CreateClone(cloning));
+			if (!copy)
+				return;
+			copy->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kTwoSided, true);
+			a_shape->GetGeometryRuntimeData().shaderProperty.reset(copy);
+			copy->SetupGeometry(a_shape);
+			copy->FinishSetupGeometry(a_shape);
 		}
 	}
 
 	void FallSheets::Drape(RE::hkpWorld* a_world, const FallSites& a_sites, const std::vector<RE::NiPoint3>& a_starts, const RE::NiPoint3& a_flow, const Fall& a_fall, std::vector<Column>& a_columns)
 	{
+		// D63, kept simple: the sheet starts where the upper water's mesh ends, falls on the arc of the water's speed
+		// there into the water below, and is only mildly disturbed by the rock under it
 		const std::size_t n = a_starts.size();
 		const uint32_t rows = DRAPE_ROWS;
-		const float drop = a_fall.upper - a_fall.lower + POOL_TUCK;
+		const RE::NiPoint3 up(0.0f, 0.0f, 1.0f);
 		std::vector<RE::NiPoint3> grid(n * rows);
-		std::vector<uint8_t> touched(grid.size(), 0);
+		std::vector<uint8_t> lifted(grid.size(), 0);
 		const auto at = [&](std::size_t a_k, uint32_t a_r) -> RE::NiPoint3& { return grid[a_r * n + a_k]; };
-		// The free curtain: from each column's start on the upper water, on a ballistic arc at the lip's speed, down to
-		// the water below, rows evenly spaced in height
+		const float speed = std::clamp(a_fall.speed, SLOWEST_TOP, FASTEST_TOP);
+		const float fast = (speed - SLOWEST_TOP) / (FASTEST_TOP - SLOWEST_TOP);  // 0 slow and thin, 1 fast and thick
+		const float lift = SLOW_LIFT + (FAST_LIFT - SLOW_LIFT) * fast;
+		const int smoothing = SLOW_SMOOTHING + static_cast<int>(std::lround(static_cast<float>(FAST_SMOOTHING - SLOW_SMOOTHING) * fast));
+
+		// The brink: where the upper water's mesh (its water object's footprint) ends, along the flow from each column's
+		// start; without one, the lip itself
+		std::vector<RE::NiPoint3> brinks(n);
+		float bounds[4];
 		for (std::size_t k = 0; k < n; k++) {
-			for (uint32_t r = 0; r < rows; r++) {
-				const float fallen = drop * static_cast<float>(r) / static_cast<float>(rows - 1);
+			RE::NiPoint3 brink = a_starts[k] + a_flow * UPSTREAM;
+			if (a_sites.WaterObjectBounds(a_starts[k].x, a_starts[k].y, a_fall.upper, LEVEL_REACH, bounds)) {
+				float exit = BRINK_REACH;
+				if (a_flow.x > 1e-4f)
+					exit = std::min(exit, (bounds[2] - a_starts[k].x) / a_flow.x);
+				else if (a_flow.x < -1e-4f)
+					exit = std::min(exit, (bounds[0] - a_starts[k].x) / a_flow.x);
+				if (a_flow.y > 1e-4f)
+					exit = std::min(exit, (bounds[3] - a_starts[k].y) / a_flow.y);
+				else if (a_flow.y < -1e-4f)
+					exit = std::min(exit, (bounds[1] - a_starts[k].y) / a_flow.y);
+				brink = a_starts[k] + a_flow * std::max(exit, 0.0f);
+			}
+			brink.z = a_fall.upper;
+			brinks[k] = brink;
+			if (k == 0 || k == n / 2 || k + 1 == n)
+				logger::info("[Fluid Field]   brink {}: start ({:.0f}, {:.0f}), {}, brink ({:.0f}, {:.0f}), {:.0f} past the start", k, a_starts[k].x, a_starts[k].y,
+					a_sites.WaterObjectBounds(a_starts[k].x, a_starts[k].y, a_fall.upper, LEVEL_REACH, bounds) ?
+						std::format("water object ({:.0f}..{:.0f}, {:.0f}..{:.0f})", bounds[0], bounds[2], bounds[1], bounds[3]) :
+						std::string("no water object at the level"),
+					brink.x, brink.y, (brink - a_starts[k]).Dot(a_flow));
+		}
+
+		// The arc: row 0 back over the upper water, row 1 on the brink, then the ballistic fall at the top's speed,
+		// rows evenly spaced in height, down past the water below by the plunge depth
+		const float drop = a_fall.upper - a_fall.lower;
+		const float landing = std::sqrt(speed * speed + 2.0f * GRAVITY * std::max(drop, 0.0f));
+		const float plunge = std::clamp(landing * PLUNGE_PER_SPEED, LEAST_PLUNGE, MOST_PLUNGE);
+		const float total = drop + plunge;
+		for (std::size_t k = 0; k < n; k++) {
+			at(k, 0) = brinks[k] - a_flow * OVERLAP;
+			at(k, 0).z = a_fall.upper;
+			for (uint32_t r = 1; r < rows; r++) {
+				const float fallen = total * static_cast<float>(r - 1) / static_cast<float>(rows - 2);
 				const float time = std::sqrt(2.0f * fallen / GRAVITY);
-				at(k, r) = a_starts[k] + a_flow * (UPSTREAM + LIP_SPEED * time) - RE::NiPoint3(0.0f, 0.0f, fallen);
+				at(k, r) = brinks[k] + a_flow * (speed * time) - up * fallen;
 			}
 		}
-		// Out onto the rock where it stands in front: of the two corrections (out downstream to the rock's face, up
-		// onto its top) the smaller, so a ledge lifts the water and a cliff holds it out
-		const auto pushOut = [&](RE::NiPoint3& a_p) {
-			float distance;
-			RE::NiPoint3 normal;
-			float best = FLT_MAX;
-			RE::NiPoint3 moved = a_p;
-			const RE::NiPoint3 fromSide = a_p + a_flow * DRAPE_REACH;
-			if (RockHit(a_world, fromSide, -a_flow, DRAPE_REACH, distance, normal) && distance < DRAPE_REACH) {
-				const RE::NiPoint3 candidate = fromSide - a_flow * distance + a_flow * FLOW_DEPTH;
-				best = (candidate - a_p).Length();
-				moved = candidate;
-			}
-			const RE::NiPoint3 fromAbove = a_p + RE::NiPoint3(0.0f, 0.0f, DRAPE_REACH);
-			if (RockHit(a_world, fromAbove, RE::NiPoint3(0.0f, 0.0f, -1.0f), DRAPE_REACH, distance, normal) && distance < DRAPE_REACH) {
-				const RE::NiPoint3 candidate(a_p.x, a_p.y, fromAbove.z - distance + FLOW_DEPTH);
-				if ((candidate - a_p).Length() < best) {
-					best = (candidate - a_p).Length();
-					moved = candidate;
-				}
-			}
-			a_p = moved;
-			return best < FLT_MAX;
+
+		// Mildly disturbed by the rock under it: each vertex looks PROBE_LENGTH under itself (against its facing, in the
+		// fall's downstream-up plane); rock found lifts it by a share of how far the rock reaches into that look. A
+		// vertex already in rock is left (the rock pokes through there)
+		const auto facing = [&](std::size_t a_k, uint32_t a_r) {
+			const RE::NiPoint3 along = at(a_k, std::min(a_r + 1, rows - 1)) - at(a_k, a_r > 0 ? a_r - 1 : 0);
+			const RE::NiPoint3 normal = Normalized(a_flow * (-along.z) + up * along.Dot(a_flow));
+			return normal.Length() > 0.5f ? normal : Normalized(a_flow + up);
 		};
-		for (uint32_t pass = 0; pass < DRAPE_PASSES; pass++) {
+		{
+			std::vector<RE::NiPoint3> moved = grid;
 			for (std::size_t k = 0; k < n; k++) {
-				for (uint32_t r = 1; r < rows; r++) {
-					if (pushOut(at(k, r)))
-						touched[r * n + k] = 1;
+				for (uint32_t r = 2; r < rows; r++) {
+					const RE::NiPoint3 normal = facing(k, r);
+					float distance;
+					RE::NiPoint3 hit;
+					if (!RockHit(a_world, at(k, r), -normal, PROBE_LENGTH, distance, hit))
+						continue;
+					moved[r * n + k] += normal * (lift * (PROBE_LENGTH - distance));
+					lifted[r * n + k] = 1;
 				}
 			}
-			if (pass + 1 == DRAPE_PASSES)
-				break;
-			// Smoothed, the lip row held: a sheet, not strands
+			grid.swap(moved);
+		}
+		// Smoothed, more for a fast, thick fall (small bumps disturb it less); the brink rows held
+		for (int pass = 0; pass < smoothing; pass++) {
 			std::vector<RE::NiPoint3> soft = grid;
 			for (std::size_t k = 0; k < n; k++) {
-				for (uint32_t r = 1; r < rows; r++) {
-					RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
-					float weight = 0.0f;
-					const auto add = [&](std::size_t a_k, uint32_t a_r, float a_w) {
-						sum += at(a_k, a_r) * a_w;
-						weight += a_w;
-					};
-					add(k, r, 2.0f);
-					if (k > 0)
-						add(k - 1, r, 1.0f);
-					if (k + 1 < n)
-						add(k + 1, r, 1.0f);
-					add(k, r - 1, 1.0f);
-					if (r + 1 < rows)
-						add(k, r + 1, 1.0f);
+				for (uint32_t r = 2; r < rows; r++) {
+					RE::NiPoint3 sum = at(k, r) * 2.0f;
+					float weight = 2.0f;
+					if (k > 0) {
+						sum += at(k - 1, r);
+						weight += 1.0f;
+					}
+					if (k + 1 < n) {
+						sum += at(k + 1, r);
+						weight += 1.0f;
+					}
+					sum += at(k, r - 1);
+					weight += 1.0f;
+					if (r + 1 < rows) {
+						sum += at(k, r + 1);
+						weight += 1.0f;
+					}
 					soft[r * n + k] = sum / weight;
 				}
 			}
 			grid.swap(soft);
 		}
-		// Into the pools it reaches: laid just under their surface
+
+		// Into the ground for good: the rows after the last one outside the rock (rock crossed an odd number of times by
+		// a ray from far above) collapse onto where the sheet went in. Rock it passes through and comes out of again
+		// (a boulder) is left: it pokes through
+		{
+			uint32_t trimmed = 0;
+			for (std::size_t k = 0; k < n; k++) {
+				uint32_t last = rows - 1;
+				while (last > 1 && RockCrossings(a_world, at(k, last) + up * 2000.0f, at(k, last)) % 2 == 1)
+					last--;
+				if (last + 1 >= rows)
+					continue;
+				RE::NiPoint3 entry = at(k, last + 1);
+				const RE::NiPoint3 step = at(k, last + 1) - at(k, last);
+				float distance;
+				RE::NiPoint3 hit;
+				if (RockHit(a_world, at(k, last), Normalized(step), step.Length(), distance, hit))
+					entry = at(k, last) + Normalized(step) * distance;
+				for (uint32_t r = last + 1; r < rows; r++)
+					at(k, r) = entry;
+				trimmed += rows - 1 - last;
+			}
+			logger::info("[Fluid Field]   sheet: {} rows of {} columns trimmed where it went into the ground", trimmed, n);
+		}
+
+		// Under the water below: never under its bed
 		for (std::size_t k = 0; k < n; k++) {
-			for (uint32_t r = 1; r < rows; r++) {
+			for (uint32_t r = 2; r < rows; r++) {
 				RE::NiPoint3& p = at(k, r);
-				float level = 0.0f;
-				if (a_sites.PoolLevelAt(p.x, p.y, level) && level < a_fall.upper - LEAST_DROP * 0.5f && p.z < level)
-					p.z = level - POOL_TUCK;
-				p.z = std::max(p.z, a_fall.lower - POOL_TUCK);
+				if (p.z >= a_fall.lower)
+					continue;
+				float distance;
+				RE::NiPoint3 hit;
+				const RE::NiPoint3 start(p.x, p.y, a_fall.lower + 8.0f);
+				if (RockHit(a_world, start, -up, 4000.0f, distance, hit))
+					p.z = std::max(p.z, start.z - distance + BED_CLEARANCE);
 			}
 		}
+
 		// The columns, with the water's travel time down them (its speed from the height it has fallen)
 		a_columns.assign(n, {});
 		for (std::size_t k = 0; k < n; k++) {
@@ -294,14 +245,31 @@ namespace FluidFieldSim
 			for (uint32_t r = 0; r < rows; r++) {
 				if (r > 0) {
 					const RE::NiPoint3 step = at(k, r) - at(k, r - 1);
-					const float speed = std::sqrt(LIP_SPEED * LIP_SPEED + 2.0f * GRAVITY * std::max(a_fall.upper - at(k, r).z, 0.0f));
-					time += step.Length() / std::max(speed, 1.0f);
+					const float v = std::sqrt(speed * speed + 2.0f * GRAVITY * std::max(a_fall.upper - at(k, r).z, 0.0f));
+					time += step.Length() / std::max(v, 1.0f);
 				}
 				a_columns[k].points.push_back(at(k, r));
 				a_columns[k].times.push_back(time);
-				a_columns[k].onRock.push_back(touched[r * n + k]);
+				a_columns[k].onRock.push_back(lifted[r * n + k]);
 			}
 		}
+	}
+
+	int FallSheets::RockCrossings(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_to)
+	{
+		const RE::NiPoint3 direction = Normalized(a_to - a_from);
+		const float reach = (a_to - a_from).Length();
+		int crossings = 0;
+		float from = 0.0f;
+		for (int step = 0; step < 16 && from < reach; step++) {
+			float distance;
+			RE::NiPoint3 normal;
+			if (!RockHit(a_world, a_from + direction * from, direction, reach - from, distance, normal))
+				break;
+			crossings++;
+			from += distance + 0.5f;
+		}
+		return crossings;
 	}
 
 	std::unique_ptr<FallSheets::Sheet> FallSheets::Build(const FallSites& a_sites, const Fall& a_fall)
@@ -309,35 +277,17 @@ namespace FluidFieldSim
 		// Every piece's vertices in the world, with its texture coordinates and colours; the first piece
 		// lends the sheet its vertex layout, material and place in the scene
 		RE::BSGeometry* first = a_fall.pieces.empty() ? nullptr : a_fall.pieces.front().get();
-		auto* firstRenderer = first ? first->GetGeometryRuntimeData().rendererData : nullptr;
 		auto* parent = first ? first->parent : nullptr;
-		if (!firstRenderer || !parent) {
-			logger::info("[Fluid Field]   sheet skipped: no renderer data or parent");
+		if (!parent || !REL::Module::IsAE()) {
+			logger::info("[Fluid Field]   sheet skipped: no parent, or not 1.7.104 (the engine's mesh builder)");
 			return nullptr;
 		}
-		RE::BSGraphics::VertexDesc desc = firstRenderer->vertexDesc;
-		const uint32_t stride = desc.GetSize();
-		const uint32_t positionOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-		const uint32_t uvOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
-		// Full-precision positions (four floats, the last the tangent's x) when the texture coordinates follow 16 bytes on;
-		// the flag read back false on the falls' own layout
-		const bool fullPrecision = uvOffset >= positionOffset + 16;
-		const bool hasNormal = desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_NORMAL);
-		const bool hasTangent = desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_TANGENT);
-		const bool hasColor = desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_COLORS);
-		const uint32_t normalOffset = hasNormal ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_NORMAL) : 0;
-		const uint32_t tangentOffset = hasTangent ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_BINORMAL) : 0;
-		const uint32_t colorOffset = hasColor ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_COLOR) : 0;
-		if (!fullPrecision || stride < positionOffset + 16 || !desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV)) {
-			logger::info("[Fluid Field]   sheet skipped: vertex layout (stride {}, position {}, uv {})", stride, positionOffset, uvOffset);
-			return nullptr;
-		}
-
 		std::vector<RE::NiPoint3> lips;     // Each piece's top edge
 		std::vector<RE::NiPoint3> heading;  // ...and the way the water leaves it, level, one per lip point
 		std::vector<std::array<uint8_t, 4>> colors;
 		std::vector<float> colorRun;  // 0 at a piece's top, 1 at its foot
-		RE::NiPoint3 facing(0.0f, 0.0f, 0.0f), mean(0.0f, 0.0f, 0.0f);
+		RE::NiPoint3 mean(0.0f, 0.0f, 0.0f);
+		float topSpeed = 0.0f, topSamples = 0.0f;  // D63: the water's speed at the top, from the pieces' texture density there
 		for (const auto& piece : a_fall.pieces) {
 			auto* triShape = piece ? piece->AsTriShape() : nullptr;
 			auto* renderer = piece ? piece->GetGeometryRuntimeData().rendererData : nullptr;
@@ -368,11 +318,6 @@ namespace FluidFieldSim
 			}
 			if (hi[1] <= lo[1])
 				continue;
-			for (uint32_t i = 0; i < counts.triangleCount; i++) {
-				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
-				if (index[0] < counts.vertexCount && index[1] < counts.vertexCount && index[2] < counts.vertexCount)
-					facing += (positions[index[1]] - positions[index[0]]).Cross(positions[index[2]] - positions[index[0]]);
-			}
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
 				const float run = (uvs[v][1] - lo[1]) / (hi[1] - lo[1]);
 				if (pieceColor) {
@@ -393,6 +338,11 @@ namespace FluidFieldSim
 						continue;
 					toward += positions[w] - positions[v];
 					weight += 1.0f;
+					const float dv = uvs[w][1] - uvs[v][1];
+					if (dv > 1e-3f) {
+						topSpeed += (positions[w] - positions[v]).Length() / dv * SCROLL;
+						topSamples += 1.0f;
+					}
 				}
 				toward.z = 0.0f;
 				toward = Normalized(toward);
@@ -490,40 +440,17 @@ namespace FluidFieldSim
 		std::vector<Column> columns;
 		{
 			const RE::BSReadLockGuard lock(bhkWorld->worldLock);
-			Drape(world, a_sites, starts, mean, a_fall, columns);
+			Fall fall = a_fall;
+			if (topSamples > 0.0f)
+				fall.speed = topSpeed / topSamples;
+			fall.speed = std::clamp(std::max(fall.speed, SLOWEST_TOP) * arcScale, SLOWEST_TOP * 0.25f, FASTEST_TOP);
+			logger::info("[Fluid Field]   sheet: water at the top {:.0f} units/s, {:.0f} wide", fall.speed, width);
+			Drape(world, a_sites, starts, mean, fall, columns);
 		}
 		for (uint32_t k = 0; k < GUIDE_COLUMNS; k++) {
 			auto& column = columns[k];
 			column.u = (sA + width * static_cast<float>(k) / static_cast<float>(GUIDE_COLUMNS - 1)) / ACROSS_REPEAT;
-			if (k % 8 == 0 || k + 1 == GUIDE_COLUMNS) {
-				float run = 0.0f;
-				for (std::size_t i = 1; i < column.points.size(); i++)
-					run += (column.points[i] - column.points[i - 1]).Length();
-				logger::info("[Fluid Field]   column {}: from ({:.0f}, {:.0f}, {:.0f}), {} points, {:.0f} units, {:.2f} s, ends at z {:.0f} (water {:.0f})", k, starts[k].x, starts[k].y, starts[k].z,
-					column.points.size(), run, column.times.back(), column.points.back().z, a_fall.lower);
-			}
 		}
-		// Vanilla's tint: its pieces' average colour at their tops and their feet, blended down the sheet
-		std::array<float, 4> tintTop{ 255.0f, 255.0f, 255.0f, 255.0f }, tintBottom{ 255.0f, 255.0f, 255.0f, 255.0f };
-		if (!colors.empty()) {
-			tintTop = {};
-			tintBottom = {};
-			float weightTop = 0.0f, weightBottom = 0.0f;
-			for (std::size_t v = 0; v < colors.size(); v++) {
-				const float wt = 1.0f - colorRun[v], wb = colorRun[v];
-				for (int c = 0; c < 4; c++) {
-					tintTop[c] += colors[v][c] * wt;
-					tintBottom[c] += colors[v][c] * wb;
-				}
-				weightTop += wt;
-				weightBottom += wb;
-			}
-			for (int c = 0; c < 4; c++) {
-				tintTop[c] /= std::max(weightTop, 1e-3f);
-				tintBottom[c] /= std::max(weightBottom, 1e-3f);
-			}
-		}
-
 		// Each column resampled to ROWS rows by distance along it; then filled across to COLUMNS
 		const auto resample = [](const Column& a_column, float a_f, RE::NiPoint3& a_point, float& a_time) {
 			float total = 0.0f;
@@ -563,7 +490,7 @@ namespace FluidFieldSim
 			}
 		}
 		// Softened across and along, so the columns do not show as strands
-		for (int pass = 0; pass < 2; pass++) {
+		for (int pass = 0; pass < 1; pass++) {
 			std::vector<RE::NiPoint3> soft = grid;
 			for (uint32_t r = 0; r < ROWS; r++) {
 				for (uint32_t c = 0; c < COLUMNS; c++) {
@@ -587,104 +514,50 @@ namespace FluidFieldSim
 			grid.swap(soft);
 		}
 
-		// Into the piece's own vertex layout, in its model space
-		auto sheet = std::make_unique<Sheet>();
-		const auto& transform = first->world;
-		const RE::NiMatrix3 toModel = transform.rotate.Transpose();
-		const float toModelScale = transform.scale > 1e-6f ? 1.0f / transform.scale : 1.0f;
-		const auto toLocal = [&](const RE::NiPoint3& a_world) { return (toModel * (a_world - transform.translate)) * toModelScale; };
-		const auto toLocalDirection = [&](const RE::NiPoint3& a_world) { return Normalized(toModel * a_world); };
-		logger::info("[Fluid Field]   sheet facing ({:.2f}, {:.2f}, {:.2f})", Normalized(facing).x, Normalized(facing).y, Normalized(facing).z);
-		const bool flip = [&] {
-			const RE::NiPoint3 a = grid[COLUMNS] - grid[0], b = grid[1] - grid[0];
-			return b.Cross(a).Dot(facing) < 0.0f;
-		}();
-		sheet->rawVertices.assign(static_cast<std::size_t>(stride) * grid.size(), 0);
-		RE::NiPoint3 boundMin(FLT_MAX, FLT_MAX, FLT_MAX), boundMax(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+		// The grid in the parent's model space, through the engine's own builder
+		const RE::NiTransform inverse = parent->world.Invert();
+		std::vector<RE::NiPoint3> positions(grid.size()), normals(grid.size()), tangents(grid.size()), bitangents(grid.size());
+		std::vector<RE::NiPoint2> uvs(grid.size());
+		const RE::NiPoint3 outward = mean + RE::NiPoint3(0.0f, 0.0f, 1.0f);
 		for (uint32_t r = 0; r < ROWS; r++) {
 			for (uint32_t c = 0; c < COLUMNS; c++) {
 				const std::size_t i = static_cast<std::size_t>(r) * COLUMNS + c;
 				const RE::NiPoint3 alongU = grid[static_cast<std::size_t>(r) * COLUMNS + std::min(c + 1, COLUMNS - 1)] - grid[static_cast<std::size_t>(r) * COLUMNS + (c > 0 ? c - 1 : 0)];
 				const RE::NiPoint3 alongV = grid[static_cast<std::size_t>(std::min(r + 1, ROWS - 1)) * COLUMNS + c] - grid[static_cast<std::size_t>(r > 0 ? r - 1 : 0) * COLUMNS + c];
-				RE::NiPoint3 normal = Normalized(alongV.Cross(alongU));
-				if (flip)
+				RE::NiPoint3 normal = Normalized(alongU.Cross(alongV));
+				if (normal.Dot(outward) < 0.0f)
 					normal = -normal;
-				const RE::NiPoint3 local = toLocal(grid[i]);
-				boundMin = { std::min(boundMin.x, local.x), std::min(boundMin.y, local.y), std::min(boundMin.z, local.z) };
-				boundMax = { std::max(boundMax.x, local.x), std::max(boundMax.y, local.y), std::max(boundMax.z, local.z) };
-				const RE::NiPoint3 n = toLocalDirection(normal), tangent = toLocalDirection(alongU), bitangent = toLocalDirection(alongV);
-				uint8_t* data = sheet->rawVertices.data() + i * stride;
-				const float position[4] = { local.x, local.y, local.z, tangent.x };
-				std::memcpy(data + positionOffset, position, sizeof(position));
+				positions[i] = inverse * grid[i];
+				normals[i] = Normalized(inverse.rotate * normal);
+				tangents[i] = Normalized(inverse.rotate * alongU);
+				bitangents[i] = Normalized(inverse.rotate * alongV);
 				// Along the flow, the texture runs with the water's travel time at vanilla's scroll
-				const uint16_t uv[2] = { DirectX::PackedVector::XMConvertFloatToHalf(us[i]), DirectX::PackedVector::XMConvertFloatToHalf(times[i] * SCROLL) };
-				std::memcpy(data + uvOffset, uv, sizeof(uv));
-				const auto pack = [](float a_value) { return static_cast<uint8_t>(std::clamp((a_value * 0.5f + 0.5f) * 255.0f + 0.5f, 0.0f, 255.0f)); };
-				if (hasNormal) {
-					const uint8_t packed[4] = { pack(n.x), pack(n.y), pack(n.z), pack(tangent.y) };
-					std::memcpy(data + normalOffset, packed, 4);
-				}
-				if (hasTangent) {
-					const uint8_t packed[4] = { pack(bitangent.x), pack(bitangent.y), pack(bitangent.z), pack(tangent.z) };
-					std::memcpy(data + tangentOffset, packed, 4);
-				}
-				if (hasColor) {
-					const float f = static_cast<float>(r) / static_cast<float>(ROWS - 1);
-					uint8_t color[4];
-					for (int k = 0; k < 4; k++)
-						color[k] = static_cast<uint8_t>(std::clamp(tintTop[k] * (1.0f - f) + tintBottom[k] * f, 0.0f, 255.0f));
-					color[3] = 255;
-					std::memcpy(data + colorOffset, color, 4);
-				}
+				uvs[i] = RE::NiPoint2(us[i], times[i] * SCROLL);
 			}
 		}
+		std::vector<uint16_t> indices;
+		indices.reserve(static_cast<std::size_t>(ROWS - 1) * (COLUMNS - 1) * 6);
 		for (uint32_t r = 0; r + 1 < ROWS; r++) {
 			for (uint32_t c = 0; c + 1 < COLUMNS; c++) {
 				const auto a = static_cast<uint16_t>(r * COLUMNS + c), b = static_cast<uint16_t>(a + 1), d = static_cast<uint16_t>(a + COLUMNS), e = static_cast<uint16_t>(d + 1);
-				// Both faces for now (the facing is not settled yet: a sheet facing away drew nothing)
-				sheet->rawIndices.insert(sheet->rawIndices.end(), { a, b, d, b, e, d });
-				sheet->rawIndices.insert(sheet->rawIndices.end(), { a, d, b, b, d, e });
+				indices.insert(indices.end(), { a, d, b, b, d, e });
 			}
 		}
-
-		// Our buffers, as the engine's renderer data, on a clone of the piece under the same parent
-		auto* device = globals::d3d::device;
-		const D3D11_BUFFER_DESC vertexDesc{ .ByteWidth = static_cast<UINT>(sheet->rawVertices.size()), .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_VERTEX_BUFFER };
-		const D3D11_BUFFER_DESC indexDesc{ .ByteWidth = static_cast<UINT>(sheet->rawIndices.size() * sizeof(uint16_t)), .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_INDEX_BUFFER };
-		const D3D11_SUBRESOURCE_DATA vertexData{ sheet->rawVertices.data(), 0, 0 };
-		const D3D11_SUBRESOURCE_DATA indexData{ sheet->rawIndices.data(), 0, 0 };
-		if (!device || FAILED(device->CreateBuffer(&vertexDesc, &vertexData, sheet->vertexBuffer.put())) || FAILED(device->CreateBuffer(&indexDesc, &indexData, sheet->indexBuffer.put())))
+		RE::BSTriShape* shape = BuildShape(static_cast<uint32_t>(indices.size() / 3), indices.data(), static_cast<uint32_t>(grid.size()), positions.data(), uvs.data(), normals.data(),
+			tangents.data(), bitangents.data());
+		if (!shape) {
+			logger::info("[Fluid Field]   sheet skipped: the engine's mesh builder returned nothing");
 			return nullptr;
-		Util::SetResourceName(sheet->vertexBuffer.get(), "FluidField::FallSheet VB");
-		Util::SetResourceName(sheet->indexBuffer.get(), "FluidField::FallSheet IB");
-		sheet->data.vertexBuffer = reinterpret_cast<RE::ID3D11Buffer*>(sheet->vertexBuffer.get());
-		sheet->data.indexBuffer = reinterpret_cast<RE::ID3D11Buffer*>(sheet->indexBuffer.get());
-		sheet->data.vertexDesc = desc;
-		sheet->data.refCount = 1000;  // Never released by the engine: ours, given back before the clone goes
-		sheet->data.rawVertexData = sheet->rawVertices.data();
-		sheet->data.rawIndexData = sheet->rawIndices.data();
-
-		RE::NiCloningProcess cloning;
-		auto* cloneObject = first->CreateClone(cloning);
-		auto* clone = cloneObject ? cloneObject->AsTriShape() : nullptr;
-		if (!clone)
-			return nullptr;
-		sheet->clone.reset(clone);
+		}
+		auto sheet = std::make_unique<Sheet>();
+		sheet->shape.reset(shape);
 		sheet->originals = a_fall.pieces;
 		sheet->parent.reset(parent);
-		clone->name = SHEET_NAME;
-		clone->local = first->local;
-		auto& runtime = clone->GetGeometryRuntimeData();
-		sheet->previousData = runtime.rendererData;
-		runtime.rendererData = &sheet->data;
-		auto& shapeCounts = clone->GetTrishapeRuntimeData();
-		shapeCounts.vertexCount = static_cast<uint16_t>(grid.size());
-		shapeCounts.triangleCount = static_cast<uint16_t>(sheet->rawIndices.size() / 3);
-		const RE::NiPoint3 centre = (boundMin + boundMax) * 0.5f;
-		clone->GetModelData().modelBound = RE::NiBound{ centre, (boundMax - boundMin).Length() * 0.5f };
-		parent->AttachChild(clone, true);
+		shape->name = SHEET_NAME;
+		GiveProperty(shape, first->GetGeometryRuntimeData().shaderProperty.get());
+		parent->AttachChild(shape, true);
 		RE::NiUpdateData update;
-		clone->Update(update);
+		shape->Update(update);
 		for (const auto& piece : a_fall.pieces) {
 			if (piece)
 				piece->SetAppCulled(true);
@@ -716,11 +589,10 @@ namespace FluidFieldSim
 
 	void FallSheets::Remove(Sheet& a_sheet)
 	{
-		if (a_sheet.clone) {
+		if (a_sheet.shape) {
 			if (a_sheet.parent)
-				a_sheet.parent->DetachChild(a_sheet.clone.get());
-			a_sheet.clone->GetGeometryRuntimeData().rendererData = a_sheet.previousData;
-			a_sheet.clone.reset();
+				a_sheet.parent->DetachChild(a_sheet.shape.get());
+			a_sheet.shape.reset();
 		}
 		for (const auto& piece : a_sheet.originals) {
 			if (piece)
@@ -807,39 +679,19 @@ namespace FluidFieldSim
 		RE::NiPoint2 uvs[4] = { { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, 1.0f }, { 1.0f, 1.0f } };
 		const uint16_t indices[6] = { 0, 2, 1, 1, 2, 3 };
 
-		// The engine's builder (77465): a BSTriShape with its renderer data, from separate arrays (null ones left out)
-		using Build_t = RE::BSTriShape* (*)(uint32_t, const uint16_t*, uint32_t, RE::NiPoint3*, RE::NiPoint2*, void*, RE::NiPoint3*, RE::NiPoint3*, RE::NiPoint3*, void*, void*, void*, void*, void*,
-			void*);
-		static REL::Relocation<Build_t> build{ REL::ID(77465) };
 		logger::info("[Fluid Field] Test quad: building with the engine's mesh builder");
-		RE::BSTriShape* shape = build(2, indices, 4, positions, uvs, nullptr, normals, tangents, bitangents, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+		RE::BSTriShape* shape = BuildShape(2, indices, 4, positions, uvs, normals, tangents, bitangents);
 		if (!shape) {
 			logger::warn("[Fluid Field] Test quad: the builder returned nothing");
 			return;
 		}
 		testQuad.reset(shape);
-		auto& runtime = shape->GetGeometryRuntimeData();
-		logger::info("[Fluid Field] Test quad: built, {} vertices, {} triangles, renderer data {}, vertex stride {}", shape->GetTrishapeRuntimeData().vertexCount,
-			shape->GetTrishapeRuntimeData().triangleCount, static_cast<void*>(runtime.rendererData), runtime.rendererData ? runtime.rendererData->vertexDesc.GetSize() : 0);
-
-		// A copy of a vanilla falls piece's lit material
 		RE::BSShaderProperty* source = nullptr;
 		for (const auto& mesh : a_sites.GetLitMeshes()) {
 			if (mesh.geometry && (source = mesh.geometry->GetGeometryRuntimeData().shaderProperty.get()) != nullptr)
 				break;
 		}
-		if (!source) {
-			logger::warn("[Fluid Field] Test quad: no vanilla falls material to copy; drawn without one");
-		} else {
-			RE::NiCloningProcess cloning;
-			auto* copy = static_cast<RE::BSShaderProperty*>(source->CreateClone(cloning));
-			if (copy) {
-				copy->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kTwoSided, true);
-				runtime.shaderProperty.reset(copy);
-				copy->SetupGeometry(shape);
-				copy->FinishSetupGeometry(shape);
-			}
-		}
+		GiveProperty(shape, source);
 		shape->name = "FluidFieldTestQuad";
 		parent->AttachChild(shape, true);
 		testQuadParent.reset(parent);
@@ -862,8 +714,12 @@ namespace FluidFieldSim
 		testQuadParent.reset();
 	}
 
-	void FallSheets::Update(const FallSites& a_sites, bool a_enabled)
+	void FallSheets::Update(const FallSites& a_sites, bool a_enabled, float a_arcScale)
 	{
+		if (a_arcScale != arcScale) {
+			arcScale = a_arcScale;
+			groundVersion = UINT64_MAX;
+		}
 		if (!a_enabled) {
 			if (!sheets.empty() || !pending.empty() || groundVersion != UINT64_MAX)
 				Clear();
@@ -907,6 +763,12 @@ namespace FluidFieldSim
 				if (lower > upper - LEAST_DROP)
 					continue;
 				auto& fall = falls[{ mesh.siteId, static_cast<int32_t>(std::lround(upper / 16.0f)) }];
+				// D63: the water's speed at the top, from this piece's texture density down the flow and vanilla's scroll
+				float scale[2];
+				if (a_sites.GetTextureScale(mesh.geometry.get(), scale)) {
+					const float speed = std::clamp(scale[1] * SCROLL, SLOWEST_TOP, FASTEST_TOP);
+					fall.speed = fall.pieces.empty() ? speed : 0.5f * (fall.speed + speed);
+				}
 				fall.pieces.push_back(mesh.geometry);
 				fall.upper = upper;
 				fall.lower = lower;
@@ -930,7 +792,8 @@ namespace FluidFieldSim
 		const auto start = std::chrono::steady_clock::now();
 		auto sheet = Build(a_sites, fall);
 		const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-		logger::info("[Fluid Field] Waterfall sheet ({} pieces, water {:.0f} to {:.0f}): {} in {:.1f} ms", fall.pieces.size(), fall.upper, fall.lower, sheet ? "built" : "not built", ms);
+		logger::info("[Fluid Field] Waterfall sheet ({} pieces, water {:.0f} to {:.0f}, {:.0f} units/s at the top): {} in {:.1f} ms", fall.pieces.size(), fall.upper, fall.lower, fall.speed,
+			sheet ? "built" : "not built", ms);
 		if (sheet)
 			sheets.push_back(std::move(sheet));
 	}

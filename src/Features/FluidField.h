@@ -95,23 +95,24 @@ struct FluidField : OverlayFeature
 		bool HideUnderwaterFalls = true;     ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
 		bool FallWhitening = true;           ///< The falls whiten with their foam and speed (D34)
 		bool FallTestQuad = false;           ///< D62 probe: the engine-built test quad in front of the player (not saved meaningfully)
-		bool OwnFallSheets = true;           ///< D61: generate our own waterfall sheets in place of vanilla's lit falls pieces
-		float FallTranslucency = 0.0f;       ///< D53: how see-through the falls' thin water is (0: opaque, drawn as vanilla's)
-		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
-		float FallFlowPeriod = 0.5f;         ///< Seconds per cycle of the falls' flowmap (D32): shorter stretches the texture less, pulses more
-		float FallFlowMost = 2.5f;           ///< Most texture repeats the flowmap moves the texture per cycle
-		int SprayAmount = 200;               ///< Spray droplets alive per emitter at once (D31)
-		float SpraySize = 1.4f;              ///< Spray droplet width, world units
-		float SprayOpacity = 0.2f;           ///< How opaque each droplet is
-		int MistAmount = 0;                  ///< Mist puffs alive per emitter at once
-		float MistOpacity = 0.06f;           ///< How dense each mist puff is
-		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
-		bool InteractiveFog = true;          ///< Ground fog that actors and the weather's wind move (D21)
-		float FogDensity = 0.08f;            ///< Ground fog extinction per world unit inside the layer, in its banks
-		float FogBrightness = 0.15f;         ///< How brightly the ground fog is lit, as a fraction of the light around it
-		float FogThickness = 18.0f;          ///< Height of the ground fog layer's top above the ground, in its banks, world units
-		float FogStir = 1.0f;                ///< How strongly moving actors push the air and part the fog
-		float FogRefillSeconds = 10.0f;      ///< Seconds for parted fog to fill back in (about two thirds of the way)
+		bool OwnFallSheets = true;
+		float FallArcSpeed = 1.0f;       ///< D63: scales the speed the generated falls leave their brink at (their arc)           ///< D61: generate our own waterfall sheets in place of vanilla's lit falls pieces
+		float FallTranslucency = 0.0f;   ///< D53: how see-through the falls' thin water is (0: opaque, drawn as vanilla's)
+		float WaterfallStrength = 1.0f;  ///< How hard waterfalls churn, push and foam the water
+		float FallFlowPeriod = 0.5f;     ///< Seconds per cycle of the falls' flowmap (D32): shorter stretches the texture less, pulses more
+		float FallFlowMost = 2.5f;       ///< Most texture repeats the flowmap moves the texture per cycle
+		int SprayAmount = 200;           ///< Spray droplets alive per emitter at once (D31)
+		float SpraySize = 1.4f;          ///< Spray droplet width, world units
+		float SprayOpacity = 0.2f;       ///< How opaque each droplet is
+		int MistAmount = 0;              ///< Mist puffs alive per emitter at once
+		float MistOpacity = 0.06f;       ///< How dense each mist puff is
+		float WaterTint = 0.5f;          ///< How much the water type's colour tints what is seen through all water (0: vanilla)
+		bool InteractiveFog = true;      ///< Ground fog that actors and the weather's wind move (D21)
+		float FogDensity = 0.08f;        ///< Ground fog extinction per world unit inside the layer, in its banks
+		float FogBrightness = 0.15f;     ///< How brightly the ground fog is lit, as a fraction of the light around it
+		float FogThickness = 18.0f;      ///< Height of the ground fog layer's top above the ground, in its banks, world units
+		float FogStir = 1.0f;            ///< How strongly moving actors push the air and part the fog
+		float FogRefillSeconds = 10.0f;  ///< Seconds for parted fog to fill back in (about two thirds of the way)
 	};
 
 	Settings settings;

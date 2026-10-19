@@ -2738,6 +2738,33 @@ namespace FluidFieldSim
 		}
 	}
 
+	bool FallSites::WaterObjectBounds(float a_x, float a_y, float a_level, float a_reach, float a_bounds[4]) const
+	{
+		if (!waterSurfaces)
+			return false;
+		std::vector<WaterSurfaces::Plane> planes;
+		waterSurfaces->CollectPlanes(a_x - 1.0f, a_y - 1.0f, a_x + 1.0f, a_y + 1.0f, planes);
+		bool found = false;
+		float best = FLT_MAX;
+		for (const auto& plane : planes) {
+			if (plane.source != WaterSurfaces::Source::WaterObject || std::abs(plane.height - a_level) > a_reach)
+				continue;
+			if (a_x < plane.minX || a_x > plane.maxX || a_y < plane.minY || a_y > plane.maxY)
+				continue;
+			// The smallest that holds the point: the water there, not a wide one around it
+			const float area = (plane.maxX - plane.minX) * (plane.maxY - plane.minY);
+			if (area >= best)
+				continue;
+			best = area;
+			a_bounds[0] = plane.minX;
+			a_bounds[1] = plane.minY;
+			a_bounds[2] = plane.maxX;
+			a_bounds[3] = plane.maxY;
+			found = true;
+		}
+		return found;
+	}
+
 	bool FallSites::PoolLevelAt(float a_x, float a_y, float& a_level) const
 	{
 		bool found = false;

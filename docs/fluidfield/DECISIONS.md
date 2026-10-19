@@ -1459,3 +1459,47 @@ Entry format:
     move onto it. Toggle: Waterfalls debug "Toggle Test Quad", or the
     FallTestQuad setting.
 -   References: D61
+
+## D63: Generated sheets built by the engine; the simple arc (in progress)
+
+-   Date: 2026-10-19
+-   Phase / spike: @Victor's design for the generated falls (one mesh per
+    step between an upper and a lower water, starting where the upper
+    water's mesh ends, arcing by the water's speed into the lower water,
+    only mildly disturbed by what lies under it or pokes through it;
+    plunge depth from speed and mass, never under the bed; edges pulled to
+    the channel walls, a free edge curled back in a C)
+-   Decision so far:
+    -   The sheets are built by the engine's own mesh builder (D62) with a
+        copy of the fall's vanilla lit property, under the vanilla pieces'
+        parent. No more swapped buffers on a clone.
+    -   The drape went through three shapes in one session. Rock pushes
+        along a per-vertex facing, wall pulls from a row's middle and edge
+        curls all produced chaos: spikes, loops, a sheet half underground.
+        At @Victor's direction it is now the simple arc:
+        -   It starts where the upper water's engine water object ends.
+        -   It falls ballistically at the speed at the top. The speed is
+            at least 200 units/s (vanilla's lip spray), scaled by the
+            Generated Falls Arc setting.
+        -   It is lifted a little by rock within PROBE_LENGTH under it.
+        -   It is smoothed, more for a faster fall.
+        -   It is clamped above the bed below the lower water.
+        -   Rows that end up underground for good (rock crossed an odd
+            number of times from far above) collapse onto where they went
+            in.
+    -   Walls and curls are out until the base shape is right.
+-   Open at the end of the session (screenshots 732-734):
+    -   The sheet does not reach the water below: trimming ends it in a V
+        above the rocks in front of the pool. Parity from above is fooled
+        by rock in front of and above the fall, and by overhangs.
+    -   One step gets several sheets, as vanilla does, because falls are
+        grouped by (site, upper level) and pieces at one step disagree on
+        their upper level. It must be one mesh per step between two waters.
+    -   The water objects are whole cells, so "where the upper water ends"
+        is the cell edge, not the visible lip. The real lip must come from
+        the rock: where the bed drops away under the upper water.
+    -   The smaller falls (-914, -1037) have no water object at their level
+        and start at vanilla's lip.
+    -   @Victor also asked to switch off the shallow-water simulation where
+        it lies inside rock and landscape the player cannot reach (D-next).
+-   References: D61, D62

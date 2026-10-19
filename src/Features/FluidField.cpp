@@ -62,6 +62,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	HideUnderwaterFalls,
 	FallWhitening,
 	OwnFallSheets,
+	FallArcSpeed,
 	FallTestQuad,
 	FallTranslucency,
 	FallLayerMask,
@@ -144,6 +145,8 @@ void FluidField::DrawSettings()
 		tooltip(T(TKEY("fall_translucency_tooltip"), "How see-through the falls' thin water is, in patches that stream with it; white water stays opaque. 0 draws them opaque, as vanilla does."));
 		ImGui::Checkbox(T(TKEY("own_fall_sheets"), "Generated Falls"), &settings.OwnFallSheets);
 		tooltip(T(TKEY("own_fall_sheets_tooltip"), "Replaces vanilla's falling water with sheets generated from each fall's lip down the rock to the water below, drawn with vanilla's material."));
+		ImGui::SliderFloat(T(TKEY("fall_arc_speed"), "Generated Falls Arc"), &settings.FallArcSpeed, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("fall_arc_speed_tooltip"), "How fast the water leaves the brink, so how far the generated falls arc out before they drop."));
 		ImGui::Checkbox(T(TKEY("hide_underwater_falls"), "Hide Buried Falls"), &settings.HideUnderwaterFalls);
 		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes under the water above or below them, or deep in the rock."));
 		ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Plunge Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -857,7 +860,7 @@ void FluidField::Prepass()
 			fallSites.SetTranslucent(settings.GroundWaterfalls && settings.FallTranslucency > 0.0f);
 			fallSurfaceTime += deltaTime;
 			fallSites.Update(water);
-			fallSheets.Update(fallSites, settings.GroundWaterfalls && settings.OwnFallSheets);
+			fallSheets.Update(fallSites, settings.GroundWaterfalls && settings.OwnFallSheets, settings.FallArcSpeed);
 			// D62 probe: the setting (settable from tools) or the button toggles the test quad
 			if (fallTestQuadRequested || settings.FallTestQuad != fallTestQuadShown) {
 				fallTestQuadRequested = false;
