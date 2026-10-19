@@ -35,6 +35,14 @@ namespace FluidFieldSim
 		/** @brief Removes every sheet and shows vanilla's pieces again. Main thread. */
 		void Clear();
 		std::size_t GetCount() const { return sheets.size(); }
+
+		/**
+		 * @brief D62 probe: builds a test quad with the engine's own builder (77465, a BSTriShape from arrays) in
+		 * front of the player, gives it a copy of a vanilla falls piece's lit material, and attaches it to the
+		 * player's cell, so we can see whether the engine draws it in every pass. A second call removes it.
+		 * Main thread. 1.7.104 only.
+		 */
+		void ToggleTestQuad(const FallSites& a_sites);
 		/** @brief Debug: each sheet's marched columns over the view (yellow in the air, blue on the rock) and its lip line (green). */
 		void DrawDebug(ImDrawList* a_drawList) const;
 
@@ -57,6 +65,9 @@ namespace FluidFieldSim
 		static constexpr float LEVEL_REACH = 64.0f;     ///< A lip this far under a water level is that level's
 		static constexpr float LEAST_DROP = 48.0f;      ///< The water below lies at least this far under the lip's
 		static constexpr float UPSTREAM = 24.0f;        ///< World units upstream of the lip each column starts, on the upper water
+		static constexpr uint32_t DRAPE_ROWS = 48;      ///< Rows of the draped sheet before it is filled in
+		static constexpr uint32_t DRAPE_PASSES = 4;     ///< Push-out and smoothing passes
+		static constexpr float DRAPE_REACH = 400.0f;    ///< World units downstream and above each point the rock is looked for from
 		static constexpr float NEIGHBOUR_PULL = 0.5f;   ///< How much each column's heading follows its neighbours' each step
 		static constexpr float STALL_SPEED = 40.0f;     ///< World units per second: water this slow on level rock has stopped (a puddle), and ends
 		static constexpr float ACROSS_REPEAT = 512.0f;  ///< World units across per texture repeat
@@ -95,12 +106,20 @@ namespace FluidFieldSim
 			std::vector<float> levels;  ///< Every water level of the site under the upper one (its tiers' and other falls' upper waters)
 		};
 		std::unique_ptr<Sheet> Build(const FallSites& a_sites, const Fall& a_fall);
+		/**
+		 * @brief D61: the sheet draped over the rock: a smooth curtain falling from the lip line to the water below,
+		 * pushed out onto the rock wherever the rock stands in front of it (rays from outside: downstream and
+		 * from above, so they always meet the rock's real surface), smoothed, and laid into the pools it reaches.
+		 */
+		static void Drape(RE::hkpWorld* a_world, const FallSites& a_sites, const std::vector<RE::NiPoint3>& a_starts, const RE::NiPoint3& a_flow, const Fall& a_fall, std::vector<Column>& a_columns);
 		/** @brief The columns marched together, a step at a time, each steered a little by its neighbours so the sheet holds together. */
 		static void March(RE::hkpWorld* a_world, const FallSites& a_sites, const std::vector<RE::NiPoint3>& a_starts, const std::vector<RE::NiPoint3>& a_headings, const Fall& a_fall,
 			std::vector<Column>& a_columns);
 		static void Remove(Sheet& a_sheet);
 
 		std::vector<std::unique_ptr<Sheet>> sheets;
+		RE::NiPointer<RE::BSTriShape> testQuad;
+		RE::NiPointer<RE::NiNode> testQuadParent;
 		std::vector<Fall> pending;  ///< Falls still to build, one a frame
 		uint64_t groundVersion = UINT64_MAX;
 		uint32_t readyStreams = UINT32_MAX;  ///< The sites' solved flows (their pools) when the sheets were last built

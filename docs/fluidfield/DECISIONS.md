@@ -1439,3 +1439,23 @@ Entry format:
         dumps (FluidField_sheet\*.bin) and the column overlay (Waterfall
         Shading debug) are in for the iteration.
 -   References: D30, D31, D56, D59
+
+## D62: Geometry from the engine's own mesh builder (probe passed)
+
+-   Date: 2026-10-18
+-   Phase / spike: engine research (skyrim-engine-re kb, evidence
+    2026-10-18-runtime-geometry, L1 until this probe)
+-   Decision: Our generated geometry will be built by the engine's own
+    builder, `77465` (1.7.104): a complete BSTriShape with its renderer
+    data from separate arrays (indices, positions, uv0, normals, tangents,
+    bitangents; null arrays left out of the layout), the same function the
+    engine uses for water displacement and decals. The engine then owns
+    the buffers and releases them with the shape, replacing D61's swap of
+    our own buffers into a cloned vanilla piece. Probe: a 2-triangle quad
+    in front of the player, given a clone of a vanilla falls piece's lit
+    property (SetupGeometry, FinishSetupGeometry, two-sided), attached to
+    the player's cell 3D: built (stride 28), not hidden, drawn with
+    vanilla's water material, no crash. The draped sheet (D61) is next to
+    move onto it. Toggle: Waterfalls debug "Toggle Test Quad", or the
+    FallTestQuad setting.
+-   References: D61

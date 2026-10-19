@@ -204,6 +204,106 @@ namespace FluidFieldSim
 		}
 	}
 
+	void FallSheets::Drape(RE::hkpWorld* a_world, const FallSites& a_sites, const std::vector<RE::NiPoint3>& a_starts, const RE::NiPoint3& a_flow, const Fall& a_fall, std::vector<Column>& a_columns)
+	{
+		const std::size_t n = a_starts.size();
+		const uint32_t rows = DRAPE_ROWS;
+		const float drop = a_fall.upper - a_fall.lower + POOL_TUCK;
+		std::vector<RE::NiPoint3> grid(n * rows);
+		std::vector<uint8_t> touched(grid.size(), 0);
+		const auto at = [&](std::size_t a_k, uint32_t a_r) -> RE::NiPoint3& { return grid[a_r * n + a_k]; };
+		// The free curtain: from each column's start on the upper water, on a ballistic arc at the lip's speed, down to
+		// the water below, rows evenly spaced in height
+		for (std::size_t k = 0; k < n; k++) {
+			for (uint32_t r = 0; r < rows; r++) {
+				const float fallen = drop * static_cast<float>(r) / static_cast<float>(rows - 1);
+				const float time = std::sqrt(2.0f * fallen / GRAVITY);
+				at(k, r) = a_starts[k] + a_flow * (UPSTREAM + LIP_SPEED * time) - RE::NiPoint3(0.0f, 0.0f, fallen);
+			}
+		}
+		// Out onto the rock where it stands in front: of the two corrections (out downstream to the rock's face, up
+		// onto its top) the smaller, so a ledge lifts the water and a cliff holds it out
+		const auto pushOut = [&](RE::NiPoint3& a_p) {
+			float distance;
+			RE::NiPoint3 normal;
+			float best = FLT_MAX;
+			RE::NiPoint3 moved = a_p;
+			const RE::NiPoint3 fromSide = a_p + a_flow * DRAPE_REACH;
+			if (RockHit(a_world, fromSide, -a_flow, DRAPE_REACH, distance, normal) && distance < DRAPE_REACH) {
+				const RE::NiPoint3 candidate = fromSide - a_flow * distance + a_flow * FLOW_DEPTH;
+				best = (candidate - a_p).Length();
+				moved = candidate;
+			}
+			const RE::NiPoint3 fromAbove = a_p + RE::NiPoint3(0.0f, 0.0f, DRAPE_REACH);
+			if (RockHit(a_world, fromAbove, RE::NiPoint3(0.0f, 0.0f, -1.0f), DRAPE_REACH, distance, normal) && distance < DRAPE_REACH) {
+				const RE::NiPoint3 candidate(a_p.x, a_p.y, fromAbove.z - distance + FLOW_DEPTH);
+				if ((candidate - a_p).Length() < best) {
+					best = (candidate - a_p).Length();
+					moved = candidate;
+				}
+			}
+			a_p = moved;
+			return best < FLT_MAX;
+		};
+		for (uint32_t pass = 0; pass < DRAPE_PASSES; pass++) {
+			for (std::size_t k = 0; k < n; k++) {
+				for (uint32_t r = 1; r < rows; r++) {
+					if (pushOut(at(k, r)))
+						touched[r * n + k] = 1;
+				}
+			}
+			if (pass + 1 == DRAPE_PASSES)
+				break;
+			// Smoothed, the lip row held: a sheet, not strands
+			std::vector<RE::NiPoint3> soft = grid;
+			for (std::size_t k = 0; k < n; k++) {
+				for (uint32_t r = 1; r < rows; r++) {
+					RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
+					float weight = 0.0f;
+					const auto add = [&](std::size_t a_k, uint32_t a_r, float a_w) {
+						sum += at(a_k, a_r) * a_w;
+						weight += a_w;
+					};
+					add(k, r, 2.0f);
+					if (k > 0)
+						add(k - 1, r, 1.0f);
+					if (k + 1 < n)
+						add(k + 1, r, 1.0f);
+					add(k, r - 1, 1.0f);
+					if (r + 1 < rows)
+						add(k, r + 1, 1.0f);
+					soft[r * n + k] = sum / weight;
+				}
+			}
+			grid.swap(soft);
+		}
+		// Into the pools it reaches: laid just under their surface
+		for (std::size_t k = 0; k < n; k++) {
+			for (uint32_t r = 1; r < rows; r++) {
+				RE::NiPoint3& p = at(k, r);
+				float level = 0.0f;
+				if (a_sites.PoolLevelAt(p.x, p.y, level) && level < a_fall.upper - LEAST_DROP * 0.5f && p.z < level)
+					p.z = level - POOL_TUCK;
+				p.z = std::max(p.z, a_fall.lower - POOL_TUCK);
+			}
+		}
+		// The columns, with the water's travel time down them (its speed from the height it has fallen)
+		a_columns.assign(n, {});
+		for (std::size_t k = 0; k < n; k++) {
+			float time = 0.0f;
+			for (uint32_t r = 0; r < rows; r++) {
+				if (r > 0) {
+					const RE::NiPoint3 step = at(k, r) - at(k, r - 1);
+					const float speed = std::sqrt(LIP_SPEED * LIP_SPEED + 2.0f * GRAVITY * std::max(a_fall.upper - at(k, r).z, 0.0f));
+					time += step.Length() / std::max(speed, 1.0f);
+				}
+				a_columns[k].points.push_back(at(k, r));
+				a_columns[k].times.push_back(time);
+				a_columns[k].onRock.push_back(touched[r * n + k]);
+			}
+		}
+	}
+
 	std::unique_ptr<FallSheets::Sheet> FallSheets::Build(const FallSites& a_sites, const Fall& a_fall)
 	{
 		// Every piece's vertices in the world, with its texture coordinates and colours; the first piece
@@ -363,6 +463,22 @@ namespace FluidFieldSim
 			headings[k] = Normalized(headings[a] * (1.0f - t) + headings[b] * t);
 		}
 
+		// The lip line smoothed across (vanilla's lips zigzag): each start's distance along the flow, averaged over its neighbours
+		{
+			std::vector<float> along(GUIDE_COLUMNS);
+			for (uint32_t k = 0; k < GUIDE_COLUMNS; k++)
+				along[k] = starts[k].Dot(mean);
+			for (uint32_t k = 0; k < GUIDE_COLUMNS; k++) {
+				float sum = 0.0f, count = 0.0f;
+				for (int32_t j = static_cast<int32_t>(k) - 3; j <= static_cast<int32_t>(k) + 3; j++) {
+					if (j >= 0 && j < static_cast<int32_t>(GUIDE_COLUMNS)) {
+						sum += along[j];
+						count += 1.0f;
+					}
+				}
+				starts[k] += mean * (sum / count - along[k]);
+			}
+		}
 		auto* tes = RE::TES::GetSingleton();
 		auto* cell = tes ? (tes->interiorCell ? tes->interiorCell : tes->GetCell(first->world.translate)) : nullptr;
 		auto* bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
@@ -374,7 +490,7 @@ namespace FluidFieldSim
 		std::vector<Column> columns;
 		{
 			const RE::BSReadLockGuard lock(bhkWorld->worldLock);
-			March(world, a_sites, starts, headings, a_fall, columns);
+			Drape(world, a_sites, starts, mean, a_fall, columns);
 		}
 		for (uint32_t k = 0; k < GUIDE_COLUMNS; k++) {
 			auto& column = columns[k];
@@ -647,6 +763,91 @@ namespace FluidFieldSim
 		}
 	}
 
+	void FallSheets::ToggleTestQuad(const FallSites& a_sites)
+	{
+		if (testQuad) {
+			if (testQuadParent)
+				testQuadParent->DetachChild(testQuad.get());
+			testQuad.reset();
+			testQuadParent.reset();
+			logger::info("[Fluid Field] Test quad removed");
+			return;
+		}
+		if (!REL::Module::IsAE()) {
+			logger::warn("[Fluid Field] Test quad: the engine's mesh builder is only known on 1.7.104");
+			return;
+		}
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		auto* cell = player ? player->GetParentCell() : nullptr;
+		auto* loaded = cell ? cell->GetRuntimeData().loadedData : nullptr;
+		RE::NiNode* parent = loaded ? loaded->cell3D.get() : nullptr;
+		if (!parent) {
+			logger::warn("[Fluid Field] Test quad: no cell 3D");
+			return;
+		}
+		// A 300 x 300 quad standing 300 units in front of the player, facing them, at head height
+		const float yaw = player->GetAngleZ();
+		const RE::NiPoint3 forward(std::sin(yaw), std::cos(yaw), 0.0f);
+		const RE::NiPoint3 right(std::cos(yaw), -std::sin(yaw), 0.0f);
+		const RE::NiPoint3 up(0.0f, 0.0f, 1.0f);
+		const RE::NiPoint3 centre = player->GetPosition() + forward * 300.0f + up * 120.0f;
+		// Positions in the parent's model space
+		const RE::NiTransform inverse = parent->world.Invert();
+		RE::NiPoint3 positions[4];
+		const float half = 150.0f;
+		const RE::NiPoint3 corners[4] = { centre - right * half + up * half, centre + right * half + up * half, centre - right * half - up * half, centre + right * half - up * half };
+		for (int i = 0; i < 4; i++)
+			positions[i] = inverse * corners[i];
+		const RE::NiPoint3 toPlayer = Normalized(inverse.rotate * (-forward));
+		const RE::NiPoint3 tangent = Normalized(inverse.rotate * right);
+		const RE::NiPoint3 bitangent = Normalized(inverse.rotate * (-up));
+		RE::NiPoint3 normals[4] = { toPlayer, toPlayer, toPlayer, toPlayer };
+		RE::NiPoint3 tangents[4] = { tangent, tangent, tangent, tangent };
+		RE::NiPoint3 bitangents[4] = { bitangent, bitangent, bitangent, bitangent };
+		RE::NiPoint2 uvs[4] = { { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, 1.0f }, { 1.0f, 1.0f } };
+		const uint16_t indices[6] = { 0, 2, 1, 1, 2, 3 };
+
+		// The engine's builder (77465): a BSTriShape with its renderer data, from separate arrays (null ones left out)
+		using Build_t = RE::BSTriShape* (*)(uint32_t, const uint16_t*, uint32_t, RE::NiPoint3*, RE::NiPoint2*, void*, RE::NiPoint3*, RE::NiPoint3*, RE::NiPoint3*, void*, void*, void*, void*, void*,
+			void*);
+		static REL::Relocation<Build_t> build{ REL::ID(77465) };
+		logger::info("[Fluid Field] Test quad: building with the engine's mesh builder");
+		RE::BSTriShape* shape = build(2, indices, 4, positions, uvs, nullptr, normals, tangents, bitangents, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+		if (!shape) {
+			logger::warn("[Fluid Field] Test quad: the builder returned nothing");
+			return;
+		}
+		testQuad.reset(shape);
+		auto& runtime = shape->GetGeometryRuntimeData();
+		logger::info("[Fluid Field] Test quad: built, {} vertices, {} triangles, renderer data {}, vertex stride {}", shape->GetTrishapeRuntimeData().vertexCount,
+			shape->GetTrishapeRuntimeData().triangleCount, static_cast<void*>(runtime.rendererData), runtime.rendererData ? runtime.rendererData->vertexDesc.GetSize() : 0);
+
+		// A copy of a vanilla falls piece's lit material
+		RE::BSShaderProperty* source = nullptr;
+		for (const auto& mesh : a_sites.GetLitMeshes()) {
+			if (mesh.geometry && (source = mesh.geometry->GetGeometryRuntimeData().shaderProperty.get()) != nullptr)
+				break;
+		}
+		if (!source) {
+			logger::warn("[Fluid Field] Test quad: no vanilla falls material to copy; drawn without one");
+		} else {
+			RE::NiCloningProcess cloning;
+			auto* copy = static_cast<RE::BSShaderProperty*>(source->CreateClone(cloning));
+			if (copy) {
+				copy->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kTwoSided, true);
+				runtime.shaderProperty.reset(copy);
+				copy->SetupGeometry(shape);
+				copy->FinishSetupGeometry(shape);
+			}
+		}
+		shape->name = "FluidFieldTestQuad";
+		parent->AttachChild(shape, true);
+		testQuadParent.reset(parent);
+		RE::NiUpdateData update;
+		shape->Update(update);
+		logger::info("[Fluid Field] Test quad: attached at ({:.0f}, {:.0f}, {:.0f}), hidden flag {}", centre.x, centre.y, centre.z, shape->GetFlags().any(RE::NiAVObject::Flag::kHidden));
+	}
+
 	void FallSheets::Clear()
 	{
 		for (auto& sheet : sheets)
@@ -655,6 +856,10 @@ namespace FluidFieldSim
 		pending.clear();
 		groundVersion = UINT64_MAX;
 		readyStreams = UINT32_MAX;
+		if (testQuad && testQuadParent)
+			testQuadParent->DetachChild(testQuad.get());
+		testQuad.reset();
+		testQuadParent.reset();
 	}
 
 	void FallSheets::Update(const FallSites& a_sites, bool a_enabled)

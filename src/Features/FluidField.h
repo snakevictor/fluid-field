@@ -94,6 +94,7 @@ struct FluidField : OverlayFeature
 		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		bool HideUnderwaterFalls = true;     ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
 		bool FallWhitening = true;           ///< The falls whiten with their foam and speed (D34)
+		bool FallTestQuad = false;           ///< D62 probe: the engine-built test quad in front of the player (not saved meaningfully)
 		bool OwnFallSheets = true;           ///< D61: generate our own waterfall sheets in place of vanilla's lit falls pieces
 		float FallTranslucency = 0.0f;       ///< D53: how see-through the falls' thin water is (0: opaque, drawn as vanilla's)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
@@ -381,8 +382,10 @@ private:
 	/** @brief Rebuilds the ground and flow maps when the sites change or the player moves far; uploads the constants. */
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
 	void ReleaseFallGround();
-	int fallDebugView = 0;                                   ///< Debug: 1 vanilla's fall meshes, 2 their intersections and the spray emitters (D36); not saved
-	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
+	int fallDebugView = 0;       ///< Debug: 1 vanilla's fall meshes, 2 their intersections and the spray emitters (D36); not saved
+	bool showFallSites = false;  ///< Debug: draws the waterfall sites (D25) in the world; not saved
+	bool fallTestQuadRequested = false;
+	bool fallTestQuadShown = false;                          ///< D62 probe: toggle the engine-built test quad next update
 	bool hideFallEffects = true;                             ///< Debug: hides vanilla's mist, skirt, splash and rapids meshes; not saved
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 

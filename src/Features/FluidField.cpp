@@ -62,6 +62,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	HideUnderwaterFalls,
 	FallWhitening,
 	OwnFallSheets,
+	FallTestQuad,
 	FallTranslucency,
 	FallLayerMask,
 	FallFlowPeriod,
@@ -269,6 +270,9 @@ void FluidField::DrawSettings()
 				"Fall Meshes: vanilla's falling-water triangles, one colour per mesh, red where they run inside rock. Intersections: where the meshes meet (yellow: a mesh ends against another; magenta: two cross), where they cross the water above or below (green), and the spray emitters (cyan: drops, blue: plunges and impacts, orange: seams). Drawn through everything. Not saved."));
 			ImGui::Checkbox(T(TKEY("show_waterfall_sites"), "Show Waterfall Sites"), &showFallSites);
 			tooltip(T(TKEY("show_waterfall_sites_tooltip"), "Draws the waterfall sites found in vanilla's layout: effect meshes by class, each site's water levels (green top, blue bottom, teal tiers) and a label. Also prints each cell's summary to the console."));
+			if (ImGui::Button(T(TKEY("fall_test_quad"), "Toggle Test Quad")))
+				fallTestQuadRequested = true;
+			tooltip(T(TKEY("fall_test_quad_tooltip"), "Probe: builds a quad in front of the player with the engine's own mesh builder and a vanilla waterfall material, or removes it."));
 			ImGui::Checkbox(T(TKEY("hide_waterfall_effects"), "Hide Vanilla Waterfall Effects"), &hideFallEffects);
 			tooltip(T(TKEY("hide_waterfall_effects_tooltip"), "Hides vanilla's mist, skirt, splash and rapids meshes around waterfalls. Not saved."));
 			uint32_t captured, captures;
@@ -854,6 +858,13 @@ void FluidField::Prepass()
 			fallSurfaceTime += deltaTime;
 			fallSites.Update(water);
 			fallSheets.Update(fallSites, settings.GroundWaterfalls && settings.OwnFallSheets);
+			// D62 probe: the setting (settable from tools) or the button toggles the test quad
+			if (fallTestQuadRequested || settings.FallTestQuad != fallTestQuadShown) {
+				fallTestQuadRequested = false;
+				fallTestQuadShown = !fallTestQuadShown;
+				settings.FallTestQuad = fallTestQuadShown;
+				fallSheets.ToggleTestQuad(fallSites);
+			}
 			UpdateFallGround(playerPos);
 		} else {
 			waterfalls.Clear();
