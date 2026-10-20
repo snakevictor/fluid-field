@@ -356,7 +356,7 @@ namespace FluidFieldSim
 		static constexpr float BAKE_NEAR_TURN = 3.7f;      ///< D74: ...but right beside rock up to 75 degrees
 		static constexpr float MEET_CELL = 32.0f;          ///< D72: world units per cell of the grid meshes find each other's water in
 		static constexpr float MEET_REACH = 120.0f;        ///< D72: another mesh's water this near draws this mesh's flow... (D74: 120)
-		static constexpr float MEET_PULL = 0.9f;           ///< D72: ...this much at its nearest
+		static constexpr float MEET_PULL = 0.0f;           ///< D72: ...this much at its nearest (D76: off: it bent streaks into chevrons the sim never saw)
 		static constexpr float BAKE_MOST_DRIFT = 64.0f;    ///< D71: texels a streak may drift across from where it came in (D74: the sim decides; only a guard)
 		static constexpr float BAKE_MOST_DOWN = 1.6f;      ///< D60: and runs at most this much of it
 		static constexpr std::size_t BAKE_LEAST_ROCK = 6;  ///< D60: rock islands of this many texels or fewer are specks, taken as water
@@ -376,6 +376,7 @@ namespace FluidFieldSim
 		static constexpr float SIM_BAND = 0.15f;          ///< D74: share of the mesh's rows (texture v) its top and foot bands are
 		static constexpr float SIM_DEAD = 0.15f;          ///< D74: water moving less than this share of the median is a dead pocket: it keeps vanilla's way
 		static constexpr float SIM_MOST_TURN = 5.7f;      ///< D74: the streaks turn at most this across per down (80 degrees)
+		static constexpr int32_t SIM_LIP_ROWS = 14;       ///< D76: rows down from a mesh's top over which its streaks start to turn
 		static constexpr bool FLAT_JOIN = false;          ///< D68's flat parts joining the site's flow: the sim spreads the water itself (D74)
 		static constexpr float BAKE_WAKE_TEXELS = 24.0f;  ///< D60: texels down the streaks a rock's wake fades over
 		/** @brief D59: a mesh's flow bake in progress: its texture grid rasterised, its texels being tested against the rock. */
@@ -423,7 +424,8 @@ namespace FluidFieldSim
 		/** @brief D68: gathers the statics' triangles round a bake job's sheet (main thread). */
 		void GatherSolids(BakeJob& a_job) const;
 		/** @brief D68: whether a point lies inside a static's render mesh, deeper than BAKE_ROCK_MARGIN (upward ray parity per mesh). */
-		static bool InsideSolid(const BakeJob& a_job, const RE::NiPoint3& a_point);
+		static bool InsideSolid(const BakeJob& a_job, const RE::NiPoint3& a_point, bool a_lying = false);
+		static constexpr float SOLID_COVER = 120.0f;  ///< D76: a lying texel with a static's underside this near above it is under that rock (a wall)
 		/** @brief D68: the solved site flow at a world point (direction from above), or false where there is none. */
 		bool SiteFlowAt(float a_x, float a_y, float& a_vx, float& a_vy) const;
 		uint32_t linkedStreams = UINT32_MAX;  ///< D68: the sites' solved flows when the bakes were last linked
@@ -437,6 +439,7 @@ namespace FluidFieldSim
 			std::vector<RE::NiPoint3> position;
 			std::vector<uint8_t> covered;
 			std::vector<float> turn, speed, wake, foam;  ///< Across per down (texels), speed (vanilla's 1), the rock's wake and foam
+			mutable std::vector<float> swept;            ///< D76: the turn the streak sweep used (the debug arrows show it)
 			std::vector<RE::NiPoint3> normal;
 			std::vector<uint8_t> rock;  ///< D75: texels inside rock (the debug arrows skip them)
 		};

@@ -2648,7 +2648,7 @@ namespace FluidFieldSim
 		logger::info("[Fluid Field]   bake: {} triangles of {} statics round the sheet", a_job.solids.size(), statics);
 	}
 
-	bool FallSites::InsideSolid(const BakeJob& a_job, const RE::NiPoint3& a_point)
+	bool FallSites::InsideSolid(const BakeJob& a_job, const RE::NiPoint3& a_point, bool a_lying)
 	{
 		if (a_job.bins.empty())
 			return false;
@@ -2659,6 +2659,7 @@ namespace FluidFieldSim
 		// Upward from the point, per mesh: an odd number of its faces above means inside it (an open, buried
 		// underside does not matter, an overhang above counts twice)
 		std::vector<std::pair<uint32_t, uint32_t>> crossings;
+		float nearestAbove = FLT_MAX;
 		for (const uint32_t t : a_job.bins[static_cast<std::size_t>(by) * a_job.solidBins[0] + bx]) {
 			const auto& tri = a_job.solids[t];
 			const float d = (tri[1].x - tri[0].x) * (tri[2].y - tri[0].y) - (tri[2].x - tri[0].x) * (tri[1].y - tri[0].y);
@@ -2671,6 +2672,7 @@ namespace FluidFieldSim
 			const float z = tri[0].z + (tri[1].z - tri[0].z) * w1 + (tri[2].z - tri[0].z) * w2;
 			if (z <= a_point.z)
 				continue;
+			nearestAbove = std::min(nearestAbove, z - a_point.z);
 			const uint32_t ref = a_job.solidRef[t];
 			auto it = std::find_if(crossings.begin(), crossings.end(), [&](const auto& a_entry) { return a_entry.first == ref; });
 			if (it == crossings.end())
@@ -2678,6 +2680,11 @@ namespace FluidFieldSim
 			else
 				it->second++;
 		}
+		// D76: a lying (run, not curtain) texel with a rock's underside just above it is under that rock: vanilla's sheet
+		// runs on beneath a boulder resting on it (an even number of crossings: the boulder is wholly above), and the
+		// water drained out through it instead of turning
+		if (a_lying && nearestAbove < SOLID_COVER)
+			return true;
 		for (const auto& [ref, count] : crossings) {
 			if (count % 2 == 0)
 				continue;
@@ -2737,7 +2744,7 @@ namespace FluidFieldSim
 		// (it wants rock on both sides of the sheet, and the ray from under the boulder started in the ground)
 		uint32_t meshRock = 0;
 		for (std::size_t i = 0; i < count; i++) {
-			if (a_job.covered[i] && !rock[i] && InsideSolid(a_job, a_job.position[i])) {
+			if (a_job.covered[i] && !rock[i] && InsideSolid(a_job, a_job.position[i], std::abs(a_job.normal[i].z) > 0.5f)) {
 				rock[i] = 1;
 				meshRock++;
 			}
@@ -3089,7 +3096,8 @@ namespace FluidFieldSim
 			const float world = std::min(SIM_TERMINAL, std::sqrt(SIM_INFLOW * SIM_INFLOW + SIM_GRAVITY * std::max(topZ - a_job.position[i].z, 0.0f)));
 			fastestWorld = std::max(fastestWorld, world);
 			const float vanilla = VANILLA_SCROLL * std::max(tv[i].Length(), 1e-3f) / std::max(texelV, 1e-6f);
-			speed[i] = std::clamp(world / std::max(vanilla, 1.0f), 0.25f, 4.0f);
+			// D76: at most 1.6 (vanilla's own UVs already stretch down the drops; 4x stretched the texture into blocks)
+			speed[i] = std::clamp(world / std::max(vanilla, 1.0f), BAKE_LEAST_SPEED, BAKE_MOST_DOWN);
 			float strike = 0.0f;
 			for (int k = 0; k < 4; k++) {
 				const int32_t nx = x + NX[k], ny = y + NY[k];
@@ -3099,6 +3107,19 @@ namespace FluidFieldSim
 			foam[i] = std::clamp(strike / 300.0f, 0.0f, 1.0f);
 			from[i] = static_cast<int32_t>(i);
 			frontier.push_back(i);
+		}
+		// D76: water coming over the lip goes straight on: the turn eases in over the first SIM_LIP_ROWS rows of each
+		// column (on the lip's curl the sim's frame twists, and its flow there scattered sideways)
+		for (int32_t x = 0; x < iw; x++) {
+			int32_t first = -1;
+			for (int32_t y = 0; y < ih && first < 0; y++)
+				first = a_job.covered[index(x, y)] ? y : -1;
+			if (first < 0)
+				continue;
+			for (int32_t y = first; y < std::min(ih, first + SIM_LIP_ROWS); y++) {
+				const float ease = static_cast<float>(y - first) / static_cast<float>(SIM_LIP_ROWS);
+				turn[index(x, y)] *= ease * ease * (3.0f - 2.0f * ease);
+			}
 		}
 		for (std::size_t head = 0; head < frontier.size(); head++) {
 			const std::size_t i = frontier[head];
@@ -3494,6 +3515,7 @@ namespace FluidFieldSim
 				BlurGrid(pulled, w, h, 3);
 				turn.swap(pulled);
 			}
+			field.swept = turn;
 			// Down the sheet a row at a time (semi-Lagrangian, as D60's warp): each texel's streak and run time are
 			// those of the texel above it on its way down, its run time grown by the row's length over its speed
 			a_node.across.assign(count, 0.0f);
@@ -4333,7 +4355,7 @@ namespace FluidFieldSim
 							continue;
 						const RE::NiPoint3 tu = field->position[at(x + 1, y)] - field->position[at(x - 1, y)];
 						const RE::NiPoint3 tv = field->position[at(x, y + 1)] - field->position[at(x, y - 1)];
-						RE::NiPoint3 direction = tv + tu * field->turn[i];
+						RE::NiPoint3 direction = tv + tu * (field->swept.size() == field->turn.size() ? field->swept[i] : field->turn[i]);
 						const float length = direction.Length();
 						if (length < 1e-3f)
 							continue;
