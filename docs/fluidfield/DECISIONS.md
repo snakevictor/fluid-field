@@ -2108,3 +2108,17 @@ Entry format:
         too (they fade into it, but their teeth showed: SS 860), 10 rounds, at
         most 40 units.
 -   References: D85, D86
+
+## D88: The wobble is pinned at the banks and rises mostly up
+
+-   Date: 2026-10-20
+-   Context: SS 861/862: the sheet's edge dipped under the ground as it
+    wobbled, the terrain showing through.
+-   Decision:
+    -   The wobble fades in from the mesh's open edges over 120 units, measured
+        along the mesh (shortest paths over its edges from every open-edge
+        vertex), smoothstep; it replaces the half size beside an edge.
+    -   The wobble rises mostly up from the mesh: the wave's -1 to 1 maps to
+        -0.15 to 0.85 of its size (the user: "mostly up ... a little bit of
+        downwards wobble is ok").
+-   References: D85, D87

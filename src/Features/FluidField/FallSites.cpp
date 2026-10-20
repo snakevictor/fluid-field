@@ -19,6 +19,7 @@
 #include <fstream>
 #include <map>
 #include <numeric>
+#include <queue>
 #include <tuple>
 #include <unordered_set>
 
@@ -1851,6 +1852,40 @@ namespace FluidFieldSim
 				if (open[triangle[0]] || open[triangle[1]] || open[triangle[2]])
 					nearOpen[triangle[0]] = nearOpen[triangle[1]] = nearOpen[triangle[2]] = 1;
 			}
+			// D88: how far each vertex lies from the mesh's open edges, along the mesh (shortest paths over its edges): the
+			// wobble fades out toward them, so the water stays pinned at its banks (it dipped under the ground there)
+			std::vector<float> fromEdge(counts.vertexCount, FLT_MAX);
+			{
+				std::vector<std::vector<std::pair<uint16_t, float>>> next(counts.vertexCount);
+				for (const auto& triangle : triangles) {
+					for (int k = 0; k < 3; k++) {
+						const uint16_t a = triangle[k], b = triangle[(k + 1) % 3];
+						const float length = (positions[a] - positions[b]).Length() * geometry->world.scale;
+						next[a].emplace_back(b, length);
+						next[b].emplace_back(a, length);
+					}
+				}
+				using Entry = std::pair<float, uint16_t>;
+				std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> frontier;
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					if (open[v]) {
+						fromEdge[v] = 0.0f;
+						frontier.emplace(0.0f, static_cast<uint16_t>(v));
+					}
+				}
+				while (!frontier.empty()) {
+					const auto [distance, v] = frontier.top();
+					frontier.pop();
+					if (distance > fromEdge[v] || distance > WOBBLE_EDGE_REACH)
+						continue;
+					for (const auto& [n, length] : next[v]) {
+						if (distance + length < fromEdge[n]) {
+							fromEdge[n] = distance + length;
+							frontier.emplace(fromEdge[n], n);
+						}
+					}
+				}
+			}
 			// The swell at each vertex's texture coordinate (bilinear on the bake's grid), to a push along its normal
 			const auto w = static_cast<int32_t>(bake.width), h = static_cast<int32_t>(bake.height);
 			const auto swellAt = [&](float a_u, float a_v) {
@@ -1899,7 +1934,8 @@ namespace FluidFieldSim
 						float across = 0.0f, along = 0.0f;
 						flowAt(uvs[v][0], uvs[v][1], across, along);
 						const float stirred = std::clamp(stirredAt(uvs[v][0], uvs[v][1]) / WOBBLE_STIRRED, 0.0f, 1.0f);
-						const float size = (WOBBLE_CALM + (WOBBLE_MOST - WOBBLE_CALM) * stirred * stirred * (3.0f - 2.0f * stirred)) * (nearOpen[v] ? 0.5f : 1.0f);
+						const float inland = std::clamp(fromEdge[v] / WOBBLE_EDGE_REACH, 0.0f, 1.0f);
+						const float size = (WOBBLE_CALM + (WOBBLE_MOST - WOBBLE_CALM) * stirred * stirred * (3.0f - 2.0f * stirred)) * inland * inland * (3.0f - 2.0f * inland);
 						const RE::NiPoint3 wobble = normals[v] * (size / (length * scale));
 						value[7] = across;
 						wobbled++;

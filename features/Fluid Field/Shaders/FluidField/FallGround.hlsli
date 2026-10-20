@@ -147,13 +147,15 @@ namespace FallGround
 	/**
 	 * D85: the falls' wobble at a point of the flow (its streak, and its run less the scroll's phase): waves square to
 	 * the flow riding down it with the texture, broken up by a smooth noise carried the same way. Periodic over a
-	 * texture repeat, so the phase's wrap never jumps. -1 to 1.
+	 * texture repeat, so the phase's wrap never jumps. D88: -0.15 to 0.85 (mostly up).
 	 */
 	float Wobble(float a_across, float a_run)
 	{
 		static const float WAVES = 6.0;  // Crests per texture repeat down the flow
 		const float wave = sin(6.2831853 * WAVES * a_run + 1.7 * WobbleNoise(float2(a_across, a_run), float2(3.0, 3.0)));
-		return 0.65 * wave + 0.35 * WobbleNoise(float2(a_across, a_run), float2(5.0, 9.0));
+		const float wobble = 0.65 * wave + 0.35 * WobbleNoise(float2(a_across, a_run), float2(5.0, 9.0));
+		// D88: mostly up from the mesh, a little down (dipped, the water sank into the ground at its banks)
+		return 0.5 * wobble + 0.35;
 	}
 
 	/** D69, D82, D85: a falls vertex's move: across a seam's gap, its swell, and its wobble at the scroll's phase a_phase. */
