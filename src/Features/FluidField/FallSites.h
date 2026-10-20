@@ -379,7 +379,7 @@ namespace FluidFieldSim
 		static constexpr float WOBBLE_MOST = 20.0f;         ///< D85: world units the water wobbles at most, where it is most stirred (D87: 20, was 6: unseen)...
 		static constexpr float WOBBLE_CALM = 4.0f;          ///< D85: ...and everywhere else (its breathing; D87: 4, was 1)
 		static constexpr float WOBBLE_STIRRED = 1.5f;       ///< D85: disturbance at which the wobble is whole
-		static constexpr float WOBBLE_EDGE_REACH = 120.0f;  ///< D88: world units in from the mesh's open edges over which the wobble fades in (pinned at the banks)
+		static constexpr float WOBBLE_EDGE_REACH = 120.0f;  ///< D88: world units in from the mesh's open edges (D89: and from rock) over which the wobble fades in
 		/** @brief D82: the vertex shifts the shaders read (vertexClips 4-6): the seams' gap shift (D69) and the push together. */
 		void ComposeShifts();
 		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> gapShifts, vertexPushes;

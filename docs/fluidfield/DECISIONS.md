@@ -2122,3 +2122,9 @@ Entry format:
         -0.15 to 0.85 of its size (the user: "mostly up ... a little bit of
         downwards wobble is ok").
 -   References: D85, D87
+-   **D89 (same day): none inside rock.** SS 864/865: the wobble lifted the part
+    of a sheet that runs inside a boulder out through the rock's face. Vertices
+    inside rock or ground (the bake's rock mask at their texture coordinate,
+    which takes the collision's terrain too) get no swell and no wobble, and
+    seed the fade like the open edges: the wobble comes in over 120 units from
+    rock as from the banks.

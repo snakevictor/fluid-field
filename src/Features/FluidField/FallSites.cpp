@@ -1852,8 +1852,21 @@ namespace FluidFieldSim
 				if (open[triangle[0]] || open[triangle[1]] || open[triangle[2]])
 					nearOpen[triangle[0]] = nearOpen[triangle[1]] = nearOpen[triangle[2]] = 1;
 			}
+			// D89: which vertices lie inside rock or ground (the bake's mask at their texture coordinate): neither swell nor
+			// wobble there (they lifted the sheet out through a boulder's face)
+			std::vector<uint8_t> inRock(counts.vertexCount, 0);
+			if (bake.rock.size() == static_cast<std::size_t>(bake.width) * bake.height) {
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					const auto gx = std::clamp(static_cast<int32_t>(std::lround((uvs[v][0] - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(bake.width) - 0.5f)), 0,
+						static_cast<int32_t>(bake.width) - 1);
+					const auto gy = std::clamp(static_cast<int32_t>(std::lround((uvs[v][1] - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(bake.height) - 0.5f)), 0,
+						static_cast<int32_t>(bake.height) - 1);
+					inRock[v] = bake.rock[static_cast<std::size_t>(gy) * bake.width + gx];
+				}
+			}
 			// D88: how far each vertex lies from the mesh's open edges, along the mesh (shortest paths over its edges): the
-			// wobble fades out toward them, so the water stays pinned at its banks (it dipped under the ground there)
+			// wobble fades out toward them, so the water stays pinned at its banks (it dipped under the ground there).
+			// D89: and from rock, likewise
 			std::vector<float> fromEdge(counts.vertexCount, FLT_MAX);
 			{
 				std::vector<std::vector<std::pair<uint16_t, float>>> next(counts.vertexCount);
@@ -1868,7 +1881,7 @@ namespace FluidFieldSim
 				using Entry = std::pair<float, uint16_t>;
 				std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> frontier;
 				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					if (open[v]) {
+					if (open[v] || inRock[v]) {
 						fromEdge[v] = 0.0f;
 						frontier.emplace(0.0f, static_cast<uint16_t>(v));
 					}
@@ -1930,7 +1943,7 @@ namespace FluidFieldSim
 				if (base + v < vertexClips.size()) {
 					auto& value = vertexClips[base + v];
 					value[7] = value[8] = value[9] = value[10] = value[11] = 0.0f;
-					if (!open[v] && length > 1e-6f && linked != flowBakes.end()) {
+					if (!open[v] && !inRock[v] && length > 1e-6f && linked != flowBakes.end()) {
 						float across = 0.0f, along = 0.0f;
 						flowAt(uvs[v][0], uvs[v][1], across, along);
 						const float stirred = std::clamp(stirredAt(uvs[v][0], uvs[v][1]) / WOBBLE_STIRRED, 0.0f, 1.0f);
@@ -1946,7 +1959,7 @@ namespace FluidFieldSim
 						value[11] = along;
 					}
 				}
-				if (open[v] || length < 1e-6f)
+				if (open[v] || inRock[v] || length < 1e-6f)
 					continue;
 				const float t = std::clamp((swellAt(uvs[v][0], uvs[v][1]) - PUSH_FROM) / (PUSH_FULL - PUSH_FROM), 0.0f, 1.0f);
 				const float amount = PUSH_MOST * t * t * (3.0f - 2.0f * t) * (nearOpen[v] ? 0.5f : 1.0f);
