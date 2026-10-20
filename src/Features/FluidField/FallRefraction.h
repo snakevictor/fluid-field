@@ -15,9 +15,9 @@ namespace FluidFieldSim
 	 * world (water and blended geometry included), before the spray. Each piece is drawn from our own immutable
 	 * buffers, built once from its CPU copy (the dense copies', D73), with the same per-vertex shift and wobble (t123)
 	 * and the same flow bake (t124) as the lit passes, at the frame's latched scroll phase. The shader
-	 * (FluidField/FallSurface.hlsl) ports the river water's look (Water.hlsl): what lies behind, refracted from a copy
-	 * of the scene and absorbed by the water along the view ray, fresnel reflection, the sun's glint, and white water
-	 * from the bake. Every piece of pipeline state it touches is saved and restored.
+	 * (FluidField/FallSurface.hlsl) ports the river water's look (Water.hlsl): its colour lit and shadowed as the
+	 * river's (D102), what lies behind showing faintly through a thin, mostly opaque sheet, fresnel reflection, the
+	 * sun's glint, and white water from the bake. Every piece of pipeline state it touches is saved and restored.
 	 */
 	class FallRefraction
 	{
@@ -67,9 +67,10 @@ namespace FluidFieldSim
 			ID3D11ShaderResourceView* vertexClip = nullptr;   ///< FallGround's VertexClip (t123)
 			ID3D11ShaderResourceView* poolHeights = nullptr;  ///< FallGround's Heights (t120)
 			ID3D11ShaderResourceView* environment = nullptr;  ///< A cubemap of the surroundings (Dynamic Cubemaps, once it holds a capture), or null for each water's reflection colour
-			float depthScale = 2.0f;                          ///< D98: how much deeper than its path through it the falling water reads against its water's fog distances
-			float refraction = 1.0f;                          ///< How strongly the surface bends what is seen through it
-			float streakFoam = 0.6f;                          ///< How much of vanilla's streak texture reads as white water
+			float depthScale = 1.0f;                          ///< D102: how thick the sheet reads (Water Depth): its opacity and depth of colour
+			float refraction = 0.5f;                          ///< How strongly the surface bends what is seen through it
+			float streakFoam = 0.4f;                          ///< How much of vanilla's streak texture reads as white water
+			bool volumetricShadows = false;                   ///< D102: Volumetric Shadows is loaded: its shadow map (t18) and cascades (t98) shadow the sheet while bound
 		};
 
 		/** @brief Draws a_meshes; nothing when the shaders failed or nothing is bound. */
@@ -81,13 +82,15 @@ namespace FluidFieldSim
 		/** @brief False once its shaders failed to compile or the scene could not be copied: the engine's lit falls are then kept. */
 		bool IsUsable() const { return !shaderFailed && !sceneCopyFailed; }
 
-		/** @brief World units of water behind the surface counted at most (a curtain far in front of its rock is not that thick). */
-		static constexpr float LONGEST_PATH = 600.0f;
+		/** @brief World units of water behind the surface counted at most: D102, the sheet is what reads, not the gap behind it. */
+		static constexpr float LONGEST_PATH = 32.0f;
 		/** @brief World units of water the sheet itself is thick, looked at square on. */
 		static constexpr float SHEET_THICKNESS = 8.0f;
 
 	private:
 		bool EnsureShaders();
+		/** @brief D102: the pixel shader reading Volumetric Shadows' map, compiled on first use; null when it failed. */
+		ID3D11PixelShader* EnsureShadowedShader();
 		bool EnsureStates(ID3D11Device* a_device);
 		bool EnsureSceneCopy(ID3D11Device* a_device, ID3D11Texture2D* a_source, ID3D11RenderTargetView* a_target);
 
@@ -147,12 +150,14 @@ namespace FluidFieldSim
 		uint32_t groundSize = 0;
 		winrt::com_ptr<ID3D11VertexShader> vertexShader;
 		winrt::com_ptr<ID3D11PixelShader> pixelShader;
+		winrt::com_ptr<ID3D11PixelShader> pixelShaderShadowed;  ///< D102: with VOLUMETRIC_SHADOWS
 		winrt::com_ptr<ID3D11BlendState> blend;
 		winrt::com_ptr<ID3D11DepthStencilState> depthState;
 		winrt::com_ptr<ID3D11RasterizerState> raster;
 		winrt::com_ptr<ID3D11SamplerState> wrapSampler;
 		winrt::com_ptr<ID3D11SamplerState> clampSampler;
 		bool shaderFailed = false;
+		bool shadowedShaderFailed = false;  ///< D102: the shadowed variant failed; the plain one is used
 		bool sceneCopyFailed = false;
 	};
 }

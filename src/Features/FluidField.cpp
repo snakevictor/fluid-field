@@ -10,6 +10,7 @@
 #include "DynamicCubemaps.h"
 #include "UnifiedWater.h"
 #include "UnifiedWater/Flowmap.h"
+#include "VolumetricShadows.h"
 
 #include <DirectXPackedVector.h>
 #include <bit>
@@ -145,12 +146,12 @@ void FluidField::DrawSettings()
 		ImGui::SliderFloat(T(TKEY("fall_speed"), "Falls Speed"), &settings.FallSpeed, 0.5f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("fall_speed_tooltip"), "How fast the falls' water runs, against vanilla's own speed. The whole flow speeds up alike, so the texture never stretches."));
 		ImGui::Checkbox(T(TKEY("refractive_falls"), "See-Through Falls"), &settings.RefractiveFalls);
-		tooltip(T(TKEY("refractive_falls_tooltip"), "Experimental. Draws the falls as clear, refractive water, like the river below them: the rock behind shows through, bent by the surface and tinted by the water, with reflections and white water. Off draws vanilla's opaque falls."));
+		tooltip(T(TKEY("refractive_falls_tooltip"), "Experimental. Draws the falls in the water of the river they pour out of, lit and shadowed as it is: a thin sheet of mostly opaque water through which the rock behind shows faintly, with modest reflections and white water. Off draws vanilla's opaque falls."));
 		if (settings.RefractiveFalls) {
 			ImGui::SliderFloat(T(TKEY("fall_depth"), "Water Depth"), &settings.FallDepth, 0.25f, 8.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-			tooltip(T(TKEY("fall_depth_tooltip"), "How deep the falling water looks next to the river it pours out of, which gives its colours and clarity. Higher shows more of the water's own colour and less of what lies behind."));
+			tooltip(T(TKEY("fall_depth_tooltip"), "How thick the falling water looks. Higher is more opaque and deeper in its river's colour; lower lets more of the rock behind show through."));
 			ImGui::SliderFloat(T(TKEY("fall_refraction"), "Refraction"), &settings.FallRefraction, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			tooltip(T(TKEY("fall_refraction_tooltip"), "How strongly the falls' surface bends what is seen through it."));
+			tooltip(T(TKEY("fall_refraction_tooltip"), "How strongly the falls' surface bends what little is seen through it."));
 		}
 		ImGui::Checkbox(T(TKEY("hide_underwater_falls"), "Hide Buried Falls"), &settings.HideUnderwaterFalls);
 		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes under the water above or below them, or deep in the rock."));
@@ -1887,7 +1888,8 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 	}
 	params.depthScale = std::clamp(settings.FallDepth, 0.25f, 8.0f);
 	params.refraction = std::clamp(settings.FallRefraction, 0.0f, 3.0f);
-	params.streakFoam = settings.FallWhitening ? 0.6f : 0.4f;
+	params.streakFoam = settings.FallWhitening ? 0.4f : 0.25f;  // D102: the base look's white water kept modest
+	params.volumetricShadows = globals::features::volumetricShadows.loaded;
 	globals::profiler->BeginPass("FluidField::RefractiveFalls");
 	fallRefraction.Draw(globals::d3d::device, globals::d3d::context, params, draws);
 	globals::profiler->EndPass();
