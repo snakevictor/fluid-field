@@ -2022,3 +2022,24 @@ Entry format:
     -   The user saw three steps: vanilla, then the dense copies (seams, cuts),
         then the flow; with the cache the last two come together.
     -   The swell reaches 20 units (3842 vertices of 18 meshes).
+
+## D84: The swell piles up at rocks and stands up behind boulders
+
+-   Date: 2026-10-20
+-   Context: the user (SS 850): the water should bulge behind the rock,
+    following the flow, and more "concave-y". The D82 swell came only from
+    strands squeezed or striking rock; they steer round rocks smoothly, so
+    little showed at a boulder.
+-   Decision:
+    -   **Pillow:** a strand that sees rock within its 5-row look-ahead piles
+        up, more nearer and more head-on (swell up to 3).
+    -   **Rooster tail:** behind each boulder (a row's run of rock with water
+        at both ends, at most 48 texels), the water stands up in a ridge on
+        the wake's middle, none at the boulder's sides (1 - across²), highest
+        4 rows behind and fading over 8 (swell 3.5).
+    -   **Rounder mounds:** the swell is softened 2 passes (was 4).
+    -   Tried first and dropped: a hump where the strands' wake closes. On
+        bake 4 the wake behind the boulder narrows from 26 to 9 texels and
+        never closes on the mesh, and short-lived gaps at the crests (strands
+        starting on different rows) raised false humps.
+-   References: D80, D82, D83

@@ -372,7 +372,7 @@ namespace FluidFieldSim
 		static constexpr float PUSH_FROM = 1.0f;        ///< D82: swell the push starts at (the sheet mostly runs 0 to 2.5)...
 		static constexpr float PUSH_FULL = 3.0f;        ///< D82: ...and is whole at (piling against rock, squeezing between rocks: 5 to 20; D83: 3, was 4)
 		static constexpr int32_t LEAD_TEST_REACH = 12;  ///< D83: hidden lead-in texels this far across from running water still get the rock test
-		static constexpr int PUSH_BLUR = 4;             ///< D82: passes softening the swell to broad shapes
+		static constexpr int PUSH_BLUR = 2;             ///< D82: passes softening the swell to broad shapes (D84: 2, was 4: steeper, rounder mounds)
 		/** @brief D82: the vertex shifts the shaders read (vertexClips 4-6): the seams' gap shift (D69) and the push together. */
 		void ComposeShifts();
 		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> gapShifts, vertexPushes;

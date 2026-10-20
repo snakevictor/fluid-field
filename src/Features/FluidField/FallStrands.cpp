@@ -31,6 +31,11 @@ namespace FluidFieldSim::FallStrands
 		constexpr float HEAL = 1.5f;             ///< Seconds a strand turned aside takes to come back to its column
 		constexpr float LEAST_SPACING = 0.5f;    ///< Strands press together to this share of their spacing at most (the streaks squeeze 2x)
 		constexpr float OPEN_SPACING = 3.0f;     ///< A gap this many spacings wide (and 3 texels) is open: the wake behind rock
+		constexpr float PILLOW_SWELL = 3.0f;     ///< D84: swell of water piling up head-on against rock just ahead (the pillow)
+		constexpr float WAKE_SWELL = 3.5f;       ///< D84: swell behind a boulder, its two streams meeting (the rooster tail)...
+		constexpr float WAKE_PEAK = 4.0f;        ///< D84: ...highest this many rows behind it...
+		constexpr float WAKE_FADE = 8.0f;        ///< D84: ...fading over this many rows down the flow
+		constexpr int32_t BOULDER_WIDEST = 48;   ///< D84: rock with water both sides of it no wider than this (texels) is a boulder
 		constexpr float AERATION_FADE = 3.0f;    ///< Seconds aeration from strikes and pile-ups fades over
 		constexpr float UNITS_PER_METRE = 70.0f;
 		constexpr float NOWHERE = 1e6f;
@@ -134,7 +139,8 @@ namespace FluidFieldSim::FallStrands
 			float squeeze = 1.0f;
 			float strike = 0.0f;  ///< World units per second of across speed lost against rock this row
 			float spacing = 1.0f;
-			int side = 0;  ///< Which way it passes the rock ahead (-1 left, 1 right)
+			int side = 0;         ///< Which way it passes the rock ahead (-1 left, 1 right)
+			float pillow = 0.0f;  ///< D84: piling up against the rock just ahead (1 head-on, at it)
 			bool alive = false;
 		};
 	}
@@ -495,6 +501,8 @@ namespace FluidFieldSim::FallStrands
 				const float left = nearest(leftClear, hitX, a_row + ahead), right = nearest(rightClear, hitX, a_row + ahead);
 				const float toLeft = hitX - left, toRight = right - hitX;
 				if (std::min(toLeft, toRight) <= MOST_ESCAPE) {
+					// D84: nearer and more head-on, the more it piles up
+					a_node.pillow = (1.0f - static_cast<float>(ahead - 1) / static_cast<float>(LOOK)) * (1.0f - std::abs(toLeft - toRight) / std::max(toLeft + toRight, 1e-3f));
 					int choose = toLeft < toRight ? -1 : 1;
 					if (a_node.side != 0 && std::abs(toLeft - toRight) < 1.5f)
 						choose = a_node.side;
@@ -506,6 +514,7 @@ namespace FluidFieldSim::FallStrands
 				}
 			} else {
 				a_node.side = 0;
+				a_node.pillow = 0.0f;
 			}
 			// In the rock after all: out to the nearer side (its side if it chose one); the speed into the rock is lost
 			// (the strike: foam, spray). Over rock wider than MOST_ESCAPE it runs on over it, roughened
@@ -654,7 +663,8 @@ namespace FluidFieldSim::FallStrands
 					result.foam[i] += std::clamp(1.5f * a_node.strike / std::max(a_node.down, 1.0f) + 0.5f * std::max(a_node.squeeze - 1.5f, 0.0f), 0.0f, 1.0f) * a_weight;
 					result.turn[i] += a_node.across / std::max(a_node.down, 1.0f) * sample(perRow, a_node.x, static_cast<float>(y)) / sample(perColumn, a_node.x, static_cast<float>(y)) * a_weight;
 					result.speed[i] += std::clamp(a_node.down / std::max(sample(vanilla, a_node.x, static_cast<float>(y)), 1.0f), LEAST_RATIO, MOST_RATIO) * a_weight;
-					result.swell[i] += (std::max(a_node.squeeze - 1.0f, 0.0f) + 2.0f * a_node.strike / std::max(a_node.down, 1.0f)) * a_weight;
+					result.swell[i] += (std::max(a_node.squeeze - 1.0f, 0.0f) + 2.0f * a_node.strike / std::max(a_node.down, 1.0f) + PILLOW_SWELL * a_node.pillow) *
+					                   a_weight;
 				};
 				result.speed[i] = 0.0f;
 				if (right == 0 || right == order.size()) {
@@ -682,6 +692,45 @@ namespace FluidFieldSim::FallStrands
 				fill(b, f, lip[order[right]]);
 			}
 		}
+		// D84: behind each boulder (rock with water both sides of it) its two streams meet and the water stands up in a
+		// mound, highest WAKE_PEAK rows behind it, fading down the flow, on the boulder's own columns
+		{
+			std::vector<float> behind(count, NOWHERE), middle(count, 0.0f), half(count, 1.0f);
+			for (int32_t y = 0; y + 1 < h; y++) {
+				for (int32_t x = 0; x < w; x++) {
+					const std::size_t i = index(x, y);
+					if (!rock[i] || !covered[i + w] || rock[i + w])
+						continue;
+					// This row's run of rock through it: water at both its ends, and narrow enough
+					int32_t left = x, right = x;
+					while (left > 0 && rock[index(left - 1, y)])
+						left--;
+					while (right + 1 < w && rock[index(right + 1, y)])
+						right++;
+					const bool water = left > 0 && right + 1 < w && covered[index(left - 1, y)] && covered[index(right + 1, y)];
+					if (water && right - left + 1 <= BOULDER_WIDEST) {
+						behind[i] = 0.0f;
+						middle[i] = 0.5f * static_cast<float>(left + right);
+						half[i] = 0.5f * static_cast<float>(right - left + 1);
+					}
+				}
+			}
+			for (int32_t y = 1; y < h; y++) {
+				for (int32_t x = 0; x < w; x++) {
+					const std::size_t i = index(x, y);
+					if (rock[i] || !covered[i] || behind[i - w] > WAKE_PEAK + 4.0f * WAKE_FADE)
+						continue;
+					behind[i] = behind[i - w] + 1.0f;
+					middle[i] = middle[i - w];
+					half[i] = half[i - w];
+					// A ridge: whole on the wake's middle, none at the boulder's sides (a rooster tail, not a plateau)
+					const float past = behind[i], across = std::abs(static_cast<float>(x) - middle[i]) / std::max(half[i], 1.0f);
+					const float ridge = std::max(1.0f - across * across, 0.0f);
+					result.swell[i] += WAKE_SWELL * ridge * (past < WAKE_PEAK ? Smoothstep(0.0f, WAKE_PEAK, past) : std::exp(-(past - WAKE_PEAK) / WAKE_FADE));
+				}
+			}
+		}
+
 		// The texture's mapping, on vanilla's own texture grid (the frame its look is drawn in). Its streaks follow the
 		// strands' way at every cell (every turn kept), keeping vanilla's spacing only as far as that allows: where the
 		// water gathers or spreads they close up or open out instead of copying the strands' own bunching (copied, it
