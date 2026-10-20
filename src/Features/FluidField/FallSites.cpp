@@ -2002,9 +2002,10 @@ namespace FluidFieldSim
 			}
 			// D68: the water this mesh falls into: planes under its top (water objects and cells' water). A plane
 			// covers its whole bound, but under its height there is only water or ground, and both hide the falls
-			float top = -FLT_MAX, lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
+			float top = -FLT_MAX, bottom = FLT_MAX, lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
 			for (const auto& position : positions) {
 				top = std::max(top, position.z);
+				bottom = std::min(bottom, position.z);
 				lo[0] = std::min(lo[0], position.x);
 				lo[1] = std::min(lo[1], position.y);
 				hi[0] = std::max(hi[0], position.x);
@@ -2019,14 +2020,16 @@ namespace FluidFieldSim
 				for (uint32_t v = 0; v < counts.vertexCount; v++) {
 					const float length = normals[v].Length();
 					bool inside = false;
-					float clip = RockClip(world, positions[v], length > 1e-6f ? normals[v] / length : RE::NiPoint3(0.0f, 0.0f, 1.0f), inside);
+					float clip = ROCK_CUT ? RockClip(world, positions[v], length > 1e-6f ? normals[v] / length : RE::NiPoint3(0.0f, 0.0f, 1.0f), inside) : CLIP_MARGIN + CLIP_RANGE;
 					float water = -FLT_MAX;
 					for (const auto& plane : planes) {
 						if (positions[v].x >= plane[0] && positions[v].x <= plane[2] && positions[v].y >= plane[1] && positions[v].y <= plane[3])
 							water = std::max(water, plane[4]);
 					}
 					const float above = water > -FLT_MAX ? positions[v].z - water : NO_WATER;
-					if (water > -FLT_MAX)
+					// D70: only near the mesh's foot, where it goes into its water: higher up, a plane whose bound covers
+					// the fall (a pool partway down, a whole cell) cut holes in the middle of the sheet
+					if (water > -FLT_MAX && positions[v].z < bottom + WATER_CUT_BAND)
 						clip = std::min(clip, above + WATER_KEEP);
 					vertexClips.push_back({ clip, 1.0f, above, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f });
 					clipTested++;
@@ -2899,7 +2902,9 @@ namespace FluidFieldSim
 							continue;
 						const float flat = std::clamp((std::abs(field.normal[i].z) - 0.75f) / 0.15f, 0.0f, 1.0f);
 						float vx, vy;
-						if (flat <= 0.0f || !SiteFlowAt(field.position[i].x, field.position[i].y, vx, vy) || vx * vx + vy * vy < 0.0025f)
+						// D70: only near the mesh's foot, where the water lands (on a crest it swirled the arch)
+						const float foot = std::clamp((a_node.lo[2] + 2.0f * WATER_CUT_BAND - field.position[i].z) / WATER_CUT_BAND, 0.0f, 1.0f);
+						if (flat * foot <= 0.0f || !SiteFlowAt(field.position[i].x, field.position[i].y, vx, vy) || vx * vx + vy * vy < 0.0025f)
 							continue;
 						const RE::NiPoint3 tu = field.position[at(x + 1, y)] - field.position[at(x - 1, y)];
 						const RE::NiPoint3 tv = field.position[at(x, y + 1)] - field.position[at(x, y - 1)];
@@ -2911,7 +2916,7 @@ namespace FluidFieldSim
 						// Only where the main flow leaves the mesh's own way down by more than 20 degrees: elsewhere the
 						// mesh already runs with it, and a small turn everywhere only sheared the streaks into whorls
 						const float apart = std::clamp((std::abs(wanted - turn[i]) - 0.36f) / 0.36f, 0.0f, 1.0f);
-						const float weight = flat * flat * (3.0f - 2.0f * flat) * apart;
+						const float weight = flat * flat * (3.0f - 2.0f * flat) * apart * foot;
 						turn[i] += (wanted - turn[i]) * weight;
 						flatTexels += weight > 0.5f ? 1 : 0;
 					}
@@ -2960,6 +2965,19 @@ namespace FluidFieldSim
 			BlurGrid(trust, w, h, 2);
 			for (std::size_t i = 0; i < count; i++)
 				a_node.across[i] = across0[i % w] + offset[i] * trust[i];
+			// D70: streaks never cross or fold (where the turn flipped over a short way the streak coordinate folded
+			// over itself: the whorls): along each row, at least BAKE_LEAST_SPACING of the straight spacing apart
+			for (int32_t y = 0; y < h; y++) {
+				for (int32_t x = 1; x < w; x++) {
+					const std::size_t i = static_cast<std::size_t>(y) * w + x;
+					const float straight = across0[x] - across0[x - 1];
+					const float least = straight * BAKE_LEAST_SPACING;
+					if (straight > 0.0f)
+						a_node.across[i] = std::max(a_node.across[i], a_node.across[i - 1] + least);
+					else if (straight < 0.0f)
+						a_node.across[i] = std::min(a_node.across[i], a_node.across[i - 1] + least);
+				}
+			}
 			FlowBake bake;
 			bake.width = field.width;
 			bake.height = field.height;

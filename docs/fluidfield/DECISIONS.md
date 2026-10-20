@@ -1611,3 +1611,24 @@ Entry format:
 -   Open: the hole beside a boulder (781) is the rock cut across a large
     triangle, not a seam; to look at next.
 -   References: D57, D67, D68
+
+## D70: No rock cut; the water cut only at a mesh's foot; vanilla's way down drives harder; streaks never fold
+
+-   Date: 2026-10-19
+-   Phase / spike: @Victor's review screenshots 801-811
+-   Decision:
+    -   Holes in the sheets (801, 803, 804, 811: a clean polygon round one
+        vertex with no rock there): the per-vertex rock cut's parity
+        misfired, and D68's water cut fired partway down a fall where a
+        plane's bound (a pool partway down, a whole cell) covers it. The
+        rock cut is off (ROCK_CUT; @Victor: water inside rock need not be
+        culled for now, and rock hides it anyway); the water cut applies
+        only within 160 units of the mesh's foot.
+    -   Swirls (802, 805-807): @Victor wants vanilla's motion to drive
+        harder. The solve may turn the flow 27 degrees at most (was 45),
+        60% of the bend is kept (was 75%), streaks never fold (along each
+        row they stay at least half their straight spacing apart, in
+        order), and flat parts turn to the main flow only near the mesh's
+        foot (an arch's crest swirled). First run: 757 flat texels turn
+        (was 68764).
+-   References: D56, D60, D68

@@ -316,10 +316,12 @@ namespace FluidFieldSim
 		float RockAlong(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, int* a_crossings = nullptr, float* a_last = nullptr) const;
 		std::unordered_map<const RE::BSGeometry*, uint32_t> vertexClipBase;
 		std::vector<std::array<float, 8>> vertexClips;
-		static constexpr float GAP_REACH = 40.0f;   ///< D69: an open edge this near another mesh's open edge, and not over it, closes the gap
-		static constexpr float GAP_OVERLAP = 4.0f;  ///< D69: ...each side moving past the middle by this much
-		static constexpr float WATER_KEEP = 24.0f;  ///< D68: falling water is cut this far under the water it falls into
-		static constexpr float NO_WATER = 1.0e4f;   ///< D68: a vertex's height above the water below where there is none
+		static constexpr float GAP_REACH = 40.0f;        ///< D69: an open edge this near another mesh's open edge, and not over it, closes the gap
+		static constexpr float GAP_OVERLAP = 4.0f;       ///< D69: ...each side moving past the middle by this much
+		static constexpr float WATER_KEEP = 24.0f;       ///< D68: falling water is cut this far under the water it falls into
+		static constexpr float WATER_CUT_BAND = 160.0f;  ///< D70: ...only this near its mesh's foot (a plane's bound reaches past its water, D63)
+		static constexpr bool ROCK_CUT = false;          ///< D70: the per-vertex rock cut (D56) holed sheets where its parity misfired; rock hides water inside it anyway
+		static constexpr float NO_WATER = 1.0e4f;        ///< D68: a vertex's height above the water below where there is none
 		/**
 		 * @brief D67: each tested lit mesh's overlap fade: its open edges that lie on another falls mesh leading it
 		 * (higher, or as high and larger) fade to 0, so that mesh shows through; the rest stay 1.
@@ -340,14 +342,14 @@ namespace FluidFieldSim
 		static constexpr float BAKE_ROCK_MARGIN = 24.0f;  ///< A texel this far inside rock is still water (vanilla's sheets dip into the rock they lie on)
 		static constexpr double BAKE_BUDGET_MS = 3.0;
 		static constexpr float BAKE_LEAST_DOWN = 0.3f;     ///< The flow keeps at least this much of vanilla's forward...
-		static constexpr float BAKE_MOST_TURN = 1.0f;      ///< ...and turns aside at most this across per down (45 degrees)
+		static constexpr float BAKE_MOST_TURN = 0.5f;      ///< ...and turns aside at most this across per down (D70: 27 degrees: vanilla's way down drives harder)
 		static constexpr float BAKE_MOST_DOWN = 1.6f;      ///< D60: and runs at most this much of it
 		static constexpr std::size_t BAKE_LEAST_ROCK = 6;  ///< D60: rock islands of this many texels or fewer are specks, taken as water
 		static constexpr float BAKE_BEND_NEAR = 3.0f;      ///< D60: the streaks bend in full this many texels from rock...
 		static constexpr float BAKE_BEND_FAR = 14.0f;      ///< ...and not at all past this
 		static constexpr int BAKE_TURN_BLUR = 6;           ///< D60: passes softening the turn (D68: more, so it cannot whorl)
 		static constexpr int BAKE_WARP_BLUR = 3;           ///< D60: passes softening the warp
-		static constexpr float BAKE_WARP_KEEP = 0.75f;     ///< D60: how much of the full streamline warp is kept (streaks partly run under a rock)
+		static constexpr float BAKE_WARP_KEEP = 0.6f;      ///< D60: how much of the full streamline warp is kept (streaks partly run under a rock)
 		static constexpr float BAKE_LEAST_SPACING = 0.5f;  ///< D60: streaks squeezed closer than this, or spread wider than BAKE_MOST_SPACING, ease back to vanilla's
 		static constexpr float BAKE_MOST_SPACING = 2.0f;
 		static constexpr float BAKE_WAKE_TEXELS = 24.0f;  ///< D60: texels down the streaks a rock's wake fades over
