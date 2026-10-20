@@ -128,6 +128,10 @@ VS_OUTPUT main(VS_INPUT input)
 	vsout.PositionCS.xzw = input.PositionMS.xzw;
 #	else
 
+#		if defined(FLUID_FIELD)
+	// Fluid Field (D69): a falls seam's edge moved across its gap, the same as Lighting.hlsl
+	input.PositionMS.xyz += FallGround::Shift(input.VertexID);
+#		endif
 	precise float4 positionMS = float4(input.PositionMS.xyz, 1.0);
 	float4 positionCS = float4(0, 0, 0, 0);
 

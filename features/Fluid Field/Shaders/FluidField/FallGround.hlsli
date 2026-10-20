@@ -46,7 +46,13 @@ namespace FallGround
 	Texture2D<float4> Stream : register(t122);  // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
 	// D56: per vertex of the falls' lit meshes, how far it stands out of the rock (negative inside); D67: and how
 	// much of it shows where it overlaps a mesh leading it (its seam edge fades, dithered, in both passes)
-	StructuredBuffer<float4> VertexClip : register(t123);  // D68: and how far it stands above the water it falls into (z)
+	/** D69: per vertex of the falls' lit meshes: the rock cut, fade, height above the water below (a), and its move across a seam's gap, in its mesh's space (b). */
+	struct FallVertex
+	{
+		float4 a;
+		float4 b;
+	};
+	StructuredBuffer<FallVertex> VertexClip : register(t123);  // D68: and how far it stands above the water it falls into (z)
 	// D59, D67: this mesh's flow, solved on its own texture grid and linked to the mesh above it (FallSites::LinkBakes):
 	// the texture coordinates its water reads (across: its streak; along: its run time at the shared scroll), a
 	// rock's wake, and foam (its rim, water piling against it)
@@ -160,7 +166,7 @@ namespace FallGround
 		// D56: the rock per vertex, tested against the game's collision (FallSites::ClipStep): the top-down
 		// ground map called everything under an overhang buried, and holed the falls there
 		if (VertexBase != NO_VERTEX_CLIP)
-			distance = min(distance, VertexClip[VertexBase + a_vertex].x);
+			distance = min(distance, VertexClip[VertexBase + a_vertex].a.x);
 		return clamp(distance, -CLIP_MOST, CLIP_MOST);
 	}
 
@@ -175,7 +181,15 @@ namespace FallGround
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
 			return float2(1.0, NO_WATER);
-		return VertexClip[VertexBase + a_vertex].yz;
+		return VertexClip[VertexBase + a_vertex].a.yz;
+	}
+
+	/** D69: how far a vertex of falling water moves, in its mesh's space, to close a seam's gap; 0 on every other draw. The same in both depth passes. */
+	float3 Shift(uint a_vertex)
+	{
+		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
+			return 0.0;
+		return VertexClip[VertexBase + a_vertex].b.xyz;
 	}
 
 	/**

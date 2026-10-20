@@ -2028,7 +2028,7 @@ namespace FluidFieldSim
 					const float above = water > -FLT_MAX ? positions[v].z - water : NO_WATER;
 					if (water > -FLT_MAX)
 						clip = std::min(clip, above + WATER_KEEP);
-					vertexClips.push_back({ clip, 1.0f, above, 0.0f });
+					vertexClips.push_back({ clip, 1.0f, above, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f });
 					clipTested++;
 					clipInside += inside ? 1 : 0;
 				}
@@ -2047,7 +2047,9 @@ namespace FluidFieldSim
 		// Every tested lit mesh in the world: its vertices, triangles, open edges' vertices, extent, top and area
 		struct Mesh
 		{
+			const RE::BSGeometry* geometry = nullptr;
 			uint32_t base = 0;
+			std::vector<std::array<uint16_t, 2>> openEdges;
 			std::vector<RE::NiPoint3> positions;
 			std::vector<std::array<uint16_t, 3>> triangles;
 			std::vector<uint8_t> open;
@@ -2071,6 +2073,7 @@ namespace FluidFieldSim
 			if (base->second + counts.vertexCount > vertexClips.size())
 				continue;
 			Mesh mesh;
+			mesh.geometry = geometry;
 			mesh.base = base->second;
 			mesh.positions.resize(counts.vertexCount);
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
@@ -2096,8 +2099,10 @@ namespace FluidFieldSim
 			}
 			mesh.open.assign(counts.vertexCount, 0);
 			for (const auto& [edge, count] : uses) {
-				if (count == 1)
-					mesh.open[edge.first] = mesh.open[edge.second] = 1;
+				if (count != 1)
+					continue;
+				mesh.open[edge.first] = mesh.open[edge.second] = 1;
+				mesh.openEdges.push_back({ edge.first, edge.second });
 			}
 			meshes.push_back(std::move(mesh));
 		}
@@ -2106,7 +2111,7 @@ namespace FluidFieldSim
 		const auto leads = [&](const Mesh& a_lead, const Mesh& a_mesh) {
 			return a_lead.top > a_mesh.top + 8.0f || (std::abs(a_lead.top - a_mesh.top) <= 8.0f && a_lead.area > a_mesh.area);
 		};
-		uint32_t faded = 0, edges = 0;
+		uint32_t faded = 0, edges = 0, gaps = 0;
 		for (const auto& mesh : meshes) {
 			// Which vertices lie on a mesh leading this one
 			std::vector<uint8_t> onLead(mesh.positions.size(), 0);
@@ -2146,9 +2151,64 @@ namespace FluidFieldSim
 				}
 				vertexClips[mesh.base + v][1] = fade;
 			}
+			// D69: an open edge's vertex that lies off every other mesh but near another mesh's open edge (two meshes
+			// meeting edge to edge with air between: the dark lines along their seam) moves across the gap, past the
+			// middle by GAP_OVERLAP; the other mesh's edge moves to meet it the same way. In the mesh's own space, for
+			// both depth passes' vertex shaders
+			const RE::NiTransform inverse = mesh.geometry->world.Invert();
+			for (std::size_t v = 0; v < mesh.positions.size(); v++) {
+				auto& value = vertexClips[mesh.base + v];
+				value[4] = value[5] = value[6] = 0.0f;
+				if (!mesh.open[v] || onLead[v])
+					continue;
+				const RE::NiPoint3& p = mesh.positions[v];
+				float best = GAP_REACH * GAP_REACH;
+				RE::NiPoint3 target;
+				bool found = false;
+				for (const auto& other : meshes) {
+					if (&other == &mesh || p.x < other.lo[0] - GAP_REACH || p.x > other.hi[0] + GAP_REACH || p.y < other.lo[1] - GAP_REACH || p.y > other.hi[1] + GAP_REACH ||
+						p.z < other.lo[2] - GAP_REACH || p.z > other.hi[2] + GAP_REACH)
+						continue;
+					// Not where this vertex already lies on the other mesh (an overlap, D67's)
+					bool over = false;
+					for (const auto& tri : other.triangles) {
+						if (TriangleDistanceSquared(p, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]]) < 4.0f) {
+							over = true;
+							break;
+						}
+					}
+					if (over)
+						continue;
+					for (const auto& edge : other.openEdges) {
+						const RE::NiPoint3& a = other.positions[edge[0]];
+						const RE::NiPoint3 ab = other.positions[edge[1]] - a;
+						const float length = ab.Dot(ab);
+						const float s = length > 1e-6f ? std::clamp((p - a).Dot(ab) / length, 0.0f, 1.0f) : 0.0f;
+						const RE::NiPoint3 q = a + ab * s;
+						const RE::NiPoint3 d = q - p;
+						const float distance = d.Dot(d);
+						if (distance < best && distance > 1.0f) {
+							best = distance;
+							target = q;
+							found = true;
+						}
+					}
+				}
+				if (!found)
+					continue;
+				const RE::NiPoint3 across = target - p;
+				const float gap = std::sqrt(best);
+				const RE::NiPoint3 moved = p + across * ((0.5f * gap + GAP_OVERLAP) / gap);
+				const RE::NiPoint3 local = inverse * moved - inverse * p;
+				value[4] = local.x;
+				value[5] = local.y;
+				value[6] = local.z;
+				gaps++;
+			}
 		}
 		vertexClipVersion++;
-		logger::info("[Fluid Field] Waterfall seams: {} of {} open-edge vertices of {} lit meshes lie on a mesh leading them, and fade", faded, edges, meshes.size());
+		logger::info("[Fluid Field] Waterfall seams: {} of {} open-edge vertices of {} lit meshes lie on a mesh leading them, and fade; {} move across a gap to the mesh beside them", faded,
+			edges, meshes.size(), gaps);
 	}
 
 	std::unique_ptr<FallSites::BakeJob> FallSites::StartBake(RE::BSGeometry* a_geometry)

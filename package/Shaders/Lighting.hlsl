@@ -154,6 +154,10 @@ VS_OUTPUT main(VS_INPUT input)
 {
 	VS_OUTPUT vsout;
 
+#	if defined(FLUID_FIELD)
+	// Fluid Field (D69): a falls seam's edge moved across its gap, the same in the depth pre-pass (Utility.hlsl)
+	input.Position.xyz += FallGround::Shift(input.VertexID);
+#	endif
 	precise float4 inputPosition = float4(input.Position.xyz, 1.0);
 
 #	if defined(LODLANDNOISE) || defined(LODLANDSCAPE)

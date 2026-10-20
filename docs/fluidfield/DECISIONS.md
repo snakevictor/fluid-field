@@ -1593,3 +1593,21 @@ Entry format:
     the hole beside a boulder (781) need the edges moved, not faded; flow
     "plain incorrect at places" (782, 787) to be judged again after this.
 -   References: D57, D59, D60, D67
+
+## D69: Seam gaps closed by moving the edges, in both depth passes
+
+-   Date: 2026-10-19
+-   Phase / spike: @Victor's review screenshot 789 (dark lines along seams)
+-   Decision: Where two lit falls meshes meet edge to edge with air between
+    them, fading cannot help. An open edge's vertex that lies off every
+    other mesh but within 40 units of another mesh's open edge moves across
+    the gap, 4 units past the middle; the other mesh's edge moves to meet
+    it the same way. The move is stored in the mesh's own space beside the
+    rock cut and fade (the per-vertex buffer is now two float4s) and added
+    to the vertex's position at the start of both Lighting.hlsl's and
+    Utility.hlsl's vertex shaders, so the depth pre-pass and the lit pass
+    still agree (checked: no brown or milky surfaces). First run: 28 of 992
+    open-edge vertices of 18 meshes moved; 7 faded (D68's overlap rule).
+-   Open: the hole beside a boulder (781) is the rock cut across a large
+    triangle, not a seam; to look at next.
+-   References: D57, D67, D68

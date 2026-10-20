@@ -124,7 +124,8 @@ namespace FluidFieldSim
 		 * Each value is how far the vertex stands out of the rock (negative inside it), for SV_ClipDistance,
 		 * and (D67) how much of it shows where it overlaps another falls mesh (1 whole, 0 gone: its edges
 		 * over a mesh that leads it are dithered out, so the two blend instead of meeting at a hard line),
-		 * and (D68) how far it stands above the water it falls into (NO_WATER where there is none).
+		 * and (D68) how far it stands above the water it falls into (NO_WATER where there is none); then
+		 * (D69) how far it moves, in its mesh's own space, to close a gap to the mesh beside it.
 		 */
 		bool GetVertexClip(const RE::BSGeometry* a_geometry, uint32_t& a_base) const
 		{
@@ -134,7 +135,7 @@ namespace FluidFieldSim
 			a_base = it->second;
 			return true;
 		}
-		const std::vector<std::array<float, 4>>& GetVertexClips() const { return vertexClips; }
+		const std::vector<std::array<float, 8>>& GetVertexClips() const { return vertexClips; }
 		/** @brief D61: a grounded site's lit falls piece, and the water level its site ends in. */
 		struct LitMesh
 		{
@@ -314,7 +315,9 @@ namespace FluidFieldSim
 		/** @brief D57: the nearest rock along a ray from a point, world units, or a negative value for none (the falls' own collision passed through). */
 		float RockAlong(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, int* a_crossings = nullptr, float* a_last = nullptr) const;
 		std::unordered_map<const RE::BSGeometry*, uint32_t> vertexClipBase;
-		std::vector<std::array<float, 4>> vertexClips;
+		std::vector<std::array<float, 8>> vertexClips;
+		static constexpr float GAP_REACH = 40.0f;   ///< D69: an open edge this near another mesh's open edge, and not over it, closes the gap
+		static constexpr float GAP_OVERLAP = 4.0f;  ///< D69: ...each side moving past the middle by this much
 		static constexpr float WATER_KEEP = 24.0f;  ///< D68: falling water is cut this far under the water it falls into
 		static constexpr float NO_WATER = 1.0e4f;   ///< D68: a vertex's height above the water below where there is none
 		/**
