@@ -1612,8 +1612,9 @@ namespace FluidFieldSim
 		uint64_t hash = 14695981039346656037ull;
 		const auto mix = [&](int64_t a_value) { hash = fnv(hash, &a_value, sizeof(a_value)); };
 		const auto quantise = [](float a_value, float a_step) { return std::isfinite(a_value) ? static_cast<int64_t>(std::llround(a_value / a_step)) : INT64_MIN; };
-		// The bake code's own build too: while it is being tuned, every build bakes afresh
-		const std::string build = std::format("{} {}|{}", __DATE__, __TIME__, FallStrands::Version());
+		// The strand code's own build too: while it is being tuned, every build of it bakes afresh (a change to the rest of
+		// the bake, here, bumps BAKE_CACHE_VERSION)
+		const std::string build = FallStrands::Version();
 		hash = fnv(hash, build.data(), build.size());
 		mix(BAKE_CACHE_VERSION);
 		mix(ref->GetFormID());
@@ -2105,6 +2106,20 @@ namespace FluidFieldSim
 
 	void FallSites::BakeStep()
 	{
+		BakeWork();
+		// D67: linked once all are solved, so each mesh carries on from the one above it. D83: checked after every step,
+		// not only as a bake lands: a bake read from the cache lands a frame after its job, before the queue's stale
+		// entries (originals queued before their dense copies were made) are passed by, and nothing landed after them
+		if (linkDue && bakesPending.empty() && bakeQueue.empty() && !bakeJob) {
+			linkDue = false;
+			logger::info("[Fluid Field] Waterfall flow bakes: {} meshes ({} read from the cache, {} solved), {} texels tested, {} inside rock", bakeFields.size(), bakesCached,
+				bakesSolved, bakedTexels, bakedRockTexels);
+			LinkBakes();
+		}
+	}
+
+	void FallSites::BakeWork()
+	{
 		// Finished solves
 		for (auto it = bakesPending.begin(); it != bakesPending.end();) {
 			if (it->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
@@ -2112,15 +2127,12 @@ namespace FluidFieldSim
 				continue;
 			}
 			auto field = it->second.get();
-			if (it->first && grounded.contains(it->first.get()) && field)
+			const bool kept = it->first && grounded.contains(it->first.get()) && field;
+			if (kept) {
 				bakeFields[it->first.get()] = std::move(field);
-			it = bakesPending.erase(it);
-			// D67: linked once all are solved, so each mesh carries on from the one above it
-			if (bakesPending.empty() && bakeQueue.empty() && !bakeJob) {
-				logger::info("[Fluid Field] Waterfall flow bakes: {} meshes ({} read from the cache, {} solved), {} texels tested, {} inside rock", bakeFields.size(), bakesCached,
-					bakesSolved, bakedTexels, bakedRockTexels);
-				LinkBakes();
+				linkDue = true;
 			}
+			it = bakesPending.erase(it);
 		}
 		auto* tes = RE::TES::GetSingleton();
 		if (!tes)
@@ -2148,8 +2160,15 @@ namespace FluidFieldSim
 				GatherSolids(*bakeJob);
 				// D82: baked before (same reference, placement, rock and ground): read back, no rock test or solve
 				bakeJob->cache = BakeCachePath(*bakeJob);
-				if (!bakeJob->cache.empty() && std::filesystem::exists(bakeJob->cache)) {
-					if (auto field = LoadBake(bakeJob->cache)) {
+				std::error_code error;
+				const bool cached = !bakeJob->cache.empty() && std::filesystem::exists(bakeJob->cache, error);
+				logger::info("[Fluid Field]   bake job '{}' ({}x{}): cache {} '{}'", geometry->name.c_str(), bakeJob->width, bakeJob->height, cached ? "hit" : "miss",
+					bakeJob->cache.filename().string());
+				if (cached) {
+					auto field = LoadBake(bakeJob->cache);
+					if (!field)
+						logger::warn("[Fluid Field]   bake cache: could not read '{}'", bakeJob->cache.string());
+					if (field) {
 						std::promise<std::shared_ptr<BakeField>> ready;
 						ready.set_value(std::move(field));
 						bakesPending.emplace_back(bakeJob->geometry, ready.get_future());
@@ -2173,8 +2192,12 @@ namespace FluidFieldSim
 			auto* cell = tes->interiorCell ? tes->interiorCell : tes->GetCell(bakeJob->geometry->world.translate);
 			auto* bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
 			auto* world = bhkWorld ? bhkWorld->GetWorld1() : nullptr;
-			if (!world)
+			if (!world) {
+				if (!bakeJob->worldMissing)
+					logger::warn("[Fluid Field]   bake job '{}': no collision world at its cell; waiting", bakeJob->geometry->name.c_str());
+				bakeJob->worldMissing = true;
 				return;
+			}
 			{
 				// Each texel inside rock? A ray from outside it, in along the sheet's facing, crosses rock an odd
 				// number of times to reach a point inside (D57), deeper than a sheet lying on its rock
@@ -2205,6 +2228,7 @@ namespace FluidFieldSim
 			}
 			if (bakeJob->next >= bakeJob->covered.size()) {
 				auto job = std::shared_ptr<BakeJob>(std::move(bakeJob));
+				logger::info("[Fluid Field]   bake job '{}': rock tested, solving", job->geometry->name.c_str());
 				bakesPending.emplace_back(job->geometry, std::async(std::launch::async, [job]() { return SolveBake(*job); }));
 			}
 		}

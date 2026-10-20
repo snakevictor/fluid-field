@@ -2003,3 +2003,22 @@ Entry format:
         the cache key: the landscape cache fills in over time, so a fall baked
         before its cell's heights arrived would miss the cache on the next visit.
 -   References: D79, D80, D82
+-   Tested in game (2026-10-20 14:25-14:55):
+    -   First sight, no cache: the first site's 5 meshes baked in 5.6 s (was
+        10.1 s), the next 13 in 15.8 s (was about 24 s); 39% fewer texels
+        rock-tested.
+    -   **Bug, found and fixed:** bakes read from the cache never linked, so the
+        falls never took their flow. The link was checked only as a bake
+        landed. Originals queued before their dense copies existed sit in the
+        queue until passed by; a solved bake lands seconds later (the queue
+        already empty), a cached one the next frame (one stale entry left), and
+        nothing landed after it. The check now runs after every bake step.
+    -   **The cache key** now takes the strand code's build (FallStrands) and
+        BAKE_CACHE_VERSION, not FallSites.cpp's own build time: a change to the
+        rest of the bake bumps the version by hand.
+    -   With the cache, every site takes its flow 0.2-0.6 s after its ground
+        capture (18 of 18 read from disk). What is left is the capture itself:
+        about 5 s for the first site, 20-25 s for the others.
+    -   The user saw three steps: vanilla, then the dense copies (seams, cuts),
+        then the flow; with the cache the last two come together.
+    -   The swell reaches 20 units (3842 vertices of 18 meshes).

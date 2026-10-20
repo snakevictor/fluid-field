@@ -304,6 +304,7 @@ namespace FluidFieldSim
 			std::vector<uint8_t> untested;  ///< D83: hidden lead-in texels no strand comes near: the rock test passes them by
 			std::filesystem::path cache;    ///< D82: where its finished bake is kept (empty: not kept)
 			std::size_t next = 0;
+			bool worldMissing = false;  ///< Diagnostics: the wait for its cell's collision world logged
 			// D68: the render meshes of the statics round the sheet (boulders, the walls beside it), binned from above
 			std::vector<std::array<RE::NiPoint3, 3>> solids;
 			std::vector<uint32_t> solidRef;
@@ -399,6 +400,9 @@ namespace FluidFieldSim
 		uint32_t bakedRockTexels = 0, bakedTexels = 0;
 		/** @brief D59: rasterises the next queued mesh, tests its texels against the rock, then solves it off the main thread. */
 		void BakeStep();
+		/** @brief D83: BakeStep's work: lands finished bakes, then starts or continues the next job. */
+		void BakeWork();
+		bool linkDue = false;  ///< D83: a bake landed since the last link
 		static std::unique_ptr<BakeJob> StartBake(RE::BSGeometry* a_geometry);
 		static std::shared_ptr<BakeField> SolveBake(const BakeJob& a_job);
 		std::unordered_set<std::string> loggedParts;  ///< Diagnostics: falling-water mesh parts already logged
