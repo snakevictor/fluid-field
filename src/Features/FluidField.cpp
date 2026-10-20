@@ -856,7 +856,6 @@ void FluidField::Prepass()
 				}
 				const float rate = count > 0.0f ? total / count : DEFAULT_FALL_SCROLL;
 				fallRate = fallRate > 0.0f ? fallRate + (rate - fallRate) * std::min(deltaTime, 1.0f) : rate;
-				fallPhasePrevious = fallPhase;
 				fallPhase += fallRate * std::clamp(deltaTime, 0.0f, 0.25f);
 				fallPhase -= std::floor(fallPhase);
 			}
@@ -1564,8 +1563,17 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
 		fallGroundData.TexOffset[1] = material ? material->texCoordOffset[buffer].y : 0.0f;
 		// D56: vanilla's own scroll, the falls' forward: the texture moves toward +v as its v offset falls.
 		// Measured over a quarter second at least (the offset loops back by whole repeats)
-		fallGroundData.Scroll[0] = 0.0f;
-		fallGroundData.Scroll[1] = 0.0f;
+		// D85: one phase per rendered frame, latched at its first falls draw: the depth pre-pass runs before Prepass moves
+		// the phase on, the lit pass after, and with the wobble riding the phase a frame's step between them failed the
+		// lit pass's depth test almost everywhere (flat white sheets, the falls showing only in cracks)
+		if (const uint32_t frame = globals::state->frameCount; frame != fallPhaseFrame) {
+			fallPhaseFrame = frame;
+			fallDrawPhasePrevious = fallDrawPhase;
+			fallDrawPhase = fallPhase;
+		}
+		fallGroundData.Scroll[0] = fallDrawPhase;
+		fallGroundData.Scroll[1] = fallRate > 0.0f ? fallRate : DEFAULT_FALL_SCROLL;
+		fallGroundData.PreviousPhase = fallDrawPhasePrevious;
 		if (material) {
 			auto& scroll = fallScrolls[material];
 			const float offset = material->texCoordOffset[buffer].y;
@@ -1595,9 +1603,6 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
 				scroll.scaleTime = fallSurfaceTime;
 			}
 			// D67: the falls' one scroll (this material's own only measures vanilla's rate for it)
-			fallGroundData.Scroll[0] = fallPhase;
-			fallGroundData.PreviousPhase = fallPhasePrevious;
-			fallGroundData.Scroll[1] = fallRate > 0.0f ? fallRate : DEFAULT_FALL_SCROLL;
 		}
 		// D56: the per-vertex cut
 		uint32_t vertexBase = 0;

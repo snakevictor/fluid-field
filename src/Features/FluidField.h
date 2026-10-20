@@ -296,7 +296,9 @@ private:
 	FluidFieldSim::FallSurfaceRenderer fallSurface;  ///< D30: the falls' own water surfaces
 	float fallSurfaceTime = 0.0f;                    ///< Seconds, for the surfaces' flow
 	float fallPhase = 0.0f;                          ///< D67: the falls' one scroll, integrated each frame (a repeat at most): every mesh of a cascade reads the same
-	float fallPhasePrevious = 0.0f;                  ///< D85: the phase a frame ago
+	uint32_t fallPhaseFrame = UINT32_MAX;            ///< D85: the rendered frame fallDrawPhase was latched for
+	float fallDrawPhase = 0.0f;                      ///< D85: the phase every falls draw of this frame reads (both depth passes alike)
+	float fallDrawPhasePrevious = 0.0f;              ///< D85: the previous frame's (the wobble's motion vectors)
 	float fallRate = 0.0f;                           ///< D67: ...and its rate, texture coordinates per second (vanilla's, averaged over the falls' materials)
 
 	/**

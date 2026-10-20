@@ -2085,3 +2085,14 @@ Entry format:
     -   **"Foam on the Falls" off by default** until the foam layer replaces it:
         at its 30% cap, lace on vanilla's near-white texture, it barely shows.
 -   References: D34, D42, D67, D69, D73
+-   **Bug, found and fixed (D85's first run): flat white sheets, the falls
+    showing only in cracks.** The falls' depth pre-pass runs before
+    FluidField::Prepass moves the shared phase on, the lit pass after it. With
+    the wobble riding the phase, a frame's step between the passes moved the
+    vertices apart, and the lit pass failed its depth test almost everywhere.
+    The phase is now latched once per rendered frame at its first falls draw
+    (globals::state->frameCount) and every falls draw of that frame reads it;
+    the previous frame's latched phase feeds the motion vectors. The texture's
+    scroll reads the same latched phase. This confirms the frame-order concern
+    of research/waterfalls/realtime-integration-design.md (phase 0); the seam
+    dither's Time has the same exposure, smaller.
