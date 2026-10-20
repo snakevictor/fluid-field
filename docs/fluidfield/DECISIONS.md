@@ -1907,3 +1907,9 @@ Entry format:
         seams become gentle ramps. Offline: p5/p95 across 0.58-0.89 / 1.61-1.91
         (was 0.12 / 6.2), shear p95 0.5; about 150 ms per mesh, on the bake's
         thread.
+-   Third look (SS 841): bounded, it looked far better, but the water a bank
+    turned no longer swung back into the main flow: the edge fade switched the
+    bend off exactly there, and half a texel of shear per row allowed only
+    about 27 degrees. The edge fade is gone (the relaxation already bounds the
+    squeeze), and the shear is now up to 1.2 texels per row (about 50 degrees).
+    Offline: across p95 1.64-2.31, shear p95 0.75-1.12.

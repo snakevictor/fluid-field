@@ -37,9 +37,8 @@ namespace FluidFieldSim::FallStrands
 		constexpr int SOFTEN = 3;              ///< Passes softening the streaks' bend on the texture grid
 		constexpr float LEAST_STRETCH = 0.6f;  ///< The texture across stays within this much of vanilla's scale...
 		constexpr float MOST_STRETCH = 1.6f;   ///< ...and this (pressed together, the strands squeezed it 3-6x into ripples)
-		constexpr float MOST_SHEAR = 0.5f;     ///< Texels the streaks shift across per row at most
+		constexpr float MOST_SHEAR = 1.2f;     ///< Texels the streaks shift across per row at most (about 50 degrees: water a bank turns swings back into the flow)
 		constexpr int RELAX = 300;             ///< Passes easing the bend into those bounds
-		constexpr float EDGE_FADE = 10.0f;     ///< Texels in from the mesh's sides over which the bend fades in (strands pressed along its ragged outline squeezed the texture into ripples)
 
 		float Smoothstep(float a_from, float a_to, float a_x)
 		{
@@ -626,12 +625,8 @@ namespace FluidFieldSim::FallStrands
 		// and mip there, a blocky pattern at the bake's resolution
 		{
 			std::vector<float> offset(count), scratch(count);
-			std::vector<uint8_t> off(count);
 			for (std::size_t i = 0; i < count; i++)
-				off[i] = covered[i] ? 0 : 1;
-			const auto toSide = Distance(off, w, h);
-			for (std::size_t i = 0; i < count; i++)
-				offset[i] = (result.seed[i] - static_cast<float>(i % w)) * Smoothstep(1.5f, EDGE_FADE, toSide[i]);
+				offset[i] = result.seed[i] - static_cast<float>(i % w);
 			// Eased into the bounds: each pair of neighbours out of them moves halfway back, both ways, many times over
 			for (int pass = 0; pass < RELAX; pass++) {
 				for (int32_t y = 0; y < h; y++) {
