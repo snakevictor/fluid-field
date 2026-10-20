@@ -1894,3 +1894,16 @@ Entry format:
     FXrapidsBig01, FXWaterfallSkirtSlope, FXWaterfallMistBlastLite and the
     splash models have no lit shapes.
 -   References: D25, D77
+-   Second look (SS 840): the texture was squeezed into tight wavy ripples
+    along the mesh's sides (strands pressed along the ragged outline and the
+    rock, 3-6x), and the middle looked smeared, its detail gone (a fed mesh
+    took a slope fitted to its feeder's foot, -0.42 held at -0.5: mirrored and
+    stretched 2x).
+    -   A fed mesh now keeps its own texture's scale and way across (slope 1);
+        the feeder gives only the shift.
+    -   The bend fades in over 10 texels from the mesh's sides, and is relaxed
+        (300 passes) so the texture across stays within 0.6-1.6 of vanilla's
+        scale and the streaks shift at most half a texel per row. The wakes'
+        seams become gentle ramps. Offline: p5/p95 across 0.58-0.89 / 1.61-1.91
+        (was 0.12 / 6.2), shear p95 0.5; about 150 ms per mesh, on the bake's
+        thread.

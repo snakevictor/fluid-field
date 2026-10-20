@@ -1739,12 +1739,12 @@ namespace FluidFieldSim
 			if (n >= 1.0) {
 				const double denominator = n * sxx - sx * sx;
 				slope = n >= 2.0 && std::abs(denominator) > 1e-9 ? (n * sxy - sx * sy) / denominator : 1.0;
-				// D80: the streaks keep near their own spacing (links bunched on a few feeder texels fitted a slope near 0:
-				// the whole mesh read one texture column, its streaks sideways)
+				// D80: the mesh keeps its own texture's scale and way across (a slope fitted to the feeder's foot mirrored
+				// and stretched it, or laid it sideways); the feeder gives only the shift
 				const double fitted = slope;
-				slope = (slope < 0.0 ? -1.0 : 1.0) * std::clamp(std::abs(slope), 0.5, 2.0);
+				slope = 1.0;
 				intercept = (sy - slope * sx) / n;
-				logger::info("[Fluid Field]   link: a mesh fed at {} columns, streak slope {:.2f} (fitted {:.2f})", a_node.links.size(), slope, fitted);
+				logger::info("[Fluid Field]   link: a mesh fed at {} columns (its feeder's streaks would have fitted a slope of {:.2f})", a_node.links.size(), fitted);
 				meanAlong = sumAlong / n;
 			}
 			for (int32_t x = 0; x < w; x++) {

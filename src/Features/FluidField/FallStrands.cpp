@@ -34,7 +34,12 @@ namespace FluidFieldSim::FallStrands
 		constexpr float AERATION_FADE = 3.0f;    ///< Seconds aeration from strikes and pile-ups fades over
 		constexpr float UNITS_PER_METRE = 70.0f;
 		constexpr float NOWHERE = 1e6f;
-		constexpr int SOFTEN = 3;  ///< Passes softening the streaks' bend on the texture grid
+		constexpr int SOFTEN = 3;              ///< Passes softening the streaks' bend on the texture grid
+		constexpr float LEAST_STRETCH = 0.6f;  ///< The texture across stays within this much of vanilla's scale...
+		constexpr float MOST_STRETCH = 1.6f;   ///< ...and this (pressed together, the strands squeezed it 3-6x into ripples)
+		constexpr float MOST_SHEAR = 0.5f;     ///< Texels the streaks shift across per row at most
+		constexpr int RELAX = 300;             ///< Passes easing the bend into those bounds
+		constexpr float EDGE_FADE = 10.0f;     ///< Texels in from the mesh's sides over which the bend fades in (strands pressed along its ragged outline squeezed the texture into ripples)
 
 		float Smoothstep(float a_from, float a_to, float a_x)
 		{
@@ -621,8 +626,35 @@ namespace FluidFieldSim::FallStrands
 		// and mip there, a blocky pattern at the bake's resolution
 		{
 			std::vector<float> offset(count), scratch(count);
+			std::vector<uint8_t> off(count);
 			for (std::size_t i = 0; i < count; i++)
-				offset[i] = result.seed[i] - static_cast<float>(i % w);
+				off[i] = covered[i] ? 0 : 1;
+			const auto toSide = Distance(off, w, h);
+			for (std::size_t i = 0; i < count; i++)
+				offset[i] = (result.seed[i] - static_cast<float>(i % w)) * Smoothstep(1.5f, EDGE_FADE, toSide[i]);
+			// Eased into the bounds: each pair of neighbours out of them moves halfway back, both ways, many times over
+			for (int pass = 0; pass < RELAX; pass++) {
+				for (int32_t y = 0; y < h; y++) {
+					for (int32_t x = 1; x < w; x++) {
+						float& a = offset[index(x - 1, y)];
+						float& b = offset[index(x, y)];
+						const float step = b - a, bounded = std::clamp(step, LEAST_STRETCH - 1.0f, MOST_STRETCH - 1.0f);
+						a += 0.5f * (step - bounded);
+						b -= 0.5f * (step - bounded);
+					}
+				}
+				for (int32_t y = 1; y < h; y++) {
+					for (int32_t x = 0; x < w; x++) {
+						if (result.leadIn[index(x, y)] != result.leadIn[index(x, y - 1)])
+							continue;
+						float& a = offset[index(x, y - 1)];
+						float& b = offset[index(x, y)];
+						const float step = b - a, bounded = std::clamp(step, -MOST_SHEAR, MOST_SHEAR);
+						a += 0.5f * (step - bounded);
+						b -= 0.5f * (step - bounded);
+					}
+				}
+			}
 			for (int pass = 0; pass < SOFTEN; pass++) {
 				for (int32_t y = 0; y < h; y++) {
 					for (int32_t x = 0; x < w; x++) {
