@@ -165,7 +165,7 @@ static const float ABSORPTION = 0.012;  // D105: per world unit: 40 units behind
 /** D102: world units deep the water reads per unit of thickness, against its water type's fog far (shallow to deep). */
 static const float DEPTH_PER_THICKNESS = 1.0;  // D105: the apparent depth is the path itself
 /** D102: how much more opaque aerated water is (bubbles scatter what lies behind). */
-static const float AERATION_OPACITY = 0.6;
+static const float AERATION_OPACITY = 0.3;  // D105: 0.3, was 0.6
 /** D102: pixels of refraction offset per unit of tilt at Refraction 1, as a fraction of the screen height. */
 static const float REFRACTION_SCREEN = 0.02;
 /** D102: the reflection's share of the fresnel weight, and the glint's strength: modest, the falls are not glossy. */
@@ -288,14 +288,16 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float apparentDepth = path * DEPTH_PER_THICKNESS;
 	const float fogMul = 1.0 - pow(saturate((FogFar - apparentDepth) / FogRange), FogAmount);
 	const float transmitted = exp(-path * ABSORPTION) * (1.0 - AERATION_OPACITY * aerated);
-	const float opacity = 1.0 - (1.0 - fogMul) * transmitted;
+	// D105: the fog curve shades the water's colour (shallow to deep) but not its opacity: at the river's fog distances it
+	// saturated at once and made every sheet solid water colour
+	const float opacity = 1.0 - transmitted;
 
 	// The water's colour lit as Water.hlsl lights it: the colours as the engine hands them (the weather's water multiplier
 	// in them), split by ExtractLighting into the sun's share and the ambient's, the sun's share shadowed
 	const float3 shallow = Color::Water(ShallowColor);
 	const float3 deep = Color::Water(DeepColor);
 	float3 dirColor, ambientColor;
-	ShadowSampling::ExtractLighting(lerp(shallow, deep, saturate(apparentDepth / FogFar)), dirColor, ambientColor);
+	ShadowSampling::ExtractLighting(lerp(shallow, deep, saturate(fogMul)), dirColor, ambientColor);
 	const float3 lightDirection = SafeNormalize(SharedData::DirLightDirection.xyz, float3(0.0, 0.0, 1.0));
 	const float3 sun = SharedData::InInterior ? 0.0 : ShadowSampling::GetDirectionalLighting();
 	const float3 sceneLight = sun * shadow + ShadowSampling::GetAmbientLighting();
