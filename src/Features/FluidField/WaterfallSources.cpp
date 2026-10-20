@@ -131,27 +131,6 @@ namespace FluidFieldSim
 		low /= static_cast<float>(lowCount);
 		high /= static_cast<float>(highCount);
 
-		// The lip's width: the top band's spread across the fall's direction
-		{
-			float fx = low.x - high.x;
-			float fy = low.y - high.y;
-			const float fl = std::sqrt(fx * fx + fy * fy);
-			fx = fl > 1.0f ? fx / fl : 1.0f;
-			fy = fl > 1.0f ? fy / fl : 0.0f;
-			float across[2] = { FLT_MAX, -FLT_MAX };
-			for (const auto& p : points) {
-				if (p.z < maxZ - band)
-					continue;
-				const float side = (p.x - high.x) * -fy + (p.y - high.y) * fx;
-				across[0] = std::min(across[0], side);
-				across[1] = std::max(across[1], side);
-			}
-			a_body.lip[0] = high.x + -fy * 0.5f * (across[0] + across[1]);
-			a_body.lip[1] = high.y + fx * 0.5f * (across[0] + across[1]);
-			a_body.lip[2] = high.z;
-			a_body.lipWidth = std::max(across[1] - across[0], MIN_WIDTH);
-		}
-
 		a_body.plunge[0] = low.x;
 		a_body.plunge[1] = low.y;
 		a_body.plunge[2] = low.z;

@@ -1,10 +1,8 @@
-// Fluid Field waterfall grounding (D26) and flow (D28, D32): vanilla's falling-water meshes bent onto
-// the rock they run over (effect-shaded layers only: the lit surface is drawn after a depth prepass
-// its position must match exactly), their textures carried by the falls' steady flow as a flowmap so
-// they part round rock and close up behind it, foamed where the flow piles against rock or squeezes
-// past it, and softened where they cut into rock. FluidField binds the constants, the captured ground
-// (FallSites::BuildGroundMap) and the flow (FallSites::BuildStreamMap) only for the draws of grounded
-// meshes; Enabled is 0 for every other effect draw.
+// Fluid Field waterfall flow (D28, D32, D59): vanilla's lit falling-water meshes, their textures carried
+// by the falls' solved flow so they part round rock and close up behind it, foamed where the flow piles
+// against rock or squeezes past it, and cut where they run under the pools (D36, D56). FluidField binds
+// the constants, the pools' surface (FallSites::BuildPoolMap) and the flow (FallSites::BuildStreamMap)
+// only for the draws of grounded meshes; Enabled is 0 for every other draw.
 
 #ifndef FLUID_FIELD_FALL_GROUND_HLSLI
 #define FLUID_FIELD_FALL_GROUND_HLSLI
@@ -17,33 +15,24 @@ namespace FallGround
 		float InverseCell;     // Texels per world unit
 		float Size;            // Texels along each side
 		uint Enabled;          // This draw is a grounded mesh
-		float Offset;          // How far above the rock the water lies
-		float ContactWidth;    // World units over which the water fades where it cuts into rock
-		float LiftMost;        // Water deeper than this inside rock is left there (a boulder hides it); shallower is lifted onto it
-		float FoamStrength;    // How white the foam is
-		uint DebugMode;        // 0 off; 1: speed as red, foam as green, water as blue; 2: the flow's direction; 3: grounding with vanilla's own texture
+		uint DebugMode;        // 0 off; 1: speed as red, foam as green, water as blue; 2: the flow's direction; 3: vanilla's own texture
 		float Time;            // Seconds
 		float FlowSpeed;       // World units per second of free-flowing water (speed 1)
-		float FlowPeriod;      // Seconds per cycle of the flowmap's two phases
-		float FlowMost;        // Most texture repeats the texture moves per cycle
-		float2 Scroll;         // D60: how far vanilla's scroll has moved this mesh's texture (its own coordinates, a repeat at most), and its rate per second
+		float2 Scroll;         // D67: the falls' one scroll (texture coordinates, a repeat at most), and its rate per second
 		float2 TexOffset;      // This mesh's texture scroll (vanilla's), taken back out of its coordinates
-		uint VertexBase;       // D56: this mesh's first value in VertexClip, or NO_VERTEX_CLIP
-		float Translucency;    // D53: how see-through the falls' thin water is (0: opaque; only on blended draws)
-		float2 TexScale;       // This mesh's world units per texture repeat along u and v (D35); 0 unknown
-		uint HideUnderwater;   // Falling water under the pools' surface is not drawn (D36)
-		float PoolFoamHeight;  // World units above the water below over which the falls foam into it
 		float3 CameraOffset;   // FrameBuffer::CameraPosAdjust, for the vertex shaders that have none (D38)
 		uint Whitening;        // The falls whiten with their foam and speed (D34); 0 for the debug comparison (D39)
-		uint HideDraw;         // D56: this draw shows nothing of the falls (a blended mesh's depth pre-pass)
-		float2 InverseScale;   // D57: undoes vanilla's animated texture scale (its slow zoom), with TexOffset its scroll
+		uint VertexBase;       // D56: this mesh's first value in VertexClip, or NO_VERTEX_CLIP
+		uint HideUnderwater;   // Falling water under the pools' surface is not drawn (D36)
+		float PoolFoamHeight;  // World units above the water below over which the falls foam into it
 		uint BakeOn;           // D59: this mesh has a flow bake (FlowBake)
-		float4 BakeRect;       // D59: the bake's texture coordinates: its least u and v, and one over its extent
+		float2 InverseScale;   // D57: undoes vanilla's animated texture scale (its slow zoom), with TexOffset its scroll
+		float2 GroundPad;
+		float4 BakeRect;  // D59: the bake's texture coordinates: its least u and v, and one over its extent
 	};
 
-	Texture2D<float2> Heights : register(t120);  // The captured rock, and the pools' surface (D36)
-	Texture2D<float> SceneDepth : register(t121);
-	Texture2D<float4> Stream : register(t122);  // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
+	Texture2D<float2> Heights : register(t120);  // The captured rock (x, not read here), and the pools' surface (y, D36)
+	Texture2D<float4> Stream : register(t122);   // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
 	// D56: per vertex of the falls' lit meshes, how far it stands out of the rock (negative inside); D67: and how
 	// much of it shows where it overlaps a mesh leading it (its seam edge fades, dithered, in both passes)
 	/** D69: per vertex of the falls' lit meshes: the rock cut, fade, height above the water below (a), and its move across a seam's gap, in its mesh's space (b). */
@@ -66,25 +55,6 @@ namespace FallGround
 	static const float AERATION_WHITE = 0.3;
 	static const float NONE = -1.0e6;  // Below this, no ground is captured
 
-	/** The captured ground under a world position, bilinear; false where any texel around it is unknown. */
-	bool Height(float2 a_position, out float a_height)
-	{
-		a_height = 0.0;
-		const float2 texel = (a_position - Origin) * InverseCell;
-		const int2 base = int2(floor(texel));
-		if (any(base < 0) || any(base + 1 >= int(Size)))
-			return false;
-		const float2 t = texel - float2(base);
-		const float h00 = Heights.Load(int3(base, 0)).x;
-		const float h10 = Heights.Load(int3(base + int2(1, 0), 0)).x;
-		const float h01 = Heights.Load(int3(base + int2(0, 1), 0)).x;
-		const float h11 = Heights.Load(int3(base + int2(1, 1), 0)).x;
-		if (min(min(h00, h10), min(h01, h11)) < NONE)
-			return false;
-		a_height = lerp(lerp(h00, h10, t.x), lerp(h01, h11, t.x), t.y);
-		return true;
-	}
-
 	/** The pools' surface over a world position (the water the falls leave and land in), or false where there is none (D36). */
 	bool Pool(float2 a_position, out float a_height)
 	{
@@ -106,40 +76,8 @@ namespace FallGround
 		return true;
 	}
 
-	/** D37: falling water this far under the captured rock and ground is buried in it. */
-	static const float BURIED = 120.0;  // D49: only deeply buried water: the ground map sees overhangs from above, and the rock's depth hides the rest
-	/** D47: how far round a point the ground is looked at for its lowest (the map is a 16-unit top-down grid). */
-	static const float BURIED_REACH = 14.0;
 	/** D47: the falls are cut this far under the pools' surface, so the pool's water overlaps the cut. */
 	static const float POOL_CUT = 8.0;  // D49: under the pools the falls are hidden, the foam at the waterline covering the line; D58: with the pool read bilinear, shallow again
-
-	/** D47: the lowest captured ground round a world position: at a cliff edge, the cliff foot's, not its top's. */
-	bool LowestGround(float2 a_position, out float a_height)
-	{
-		float h;
-		if (!Height(a_position, a_height))
-			return false;
-		[unroll] for (int i = 0; i < 4; i++)
-		{
-			const float2 offset = float2(i == 0 ? BURIED_REACH : i == 1 ? -BURIED_REACH :
-																		  0.0,
-				i == 2 ? BURIED_REACH : i == 3 ? -BURIED_REACH :
-												 0.0);
-			a_height = Height(a_position + offset, h) ? min(a_height, h) : a_height;
-		}
-		return true;
-	}
-
-	/** Whether falling water at a world position runs on under the pools or into the rock and ground, where it is not drawn (D36, D37). */
-	bool Buried(float3 a_position)
-	{
-		if (!HideUnderwater)
-			return false;
-		float pool, ground;
-		if (Pool(a_position.xy, pool) && a_position.z < pool - POOL_CUT)
-			return true;
-		return LowestGround(a_position.xy, ground) && a_position.z < ground - BURIED;
-	}
 
 	/**
 	 * D38: how far a vertex of falling water stands above where it is buried (under the pools' surface,
@@ -153,8 +91,6 @@ namespace FallGround
 	{
 		if (!Enabled)
 			return 1.0;
-		if (HideDraw)
-			return -1.0;
 		if (!HideUnderwater)
 			return 1.0;
 		const float3 position = a_position + CameraOffset;
@@ -252,29 +188,10 @@ namespace FallGround
 		return StreamAt(a_position, head);
 	}
 
-	/**
-	 * A vertex of falling water, at a world position, lifted out of the bed where it clips just under
-	 * it. It is never drawn down: vanilla's water covers the grass and clutter on the rock beneath it.
-	 * Water deep inside rock is a boulder's: it is left there, hidden, so the boulder stays dry.
-	 */
-	float3 Ground(float3 a_position)
-	{
-		float ground;
-		if (!Height(a_position.xy, ground))
-			return a_position;
-		const float surface = ground + Offset;
-		if (a_position.z < surface && surface - a_position.z <= LiftMost)
-			a_position.z = surface;
-		return a_position;
-	}
-
 	/** A pixel of falling water's texture coordinates under the flowmap (Flow). */
 	struct FlowSample
 	{
-		float2 uvA;       // The first phase
-		float2 uvB;       // The second phase, half a cycle later
-		float blendB;     // How much of the second phase shows
-		float strength;   // 0: vanilla's own texture (coordinates unchanged), 1: the flowmap in full
+		float2 uvA;       // The texture coordinates the water reads
 		float3 velocity;  // World units per second, along the surface
 		float4 stream;    // StreamAt
 		float foam;       // D59: the bake's foam: the rock's rim, the water piling against it and squeezing past it
@@ -317,9 +234,6 @@ namespace FallGround
 		result.runTime = BakeOn ? max(baked.y, 0.0) / max(Scroll.y, 1e-3) : 0.0;
 		const float2 uvBase = (BakeOn ? baked.xy : uvStill) - float2(0.0, Scroll.x);
 		result.uvA = uvBase;
-		result.uvB = uvBase;
-		result.blendB = 0.0;
-		result.strength = 1.0;
 		result.velocity = 0.0;
 		const float3 dpx = ddx(a_position);
 		const float3 dpy = ddy(a_position);
@@ -348,41 +262,15 @@ namespace FallGround
 
 	/**
 	 * D42: foam as lace, the way white water looks: thin filaments, stretched along the flow, carried by
-	 * it in the flowmap's two phases (the same texture coordinates as the water's texture), so they
-	 * stream with the water. 0 to 1, high on the filaments. The texture runs along u.
+	 * it (the same texture coordinates as the water's texture), so they stream with the water. 0 to 1,
+	 * high on the filaments. The texture runs along u.
 	 */
 	float Lace(FlowSample a_flow)
 	{
 		const float2 stretch = float2(0.7, 3.2);
-		const float a = LaceNoise(a_flow.uvA * stretch) * 0.6 + LaceNoise(a_flow.uvA * stretch * 2.7 + 3.1) * 0.4;
-		const float b = LaceNoise(a_flow.uvB * stretch + 11.7) * 0.6 + LaceNoise(a_flow.uvB * stretch * 2.7 + 7.9) * 0.4;
-		const float n = lerp(a, b, a_flow.blendB);
+		const float n = LaceNoise(a_flow.uvA * stretch) * 0.6 + LaceNoise(a_flow.uvA * stretch * 2.7 + 3.1) * 0.4;
 		// Ridges of the noise: thin lines where it crosses its middle
 		return 1.0 - saturate(abs(n - 0.5) * 2.6);
-	}
-
-	/**
-	 * D53: how thick the falling water is, 0 to 1, in patches: broad soft blobs carried by the flow in
-	 * its two phases, so thin, see-through sheets and thick runs stream down the falls together.
-	 */
-	float Thickness(FlowSample a_flow)
-	{
-		const float2 stretch = float2(0.45, 0.9);
-		const float a = LaceNoise(a_flow.uvA * stretch + 5.3) * 0.65 + LaceNoise(a_flow.uvA * stretch * 2.3 + 1.7) * 0.35;
-		const float b = LaceNoise(a_flow.uvB * stretch + 17.1) * 0.65 + LaceNoise(a_flow.uvB * stretch * 2.3 + 9.4) * 0.35;
-		return lerp(a, b, a_flow.blendB);
-	}
-
-	/**
-	 * How much of the falling water shows where it cuts into rock, from the scene's depth at the pixel:
-	 * it fades over the last ContactWidth before the rock, so intersections are soft. Water lying on
-	 * its bed sits Offset above it and stays whole.
-	 */
-	float Visibility(float2 a_pixel, float a_depth)
-	{
-		const float sceneDepth = SharedData::GetScreenDepth(SceneDepth.Load(int3(a_pixel, 0)));
-		const float depth = SharedData::GetScreenDepth(a_depth);
-		return saturate((sceneDepth - depth) / ContactWidth);
 	}
 }
 

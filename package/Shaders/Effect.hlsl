@@ -7,9 +7,6 @@
 #include "Common/Random.hlsli"
 #include "Common/SharedData.hlsli"
 #include "Common/Skinned.hlsli"
-#if defined(FLUID_FIELD)
-#	include "FluidField/FallGround.hlsli"
-#endif
 #define EFFECT
 
 #if defined(SOFT) && defined(NORMALS) && defined(TEXTURE) && defined(FALLOFF) && defined(VC) && \
@@ -208,17 +205,6 @@ VS_OUTPUT main(VS_INPUT input)
 	precise float4 previousWorldPosition = float4(mul(PreviousWorld, inputPosition), 1);
 	precise row_major float4x4 modelView = mul(viewProj, world4x4);
 	float4 viewPos = mul(modelView, inputPosition);
-#	endif
-
-#	if defined(FLUID_FIELD) && !defined(SKINNED)
-	// Fluid Field (D26): vanilla's falling water bent onto the rock it runs over
-	[branch] if (FallGround::Enabled)
-	{
-		const float3 grounded = FallGround::Ground(worldPosition.xyz + PosAdjust.xyz) - PosAdjust.xyz;
-		previousWorldPosition.xyz += grounded - worldPosition.xyz;
-		worldPosition.xyz = grounded;
-		viewPos = mul(viewProj, worldPosition);
-	}
 #	endif
 
 	vsout.Position = viewPos;
@@ -736,31 +722,11 @@ PS_OUTPUT main(PS_INPUT input)
 
 	float4 baseTexColor = float4(1, 1, 1, 1);
 	float4 baseColor = float4(1, 1, 1, 1);
-#	if defined(FLUID_FIELD)
-	float4 fallStream = 0.0;  // The falls' flow here (FallGround::StreamAt): velocity (x, y), foam, water around
-	float3 fallVelocity = 0.0;
-#	endif
 #	if !defined(TEXTURE)
 	[branch] if (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToColor || Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha)
 #	endif
 	{
-#	if defined(FLUID_FIELD)
-		// Fluid Field (D32): falling water's texture carried by the falls' flow
-		[branch] if (FallGround::Enabled && FallGround::DebugMode < 3)
-		{
-			// D36: falling water under the pools' surface is the pool's, and not drawn
-			if (FallGround::Buried(input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz))
-				discard;
-			const FallGround::FlowSample flow = FallGround::Flow(input.TexCoord0.xy, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
-			fallStream = flow.stream;
-			fallVelocity = flow.velocity;
-			baseTexColor = lerp(TexBaseSampler.Sample(SampBaseSampler, flow.uvA), TexBaseSampler.Sample(SampBaseSampler, flow.uvB), flow.blendB);
-			[flatten] if (flow.strength < 1.0)
-				baseTexColor = lerp(TexBaseSampler.Sample(SampBaseSampler, input.TexCoord0.xy), baseTexColor, flow.strength);
-		}
-		else
-#	endif
-			baseTexColor = TexBaseSampler.Sample(SampBaseSampler, input.TexCoord0.xy);
+		baseTexColor = TexBaseSampler.Sample(SampBaseSampler, input.TexCoord0.xy);
 		baseTexColor.xyz = Color::Effect(baseTexColor.xyz);
 		baseColor *= baseTexColor;
 		if (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::IgnoreTexAlpha || Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha) {
@@ -829,17 +795,6 @@ PS_OUTPUT main(PS_INPUT input)
 #	endif
 		baseColor.xyz = Color::Effect(baseColorScale * TexGrayscaleSampler.Sample(SampGrayscaleSampler, grayscaleToColorUv).xyz);
 	}
-
-#	if defined(FLUID_FIELD)
-	// Fluid Field (D26, D28), after vanilla's palette has coloured the water: foam where the flow piles
-	// against rock or squeezes past it, and soft where the water cuts into rock
-	[branch] if (FallGround::Enabled)
-	{
-		const float brightness = dot(baseColor.xyz, float3(0.3, 0.4, 0.3));
-		baseColor.xyz = lerp(baseColor.xyz, max(baseColor.xyz, brightness.xxx * FallGround::FoamStrength), saturate(fallStream.z) * 0.6);
-		alpha *= FallGround::Visibility(input.Position.xy, input.Position.z);
-	}
-#	endif
 
 	float3 lightColor = lerp(baseColor.xyz, propertyColor * baseColor.xyz, lightingInfluence);
 
@@ -931,14 +886,6 @@ PS_OUTPUT main(PS_INPUT input)
 		finalColor.xyz = pow(max(finalColor.xyz, 0.0), SharedData::enbSettings.AuroraCurve) * SharedData::enbSettings.AuroraIntensity;
 #	endif
 	psout.Diffuse = finalColor;
-#	if defined(FLUID_FIELD)
-	// Fluid Field (D28) debug 1: the falls' flow speed as red, foam as green, water as blue (black: none, as on rock)
-	[branch] if (FallGround::Enabled && FallGround::DebugMode == 1)
-		psout.Diffuse.xyz = float3(saturate(length(fallStream.xy) * 0.5), saturate(fallStream.z), fallStream.w);
-	// Debug 2 (D32): the flowmap's direction as colour (x red, y green, up blue), brighter for faster
-	[branch] if (FallGround::Enabled && FallGround::DebugMode == 2)
-		psout.Diffuse.xyz = (0.5 + 0.5 * fallVelocity / max(length(fallVelocity), 1e-3)) * saturate(length(fallVelocity) / FallGround::FlowSpeed);
-#	endif
 #	if defined(LIGHTING) && defined(LIGHT_LIMIT_FIX) && defined(LLFDEBUG)
 	if (SharedData::lightLimitFixSettings.EnableLightsVisualisation) {
 		if (SharedData::lightLimitFixSettings.LightsVisualisationMode == 0) {

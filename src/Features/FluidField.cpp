@@ -61,13 +61,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GroundWaterfalls,
 	HideUnderwaterFalls,
 	FallWhitening,
-	OwnFallSheets,
-	FallArcSpeed,
-	FallTestQuad,
-	FallTranslucency,
 	FallLayerMask,
-	FallFlowPeriod,
-	FallFlowMost,
 	SprayAmount,
 	SpraySize,
 	SprayOpacity,
@@ -130,23 +124,17 @@ void FluidField::DrawSettings()
 		ImGui::PopID();
 	}
 
-	// Waterfalls: vanilla's falling water moved by its solved flow, with foam, spray and fog
+	// Waterfalls: vanilla's falling water moved by its solved flow, with foam and spray
 	if (ImGui::CollapsingHeader(T(TKEY("waterfalls_header"), "Waterfalls"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		ImGui::PushID("WaterfallsSection");
 		ImGui::Checkbox(T(TKEY("waterfalls"), "Waterfalls"), &settings.Waterfalls);
 		tooltip(T(TKEY("waterfalls_tooltip"), "Waterfalls churn, push and foam the water they land in."));
 		ImGui::Checkbox(T(TKEY("ground_waterfalls"), "Flowing Waterfalls"), &settings.GroundWaterfalls);
-		tooltip(T(TKEY("ground_waterfalls_tooltip"), "Moves vanilla's waterfall textures with each fall's solved flow, so they part round rocks, and adds foam, spray and fog. Off shows vanilla's waterfalls unchanged."));
+		tooltip(T(TKEY("ground_waterfalls_tooltip"), "Moves vanilla's waterfall textures with each fall's solved flow, so they part round rocks, and adds foam and spray. Off shows vanilla's waterfalls unchanged."));
 
 		ImGui::SeparatorText(T(TKEY("waterfall_look"), "Water"));
 		ImGui::Checkbox(T(TKEY("fall_whitening"), "Foam on the Falls"), &settings.FallWhitening);
 		tooltip(T(TKEY("fall_whitening_tooltip"), "White water on the falls where they strike rock, where vanilla's pieces meet, into the water below and where they fall fast."));
-		ImGui::SliderFloat(T(TKEY("fall_translucency"), "Translucency"), &settings.FallTranslucency, 0.0f, 0.9f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("fall_translucency_tooltip"), "How see-through the falls' thin water is, in patches that stream with it; white water stays opaque. 0 draws them opaque, as vanilla does."));
-		ImGui::Checkbox(T(TKEY("own_fall_sheets"), "Generated Falls"), &settings.OwnFallSheets);
-		tooltip(T(TKEY("own_fall_sheets_tooltip"), "Replaces vanilla's falling water with sheets generated from each fall's lip down the rock to the water below, drawn with vanilla's material."));
-		ImGui::SliderFloat(T(TKEY("fall_arc_speed"), "Generated Falls Arc"), &settings.FallArcSpeed, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("fall_arc_speed_tooltip"), "How fast the water leaves the brink, so how far the generated falls arc out before they drop."));
 		ImGui::Checkbox(T(TKEY("hide_underwater_falls"), "Hide Buried Falls"), &settings.HideUnderwaterFalls);
 		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes under the water above or below them, or deep in the rock."));
 		ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Plunge Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -159,10 +147,6 @@ void FluidField::DrawSettings()
 		ImGui::SliderFloat(T(TKEY("spray_opacity"), "Opacity"), &settings.SprayOpacity, 0.02f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 
 		if (ImGui::TreeNode(T(TKEY("waterfall_advanced"), "Advanced"))) {
-			ImGui::SliderFloat(T(TKEY("fall_flow_period"), "Flow Cycle"), &settings.FallFlowPeriod, 0.1f, 2.0f, "%.2f s", ImGuiSliderFlags_AlwaysClamp);
-			tooltip(T(TKEY("fall_flow_period_tooltip"), "How often the moving texture restarts. Shorter stretches it less round rocks but pulses more."));
-			ImGui::SliderFloat(T(TKEY("fall_flow_most"), "Flow Stretch Limit"), &settings.FallFlowMost, 0.2f, 6.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			tooltip(T(TKEY("fall_flow_most_tooltip"), "Most texture repeats the texture moves per cycle; it caps how fast the texture runs."));
 			ImGui::SliderInt(T(TKEY("mist_amount"), "Mist Cards"), &settings.MistAmount, 0, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
 			tooltip(T(TKEY("mist_amount_tooltip"), "Soft camera-facing mist puffs per emitter (0: none)."));
 			ImGui::SliderFloat(T(TKEY("mist_opacity"), "Mist Card Opacity"), &settings.MistOpacity, 0.0f, 0.4f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
@@ -273,19 +257,11 @@ void FluidField::DrawSettings()
 				"Fall Meshes: vanilla's falling-water triangles, one colour per mesh, red where they run inside rock. Intersections: where the meshes meet (yellow: a mesh ends against another; magenta: two cross), where they cross the water above or below (green), and the spray emitters (cyan: drops, blue: plunges and impacts, orange: seams). Drawn through everything. Not saved."));
 			ImGui::Checkbox(T(TKEY("show_waterfall_sites"), "Show Waterfall Sites"), &showFallSites);
 			tooltip(T(TKEY("show_waterfall_sites_tooltip"), "Draws the waterfall sites found in vanilla's layout: effect meshes by class, each site's water levels (green top, blue bottom, teal tiers) and a label. Also prints each cell's summary to the console."));
-			const char* sheetViews[] = { T(TKEY("fall_sheet_debug_off"), "Off"), T(TKEY("fall_sheet_debug_wireframe"), "Wireframe"), T(TKEY("fall_sheet_debug_lip"), "Lip and Routes"),
-				T(TKEY("fall_sheet_debug_normals"), "Normals"), T(TKEY("fall_sheet_debug_all"), "All") };
 			const char* meshViews[] = { T(TKEY("fall_mesh_debug_off"), "Off"), T(TKEY("fall_mesh_debug_wireframe"), "Wireframe"), T(TKEY("fall_mesh_debug_flow"), "Flow"),
 				T(TKEY("fall_mesh_debug_both"), "Wireframe and Flow") };
 			ImGui::Combo(T(TKEY("fall_mesh_debug"), "Falls Mesh Debug"), &fallMeshDebug, meshViews, IM_ARRAYSIZE(meshViews));
 			tooltip(T(TKEY("fall_mesh_debug_tooltip"),
 				"Drawn over everything, through the ground. Wireframe: the falls' meshes as drawn (yellow: our dense copies). Flow: the simulated water on each mesh as arrows, longer and redder when faster, bluer when slower, white where it strikes rock. Not saved."));
-			ImGui::Combo(T(TKEY("fall_sheet_debug"), "Generated Falls Debug"), &fallSheetDebug, sheetViews, IM_ARRAYSIZE(sheetViews));
-			tooltip(T(TKEY("fall_sheet_debug_tooltip"),
-				"Drawn over everything, through the ground. Wireframe: the generated sheets' grid, red where it lies under the ground. Lip and Routes: the detected edge of the upper water (magenta), where the columns start (green), vanilla's lips (cyan), and each column's route (orange in the air, blue on the ground). Normals: the sheets' faces coloured by their normal (x red, y green, z blue). Not saved."));
-			if (ImGui::Button(T(TKEY("fall_test_quad"), "Toggle Test Quad")))
-				fallTestQuadRequested = true;
-			tooltip(T(TKEY("fall_test_quad_tooltip"), "Probe: builds a quad in front of the player with the engine's own mesh builder and a vanilla waterfall material, or removes it."));
 			ImGui::Checkbox(T(TKEY("hide_waterfall_effects"), "Hide Vanilla Waterfall Effects"), &hideFallEffects);
 			tooltip(T(TKEY("hide_waterfall_effects_tooltip"), "Hides vanilla's mist, skirt, splash and rapids meshes around waterfalls. Not saved."));
 			uint32_t captured, captures;
@@ -355,9 +331,6 @@ void FluidField::DrawOverlay()
 	// D75: the falls' meshes and their sim
 	if (fallMeshDebug != 0 && loaded && settings.Enabled)
 		fallSites.DrawMeshDebug(ImGui::GetBackgroundDrawList(), FALL_SITES_DEBUG_RANGE, fallMeshDebug);
-	// D61: the sheets' marched columns
-	if (fallSheetDebug != 0 && loaded && settings.Enabled)
-		fallSheets.DrawDebug(ImGui::GetBackgroundDrawList(), static_cast<FluidFieldSim::FallSheets::DebugView>(fallSheetDebug));
 	if (!(showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews))
 		return;
 
@@ -476,7 +449,7 @@ void FluidField::DrawOverlay()
 
 bool FluidField::IsOverlayVisible() const
 {
-	return (showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews) || ((showFallSites || fallDebugView > 0 || fallMeshDebug > 0 || fallSheetDebug > 0) && settings.Enabled);
+	return (showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews) || ((showFallSites || fallDebugView > 0 || fallMeshDebug > 0) && settings.Enabled);
 }
 
 #undef I18N_KEY_PREFIX
@@ -870,7 +843,6 @@ void FluidField::Prepass()
 			// Waterfall sites reconstructed from vanilla's layout (D25)
 			fallSites.SetConsoleSummary(showFallSites);
 			fallSites.SetHideEffects(hideFallEffects, settings.FallLayerMask);
-			fallSites.SetTranslucent(settings.GroundWaterfalls && settings.FallTranslucency > 0.0f);
 			fallSurfaceTime += deltaTime;
 			// D67: one scroll for all the falls, integrated here once a frame at vanilla's rate (averaged over the
 			// falls' materials, against their slow zoom): every mesh of a cascade reads it, so one mesh's water runs
@@ -887,18 +859,9 @@ void FluidField::Prepass()
 				fallPhase -= std::floor(fallPhase);
 			}
 			fallSites.Update(water);
-			fallSheets.Update(fallSites, settings.GroundWaterfalls && settings.OwnFallSheets, settings.FallArcSpeed);
-			// D62 probe: the setting (settable from tools) or the button toggles the test quad
-			if (fallTestQuadRequested || settings.FallTestQuad != fallTestQuadShown) {
-				fallTestQuadRequested = false;
-				fallTestQuadShown = !fallTestQuadShown;
-				settings.FallTestQuad = fallTestQuadShown;
-				fallSheets.ToggleTestQuad(fallSites);
-			}
 			UpdateFallGround(playerPos);
 		} else {
 			waterfalls.Clear();
-			fallSheets.Clear();
 			fallSites.Clear();
 		}
 	} else {
@@ -971,7 +934,6 @@ void FluidField::ReleaseWater()
 	wakeSources.Clear();
 	vanillaFoam.RestoreAll();
 	waterfalls.Clear();
-	fallSheets.Clear();
 	fallSites.Clear();
 	ReleaseFallGround();
 	fallSurface.Release();
@@ -1136,7 +1098,6 @@ void FluidField::DrawGroundFogAfterWorld()
 			params.shared = globals::state->sharedDataCB->CB();
 			params.features = globals::state->featureDataCB->CB();
 			params.time = fallSurfaceTime;
-			params.debugMode = static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 3));
 			params.sprayPerEmitter = static_cast<uint32_t>(std::clamp(settings.SprayAmount, 0, 320));
 			params.mistPerEmitter = static_cast<uint32_t>(std::clamp(settings.MistAmount, 0, 8));
 			params.spraySize = settings.SpraySize;
@@ -1592,13 +1553,12 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		fallSites.BuildStreamMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallStreamScratch);
 		context->UpdateSubresource(fallStreamTexture.get(), 0, nullptr, fallStreamScratch.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
 	}
-	fallGroundData = { { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u, FALL_GROUND_OFFSET,
-		FALL_GROUND_CONTACT, FALL_GROUND_LIFT_MOST, FALL_FOAM_STRENGTH, static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 3)), fallSurfaceTime,
-		FluidFieldSim::FallStream::BASE_SPEED, std::max(settings.FallFlowPeriod, 0.05f), std::max(settings.FallFlowMost, 0.1f), {}, {}, UINT32_MAX, 0.0f, {},
-		settings.HideUnderwaterFalls ? 1u : 0u, FALL_POOL_FOAM, {}, settings.FallWhitening ? 1u : 0u, 0u, { 1.0f, 1.0f }, 0u, {} };
+	fallGroundData = { { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u,
+		static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 3)), fallSurfaceTime, FluidFieldSim::FallStream::BASE_SPEED, {}, {}, {}, settings.FallWhitening ? 1u : 0u,
+		UINT32_MAX, settings.HideUnderwaterFalls ? 1u : 0u, FALL_POOL_FOAM, 0u, { 1.0f, 1.0f }, {}, {} };
 }
 
-void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly)
+void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
 {
 	auto* context = globals::d3d::context;
 	const bool grounded = fallGroundSRV && settings.Enabled && settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && a_pass && a_pass->geometry && fallSites.IsGrounded(a_pass->geometry);
@@ -1624,7 +1584,7 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly)
 				scroll.time = fallSurfaceTime;
 				scroll.known = true;
 				if (first) {
-					scroll.phaseTime = fallSurfaceTime;
+					scroll.scaleTime = fallSurfaceTime;
 					scroll.scale = scaleNow;
 				}
 			} else if (elapsed >= 0.25f) {
@@ -1635,27 +1595,22 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly)
 				scroll.offset = offset;
 				scroll.time = fallSurfaceTime;
 			}
-			// D60: the scroll integrated here, once a frame: rate x time jumped the texture whenever the measured
-			// rate moved (vanilla's slow zoom fed it, and a hitch), by the change times the whole session
-			if (scroll.phaseTime != fallSurfaceTime) {
-				const float step = std::clamp(fallSurfaceTime - scroll.phaseTime, 0.0f, 0.25f);
+			// D60: vanilla's texture scale averaged once a frame, so its slow zoom stays out of the falls' rate (D67)
+			if (scroll.scaleTime != fallSurfaceTime) {
+				const float step = std::clamp(fallSurfaceTime - scroll.scaleTime, 0.0f, 0.25f);
 				scroll.scale += (scaleNow - scroll.scale) * std::min(step * 0.1f, 1.0f);
-				const float rate = (scroll.rate > 1e-3f ? scroll.rate : DEFAULT_FALL_SCROLL) / scroll.scale;
-				scroll.phase += rate * step;
-				scroll.phase -= std::floor(scroll.phase);
-				scroll.phaseTime = fallSurfaceTime;
+				scroll.scaleTime = fallSurfaceTime;
 			}
 			// D67: the falls' one scroll (this material's own only measures vanilla's rate for it)
 			fallGroundData.Scroll[0] = fallPhase;
 			fallGroundData.Scroll[1] = fallRate > 0.0f ? fallRate : DEFAULT_FALL_SCROLL;
 		}
-		// D56: the per-vertex rock cut, and a blended mesh kept out of the depth pre-pass (it would hide itself)
+		// D56: the per-vertex cut
 		uint32_t vertexBase = 0;
 		fallGroundData.VertexBase = fallClipSRV && fallSites.GetVertexClip(a_pass->geometry, vertexBase) && vertexBase < fallSites.GetVertexClips().size() ? vertexBase : UINT32_MAX;
 		// D57: vanilla's slow zoom of the texture taken out too, with its scroll
 		fallGroundData.InverseScale[0] = material && material->texCoordScale[buffer].x > 1e-4f ? 1.0f / material->texCoordScale[buffer].x : 1.0f;
 		fallGroundData.InverseScale[1] = material && material->texCoordScale[buffer].y > 1e-4f ? 1.0f / material->texCoordScale[buffer].y : 1.0f;
-		fallGroundData.HideDraw = a_depthOnly && fallSites.IsTranslucent(a_pass->geometry) ? 1u : 0u;
 		// D59: this mesh's flow bake, where it is solved
 		ID3D11ShaderResourceView* bakeView = nullptr;
 		fallGroundData.BakeOn = 0;
@@ -1671,21 +1626,12 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly)
 			}
 		}
 		context->PSSetShaderResources(124, 1, &bakeView);
-		// D35: the mesh's texel density, for the flowmap's smooth frame (0: the shader measures it per triangle)
-		float scale[2];
-		if (fallSites.GetTextureScale(a_pass->geometry, scale) && material && material->texCoordScale[buffer].x > 1e-4f && material->texCoordScale[buffer].y > 1e-4f) {
-			fallGroundData.TexScale[0] = scale[0] / material->texCoordScale[buffer].x;
-			fallGroundData.TexScale[1] = scale[1] / material->texCoordScale[buffer].y;
-		} else {
-			fallGroundData.TexScale[0] = fallGroundData.TexScale[1] = 0.0f;
-		}
 		// D38: the vertex shaders' camera offset (Lighting's has none of its own), the same in every pass
 		// D44: this pass's own (reflections render from a mirrored camera; the main camera's offset cut them wrong)
 		const auto eye = globals::game::shadowState->GetRuntimeData().posAdjust.getEye();
 		fallGroundData.CameraOffset[0] = eye.x;
 		fallGroundData.CameraOffset[1] = eye.y;
 		fallGroundData.CameraOffset[2] = eye.z;
-		fallGroundData.Translucency = fallSites.IsTranslucent(a_pass->geometry) ? std::clamp(settings.FallTranslucency, 0.0f, 0.9f) : 0.0f;
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (SUCCEEDED(context->Map(fallGroundOn.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
 			std::memcpy(mapped.pData, &fallGroundData, sizeof(fallGroundData));
@@ -1701,8 +1647,6 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly)
 		context->VSSetShaderResources(123, 1, &clip);
 		context->PSSetShaderResources(120, 1, &ground);
 		context->PSSetShaderResources(122, 1, &stream);
-		ID3D11ShaderResourceView* depth = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
-		context->PSSetShaderResources(121, 1, &depth);
 		fallGroundBound = true;
 	} else if (fallGroundBound) {
 		ID3D11Buffer* constants = fallGroundOff.get();

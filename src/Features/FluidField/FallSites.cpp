@@ -1,7 +1,6 @@
 #include "FallSites.h"
 
 #include "EngineGrid.h"
-#include "FallSheets.h"
 #include "FallSurfaceRenderer.h"
 
 #include "WaterSurfaces.h"
@@ -245,9 +244,6 @@ namespace FluidFieldSim
 				// The falling-water models carry layers of their own (and spray particles): show only the
 				// layers in the mask
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-					// D64: our own sheets live under vanilla's pieces' parent; the layer mask is for vanilla's
-					if (a_geometry->name == FallSheets::SHEET_NAME)
-						return RE::BSVisit::BSVisitControl::kContinue;
 					// D73: an original drawn by its dense copy stays hidden; the copy takes its layer
 					if (denseOf.contains(a_geometry))
 						return RE::BSVisit::BSVisitControl::kContinue;
@@ -266,35 +262,11 @@ namespace FluidFieldSim
 		hiddenEffects.swap(wanted);
 	}
 
-	void FallSites::SetTranslucent(bool a_translucent)
-	{
-		if (a_translucent == translucent)
-			return;
-		translucent = a_translucent;
-		RefreshGrounded();
-	}
-
-	void FallSites::RestoreAlpha()
-	{
-		for (auto& [alpha, original] : blendedAlpha) {
-			if (original.first)
-				original.first->alphaFlags = original.second;
-		}
-		blendedAlpha.clear();
-		for (auto& geometry : borrowedAlpha) {
-			if (geometry)
-				geometry->GetGeometryRuntimeData().alphaProperty = RE::NiPointer<RE::NiAlphaProperty>();
-		}
-		borrowedAlpha.clear();
-		translucentGeometry.clear();
-	}
-
 	void FallSites::Clear()
 	{
 		hideEffects = false;
 		RefreshHiddenEffects();
 		RemoveDense();
-		RestoreAlpha();
 		grounded.clear();
 		clipQueue.clear();
 		bakeQueue.clear();
@@ -303,7 +275,6 @@ namespace FluidFieldSim
 			flowBakeVersion++;
 		flowBakes.clear();
 		bakeFields.clear();
-		chainRoot.clear();
 		vertexClipBase.clear();
 		groundVersion++;
 		refs.clear();
@@ -751,30 +722,6 @@ namespace FluidFieldSim
 					if (normal.z < 0.0f)
 						normal = -normal;
 				}
-				// D35: its texel density, world units per texture repeat along u and v, area weighted
-				{
-					double sum[2]{}, area = 0.0;
-					for (uint32_t t = 0; t < counts.triangleCount; t++) {
-						const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(t) * 3;
-						if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
-							continue;
-						const RE::NiPoint3 e1 = positions[index[1]] - positions[index[0]];
-						const RE::NiPoint3 e2 = positions[index[2]] - positions[index[0]];
-						const float du1 = uvs[index[1]][0] - uvs[index[0]][0], dv1 = uvs[index[1]][1] - uvs[index[0]][1];
-						const float du2 = uvs[index[2]][0] - uvs[index[0]][0], dv2 = uvs[index[2]][1] - uvs[index[0]][1];
-						const float det = du1 * dv2 - du2 * dv1;
-						const float faceArea = 0.5f * e1.Cross(e2).Length();
-						if (std::abs(det) < 1e-8f || faceArea < 1e-3f)
-							continue;
-						const RE::NiPoint3 tu = (e1 * dv2 - e2 * dv1) / det;
-						const RE::NiPoint3 tv = (e2 * du1 - e1 * du2) / det;
-						sum[0] += static_cast<double>(tu.Length()) * faceArea;
-						sum[1] += static_cast<double>(tv.Length()) * faceArea;
-						area += faceArea;
-					}
-					if (area > 0.0)
-						textureScales[geometry] = { static_cast<float>(sum[0] / area), static_cast<float>(sum[1] / area) };
-				}
 				for (uint32_t t = 0; t < counts.triangleCount; t++) {
 					const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(t) * 3;
 					if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
@@ -802,12 +749,6 @@ namespace FluidFieldSim
 
 	FallSites::SurfaceMesh FallSites::BuildMergedSurface(const FallStream::Result& a_flow, float a_originX, float a_originY, const std::vector<SourceTriangle>& a_sources, const std::vector<float>& a_levels)
 	{
-		// The top of the falls: the drop below it counts into the travel time, so the texture runs down steep water too
-		float top = -FLT_MAX;
-		for (const auto& triangle : a_sources) {
-			for (int k = 0; k < 3; k++)
-				top = std::max(top, triangle.position[k][2]);
-		}
 		SurfaceMesh mesh;
 		const auto w = static_cast<int32_t>(a_flow.width);
 		const auto h = static_cast<int32_t>(a_flow.height);
@@ -824,7 +765,7 @@ namespace FluidFieldSim
 					const std::size_t i = static_cast<std::size_t>(y) * w + x;
 					if (known[i])
 						continue;
-					float sums[9]{};
+					float sums[4]{};
 					int count = 0;
 					for (int32_t dy = -1; dy <= 1; dy++) {
 						for (int32_t dx = -1; dx <= 1; dx++) {
@@ -834,30 +775,20 @@ namespace FluidFieldSim
 							const std::size_t j = static_cast<std::size_t>(ny) * w + nx;
 							if (!known[j])
 								continue;
-							sums[0] += dilated.psi[j];
-							sums[1] += dilated.travel[j];
-							sums[2] += dilated.speed[j];
-							sums[3] += dilated.foam[j];
-							sums[4] += dilated.depth[j];
-							sums[5] += dilated.vx[j];
-							sums[6] += dilated.vy[j];
-							sums[7] += dilated.head[j];
-							sums[8] += dilated.rockFoam[j];
+							sums[0] += dilated.speed[j];
+							sums[1] += dilated.vx[j];
+							sums[2] += dilated.vy[j];
+							sums[3] += dilated.head[j];
 							count++;
 						}
 					}
 					if (!count)
 						continue;
 					const float k = 1.0f / static_cast<float>(count);
-					dilated.psi[i] = sums[0] * k;
-					dilated.travel[i] = sums[1] * k;
-					dilated.speed[i] = sums[2] * k;
-					dilated.foam[i] = sums[3] * k;
-					dilated.depth[i] = sums[4] * k;
-					dilated.vx[i] = sums[5] * k;
-					dilated.vy[i] = sums[6] * k;
-					dilated.head[i] = sums[7] * k;
-					dilated.rockFoam[i] = sums[8] * k;
+					dilated.speed[i] = sums[0] * k;
+					dilated.vx[i] = sums[1] * k;
+					dilated.vy[i] = sums[2] * k;
+					dilated.head[i] = sums[3] * k;
 					next[i] = 1;
 				}
 			}
@@ -869,7 +800,7 @@ namespace FluidFieldSim
 		// The flow under a point, bilinear over its water cells; the weight is how much water is around
 		struct Flow
 		{
-			float across, travel, speed, foam, edge, depth, water, vx, vy, head, rockFoam;
+			float speed, water, vx, vy, head;
 		};
 		const auto flowAt = [&](float a_x, float a_y) {
 			Flow flow{};
@@ -891,31 +822,19 @@ namespace FluidFieldSim
 					flow.water += flowField.water[i] ? k : 0.0f;
 					if (!flowField.water[i])
 						continue;
-					flow.across += flowField.psi[i] * k;
-					flow.travel += flowField.travel[i] * k;
 					flow.speed += flowField.speed[i] * k;
-					flow.foam += flowField.foam[i] * k;
-					flow.edge += flowField.edge[i] * k;
-					flow.depth += flowField.depth[i] * k;
 					flow.vx += flowField.vx[i] * k;
 					flow.vy += flowField.vy[i] * k;
 					flow.head += flowField.head[i] * k;
-					flow.rockFoam += flowField.rockFoam[i] * k;
 					weight += k;
 				}
 			}
 			if (weight > 1e-4f) {
 				const float inverse = 1.0f / weight;
-				flow.across *= inverse;
-				flow.travel *= inverse;
 				flow.speed *= inverse;
-				flow.foam *= inverse;
-				flow.edge *= inverse;
-				flow.depth *= inverse;
 				flow.vx *= inverse;
 				flow.vy *= inverse;
 				flow.head *= inverse;
-				flow.rockFoam *= inverse;
 			}
 			return flow;
 		};
@@ -1034,21 +953,7 @@ namespace FluidFieldSim
 			const float length = std::sqrt(vertex.normal[0] * vertex.normal[0] + vertex.normal[1] * vertex.normal[1] + vertex.normal[2] * vertex.normal[2]);
 			for (float& component : vertex.normal)
 				component = length > 1e-6f ? component / length : 0.0f;
-			vertex.uv[0] = a_t.uv[0][0] * w0 + a_t.uv[1][0] * a_u + a_t.uv[2][0] * a_v;
-			vertex.uv[1] = a_t.uv[0][1] * w0 + a_t.uv[1][1] * a_u + a_t.uv[2][1] * a_v;
-			const Flow flow = flowAt(vertex.position[0], vertex.position[1]);
-			vertex.across = flow.across;
-			vertex.travel = flow.travel + (top - vertex.position[2]) / FALL_SPEED;
-			vertex.speed = flow.speed;
-			vertex.foam = flow.foam;
-			// Where the falls meet a body of water, above and below, the join is hidden in foam
-			for (const float level : a_levels)
-				vertex.foam = std::max(vertex.foam, std::clamp(1.0f - std::abs(vertex.position[2] - level) / MEET_FOAM_HEIGHT, 0.0f, 1.0f));
-			vertex.edge = 1.0f;
-			vertex.depth = flow.depth;
-			// Off the flow (beyond the solved water) vanilla's own texture stays; steep water keeps the flow's,
-			// its drop counted in the travel time
-			vertex.flow = std::clamp((flow.water - 0.1f) / 0.4f, 0.0f, 1.0f);
+			vertex.speed = flowAt(vertex.position[0], vertex.position[1]).speed;
 			const auto index = static_cast<uint32_t>(mesh.vertices.size());
 			mesh.vertices.push_back(vertex);
 			welded.emplace(key, index);
@@ -1719,16 +1624,6 @@ namespace FluidFieldSim
 		}
 	}
 
-	bool FallSites::GetTextureScale(const RE::BSGeometry* a_geometry, float a_scale[2]) const
-	{
-		const auto it = textureScales.find(a_geometry);
-		if (it == textureScales.end())
-			return false;
-		a_scale[0] = it->second[0];
-		a_scale[1] = it->second[1];
-		return true;
-	}
-
 	void FallSites::BuildStreamMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
 	{
 		a_field.assign(static_cast<std::size_t>(a_size) * a_size * 4, 0.0f);
@@ -1771,7 +1666,6 @@ namespace FluidFieldSim
 	{
 		// D26: the falling-water meshes of every site with captured ground are grounded on it
 		grounded.clear();
-		RestoreAlpha();
 		std::unordered_set<const RE::BSGeometry*> litMeshes;
 		litMeshList.clear();
 		std::vector<RE::NiPointer<RE::BSGeometry>> toDensify;
@@ -1787,22 +1681,7 @@ namespace FluidFieldSim
 				auto* root = ref ? ref->Get3D() : nullptr;
 				if (!root)
 					continue;
-				// D54: the lit surface has no alpha property of its own; its model's layers blend SrcAlpha /
-				// InvSrcAlpha, and lend it theirs
-				RE::NiAlphaProperty* lend = nullptr;
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-					auto* alpha = a_geometry->GetGeometryRuntimeData().alphaProperty.get();
-					if (alpha && alpha->GetAlphaBlending() && !alpha->GetAlphaTesting() && alpha->GetSrcBlendMode() == RE::NiAlphaProperty::AlphaFunction::kSrcAlpha &&
-						alpha->GetDestBlendMode() == RE::NiAlphaProperty::AlphaFunction::kInvSrcAlpha) {
-						lend = alpha;
-						return RE::BSVisit::BSVisitControl::kStop;
-					}
-					return RE::BSVisit::BSVisitControl::kContinue;
-				});
-				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-					// D61: our own sheets (FallSheets) are drawn as they are
-					if (a_geometry->name == FallSheets::SHEET_NAME)
-						return RE::BSVisit::BSVisitControl::kContinue;
 					// D73: an original drawn by its dense copy is passed by (the copy is found as its sibling)
 					if (denseOf.contains(a_geometry)) {
 						denseSeen.insert(a_geometry);
@@ -1819,7 +1698,7 @@ namespace FluidFieldSim
 					// D56: the lit surface's vertices are tested against the rock, once
 					if (triShape && triShape->GetTrishapeRuntimeData().triangleCount > 0 && netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get())) {
 						litMeshes.insert(a_geometry);
-						litMeshList.push_back({ RE::NiPointer<RE::BSGeometry>(a_geometry), site.bottom, site.id, site.levels });
+						litMeshList.push_back({ RE::NiPointer<RE::BSGeometry>(a_geometry) });
 						if (!vertexClipBase.contains(a_geometry) &&
 							std::none_of(clipQueue.begin(), clipQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }))
 							clipQueue.emplace_back(a_geometry);
@@ -1827,21 +1706,6 @@ namespace FluidFieldSim
 							std::none_of(bakeQueue.begin(), bakeQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }) &&
 							std::none_of(bakesPending.begin(), bakesPending.end(), [&](const auto& a_pending) { return a_pending.first.get() == a_geometry; }))
 							bakeQueue.emplace_back(a_geometry);
-					}
-					// D53: the lit surface drawn blended, so it can be translucent in patches, as falling water is.
-					// Its own alpha property is switched (the model's, shared by every copy of it) and restored after
-					auto* lit = a_geometry->GetGeometryRuntimeData().shaderProperty.get();
-					auto* alphaProperty = a_geometry->GetGeometryRuntimeData().alphaProperty.get();
-					if (translucent && triShape && lit && netimmerse_cast<RE::BSLightingShaderProperty*>(lit) && alphaProperty) {
-						blendedAlpha.try_emplace(alphaProperty, RE::NiPointer<RE::NiAlphaProperty>(alphaProperty), alphaProperty->alphaFlags);
-						alphaProperty->SetAlphaBlending(true);
-						alphaProperty->SetSrcBlendMode(RE::NiAlphaProperty::AlphaFunction::kSrcAlpha);
-						alphaProperty->SetDestBlendMode(RE::NiAlphaProperty::AlphaFunction::kInvSrcAlpha);
-						translucentGeometry.insert(a_geometry);
-					} else if (translucent && triShape && lit && netimmerse_cast<RE::BSLightingShaderProperty*>(lit) && !alphaProperty && lend) {
-						a_geometry->GetGeometryRuntimeData().alphaProperty = RE::NiPointer<RE::NiAlphaProperty>(lend);
-						borrowedAlpha.emplace_back(a_geometry);
-						translucentGeometry.insert(a_geometry);
 					}
 					// Diagnostics: what each part of a falling-water mesh is, once per model and part
 					auto* property = a_geometry->GetGeometryRuntimeData().shaderProperty.get();
@@ -1853,7 +1717,7 @@ namespace FluidFieldSim
 						// The lit surface's textures and the range of its texture coordinates
 						std::string extra;
 						if (auto* alpha = a_geometry->GetGeometryRuntimeData().alphaProperty.get())
-							extra += std::format(", alpha flags {:04X} (blend {}, test {}), threshold {}", blendedAlpha.contains(alpha) ? blendedAlpha.at(alpha).second : alpha->alphaFlags,
+							extra += std::format(", alpha flags {:04X} (blend {}, test {}), threshold {}", alpha->alphaFlags,
 								alpha->GetAlphaBlending(), alpha->GetAlphaTesting(), alpha->alphaThreshold);
 						else
 							extra += ", no alpha property";
@@ -1923,7 +1787,6 @@ namespace FluidFieldSim
 		if (std::erase_if(flowBakes, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); }))
 			flowBakeVersion++;
 		std::erase_if(bakeFields, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
-		std::erase_if(chainRoot, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first) || !litMeshes.contains(a_entry.second); });
 		groundVersion++;
 	}
 
@@ -1964,42 +1827,6 @@ namespace FluidFieldSim
 		return first;
 	}
 
-	float FallSites::RockClip(RE::hkpWorld* a_world, const RE::NiPoint3& a_point, const RE::NiPoint3& a_normal, bool& a_inside) const
-	{
-		// D57: inside rock where rays from outside it (straight down onto the point, down and in, and in along
-		// its face) all cross rock an odd number of times on the way. D56 asked which way the rock's face
-		// turned at the first hit; Havok's normals never said "from behind", so nothing was ever inside. All
-		// three must agree: under an overhang the ray from above crosses it, the one along the face does not
-		RE::NiPoint3 out = a_normal;
-		if (out.z < 0.0f)
-			out = -out;
-		const RE::NiPoint3 directions[3] = { { 0.0f, 0.0f, 1.0f }, RE::NiPoint3(out.x, out.y, out.z + 1.0f), out };
-		int inside = 0, tried = 0;
-		float depth = CLIP_RANGE;
-		for (int k = 0; k < 3; k++) {
-			RE::NiPoint3 direction = directions[k];
-			const float length = direction.Length();
-			if (length < 1e-4f)
-				continue;
-			direction = direction / length;
-			// From outside, toward the point: the last crossing is the rock's face nearest the point
-			int crossings = 0;
-			float last = 0.0f;
-			RockAlong(a_world, a_point + direction * CLIP_REACH, -direction, CLIP_REACH - 0.5f, &crossings, &last);
-			tried++;
-			if (crossings % 2 == 1) {
-				inside++;
-				if (k == 0)
-					depth = std::min(CLIP_REACH - last, CLIP_RANGE);
-			}
-		}
-		a_inside = tried > 0 && inside == tried;
-		// The cut sits just short of a buried vertex (2 against 38): Bethesda's triangles are large, and a deep
-		// value pulled the cut far across them, out of the rock, notching black gaps along it
-		(void)depth;
-		return a_inside ? -CLIP_INSIDE : CLIP_MARGIN + CLIP_RANGE;
-	}
-
 	void FallSites::ClipStep()
 	{
 		if (clipQueue.empty())
@@ -2031,15 +1858,6 @@ namespace FluidFieldSim
 				std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
 				positions[v] = geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
 			}
-			std::vector<RE::NiPoint3> normals(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
-			for (uint32_t i = 0; i < counts.triangleCount; i++) {
-				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
-				if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
-					continue;
-				const RE::NiPoint3 face = (positions[index[1]] - positions[index[0]]).Cross(positions[index[2]] - positions[index[0]]);
-				for (int k = 0; k < 3; k++)
-					normals[index[k]] += face;
-			}
 			// D68: the water this mesh falls into: planes under its top (water objects and cells' water). A plane
 			// covers its whole bound, but under its height there is only water or ground, and both hide the falls
 			float top = -FLT_MAX, bottom = FLT_MAX, lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
@@ -2055,33 +1873,28 @@ namespace FluidFieldSim
 			CollectWaterPlanes(lo[0], lo[1], hi[0], hi[1], planes);
 			std::erase_if(planes, [&](const auto& a_plane) { return a_plane[4] >= top - 32.0f; });
 			const auto base = static_cast<uint32_t>(vertexClips.size());
-			{
-				const RE::BSReadLockGuard lock(bhkWorld->worldLock);
-				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					const float length = normals[v].Length();
-					bool inside = false;
-					float clip = ROCK_CUT ? RockClip(world, positions[v], length > 1e-6f ? normals[v] / length : RE::NiPoint3(0.0f, 0.0f, 1.0f), inside) : CLIP_MARGIN + CLIP_RANGE;
-					float water = -FLT_MAX;
-					for (const auto& plane : planes) {
-						if (positions[v].x >= plane[0] && positions[v].x <= plane[2] && positions[v].y >= plane[1] && positions[v].y <= plane[3])
-							water = std::max(water, plane[4]);
-					}
-					const float above = water > -FLT_MAX ? positions[v].z - water : NO_WATER;
-					// D70: only near the mesh's foot, where it goes into its water: higher up, a plane whose bound covers
-					// the fall (a pool partway down, a whole cell) cut holes in the middle of the sheet
-					if (water > -FLT_MAX && positions[v].z < bottom + WATER_CUT_BAND)
-						clip = std::min(clip, above + WATER_KEEP);
-					// D71: w marks the mesh's foot, the only place the pools may cut it (the shader's pool cut)
-					vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f });
-					clipTested++;
-					clipInside += inside ? 1 : 0;
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				// D70: no per-vertex rock cut (it holed sheets where its parity misfired); rock hides water inside it anyway
+				float clip = CLIP_MARGIN + CLIP_RANGE;
+				float water = -FLT_MAX;
+				for (const auto& plane : planes) {
+					if (positions[v].x >= plane[0] && positions[v].x <= plane[2] && positions[v].y >= plane[1] && positions[v].y <= plane[3])
+						water = std::max(water, plane[4]);
 				}
+				const float above = water > -FLT_MAX ? positions[v].z - water : NO_WATER;
+				// D70: only near the mesh's foot, where it goes into its water: higher up, a plane whose bound covers
+				// the fall (a pool partway down, a whole cell) cut holes in the middle of the sheet
+				if (water > -FLT_MAX && positions[v].z < bottom + WATER_CUT_BAND)
+					clip = std::min(clip, above + WATER_KEEP);
+				// D71: w marks the mesh's foot, the only place the pools may cut it (the shader's pool cut)
+				vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f });
+				clipTested++;
 			}
 			vertexClipBase[geometry.get()] = base;
 			vertexClipVersion++;
 		}
 		if (clipQueue.empty()) {
-			logger::info("[Fluid Field] Waterfall rock cut: {} vertices of {} lit meshes tested, {} inside rock", clipTested, vertexClipBase.size(), clipInside);
+			logger::info("[Fluid Field] Waterfall rock cut: {} vertices of {} lit meshes tested", clipTested, vertexClipBase.size());
 			ComputeFades();
 		}
 	}
@@ -2709,26 +2522,6 @@ namespace FluidFieldSim
 		return false;
 	}
 
-	bool FallSites::SiteFlowAt(float a_x, float a_y, float& a_vx, float& a_vy) const
-	{
-		for (const auto& [key, stream] : streams) {
-			const auto& result = stream.result;
-			if (!stream.ready || result.vx.size() != static_cast<std::size_t>(result.width) * result.height || result.water.size() != result.vx.size())
-				continue;
-			const auto x = static_cast<int32_t>(std::lround((a_x - stream.originX) / FallCapture::CELL));
-			const auto y = static_cast<int32_t>(std::lround((a_y - stream.originY) / FallCapture::CELL));
-			if (x < 0 || y < 0 || x >= static_cast<int32_t>(result.width) || y >= static_cast<int32_t>(result.height))
-				continue;
-			const std::size_t i = static_cast<std::size_t>(y) * result.width + x;
-			if (!result.water[i])
-				continue;
-			a_vx = result.vx[i];
-			a_vy = result.vy[i];
-			return true;
-		}
-		return false;
-	}
-
 	std::shared_ptr<FallSites::BakeField> FallSites::SolveBake(const BakeJob& a_job)
 	{
 		const uint32_t w = a_job.width, h = a_job.height;
@@ -3344,48 +3137,8 @@ namespace FluidFieldSim
 			logger::info("[Fluid Field]   link: a mesh with its top at {:.0f} is fed by none: the nearest higher mesh is {:.0f} units from its top edge, {:.0f}% down it", node.top,
 				best < FLT_MAX ? std::sqrt(best) : -1.0f, row * 100.0f);
 		}
-		// D72: every mesh's texels in one grid of MEET_CELL world units (every other texel), with the way its water
-		// goes in the world (down +v, turned by its solve), so meshes that meet can pull each other's flow
-		struct Probe
-		{
-			uint32_t node;
-			RE::NiPoint3 position, direction;
-		};
-		std::unordered_map<uint64_t, std::vector<Probe>> probes;
-		const auto meetKey = [](float a_x, float a_y, float a_z) {
-			const auto cx = static_cast<int64_t>(std::floor(a_x / MEET_CELL)) & 0x1FFFFF, cy = static_cast<int64_t>(std::floor(a_y / MEET_CELL)) & 0x1FFFFF,
-					   cz = static_cast<int64_t>(std::floor(a_z / MEET_CELL)) & 0x1FFFFF;
-			return static_cast<uint64_t>(cx | (cy << 21) | (cz << 42));
-		};
-		const auto worldFlow = [](const BakeField& a_field, const std::vector<float>& a_turn, int32_t a_x, int32_t a_y, RE::NiPoint3& a_tu, RE::NiPoint3& a_tv) {
-			const auto w = static_cast<int32_t>(a_field.width), h = static_cast<int32_t>(a_field.height);
-			const auto at = [&](int32_t a_px, int32_t a_py) { return static_cast<std::size_t>(std::clamp(a_py, 0, h - 1)) * w + std::clamp(a_px, 0, w - 1); };
-			a_tu = a_field.position[at(a_x + 1, a_y)] - a_field.position[at(a_x - 1, a_y)];
-			a_tv = a_field.position[at(a_x, a_y + 1)] - a_field.position[at(a_x, a_y - 1)];
-			const RE::NiPoint3 direction = a_tv + a_tu * a_turn[at(a_x, a_y)];
-			const float length = direction.Length();
-			return length > 1e-4f ? direction / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
-		};
-		for (uint32_t n = 0; n < nodes.size(); n++) {
-			const BakeField& field = *nodes[n].field;
-			const auto w = static_cast<int32_t>(field.width), h = static_cast<int32_t>(field.height);
-			for (int32_t y = 1; y + 1 < h; y += 2) {
-				for (int32_t x = 1; x + 1 < w; x += 2) {
-					const std::size_t i = static_cast<std::size_t>(y) * w + x;
-					if (!field.covered[i])
-						continue;
-					RE::NiPoint3 tu, tv;
-					const RE::NiPoint3 direction = worldFlow(field, field.turn, x, y, tu, tv);
-					if (direction.Length() < 0.5f)
-						continue;
-					const auto& p = field.position[i];
-					probes[meetKey(p.x, p.y, p.z)].push_back({ n, p, direction });
-				}
-			}
-		}
-		uint32_t met = 0;
 		// Each mesh swept down from its top edge once its feeder is (meshes in a loop, if any, start as tops)
-		uint32_t linked = 0, flatTexels = 0;
+		uint32_t linked = 0;
 		const auto sweep = [&](Node& a_node) {
 			const BakeField& field = *a_node.field;
 			const auto w = static_cast<int32_t>(field.width), h = static_cast<int32_t>(field.height);
@@ -3427,94 +3180,10 @@ namespace FluidFieldSim
 				across0[x] = static_cast<float>(slope * u(x) + intercept);
 				along0[x] = static_cast<float>(meanAlong);
 			}
-			// D68: where the sheet lies flat (water landed on the ground or a pool), the flow turns to the site's main
-			// flow there (the solved flow seen from above, put in the sheet's texture axes), as far as FLAT_MOST_TURN:
-			// water falling onto a slope runs off along it, not on down the mesh's +v
+			// The solved turn, softened (D68: more, so it cannot whorl)
 			std::vector<float> turn = field.turn;
-			{
-				const auto at = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(std::clamp(a_y, 0, h - 1)) * w + std::clamp(a_x, 0, w - 1); };
-				for (int32_t y = 0; y < h; y++) {
-					for (int32_t x = 0; x < w; x++) {
-						const std::size_t i = at(x, y);
-						if (!field.covered[i])
-							continue;
-						const float flat = std::clamp((std::abs(field.normal[i].z) - 0.75f) / 0.15f, 0.0f, 1.0f);
-						float vx, vy;
-						// D70: only near the mesh's foot, where the water lands (on a crest it swirled the arch)
-						const float foot = std::clamp((a_node.lo[2] + 2.0f * WATER_CUT_BAND - field.position[i].z) / WATER_CUT_BAND, 0.0f, 1.0f);
-						if (!FLAT_JOIN || flat * foot <= 0.0f || !SiteFlowAt(field.position[i].x, field.position[i].y, vx, vy) || vx * vx + vy * vy < 0.0025f)
-							continue;
-						const RE::NiPoint3 tu = field.position[at(x + 1, y)] - field.position[at(x - 1, y)];
-						const RE::NiPoint3 tv = field.position[at(x, y + 1)] - field.position[at(x, y - 1)];
-						const float det = tu.x * tv.y - tv.x * tu.y;
-						if (std::abs(det) < 1e-3f)
-							continue;
-						const float a = (vx * tv.y - tv.x * vy) / det, b = (tu.x * vy - vx * tu.y) / det;
-						const float wanted = b > 1e-3f ? std::clamp(a / b, -FLAT_MOST_TURN, FLAT_MOST_TURN) : (a >= 0.0f ? FLAT_MOST_TURN : -FLAT_MOST_TURN);
-						// Only where the main flow leaves the mesh's own way down by more than 20 degrees: elsewhere the
-						// mesh already runs with it, and a small turn everywhere only sheared the streaks into whorls
-						const float apart = std::clamp((std::abs(wanted - turn[i]) - 0.36f) / 0.36f, 0.0f, 1.0f);
-						const float weight = flat * flat * (3.0f - 2.0f * flat) * apart * foot;
-						turn[i] += (wanted - turn[i]) * weight;
-						flatTexels += weight > 0.5f ? 1 : 0;
-					}
-				}
-				BlurGrid(turn, w, h, 6);
-			}
-			// D72: where another mesh's water runs within MEET_REACH, this mesh's flow is drawn to the way that water
-			// goes (in this mesh's texture axes; not where it runs back against this one): flows that meet merge
-			{
-				const auto self = static_cast<uint32_t>(&a_node - nodes.data());
-				std::vector<float> pulled = turn;
-				for (int32_t y = 1; y + 1 < h; y++) {
-					for (int32_t x = 1; x + 1 < w; x++) {
-						const std::size_t i = static_cast<std::size_t>(y) * w + x;
-						if (!field.covered[i])
-							continue;
-						const RE::NiPoint3& p = field.position[i];
-						RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
-						float weight = 0.0f;
-						for (int dz = -1; dz <= 1; dz++) {
-							for (int dy = -1; dy <= 1; dy++) {
-								for (int dx = -1; dx <= 1; dx++) {
-									const auto found = probes.find(meetKey(p.x + dx * MEET_CELL, p.y + dy * MEET_CELL, p.z + dz * MEET_CELL));
-									if (found == probes.end())
-										continue;
-									for (const auto& probe : found->second) {
-										if (probe.node == self)
-											continue;
-										const float distance = (probe.position - p).Length();
-										if (distance >= MEET_REACH)
-											continue;
-										const float k = 1.0f - distance / MEET_REACH;
-										sum += probe.direction * k;
-										weight = std::max(weight, k);
-									}
-								}
-							}
-						}
-						if (weight <= 0.0f || sum.Length() < 1e-3f)
-							continue;
-						RE::NiPoint3 tu, tv;
-						worldFlow(field, turn, x, y, tu, tv);
-						const RE::NiPoint3 direction = sum / sum.Length();
-						// The direction in this sheet's axes: solve [tu.tu tu.tv; tu.tv tv.tv] [a b] = [d.tu d.tv]
-						const float uu = tu.Dot(tu), uv = tu.Dot(tv), vv = tv.Dot(tv);
-						const float det = uu * vv - uv * uv;
-						if (std::abs(det) < 1e-6f)
-							continue;
-						const float du = direction.Dot(tu), dv = direction.Dot(tv);
-						const float a = (du * vv - dv * uv) / det, b = (dv * uu - du * uv) / det;
-						if (b < 0.2f * std::abs(a) || b <= 1e-4f)
-							continue;
-						const float wanted = std::clamp(a / b, -BAKE_NEAR_TURN, BAKE_NEAR_TURN);
-						pulled[i] += (wanted - pulled[i]) * weight * MEET_PULL;
-						met++;
-					}
-				}
-				BlurGrid(pulled, w, h, 3);
-				turn.swap(pulled);
-			}
+			BlurGrid(turn, w, h, 6);
+			BlurGrid(turn, w, h, 3);
 			field.swept = turn;
 			// Down the sheet a row at a time (semi-Lagrangian, as D60's warp): each texel's streak and run time are
 			// those of the texel above it on its way down, its run time grown by the row's length over its speed
@@ -3602,24 +3271,12 @@ namespace FluidFieldSim
 			if (!any)
 				break;
 		}
-		chainRoot.clear();
-		for (const auto& node : nodes) {
-			const Node* root = &node;
-			for (std::size_t guard = 0; root->feeder >= 0 && guard < nodes.size(); guard++)
-				root = &nodes[root->feeder];
-			chainRoot[node.geometry] = root->geometry;
-		}
 		flowBakeVersion++;
-		linkedStreams = CountReadyStreams();
-		logger::info("[Fluid Field] Waterfall flow linked: {} meshes, {} fed by the mesh above them; {} flat texels join the main flow; {} texels drawn by a mesh beside them ({} sites' flows solved)",
-			nodes.size(), linked, flatTexels, met, linkedStreams);
+		logger::info("[Fluid Field] Waterfall flow linked: {} meshes, {} fed by the mesh above them", nodes.size(), linked);
 	}
 
 	void FallSites::BakeStep()
 	{
-		// D68: the flat parts follow the sites' flows, so the bakes are linked again as more of them are solved
-		if (!bakeFields.empty() && bakesPending.empty() && bakeQueue.empty() && !bakeJob && CountReadyStreams() != linkedStreams)
-			LinkBakes();
 		// Finished solves
 		for (auto it = bakesPending.begin(); it != bakesPending.end();) {
 			if (it->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
@@ -4055,33 +3712,6 @@ namespace FluidFieldSim
 		}
 	}
 
-	bool FallSites::WaterObjectBounds(float a_x, float a_y, float a_level, float a_reach, float a_bounds[4]) const
-	{
-		if (!waterSurfaces)
-			return false;
-		std::vector<WaterSurfaces::Plane> planes;
-		waterSurfaces->CollectPlanes(a_x - 1.0f, a_y - 1.0f, a_x + 1.0f, a_y + 1.0f, planes);
-		bool found = false;
-		float best = FLT_MAX;
-		for (const auto& plane : planes) {
-			if (plane.source != WaterSurfaces::Source::WaterObject || std::abs(plane.height - a_level) > a_reach)
-				continue;
-			if (a_x < plane.minX || a_x > plane.maxX || a_y < plane.minY || a_y > plane.maxY)
-				continue;
-			// The smallest that holds the point: the water there, not a wide one around it
-			const float area = (plane.maxX - plane.minX) * (plane.maxY - plane.minY);
-			if (area >= best)
-				continue;
-			best = area;
-			a_bounds[0] = plane.minX;
-			a_bounds[1] = plane.minY;
-			a_bounds[2] = plane.maxX;
-			a_bounds[3] = plane.maxY;
-			found = true;
-		}
-		return found;
-	}
-
 	void FallSites::CollectWaterPlanes(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<std::array<float, 5>>& a_planes) const
 	{
 		a_planes.clear();
@@ -4093,18 +3723,6 @@ namespace FluidFieldSim
 			if (plane.source != WaterSurfaces::Source::None)
 				a_planes.push_back({ plane.minX, plane.minY, plane.maxX, plane.maxY, plane.height });
 		}
-	}
-
-	bool FallSites::GetSiteGround(uint32_t a_siteId, SiteGround& a_ground) const
-	{
-		for (const auto& [key, stream] : streams) {
-			const std::size_t count = static_cast<std::size_t>(stream.result.width) * stream.result.height;
-			if (stream.siteId != a_siteId || !stream.ready || count == 0 || stream.result.bed.size() != count || stream.result.cover.size() != count)
-				continue;
-			a_ground = { stream.originX, stream.originY, FallCapture::CELL, stream.result.width, stream.result.height, &stream.result.bed, &stream.result.cover };
-			return true;
-		}
-		return false;
 	}
 
 	bool FallSites::PoolLevelAt(float a_x, float a_y, float& a_level) const
@@ -4124,11 +3742,6 @@ namespace FluidFieldSim
 			found = true;
 		}
 		return found;
-	}
-
-	uint32_t FallSites::CountReadyStreams() const
-	{
-		return static_cast<uint32_t>(std::count_if(streams.begin(), streams.end(), [](const auto& a_entry) { return a_entry.second.ready; }));
 	}
 
 	void FallSites::BuildPoolMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const

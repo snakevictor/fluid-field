@@ -1723,3 +1723,61 @@ Entry format:
     -   The flat-parts join (D68) is off; the sim spreads the water.
 -   Dense copies: one subdivision (4x triangles); three stuttered the game.
 -   References: D59, D60, D67, D68, D71, D73
+
+## D75: Falls mesh debug overlay
+
+-   Date: 2026-10-20
+-   Phase / spike: @Victor asked for a flowmap and wireframe without the console's
+-   Decision: Falls Mesh Debug (menu, not saved) draws over everything: the
+    falls' meshes as drawn (dense copies yellow) and each mesh's sim as
+    world-space arrows (direction, length and colour by speed, white where it
+    strikes rock). Arrows are culled inside rock, under the pools, and behind
+    rock from the camera (rays, 400 a frame, cached until the camera moves 48
+    units); they show the turn the streak sweep used.
+-   References: D74
+
+## D76: Water under resting rocks turns; capped stretch; straight over the lip
+
+-   Date: 2026-10-20
+-   Phase / spike: @Victor's CS screenshots 568, 464, 605
+-   Decision:
+    -   568: vanilla's sheet runs on beneath a boulder resting on it (the
+        boulder is wholly above: an even number of crossings), so the water
+        drained out under it. A lying texel (normal z over 0.5) with a
+        static's face within 120 units above is a wall.
+    -   464: the texture followed the sim plus D72's mesh-to-mesh pull (the
+        arrows showed only the sim): chevrons and a crease. The pull is off.
+        Speed against vanilla's scroll is capped at 1.6 again (4x stretched
+        the texture into blocks: vanilla's UVs already stretch down drops).
+    -   605: on a lip's curl the sim's frame twists and its flow scattered;
+        the turn eases in over the first 14 rows of each column.
+-   References: D72, D74, D75
+
+## D77: Dead waterfall code removed
+
+-   Date: 2026-10-20
+-   Decision: Code that no longer reached the screen is deleted, so what is
+    left is what runs:
+    -   the generated falls (FallSheets, D61-D64): their settings (Generated
+        Falls, Generated Falls Arc), debug view and test quad (D62);
+    -   translucency (D53-D55): the setting, the alpha switching on the lit
+        meshes, the shader's thickness patches and the hidden depth pass;
+    -   the effect layers' grounding (D26, D28): Effect.hlsl is vanilla again
+        (the layer checkboxes still pick which vanilla layers show), with the
+        ground lift, contact fade, foam tint, buried test and scene depth
+        (t121) it read;
+    -   the flowmap's two phases (D32): Flow Cycle and Flow Stretch Limit,
+        FlowPeriod, FlowMost, uvB, blendB and strength (the bake's single
+        phase drives the texture since D67), and TexScale (D35);
+    -   the falls' fog (D37, D41) in FogCS (no emitter set it);
+    -   in FallSites: the per-vertex rock cut (D56, D57; off since D70), the
+        flat-parts join (D68; off since D74) and the meshes' pull on each
+        other (D72; off since D76), with the re-link as sites' flows solve,
+        the cascade roots, the water-object bounds (D63), the site ground and
+        lit-mesh queries (D61, D64) and unused constants;
+    -   the merged surface's per-vertex flow fields (only its position,
+        normal and speed are read), the spray constants' BaseSpeed and
+        DebugMode, and the falls bodies' lip.
+-   What is drawn is unchanged: the bakes' turn keeps both blurs, the cut's
+    clip value is the constant the off rock cut gave.
+-   References: D26, D32, D37, D53, D56, D61, D62, D63, D68, D70, D72, D74

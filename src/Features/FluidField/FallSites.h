@@ -4,7 +4,6 @@
 #include "FallStream.h"
 #include "FallSurfaceRenderer.h"
 #include "ShallowWaterSolver.h"
-#include "WindSolver.h"
 
 #include <array>
 #include <cstdint>
@@ -113,13 +112,6 @@ namespace FluidFieldSim
 		 */
 		bool IsGrounded(const RE::BSGeometry* a_geometry) const { return grounded.contains(a_geometry); }
 		/**
-		 * @brief D53: whether the falls' lit surfaces are drawn alpha-blended (their own alpha property
-		 * switched to blending while grounded), so the shader can make them translucent in patches.
-		 */
-		void SetTranslucent(bool a_translucent);
-		/** @brief Whether a grounded geometry draws blended (SetTranslucent took on it). */
-		bool IsTranslucent(const RE::BSGeometry* a_geometry) const { return translucentGeometry.contains(a_geometry); }
-		/**
 		 * @brief D56: where a lit falls mesh's per-vertex rock cut starts in GetVertexClips, once tested.
 		 * Each value is how far the vertex stands out of the rock (negative inside it), for SV_ClipDistance,
 		 * and (D67) how much of it shows where it overlaps another falls mesh (1 whole, 0 gone: its edges
@@ -136,35 +128,15 @@ namespace FluidFieldSim
 			return true;
 		}
 		const std::vector<std::array<float, 8>>& GetVertexClips() const { return vertexClips; }
-		/** @brief D61: a grounded site's lit falls piece, and the water level its site ends in. */
+		/** @brief D61: a grounded site's lit falls piece. */
 		struct LitMesh
 		{
 			RE::NiPointer<RE::BSGeometry> geometry;
-			float bottom = 0.0f;
-			uint32_t siteId = 0;
-			std::vector<float> levels;  ///< The site's water levels, highest first
 		};
-		const std::vector<LitMesh>& GetLitMeshes() const { return litMeshList; }
 		/** @brief D61: the surface of the pool over a world point (a site's solved flow's cover), or false where there is none (yet). */
 		bool PoolLevelAt(float a_x, float a_y, float& a_level) const;
-		/** @brief D64: a solved site's captured ground (top-down, FallCapture::CELL apart) and its pools' surface per cell (NO_SURFACE where none). */
-		struct SiteGround
-		{
-			float originX = 0.0f, originY = 0.0f, cell = 16.0f;
-			uint32_t width = 0, height = 0;
-			const std::vector<float>* bed = nullptr;
-			const std::vector<float>* cover = nullptr;
-		};
-		bool GetSiteGround(uint32_t a_siteId, SiteGround& a_ground) const;
-		/**
-		 * @brief D63: the footprint of the engine's water object at a level over a point (its mesh's extent), or false
-		 * where none is (cell water covers whole cells and is not counted). a_bounds: min x, min y, max x, max y.
-		 */
-		bool WaterObjectBounds(float a_x, float a_y, float a_level, float a_reach, float a_bounds[4]) const;
 		/** @brief D66: every engine water plane (water objects and cells' water) over a box: min x, min y, max x, max y, height. */
 		void CollectWaterPlanes(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<std::array<float, 5>>& a_planes) const;
-		/** @brief D61: how many sites' flows are solved (their pools known). */
-		uint32_t CountReadyStreams() const;
 
 		/**
 		 * @brief D59: a lit falls mesh's flow, solved once on its own texture grid (u across, v down), with the
@@ -186,12 +158,6 @@ namespace FluidFieldSim
 			std::vector<float> texels;  ///< RGBA32F, width x height
 		};
 		const std::unordered_map<const RE::BSGeometry*, FlowBake>& GetFlowBakes() const { return flowBakes; }
-		/** @brief D67: the mesh at the top of the cascade a lit falls mesh is part of (itself where nothing feeds it). */
-		const RE::BSGeometry* GetChainRoot(const RE::BSGeometry* a_geometry) const
-		{
-			const auto it = chainRoot.find(a_geometry);
-			return it == chainRoot.end() ? a_geometry : it->second;
-		}
 		/** @brief Changes whenever GetFlowBakes changes. */
 		uint64_t GetFlowBakeVersion() const { return flowBakeVersion; }
 		/** @brief Changes whenever GetVertexClips grows. */
@@ -211,11 +177,7 @@ namespace FluidFieldSim
 		 */
 		void BuildStreamMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
 
-		/**
-		 * @brief D30: every site's merged falls surface (vanilla's falling-water meshes, subdivided, with
-		 * their flow), all in one list, and their spray emitters; changes with GetSurfaceVersion.
-		 */
-		const std::vector<FallSurfaceVertex>& GetSurfaceVertices() const { return surfaceVertices; }
+		/** @brief D30: every site's spray emitters, from its merged falls surface; changes with GetSurfaceVersion. */
 		const std::vector<FallEmitter>& GetSurfaceEmitters() const { return surfaceEmitters; }
 
 		/**
@@ -226,8 +188,6 @@ namespace FluidFieldSim
 		void AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_strength,
 			uint32_t a_maxEmitters, bool a_foam) const;
 
-		/** @brief D35: world units per texture repeat along u and v of a falling-water mesh (its own texel density), or false if unknown. */
-		bool GetTextureScale(const RE::BSGeometry* a_geometry, float a_scale[2]) const;
 		uint64_t GetSurfaceVersion() const { return surfaceVersion; }
 
 		/**
@@ -312,16 +272,8 @@ namespace FluidFieldSim
 		std::unordered_map<uint64_t, FallCapture> captures;       ///< By Site::captureKey
 		std::unordered_set<const RE::BSGeometry*> grounded;
 		std::vector<LitMesh> litMeshList;
-		bool translucent = false;
-		std::unordered_set<const RE::BSGeometry*> translucentGeometry;
-		/** @brief The alpha properties switched to blending, with their own flags to restore. */
-		std::unordered_map<RE::NiAlphaProperty*, std::pair<RE::NiPointer<RE::NiAlphaProperty>, uint16_t>> blendedAlpha;
-		std::vector<RE::NiPointer<RE::BSGeometry>> borrowedAlpha;  ///< D54: lit surfaces given their own layers' alpha property, to give back
-		void RestoreAlpha();
 		/** @brief D56: tests the queued lit meshes' vertices against the rock, a few milliseconds a frame. */
 		void ClipStep();
-		/** @brief D56: how far a point on the falls stands out of the rock (negative inside), from rays out of it. */
-		float RockClip(RE::hkpWorld* a_world, const RE::NiPoint3& a_point, const RE::NiPoint3& a_normal, bool& a_inside) const;
 		/** @brief D57: the nearest rock along a ray from a point, world units, or a negative value for none (the falls' own collision passed through). */
 		float RockAlong(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, int* a_crossings = nullptr, float* a_last = nullptr) const;
 		std::unordered_map<const RE::BSGeometry*, uint32_t> vertexClipBase;
@@ -330,7 +282,6 @@ namespace FluidFieldSim
 		static constexpr float GAP_OVERLAP = 4.0f;       ///< D69: ...each side moving past the middle by this much
 		static constexpr float WATER_KEEP = 24.0f;       ///< D68: falling water is cut this far under the water it falls into
 		static constexpr float WATER_CUT_BAND = 160.0f;  ///< D70: ...only this near its mesh's foot (a plane's bound reaches past its water, D63)
-		static constexpr bool ROCK_CUT = false;          ///< D70: the per-vertex rock cut (D56) holed sheets where its parity misfired; rock hides water inside it anyway
 		static constexpr float NO_WATER = 1.0e4f;        ///< D68: a vertex's height above the water below where there is none
 		/**
 		 * @brief D67: each tested lit mesh's overlap fade: its open edges that lie on another falls mesh leading it
@@ -341,28 +292,17 @@ namespace FluidFieldSim
 		std::vector<RE::NiPointer<RE::BSGeometry>> clipQueue;
 		uint64_t vertexClipVersion = 0;
 		uint32_t clipTested = 0;
-		uint32_t clipInside = 0;
 		static constexpr float CLIP_REACH = 240.0f;  ///< D56: world units each ray out of a vertex looks for rock
 		static constexpr float CLIP_MARGIN = 6.0f;   ///< A vertex this far inside rock still shows (water lying on it)
 		static constexpr float CLIP_RANGE = 32.0f;   ///< The most a vertex counts as in or out, so the cut stays near the rock's face
-		static constexpr float CLIP_INSIDE = 2.0f;   ///< D57: how far a buried vertex counts under the cut
 		static constexpr double CLIP_BUDGET_MS = 3.0;
 		static constexpr float BAKE_TEXEL = 10.0f;        ///< D59: world units per texel of a mesh's flow bake
 		static constexpr uint32_t BAKE_MOST_SIDE = 192;   ///< ...and the most texels along a side
 		static constexpr float BAKE_ROCK_MARGIN = 24.0f;  ///< A texel this far inside rock is still water (vanilla's sheets dip into the rock they lie on)
 		static constexpr double BAKE_BUDGET_MS = 3.0;
-		static constexpr float BAKE_LEAST_DOWN = 0.3f;     ///< The flow keeps at least this much of vanilla's forward...
-		static constexpr float BAKE_MOST_TURN = 0.5f;      ///< ...and turns aside at most this across per down (D70: 27 degrees: vanilla's way down drives harder)
-		static constexpr float BAKE_NEAR_TURN = 3.7f;      ///< D74: ...but right beside rock up to 75 degrees
-		static constexpr float MEET_CELL = 32.0f;          ///< D72: world units per cell of the grid meshes find each other's water in
-		static constexpr float MEET_REACH = 120.0f;        ///< D72: another mesh's water this near draws this mesh's flow... (D74: 120)
-		static constexpr float MEET_PULL = 0.0f;           ///< D72: ...this much at its nearest (D76: off: it bent streaks into chevrons the sim never saw)
 		static constexpr float BAKE_MOST_DRIFT = 64.0f;    ///< D71: texels a streak may drift across from where it came in (D74: the sim decides; only a guard)
 		static constexpr float BAKE_MOST_DOWN = 1.6f;      ///< D60: and runs at most this much of it
 		static constexpr std::size_t BAKE_LEAST_ROCK = 6;  ///< D60: rock islands of this many texels or fewer are specks, taken as water
-		static constexpr float BAKE_BEND_NEAR = 3.0f;      ///< D60: the streaks bend in full this many texels from rock...
-		static constexpr float BAKE_BEND_FAR = 14.0f;      ///< ...and not at all past this
-		static constexpr int BAKE_TURN_BLUR = 6;           ///< D60: passes softening the turn (D68: more, so it cannot whorl)
 		static constexpr int BAKE_WARP_BLUR = 3;           ///< D60: passes softening the warp
 		static constexpr float BAKE_WARP_KEEP = 0.6f;      ///< D60: how much of the full streamline warp is kept (streaks partly run under a rock)
 		static constexpr float BAKE_LEAST_SPACING = 0.5f;  ///< D60: streaks squeezed closer than this, or spread wider than BAKE_MOST_SPACING, ease back to vanilla's
@@ -377,7 +317,6 @@ namespace FluidFieldSim
 		static constexpr float SIM_DEAD = 0.15f;          ///< D74: water moving less than this share of the median is a dead pocket: it keeps vanilla's way
 		static constexpr float SIM_MOST_TURN = 5.7f;      ///< D74: the streaks turn at most this across per down (80 degrees)
 		static constexpr int32_t SIM_LIP_ROWS = 14;       ///< D76: rows down from a mesh's top over which its streaks start to turn
-		static constexpr bool FLAT_JOIN = false;          ///< D68's flat parts joining the site's flow: the sim spreads the water itself (D74)
 		static constexpr float BAKE_WAKE_TEXELS = 24.0f;  ///< D60: texels down the streaks a rock's wake fades over
 		/** @brief D59: a mesh's flow bake in progress: its texture grid rasterised, its texels being tested against the rock. */
 		struct BakeJob
@@ -395,10 +334,9 @@ namespace FluidFieldSim
 			int32_t solidBins[2]{};
 			std::vector<std::vector<uint32_t>> bins;
 		};
-		static constexpr float SOLID_BIN = 32.0f;      ///< D68: world units per bin of the statics' triangles
-		static constexpr float SOLID_REACH = 64.0f;    ///< D68: world units round a sheet its statics are gathered
-		static constexpr float FLAT_MOST_TURN = 1.5f;  ///< D68: on flat parts the flow may turn this much across per down (56 degrees) to join the main flow
-		static constexpr float SOLID_MARGIN = 40.0f;   ///< D68: a texel this deep inside a static's mesh is rock (vanilla's sheets dip into the cliffs they lie against)
+		static constexpr float SOLID_BIN = 32.0f;     ///< D68: world units per bin of the statics' triangles
+		static constexpr float SOLID_REACH = 64.0f;   ///< D68: world units round a sheet its statics are gathered
+		static constexpr float SOLID_MARGIN = 40.0f;  ///< D68: a texel this deep inside a static's mesh is rock (vanilla's sheets dip into the cliffs they lie against)
 		/**
 		 * @brief D73: a denser copy of a vanilla lit falls mesh, built by the engine (D62's builder) in its own space and
 		 * drawn in its place (the original is hidden): its triangles split until no edge is longer than DENSE_EDGE, the
@@ -426,9 +364,6 @@ namespace FluidFieldSim
 		/** @brief D68: whether a point lies inside a static's render mesh, deeper than BAKE_ROCK_MARGIN (upward ray parity per mesh). */
 		static bool InsideSolid(const BakeJob& a_job, const RE::NiPoint3& a_point, bool a_lying = false);
 		static constexpr float SOLID_COVER = 120.0f;  ///< D76: a lying texel with a static's underside this near above it is under that rock (a wall)
-		/** @brief D68: the solved site flow at a world point (direction from above), or false where there is none. */
-		bool SiteFlowAt(float a_x, float a_y, float& a_vx, float& a_vy) const;
-		uint32_t linkedStreams = UINT32_MAX;  ///< D68: the sites' solved flows when the bakes were last linked
 		std::vector<RE::NiPointer<RE::BSGeometry>> bakeQueue;
 		std::unique_ptr<BakeJob> bakeJob;
 		/** @brief D67: a mesh's solved flow on its texture grid, before it is linked to the meshes above it. */
@@ -445,7 +380,6 @@ namespace FluidFieldSim
 		};
 		std::vector<std::pair<RE::NiPointer<RE::BSGeometry>, std::future<std::shared_ptr<BakeField>>>> bakesPending;
 		std::unordered_map<const RE::BSGeometry*, std::shared_ptr<BakeField>> bakeFields;
-		std::unordered_map<const RE::BSGeometry*, const RE::BSGeometry*> chainRoot;
 		/**
 		 * @brief D67: the solved meshes linked into cascades: a mesh whose top edge lies on the lower part of another
 		 * is fed by it, and its streaks and run time carry on from that mesh's; then each mesh's bake is built.
@@ -522,7 +456,6 @@ namespace FluidFieldSim
 		static constexpr float MERGE_ABOVE = 3.0f;         ///< Only near-duplicates are dropped: another piece this close above or below covers a triangle
 		static constexpr float MERGE_BELOW = 3.0f;
 		static constexpr float EMITTER_SPACING = 20.0f;       ///< World units between spray emitters
-		static constexpr float EMITTER_FOAM = 0.55f;          ///< Foam at least this much throws spray
 		static constexpr float SEAM_STEP = 10.0f;             ///< World units between points tested along a piece's open edges (D34)
 		static constexpr float SEAM_REACH = 20.0f;            ///< An open edge this close to another piece is a seam
 		static constexpr float SEAM_FOAM_RADIUS = 44.0f;      ///< World units round a seam that foam (D47: wider, so the seam is covered)
@@ -551,16 +484,13 @@ namespace FluidFieldSim
 		static constexpr float POOL_SHALLOW = 160.0f;       ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
 		static constexpr int32_t POOL_LIP_REACH = 3;        ///< D53: cells round a pool's cell its falls are looked at: a fall dropping away below the level...
 		static constexpr float POOL_LIP_DROP = 48.0f;       ///< ...this far, with none coming in from above it, is the pool's lip or a curtain under it: not the pool's water
-		static constexpr float BURIED_MARGIN = 120.0f;      ///< As FallGround.hlsli BURIED (D49)
+		static constexpr float BURIED_MARGIN = 120.0f;      ///< D49: falling water this far under the captured rock is buried in it
 		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;  ///< World units round each point where the falls meet a pool that the water foams (D44, D47)
 		static constexpr float PLUNGE_FOAM_BAND = 40.0f;    ///< The falls' vertices this close to a pool's surface meet it (D47, D50)
-		static constexpr float FOG_PLUNGE_RADIUS = 180.0f;  ///< World units round each plunge that its fog spreads (D41)
 		static constexpr float PLUNGE_PUSH_OFFSET = 32.0f;  ///< D56: world units downstream of the falls' line the plunge pushes the water
 		static constexpr float PLUNGE_MARK = 0.001f;        ///< D56: radial speed marking a fall's emitter (its own foam rate) without spreading the water
 		static constexpr float PLUNGE_PULL = 0.2f;          ///< Fraction of the falling water's speed the water below is pulled along at
 		static constexpr int FLOW_DILATE_CELLS = 6;         ///< Cells the flow is carried past the water's edge for the surface
-		static constexpr float FALL_SPEED = 600.0f;         ///< World units per second of drop counted into the travel time, so steep water streaks too
-		static constexpr float MEET_FOAM_HEIGHT = 20.0f;    ///< Water within this of a site's level (where it meets a body of water) foams
 		std::vector<std::future<SurfaceMesh>> retiredMeshes;
 		/** @brief Gathers every site's surface into one list. */
 		void RefreshSurfaces();
@@ -568,7 +498,6 @@ namespace FluidFieldSim
 		std::vector<FallEmitter> surfaceEmitters;
 		const WaterSurfaces* waterSurfaces = nullptr;  ///< Set each update: the engine's water, for the pools' extent (D45)
 		std::vector<FallPlunge> surfacePlunges;
-		mutable std::unordered_map<const RE::BSGeometry*, std::array<float, 2>> textureScales;  ///< GatherSources: each lit mesh's world units per texture repeat
 		uint64_t surfaceVersion = 0;
 		std::unordered_map<uint64_t, Stream> streams;          ///< By Site::captureKey
 		std::vector<std::future<FallStream::Result>> retired;  ///< Solves of sites that went away, left to finish

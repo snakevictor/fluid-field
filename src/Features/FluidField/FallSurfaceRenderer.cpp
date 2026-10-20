@@ -1,7 +1,5 @@
 #include "FallSurfaceRenderer.h"
 
-#include "FallStream.h"
-
 #include <algorithm>
 #include <cstring>
 #include <random>
@@ -124,9 +122,9 @@ namespace FluidFieldSim
 			return;
 		const uint32_t perEmitter = std::max(a_params.sprayPerEmitter + a_params.mistPerEmitter, 1u);
 
-		const Constants data{ a_params.time, FallStream::BASE_SPEED, BRIGHTNESS, a_params.debugMode, std::min(emitterCount, MAX_PARTICLES / perEmitter), a_params.sprayPerEmitter,
+		const Constants data{ a_params.time, BRIGHTNESS, std::min(emitterCount, MAX_PARTICLES / perEmitter), a_params.sprayPerEmitter,
 			a_params.mistPerEmitter, SPRAY_LIFE, SPRAY_SPEED, a_params.spraySize, SPRAY_STRETCH, a_params.sprayOpacity, MIST_LIFE, MIST_SIZE, MIST_RISE, a_params.mistOpacity,
-			PARTICLE_GRAVITY, {} };
+			PARTICLE_GRAVITY, 0.0f };
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (FAILED(a_context->Map(constants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
 			return;

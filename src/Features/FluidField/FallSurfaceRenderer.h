@@ -12,18 +12,9 @@ namespace FluidFieldSim
 	struct FallSurfaceVertex
 	{
 		float position[3];  ///< World units, on the water surface
-		float across;       ///< Stream function: world units across the flow
-		float travel;       ///< Seconds from where the water comes in
 		float speed;        ///< 1 for free flow
-		float foam;         ///< 0 to 1
-		float edge;         ///< 0 at the water's edge to 1 inside
 		float normal[3];
-		float depth;  ///< Water above the rock, world units
-		float uv[2];  ///< Vanilla's texture coordinates, where the flow's are not used
-		float flow;   ///< 0 to 1: how much the flow's texture coordinates are used (none on steep water)
-		float pad;
 	};
-	static_assert(sizeof(FallSurfaceVertex) == 64);
 
 	/** @brief Where the falls throw spray and mist (D31), matching Emitter in FallSpray.hlsl. */
 	struct FallEmitter
@@ -75,7 +66,6 @@ namespace FluidFieldSim
 			ID3D11Buffer* shared = nullptr;
 			ID3D11Buffer* features = nullptr;
 			float time = 0.0f;
-			uint32_t debugMode = 0;
 			uint32_t sprayPerEmitter = 40;
 			uint32_t mistPerEmitter = 0;
 			float spraySize = 1.4f;
@@ -106,9 +96,7 @@ namespace FluidFieldSim
 		struct alignas(16) Constants
 		{
 			float time;
-			float baseSpeed;
 			float brightness;
-			uint32_t debugMode;
 			uint32_t emitterCount;
 			uint32_t sprayPerEmitter;
 			uint32_t mistPerEmitter;
@@ -122,9 +110,9 @@ namespace FluidFieldSim
 			float mistRise;
 			float mistOpacity;
 			float gravity;
-			float pad[3];
+			float pad;
 		};
-		static_assert(sizeof(Constants) == 80);
+		static_assert(sizeof(Constants) == 64);
 
 		winrt::com_ptr<ID3D11Buffer> emitters;
 		winrt::com_ptr<ID3D11ShaderResourceView> emittersSRV;

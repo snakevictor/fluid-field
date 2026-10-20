@@ -1049,8 +1049,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// Fluid Field (D67): a seam's edge over a falls mesh leading it, dithered out as in the depth pre-pass
 	if (FallGround::Enabled && FallGround::Dithered(input.Position.xy, input.FallFade.x))
 		discard;
-	// Fluid Field (D32): a waterfall's lit surface carried by the falls' flow; its first phase is
-	// sampled through uv, the second and vanilla's own texture after the base samples below
+	// Fluid Field (D32): a waterfall's lit surface carried by the falls' flow, sampled through uv
 	FallGround::FlowSample fallFlow = (FallGround::FlowSample)0;
 	const float2 fallUvVanilla = uv;
 	const bool fallFlowOn = FallGround::Enabled && FallGround::DebugMode < 3;
@@ -1511,20 +1510,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		if defined(FLUID_FIELD)
 	[branch] if (fallFlowOn)
 	{
-		// D46: the two phases blended keeping the texture's contrast: a plain cross-fade averages them toward
-		// the texture's mean and washes the streaks out mid-blend. Each blend is scaled back out from the
-		// mean (the smallest mip) by 1 / sqrt(wA^2 + wB^2), the variance-preserving blend
-		const float contrast = 1.0;  // D59: the phases are the same patch now, only a deviation apart: nothing to restore
-		const float4 colorMean = TexColorSampler.SampleLevel(SampColorSampler, fallFlow.uvA, 12.0);
-		rawBaseColor.rgb = colorMean.rgb + (lerp(rawBaseColor, TexColorSampler.SampleBias(SampColorSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB).rgb - colorMean.rgb) * contrast;  // D58: colour only
-		normalColor = lerp(normalColor, TexNormalSampler.SampleBias(SampNormalSampler, fallFlow.uvB, SharedData::MipBias), fallFlow.blendB);                                                       // D47: plain: boosted normals sparkled harshly
 		rawBaseColor = saturate(rawBaseColor);
 		normalColor = saturate(normalColor);
-		[flatten] if (fallFlow.strength < 1.0)
-		{
-			rawBaseColor = lerp(TexColorSampler.SampleBias(SampColorSampler, fallUvVanilla, SharedData::MipBias), rawBaseColor, fallFlow.strength);
-			normalColor = lerp(TexNormalSampler.SampleBias(SampNormalSampler, fallUvVanilla, SharedData::MipBias), normalColor, fallFlow.strength);
-		}
 		// White water (D34): aerated where it falls fast, foamed where it piles against rock, squeezes past
 		// it, meets still water or where vanilla's pieces meet; broken up by the texture's own streaks
 		// The foam map's cells are coarse (16 units): softened over its neighbourhood, so it does not show as blocks
@@ -1535,7 +1522,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// worked into it), foams where it piles against rock, squeezes past it and frays at its edges
 		const float aerated = 1.0 - exp(-fallFlow.runTime / FallGround::AERATION_SECONDS);
 		// D60: below a rock the water is broken: whiter in its wake, fading down the streaks
-		float white = FallGround::Whitening ? saturate(max(max(foamSoft, fallFlow.foam), max(aerated * FallGround::AERATION_WHITE, fallFlow.wake * 0.6))) * fallFlow.strength : 0.0;
+		float white = FallGround::Whitening ? saturate(max(max(foamSoft, fallFlow.foam), max(aerated * FallGround::AERATION_WHITE, fallFlow.wake * 0.6))) : 0.0;
 		// D36: wholly white where the falls meet the water below, thinning up the falls; D58: and back out
 		// under it, so the part under the pool's see-through surface is not a solid white band
 		[flatten] if (fallPool && FallGround::Whitening)
@@ -1572,16 +1559,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			rawBaseColor.rgb = float3(saturate(length(fallFlow.stream.xy) * 0.5), saturate(fallFlow.stream.z), fallFlow.stream.w);
 		else if (FallGround::DebugMode == 2)
 			rawBaseColor.rgb = (0.5 + 0.5 * fallFlow.velocity / max(length(fallFlow.velocity), 1e-3)) * saturate(length(fallFlow.velocity) / FallGround::FlowSpeed);
-#			if !defined(DEFERRED)
-		// D53: translucent in patches, as falling water is: thin sheets show what is behind them, thick
-		// runs and white water do not (blended draws only: Translucency is 0 on the others)
-		[branch] if (FallGround::Translucency > 0.0 && FallGround::DebugMode == 0)
-		{
-			const float thick = smoothstep(0.3, 0.7, FallGround::Thickness(fallFlow));
-			const float solid = max(thick, saturate(white * 1.5) * cover);
-			rawBaseColor.a = lerp(1.0 - FallGround::Translucency, 1.0, solid);
-		}
-#			endif
 		baseColor = float4(Color::Diffuse(rawBaseColor.rgb), rawBaseColor.a);
 	}
 #		endif
@@ -3143,12 +3120,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #		endif  // ANISOTROPIC_ALPHA
 
-#		if defined(FLUID_FIELD) && !defined(DEFERRED)
-	// D55: blended falls (D53) take the shader's own translucency; vanilla's vertex alpha on their meshes
-	// is not opacity (it drew them invisible)
-	[branch] if (FallGround::Enabled && FallGround::Translucency > 0.0 && FallGround::DebugMode == 0)
-		alpha = baseColor.w;
-#		endif
 	psout.Diffuse.w = alpha;
 #	endif
 

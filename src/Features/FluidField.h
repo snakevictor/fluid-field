@@ -3,7 +3,6 @@
 #include "FluidField/AirSources.h"
 #include "FluidField/BedRaycasts.h"
 #include "FluidField/DepthMapView.h"
-#include "FluidField/FallSheets.h"
 #include "FluidField/FallSites.h"
 #include "FluidField/GroundHeightMap.h"
 #include "FluidField/LandscapeCache.h"
@@ -94,25 +93,19 @@ struct FluidField : OverlayFeature
 		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		bool HideUnderwaterFalls = true;     ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
 		bool FallWhitening = true;           ///< The falls whiten with their foam and speed (D34)
-		bool FallTestQuad = false;           ///< D62 probe: the engine-built test quad in front of the player (not saved meaningfully)
-		bool OwnFallSheets = false;
-		float FallArcSpeed = 1.0f;       ///< D63: scales the speed the generated falls leave their brink at (their arc)           ///< D61: generate our own waterfall sheets in place of vanilla's lit falls pieces
-		float FallTranslucency = 0.0f;   ///< D53: how see-through the falls' thin water is (0: opaque, drawn as vanilla's)
-		float WaterfallStrength = 1.0f;  ///< How hard waterfalls churn, push and foam the water
-		float FallFlowPeriod = 0.5f;     ///< Seconds per cycle of the falls' flowmap (D32): shorter stretches the texture less, pulses more
-		float FallFlowMost = 2.5f;       ///< Most texture repeats the flowmap moves the texture per cycle
-		int SprayAmount = 200;           ///< Spray droplets alive per emitter at once (D31)
-		float SpraySize = 1.4f;          ///< Spray droplet width, world units
-		float SprayOpacity = 0.2f;       ///< How opaque each droplet is
-		int MistAmount = 0;              ///< Mist puffs alive per emitter at once
-		float MistOpacity = 0.06f;       ///< How dense each mist puff is
-		float WaterTint = 0.5f;          ///< How much the water type's colour tints what is seen through all water (0: vanilla)
-		bool InteractiveFog = true;      ///< Ground fog that actors and the weather's wind move (D21)
-		float FogDensity = 0.08f;        ///< Ground fog extinction per world unit inside the layer, in its banks
-		float FogBrightness = 0.15f;     ///< How brightly the ground fog is lit, as a fraction of the light around it
-		float FogThickness = 18.0f;      ///< Height of the ground fog layer's top above the ground, in its banks, world units
-		float FogStir = 1.0f;            ///< How strongly moving actors push the air and part the fog
-		float FogRefillSeconds = 10.0f;  ///< Seconds for parted fog to fill back in (about two thirds of the way)
+		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
+		int SprayAmount = 200;               ///< Spray droplets alive per emitter at once (D31)
+		float SpraySize = 1.4f;              ///< Spray droplet width, world units
+		float SprayOpacity = 0.2f;           ///< How opaque each droplet is
+		int MistAmount = 0;                  ///< Mist puffs alive per emitter at once
+		float MistOpacity = 0.06f;           ///< How dense each mist puff is
+		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
+		bool InteractiveFog = true;          ///< Ground fog that actors and the weather's wind move (D21)
+		float FogDensity = 0.08f;            ///< Ground fog extinction per world unit inside the layer, in its banks
+		float FogBrightness = 0.15f;         ///< How brightly the ground fog is lit, as a fraction of the light around it
+		float FogThickness = 18.0f;          ///< Height of the ground fog layer's top above the ground, in its banks, world units
+		float FogStir = 1.0f;                ///< How strongly moving actors push the air and part the fog
+		float FogRefillSeconds = 10.0f;      ///< Seconds for parted fog to fill back in (about two thirds of the way)
 	};
 
 	Settings settings;
@@ -280,11 +273,11 @@ public:
 	void DrawGroundFogAfterWorld();
 
 	/**
-	 * @brief Called as each effect or lighting geometry is set up for drawing: binds the waterfall
-	 * grounding and flow (D26, D29) when it is part of a grounded falling-water mesh, and turns it off
+	 * @brief Called as each effect, lighting or utility geometry is set up for drawing: binds the waterfall
+	 * flow and cuts (D29, D56) when it is part of a grounded falling-water mesh, and turns them off
 	 * again for the next draw otherwise.
 	 */
-	void SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly = false);
+	void SetupFallGeometry(RE::BSRenderPass* a_pass);
 
 	/**
 	 * @brief Called from the deferred passes: snapshots the main camera for the ground fog drawn
@@ -300,15 +293,14 @@ private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
 	FluidFieldSim::WaterfallSources waterfalls;
 	FluidFieldSim::FallSites fallSites;
-	FluidFieldSim::FallSheets fallSheets;            ///< D61: our own waterfall sheets
 	FluidFieldSim::FallSurfaceRenderer fallSurface;  ///< D30: the falls' own water surfaces
 	float fallSurfaceTime = 0.0f;                    ///< Seconds, for the surfaces' flow
 	float fallPhase = 0.0f;                          ///< D67: the falls' one scroll, integrated each frame (a repeat at most): every mesh of a cascade reads the same
 	float fallRate = 0.0f;                           ///< D67: ...and its rate, texture coordinates per second (vanilla's, averaged over the falls' materials)
 
 	/**
-	 * @brief D26 and D28: the captured ground around the player, for bending vanilla's falling water
-	 * onto the rock, and the falls' steady flow, whose streamlines vanilla's streaks follow.
+	 * @brief D28 and D36: the pools' surface around the player, where vanilla's falling water is cut, and
+	 * the falls' steady flow, whose streamlines vanilla's streaks follow. Matches FallGroundCB in FallGround.hlsli.
 	 */
 	struct FallGroundData
 	{
@@ -316,39 +308,27 @@ private:
 		float InverseCell;
 		float Size;
 		uint32_t Enabled;
-		float Offset;
-		float ContactWidth;
-		float LiftMost;
-		float FoamStrength;
 		uint32_t DebugMode;
 		float Time;
 		float FlowSpeed;
-		float FlowPeriod;
-		float FlowMost;
 		float Scroll[2];
 		float TexOffset[2];
-		uint32_t VertexBase;
-		float Translucency;
-		float TexScale[2];
-		uint32_t HideUnderwater;
-		float PoolFoamHeight;
 		float CameraOffset[3];
 		uint32_t Whitening;
-		uint32_t HideDraw;
-		float InverseScale[2];
+		uint32_t VertexBase;
+		uint32_t HideUnderwater;
+		float PoolFoamHeight;
 		uint32_t BakeOn;
+		float InverseScale[2];
+		float Pad[2];
 		float BakeRect[4];
 	};
-	static_assert(sizeof(FallGroundData) == 144);
+	static_assert(sizeof(FallGroundData) == 112);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
 	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must be FallCapture::CELL: the flows are copied texel for texel
 	static constexpr float DEFAULT_FALL_SCROLL = 0.15f;     ///< D60: vanilla's scroll before it is measured (texture coordinates per second)
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
-	static constexpr float FALL_GROUND_OFFSET = 6.0f;
-	static constexpr float FALL_GROUND_CONTACT = 6.0f;    ///< World units over which water fades where it cuts into rock
-	static constexpr float FALL_GROUND_LIFT_MOST = 8.0f;  ///< Water deeper inside rock than this is a boulder's, left hidden
-	static constexpr float FALL_FOAM_STRENGTH = 1.2f;
-	static constexpr float FALL_POOL_FOAM = 26.0f;  ///< World units above the water below over which the falls foam into it (D36)
+	static constexpr float FALL_POOL_FOAM = 26.0f;          ///< World units above the water below over which the falls foam into it (D36)
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> fallGroundSRV;
 	winrt::com_ptr<ID3D11Texture2D> fallStreamTexture;  ///< FallSites::BuildStreamMap: velocity (x, y), foam, water
@@ -365,9 +345,8 @@ private:
 		float time = 0.0f;
 		float rate = 0.0f;
 		bool known = false;
-		float phase = 0.0f;      ///< D60: the scroll so far, in the mesh's own texture coordinates, wrapped to a repeat
-		float phaseTime = 0.0f;  ///< ...as of this fallSurfaceTime
-		float scale = 1.0f;      ///< ...and vanilla's texture scale along v, averaged (its slow zoom left out)
+		float scale = 1.0f;      ///< Vanilla's texture scale along v, averaged (its slow zoom left out)
+		float scaleTime = 0.0f;  ///< ...as of this fallSurfaceTime
 	};
 	std::unordered_map<const void*, FallScroll> fallScrolls;
 	std::vector<float> fallStreamScratch;
@@ -385,12 +364,9 @@ private:
 	/** @brief Rebuilds the ground and flow maps when the sites change or the player moves far; uploads the constants. */
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
 	void ReleaseFallGround();
-	int fallDebugView = 0;       ///< Debug: 1 vanilla's fall meshes, 2 their intersections and the spray emitters (D36); not saved
-	bool showFallSites = false;  ///< Debug: draws the waterfall sites (D25) in the world; not saved
-	bool fallTestQuadRequested = false;
-	bool fallTestQuadShown = false;
+	int fallDebugView = 0;                                   ///< Debug: 1 vanilla's fall meshes, 2 their intersections and the spray emitters (D36); not saved
+	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
 	int fallMeshDebug = 0;                                   ///< D75: the falls' meshes debug overlay (FallSites::DrawMeshDebug: 1 wireframe, 2 flow, 3 both); not saved
-	int fallSheetDebug = 0;                                  ///< D64: the generated falls' debug view (FallSheets::DebugView); not saved                          ///< D62 probe: toggle the engine-built test quad next update
 	bool hideFallEffects = true;                             ///< Debug: hides vanilla's mist, skirt, splash and rapids meshes; not saved
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 

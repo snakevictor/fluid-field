@@ -53,8 +53,6 @@ namespace FluidFieldSim
 			float width = 0.0f;
 			float direction[2]{};
 			float lowest = 0.0f;  ///< Lowest point of the body, world units
-			float lip[3]{};       ///< Centre of the top edge, where the water leaves the lip
-			float lipWidth = 0.0f;
 		};
 
 		/** @brief Updates between scans of the loaded references. */

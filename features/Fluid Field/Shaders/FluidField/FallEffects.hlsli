@@ -8,9 +8,7 @@
 cbuffer FallEffectsCB : register(b7)
 {
 	float Time;         // Seconds
-	float BaseSpeed;    // World units per second of free-flowing water
 	float Brightness;   // Scales how brightly spray and fog are lit
-	uint DebugMode;     // Waterfall Shading
 	uint EmitterCount;  // Spray emitters bound
 	uint SprayPerEmitter;
 	uint MistPerEmitter;
@@ -24,7 +22,7 @@ cbuffer FallEffectsCB : register(b7)
 	float MistRise;  // World units per second
 	float MistOpacity;
 	float Gravity;  // World units per second squared
-	float3 EffectsPad;
+	float EffectsPad;
 };
 
 #endif  // FLUID_FIELD_FALL_EFFECTS_HLSLI
