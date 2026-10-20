@@ -989,7 +989,7 @@ namespace FluidFieldSim
 				if (water > -FLT_MAX && positions[v].z < bottom + WATER_CUT_BAND)
 					clip = std::min(clip, above + WATER_KEEP);
 				// D71: w marks the mesh's foot, the only place the pools may cut it (the shader's pool cut)
-				vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f });
+				vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, CLEAR_REACH, 0.0f, 0.0f, 0.0f });
 				clipTested++;
 			}
 			vertexClipBase[geometry.get()] = base;
@@ -2385,7 +2385,7 @@ namespace FluidFieldSim
 
 	void FallSites::ComputePushes()
 	{
-		uint32_t meshes = 0, pushed = 0, wobbled = 0, flippedTotal = 0, leadCut = 0;
+		uint32_t meshes = 0, pushed = 0, wobbled = 0, flippedTotal = 0, leadCut = 0, baked = 0;
 		float most = 0.0f, mostWobble = 0.0f;
 		for (const auto& lit : litMeshList) {
 			auto* geometry = lit.geometry.get();
@@ -2646,6 +2646,19 @@ namespace FluidFieldSim
 				if (base + v < vertexClips.size()) {
 					auto& value = vertexClips[base + v];
 					value[7] = value[8] = value[9] = value[10] = value[11] = 0.0f;
+					// D104: the open water or air behind its outer side (the bake's clearance on the side its outer normal
+					// points away from), for the see-through pass's depth behind
+					value[12] = CLEAR_REACH;
+					if (bake.clearFront.size() == bake.covered.size() && bake.normal.size() == bake.covered.size() && length > 1e-6f) {
+						const auto gx = std::clamp(static_cast<int32_t>(std::lround((uvs[v][0] - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(bake.width) - 0.5f)), 0,
+							static_cast<int32_t>(bake.width) - 1);
+						const auto gy = std::clamp(static_cast<int32_t>(std::lround((uvs[v][1] - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(bake.height) - 0.5f)), 0,
+							static_cast<int32_t>(bake.height) - 1);
+						const std::size_t texel = static_cast<std::size_t>(gy) * bake.width + gx;
+						const RE::NiPoint3 outer = geometry->world.rotate * normals[v];
+						value[12] = outer.Dot(bake.normal[texel]) >= 0.0f ? bake.clearBack[texel] : bake.clearFront[texel];
+						baked++;
+					}
 					if (wobbleSize[v] > 0.0f) {
 						float across = 0.0f, along = 0.0f;
 						flowAt(uvs[v][0], uvs[v][1], across, along);
@@ -2669,8 +2682,8 @@ namespace FluidFieldSim
 		}
 		ComposeShifts();
 		ComputeSides();  // D103: after the lead-in cuts, which the covering sheets' test reads
-		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units; {} wobble, at most {:.1f} units; {} normals turned outward; {} hidden lead-in vertices cut",
-			pushed, meshes, most, wobbled, mostWobble, flippedTotal, leadCut);
+		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units; {} wobble, at most {:.1f} units; {} normals turned outward; {} hidden lead-in vertices cut; {} with a baked depth behind",
+			pushed, meshes, most, wobbled, mostWobble, flippedTotal, leadCut, baked);
 	}
 
 	void FallSites::ProbeScrolls()

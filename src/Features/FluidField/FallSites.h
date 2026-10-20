@@ -127,7 +127,7 @@ namespace FluidFieldSim
 			a_base = it->second;
 			return true;
 		}
-		const std::vector<std::array<float, 12>>& GetVertexClips() const { return vertexClips; }
+		const std::vector<std::array<float, 16>>& GetVertexClips() const { return vertexClips; }
 		/** @brief D61: a grounded site's lit falls piece. */
 		struct LitMesh
 		{
@@ -289,7 +289,7 @@ namespace FluidFieldSim
 		/** @brief D57: the nearest rock along a ray from a point, world units, or a negative value for none (the falls' own collision passed through). */
 		float RockAlong(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, int* a_crossings = nullptr, float* a_last = nullptr) const;
 		std::unordered_map<const RE::BSGeometry*, uint32_t> vertexClipBase;
-		std::vector<std::array<float, 12>> vertexClips;
+		std::vector<std::array<float, 16>> vertexClips;
 		static constexpr float GAP_REACH = 40.0f;        ///< D69: an open edge this near another mesh's open edge, and not over it, closes the gap
 		static constexpr float GAP_OVERLAP = 4.0f;       ///< D69: ...each side moving past the middle by this much
 		static constexpr float WATER_KEEP = 6.0f;        ///< D68: falling water is cut this far under the water it falls into (D95: 6, was 24: see-through water showed the sheet under it)

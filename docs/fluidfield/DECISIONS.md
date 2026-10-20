@@ -2652,3 +2652,8 @@ Entry format:
     glancing angle the covering sheet may not lie in front of a hidden
     inner side, a small gap near the covering sheet's edge.
 -   References: D79, D92, D95, D97, D98, D100, D101
+-   **D104 part 2:** the per-vertex buffer grows to 16 floats (FallVertex.d);
+    d.x is the bake's clearance on the side the vertex's outer normal points
+    away from (nearest texel at its texture coordinate). The see-through pass's
+    BehindDepth takes it, or the screen-depth difference where that is less
+    (something nearer than the rock, e.g. another sheet).

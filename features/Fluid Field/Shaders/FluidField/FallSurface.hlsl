@@ -69,6 +69,7 @@ struct VSOutput
 	float3 Normal: TEXCOORD2;
 	float3 Fade: TEXCOORD3;  // FallGround::Fade: the seam fade, and the height above the water it falls into; z: D98 its foot (VertexClip's a.w)
 	float Clip: SV_ClipDistance0;
+	float Behind: TEXCOORD7;    // D104: baked open water or air behind its outer side, world units
 	float4 Outward: TEXCOORD6;  // D100: the normal turned to the mesh's outer side; D103: w 1 where a sheet lies behind its inner side
 };
 
@@ -90,6 +91,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 	// D98: as the cut (FallGround::ClipDistance, D71), the pools foam a mesh only at its foot
 	output.Fade.z = (!FallGround::Enabled || FallGround::VertexBase == FallGround::NO_VERTEX_CLIP) ? 1.0 : fmod(FallGround::VertexClip[FallGround::VertexBase + vertexID].a.w, 2.0);  // D100: +2 marks an inward winding
 	output.Clip = FallGround::ClipDistance(relative, vertexID);
+	output.Behind = FallGround::Behind(vertexID);
 	output.Outward = float4(output.Normal * FallGround::OutwardSign(vertexID), FallGround::InnerCovered(vertexID));  // D103: interpolated as a normal, no sign flipping mid-triangle
 	return output;
 }
@@ -180,8 +182,11 @@ static const float FOAM_MOST = 0.6;
  */
 float BehindDepth(VSOutput a_input, float a_sheetDepth, float a_behindDepth)
 {
+	// D104: the baked depth behind (the bake's rays off the sheet's inner side to the first rock): steady, whatever the
+	// view; the screen-depth difference only where it is less (something nearer than the rock, e.g. another sheet)
 	const float rayScale = length(a_input.WorldPosition) / max(a_sheetDepth, 1e-3);
-	return max(a_behindDepth - a_sheetDepth, 0.0) * rayScale;
+	const float screen = max(a_behindDepth - a_sheetDepth, 0.0) * rayScale;
+	return min(max(a_input.Behind, 0.0), screen);
 }
 
 /** D102: the water a ray crosses: the sheet's own thickness over the cosine, and a little of the gap behind it (capped). */
