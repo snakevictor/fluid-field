@@ -1965,3 +1965,20 @@ Entry format:
         measured scroll once, to decide whether vanilla's per-fall speeds can
         come back.
 -   References: D67, D68, D69, D73, D80
+-   First run (2026-10-20 14:03, 18 meshes):
+    -   The render-mesh and ground tests take 9-38 ms a mesh on the worker
+        thread (the collision's: about 2 s a mesh on the main thread).
+    -   The ground test is unusable: offline it turned 43k texels of today's
+        visible water (about a third) into rock. The landscape's 128-unit
+        height grid smooths every cliff, so its surface stands in front of a
+        curtain falling down one.
+    -   Render meshes alone would turn 4.2k texels of collision rock (2.4% of
+        the visible water) into water, but those changes cascade through the
+        strands' choices: 31% of the visible texels' streaks move more than a
+        texel (one mesh by a median of 3.6). The collision test stays; the
+        cache makes it a first-sight cost only.
+    -   The hidden originals still scroll: the tall falls (TallInner01) at
+        0.121 a second, the slopes (SlopeMesh01) at 0.173; the copies, 0 (the
+        shared scroll stands in at about their mean).
+    -   Swell: 3555 vertices of 18 meshes pushed out, at most 12 units. The
+        user: "IT LOOKS GREAT NOW", "not perfect but a definitive improvement".
