@@ -2906,7 +2906,10 @@ namespace FluidFieldSim
 					const RE::NiPoint3& here = field->position[i];
 					float level = -FLT_MAX;
 					const bool foot = here.z < bottom + WATER_CUT_BAND;
-					const bool water = foot && waterAt(here, level);
+					// D90: or a pool of our own (ComputePools) anywhere down the mesh: an intermediate pool in a cascade (the
+					// engine's planes stay foot-only, their bounds reach over the falls: D70)
+					float ownPool = -FLT_MAX;
+					const bool water = (foot && waterAt(here, level)) || (PoolLevelAt(here.x, here.y, ownPool) && ownPool < top - 32.0f && (level = ownPool, true));
 					// Where the water strikes rock (the bake's foam), above the water below
 					if (field->foam[i] >= OBSTACLE_FOAM && !(water && here.z < level - POOL_COVER)) {
 						float pool;
@@ -2950,6 +2953,52 @@ namespace FluidFieldSim
 				}
 			}
 		}
+		// D90: and where each mesh's crest leaves the pool it comes from (the lip): the water there is drawn on toward it and
+		// foams as it goes over
+		uint32_t lips = 0;
+		for (const auto& [geometry, field] : bakeFields) {
+			if (!field || !grounded.contains(geometry))
+				continue;
+			const auto w = static_cast<int32_t>(field->width);
+			FallStrands::Input input;
+			input.width = field->width;
+			input.height = field->height;
+			input.position = reinterpret_cast<const float*>(field->position.data());
+			input.covered = field->covered.data();
+			std::vector<int32_t> crest;
+			std::vector<uint8_t> leadIn;
+			FallStrands::FindCrests(input, crest, leadIn);
+			for (int32_t x = 0; x < w; x++) {
+				const int32_t y = crest[x];
+				if (y < 0 || y + 2 >= static_cast<int32_t>(field->height))
+					continue;
+				const std::size_t i = static_cast<std::size_t>(y) * w + x;
+				if (!field->rock.empty() && field->rock[i])
+					continue;
+				const RE::NiPoint3& p = field->position[i];
+				float level = 0.0f;
+				if (!PoolLevelAt(p.x, p.y, level) || std::abs(p.z - level) > LIP_BAND)
+					continue;
+				const RE::NiPoint3 down = field->position[i + 2 * static_cast<std::size_t>(w)] - p;
+				const float horizontal = std::sqrt(down.x * down.x + down.y * down.y);
+				if (horizontal < 1e-3f)
+					continue;
+				const auto key = (static_cast<int64_t>(std::floor(p.x / PLUNGE_WATER_SPACING)) << 32) ^ static_cast<uint32_t>(static_cast<int32_t>(std::floor(p.y / PLUNGE_WATER_SPACING))) ^
+				                 (int64_t{ 1 } << 62);
+				auto [it, added] = points.try_emplace(key);
+				if (!added)
+					continue;
+				FallPlunge& lip = it->second;
+				lip.position[0] = p.x;
+				lip.position[1] = p.y;
+				lip.position[2] = level;
+				lip.direction[0] = down.x / horizontal;
+				lip.direction[1] = down.y / horizontal;
+				lip.speed = SIM_INFLOW;
+				lip.strength = LIP_STRENGTH;
+				lips++;
+			}
+		}
 		plungePoints.clear();
 		plungePoints.reserve(points.size());
 		for (const auto& [key, plunge] : points)
@@ -2963,8 +3012,8 @@ namespace FluidFieldSim
 		}
 		emitterVersion++;
 		groundVersion++;  // The plunge map
-		logger::info("[Fluid Field] Waterfall plunges: {} texels meet the water below, {} plunge points; spray emitters: {} at plunges, {} striking rock", meets, plungePoints.size(),
-			kinds[1], kinds[2]);
+		logger::info("[Fluid Field] Waterfall plunges: {} texels meet the water below, {} plunge points ({} at lips); spray emitters: {} at plunges, {} striking rock", meets,
+			plungePoints.size(), lips, kinds[1], kinds[2]);
 	}
 
 	void FallSites::Summarise()

@@ -61,6 +61,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GroundWaterfalls,
 	HideUnderwaterFalls,
 	FallWhitening,
+	FallSpeed,
 	FallLayerMask,
 	SprayAmount,
 	SpraySize,
@@ -135,6 +136,8 @@ void FluidField::DrawSettings()
 		ImGui::SeparatorText(T(TKEY("waterfall_look"), "Water"));
 		ImGui::Checkbox(T(TKEY("fall_whitening"), "Foam on the Falls"), &settings.FallWhitening);
 		tooltip(T(TKEY("fall_whitening_tooltip"), "White water on the falls where they strike rock, below rock, into the water below and as they run and fall."));
+		ImGui::SliderFloat(T(TKEY("fall_speed"), "Falls Speed"), &settings.FallSpeed, 0.5f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("fall_speed_tooltip"), "How fast the falls' water runs, against vanilla's own speed. The whole flow speeds up alike, so the texture never stretches."));
 		ImGui::Checkbox(T(TKEY("hide_underwater_falls"), "Hide Buried Falls"), &settings.HideUnderwaterFalls);
 		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes under the water above or below them, or deep in the rock."));
 		ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Plunge Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -856,7 +859,8 @@ void FluidField::Prepass()
 				}
 				const float rate = count > 0.0f ? total / count : DEFAULT_FALL_SCROLL;
 				fallRate = fallRate > 0.0f ? fallRate + (rate - fallRate) * std::min(deltaTime, 1.0f) : rate;
-				fallPhase += fallRate * std::clamp(deltaTime, 0.0f, 0.25f);
+				// D90: at the user's speed (one rate for every fall: a cascade's meshes still run on into each other)
+				fallPhase += fallRate * std::clamp(settings.FallSpeed, 0.1f, 5.0f) * std::clamp(deltaTime, 0.0f, 0.25f);
 				fallPhase -= std::floor(fallPhase);
 			}
 			fallSites.Update(water);

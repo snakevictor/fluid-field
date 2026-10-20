@@ -2128,3 +2128,25 @@ Entry format:
     which takes the collision's terrain too) get no swell and no wobble, and
     seed the fade like the open edges: the wobble comes in over 120 units from
     rock as from the banks.
+
+## D90: Faster falls, longer waves, foam at intermediate pools and lips
+
+-   Date: 2026-10-20
+-   Decision:
+    -   **Falls Speed** setting (default 1.75x vanilla, 0.5-3): the shared scroll
+        phase runs at that rate, so the texture and the wobble speed up alike,
+        with no stretch (stretching came from speed varying across a mesh) and
+        cascades still meeting. The user: "some waters look painfully slow ...
+        waterfalls seldom look calm". FluidField.ini 0-34-0.
+    -   **The wobble's waves are longer** (2.5 crests per texture repeat, was 6;
+        noise lattices 2x2 and 3x4): shorter than the dense copy's 20-50-unit
+        vertex spacing, they folded triangles into zigzags (SS 866/867).
+    -   **A stronger wobble** (10 calm, 28 most; edge and rock fade over 50 units,
+        was 120): D88/D89's fades took most of it on narrow, rocky meshes.
+    -   **Plunges at intermediate pools:** a mesh crossing one of our own pools
+        (ComputePools) anywhere down its length plunges there; the engine's
+        planes stay foot-only (D70).
+    -   **Lips:** where each mesh's crest is within 24 units of the pool it
+        comes from, a plunge point (strength 0.35, the water drawn on toward the
+        crest) stirs and foams the shallow water there.
+-   References: D46, D70, D78, D85, D88, D89

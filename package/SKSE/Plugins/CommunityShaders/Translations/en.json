@@ -888,6 +888,8 @@
     "feature.fluid_field.fall_view_emitters": "Spray and Plunges",
     "feature.fluid_field.fall_view_off": "Off",
     "feature.fluid_field.fall_view_tooltip": "The spray emitters (blue: where the falls go into the water below, orange: where they strike rock) and the plunges' pushes on the water below (green, the way they pull it). Drawn through everything. Not saved.",
+    "feature.fluid_field.fall_speed": "Falls Speed",
+    "feature.fluid_field.fall_speed_tooltip": "How fast the falls' water runs, against vanilla's own speed. The whole flow speeds up alike, so the texture never stretches.",
     "feature.fluid_field.fall_whitening": "Foam on the Falls",
     "feature.fluid_field.fall_whitening_tooltip": "White water on the falls where they strike rock, below rock, into the water below and as they run and fall.",
     "feature.fluid_field.far_water": "Far Water",

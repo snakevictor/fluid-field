@@ -151,9 +151,9 @@ namespace FallGround
 	 */
 	float Wobble(float a_across, float a_run)
 	{
-		static const float WAVES = 6.0;  // Crests per texture repeat down the flow
-		const float wave = sin(6.2831853 * WAVES * a_run + 1.7 * WobbleNoise(float2(a_across, a_run), float2(3.0, 3.0)));
-		const float wobble = 0.65 * wave + 0.35 * WobbleNoise(float2(a_across, a_run), float2(5.0, 9.0));
+		static const float WAVES = 2.5;  // Crests per texture repeat down the flow (D90: 2.5, was 6: shorter than the mesh's vertices could draw, it folded triangles into zigzags)
+		const float wave = sin(6.2831853 * WAVES * a_run + 1.7 * WobbleNoise(float2(a_across, a_run), float2(2.0, 2.0)));
+		const float wobble = 0.65 * wave + 0.35 * WobbleNoise(float2(a_across, a_run), float2(3.0, 4.0));
 		// D88: mostly up from the mesh, a little down (dipped, the water sank into the ground at its banks)
 		return 0.5 * wobble + 0.35;
 	}

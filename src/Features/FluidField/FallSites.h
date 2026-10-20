@@ -371,15 +371,15 @@ namespace FluidFieldSim
 		 * in its own space, broad shapes only; none at its open edges (cracks between meshes)
 		 */
 		void ComputePushes();
-		static constexpr float PUSH_MOST = 20.0f;           ///< D82: world units the water swells out at most (D83: 20, was 12)
-		static constexpr float PUSH_FROM = 1.0f;            ///< D82: swell the push starts at (the sheet mostly runs 0 to 2.5)...
-		static constexpr float PUSH_FULL = 3.0f;            ///< D82: ...and is whole at (piling against rock, squeezing between rocks: 5 to 20; D83: 3, was 4)
-		static constexpr int32_t LEAD_TEST_REACH = 12;      ///< D83: hidden lead-in texels this far across from running water still get the rock test
-		static constexpr int PUSH_BLUR = 2;                 ///< D82: passes softening the swell to broad shapes (D84: 2, was 4: steeper, rounder mounds)
-		static constexpr float WOBBLE_MOST = 20.0f;         ///< D85: world units the water wobbles at most, where it is most stirred (D87: 20, was 6: unseen)...
-		static constexpr float WOBBLE_CALM = 4.0f;          ///< D85: ...and everywhere else (its breathing; D87: 4, was 1)
-		static constexpr float WOBBLE_STIRRED = 1.5f;       ///< D85: disturbance at which the wobble is whole
-		static constexpr float WOBBLE_EDGE_REACH = 120.0f;  ///< D88: world units in from the mesh's open edges (D89: and from rock) over which the wobble fades in
+		static constexpr float PUSH_MOST = 20.0f;          ///< D82: world units the water swells out at most (D83: 20, was 12)
+		static constexpr float PUSH_FROM = 1.0f;           ///< D82: swell the push starts at (the sheet mostly runs 0 to 2.5)...
+		static constexpr float PUSH_FULL = 3.0f;           ///< D82: ...and is whole at (piling against rock, squeezing between rocks: 5 to 20; D83: 3, was 4)
+		static constexpr int32_t LEAD_TEST_REACH = 12;     ///< D83: hidden lead-in texels this far across from running water still get the rock test
+		static constexpr int PUSH_BLUR = 2;                ///< D82: passes softening the swell to broad shapes (D84: 2, was 4: steeper, rounder mounds)
+		static constexpr float WOBBLE_MOST = 28.0f;        ///< D85: world units the water wobbles at most, where it is most stirred (D90: 28)...
+		static constexpr float WOBBLE_CALM = 10.0f;        ///< D85: ...and everywhere else (its breathing; D90: 10, the fades took most of it)
+		static constexpr float WOBBLE_STIRRED = 1.5f;      ///< D85: disturbance at which the wobble is whole
+		static constexpr float WOBBLE_EDGE_REACH = 50.0f;  ///< D88: world units in from the mesh's open edges (D89: and from rock) over which the wobble fades in (D90: 50, was 120)
 		/** @brief D82: the vertex shifts the shaders read (vertexClips 4-6): the seams' gap shift (D69) and the push together. */
 		void ComposeShifts();
 		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> gapShifts, vertexPushes;
@@ -439,6 +439,8 @@ namespace FluidFieldSim
 		static constexpr float PLUNGE_PUSH_OFFSET = 32.0f;  ///< D56: world units downstream of the falls' line the plunge pushes the water
 		static constexpr float PLUNGE_MARK = 0.001f;        ///< D56: radial speed marking a fall's emitter (its own foam rate) without spreading the water
 		static constexpr float PLUNGE_PULL = 0.2f;          ///< Fraction of the falling water's speed the water below is pulled along at
+		static constexpr float LIP_BAND = 24.0f;            ///< D90: a crest this near its pool's surface is a lip, where the water leaves the pool...
+		static constexpr float LIP_STRENGTH = 0.35f;        ///< D90: ...stirring it this much (a plunge's 0.25 to 1)
 		std::vector<FallEmitter> sprayEmitters;
 		std::vector<FallPlunge> plungePoints;
 		uint64_t emitterVersion = 0;

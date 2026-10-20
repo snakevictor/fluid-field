@@ -93,6 +93,7 @@ struct FluidField : OverlayFeature
 		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		bool HideUnderwaterFalls = true;     ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
 		bool FallWhitening = false;          ///< The falls whiten with their foam and speed (D34); D86: off by default until the foam layer replaces it (barely visible)
+		float FallSpeed = 1.75f;             ///< D90: the falls' flow (texture and wobble) this many times vanilla's speed
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		int SprayAmount = 200;               ///< Spray droplets alive per emitter at once (D31)
 		float SpraySize = 1.4f;              ///< Spray droplet width, world units
