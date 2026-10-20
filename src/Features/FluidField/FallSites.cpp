@@ -247,6 +247,9 @@ namespace FluidFieldSim
 					// D64: our own sheets live under vanilla's pieces' parent; the layer mask is for vanilla's
 					if (a_geometry->name == FallSheets::SHEET_NAME)
 						return RE::BSVisit::BSVisitControl::kContinue;
+					// D73: an original drawn by its dense copy stays hidden; the copy takes its layer
+					if (denseOf.contains(a_geometry))
+						return RE::BSVisit::BSVisitControl::kContinue;
 					if (!(layerMask & (1u << static_cast<uint32_t>(LayerOf(a_geometry)))))
 						wanted.emplace(a_geometry, RE::NiPointer<RE::NiAVObject>(a_geometry));
 					return RE::BSVisit::BSVisitControl::kContinue;
@@ -289,6 +292,7 @@ namespace FluidFieldSim
 	{
 		hideEffects = false;
 		RefreshHiddenEffects();
+		RemoveDense();
 		RestoreAlpha();
 		grounded.clear();
 		clipQueue.clear();
@@ -1769,6 +1773,8 @@ namespace FluidFieldSim
 		RestoreAlpha();
 		std::unordered_set<const RE::BSGeometry*> litMeshes;
 		litMeshList.clear();
+		std::vector<RE::NiPointer<RE::BSGeometry>> toDensify;
+		std::unordered_set<const RE::BSGeometry*> denseSeen;
 		for (const auto& site : sites) {
 			const FallCapture* capture = GetCapture(site);
 			if (!capture || !capture->IsComplete())
@@ -1796,6 +1802,14 @@ namespace FluidFieldSim
 					// D61: our own sheets (FallSheets) are drawn as they are
 					if (a_geometry->name == FallSheets::SHEET_NAME)
 						return RE::BSVisit::BSVisitControl::kContinue;
+					// D73: an original drawn by its dense copy is passed by (the copy is found as its sibling)
+					if (denseOf.contains(a_geometry)) {
+						denseSeen.insert(a_geometry);
+						return RE::BSVisit::BSVisitControl::kContinue;
+					}
+					if (DENSE && !denseShapes.contains(a_geometry) && a_geometry->AsTriShape() && a_geometry->AsTriShape()->GetTrishapeRuntimeData().triangleCount > 0 &&
+						netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get()))
+						toDensify.emplace_back(a_geometry);
 					// Only the water's own surfaces: the models also carry particle spray (no triangles of
 					// their own), which grounding and the streamlines would smear
 					auto* triShape = a_geometry->AsTriShape();
@@ -1876,6 +1890,31 @@ namespace FluidFieldSim
 					}
 					return RE::BSVisit::BSVisitControl::kContinue;
 				});
+			}
+		}
+		// D73: copies whose original went away are dropped; new lit meshes get theirs, and the grounded set is built
+		// again with the copies in their place
+		for (auto it = denseOf.begin(); it != denseOf.end();) {
+			if (denseSeen.contains(it->first)) {
+				++it;
+				continue;
+			}
+			if (it->second.parent && it->second.shape)
+				it->second.parent->DetachChild(it->second.shape.get());
+			denseShapes.erase(it->second.shape.get());
+			it = denseOf.erase(it);
+		}
+		if (!toDensify.empty() && !refreshing) {
+			uint32_t built = 0;
+			for (const auto& geometry : toDensify)
+				built += Densify(geometry.get()) ? 1 : 0;
+			logger::info("[Fluid Field] Waterfall dense copies: {} of {} lit meshes", built, toDensify.size());
+			if (built > 0) {
+				refreshing = true;
+				RefreshGrounded();
+				refreshing = false;
+				RefreshHiddenEffects();
+				return;
 			}
 		}
 		// Meshes no longer grounded (their cell unloaded) lose their cut, so a reused address is not mistaken for them
@@ -2044,6 +2083,196 @@ namespace FluidFieldSim
 			logger::info("[Fluid Field] Waterfall rock cut: {} vertices of {} lit meshes tested, {} inside rock", clipTested, vertexClipBase.size(), clipInside);
 			ComputeFades();
 		}
+	}
+
+	namespace
+	{
+		/** @brief D62: the engine's own mesh builder (77465, 1.7.104): a BSTriShape from separate arrays; null arrays are left out. */
+		RE::BSTriShape* BuildDenseShape(uint32_t a_triangles, const uint16_t* a_indices, uint32_t a_vertices, RE::NiPoint3* a_positions, RE::NiPoint2* a_uvs, RE::NiPoint3* a_normals,
+			RE::NiPoint3* a_tangents, RE::NiPoint3* a_bitangents, RE::NiColorA* a_colors)
+		{
+			using Build_t = RE::BSTriShape* (*)(uint32_t, const uint16_t*, uint32_t, RE::NiPoint3*, RE::NiPoint2*, void*, RE::NiPoint3*, RE::NiPoint3*, RE::NiPoint3*, void*, void*, void*, void*,
+				void*, void*);
+			static REL::Relocation<Build_t> build{ REL::ID(77465) };
+			return build(a_triangles, a_indices, a_vertices, a_positions, a_uvs, nullptr, a_normals, a_tangents, a_bitangents, a_colors, nullptr, nullptr, nullptr, nullptr, nullptr);
+		}
+	}
+
+	bool FallSites::Densify(RE::BSGeometry* a_geometry)
+	{
+		auto* triShape = a_geometry ? a_geometry->AsTriShape() : nullptr;
+		auto* renderer = a_geometry ? a_geometry->GetGeometryRuntimeData().rendererData : nullptr;
+		auto* parent = a_geometry ? a_geometry->parent : nullptr;
+		auto* source = a_geometry ? a_geometry->GetGeometryRuntimeData().shaderProperty.get() : nullptr;
+		if (!REL::Module::IsAE() || !triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || !parent || !source ||
+			renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_SKINNED))
+			return false;
+		const auto& counts = triShape->GetTrishapeRuntimeData();
+		auto& desc = renderer->vertexDesc;
+		const uint32_t stride = desc.GetSize();
+		const uint32_t positionOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+		const uint32_t uvOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
+		const bool haveNormals = desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_NORMAL);
+		const uint32_t normalOffset = haveNormals ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_NORMAL) : 0;
+		const bool haveColors = desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_COLORS);
+		const uint32_t colorOffset = haveColors ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_COLOR) : 0;
+		if (uvOffset < positionOffset + 12 || counts.vertexCount == 0 || counts.triangleCount == 0)
+			return false;
+		// The original's vertices in its own space
+		std::vector<RE::NiPoint3> positions(counts.vertexCount), normals(counts.vertexCount);
+		std::vector<RE::NiPoint2> uvs(counts.vertexCount);
+		std::vector<RE::NiColorA> colors(counts.vertexCount, RE::NiColorA(1.0f, 1.0f, 1.0f, 1.0f));
+		for (uint32_t v = 0; v < counts.vertexCount; v++) {
+			const uint8_t* data = renderer->rawVertexData + static_cast<std::size_t>(v) * stride;
+			float local[3];
+			std::memcpy(local, data + positionOffset, sizeof(local));
+			positions[v] = RE::NiPoint3(local[0], local[1], local[2]);
+			const auto* uv = reinterpret_cast<const uint16_t*>(data + uvOffset);
+			uvs[v] = RE::NiPoint2(DirectX::PackedVector::XMConvertHalfToFloat(uv[0]), DirectX::PackedVector::XMConvertHalfToFloat(uv[1]));
+			if (haveNormals) {
+				const uint8_t* n = data + normalOffset;
+				normals[v] = RE::NiPoint3(n[0] / 255.0f * 2.0f - 1.0f, n[1] / 255.0f * 2.0f - 1.0f, n[2] / 255.0f * 2.0f - 1.0f);
+			}
+			if (haveColors) {
+				const uint8_t* c = data + colorOffset;
+				colors[v] = RE::NiColorA(c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, c[3] / 255.0f);
+			}
+		}
+		std::vector<std::array<uint32_t, 3>> triangles;
+		for (uint32_t i = 0; i < counts.triangleCount; i++) {
+			const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+			if (index[0] < counts.vertexCount && index[1] < counts.vertexCount && index[2] < counts.vertexCount)
+				triangles.push_back({ index[0], index[1], index[2] });
+		}
+		const auto normalize = [](const RE::NiPoint3& a_v) {
+			const float length = a_v.Length();
+			return length > 1e-6f ? a_v / length : RE::NiPoint3(0.0f, 0.0f, 1.0f);
+		};
+		if (!haveNormals) {
+			for (const auto& tri : triangles) {
+				const RE::NiPoint3 face = (positions[tri[1]] - positions[tri[0]]).Cross(positions[tri[2]] - positions[tri[0]]);
+				for (const uint32_t k : tri)
+					normals[k] += face;
+			}
+		}
+		for (auto& n : normals)
+			n = normalize(n);
+		// The world scale, for the edge length
+		const float scale = std::max(a_geometry->world.scale, 1e-3f);
+		// Split until the edges are short (or the budget is spent): each edge's midpoint on the PN triangle's curved
+		// edge, its normal, texture coordinate and colour averaged; split vertices (seams in the texture) share the
+		// position's mean normal, so the curved edges meet
+		for (int level = 0; level < DENSE_LEVELS; level++) {
+			float longest = 0.0f;
+			for (const auto& tri : triangles) {
+				for (int k = 0; k < 3; k++)
+					longest = std::max(longest, (positions[tri[k]] - positions[tri[(k + 1) % 3]]).Length() * scale);
+			}
+			if (longest <= DENSE_EDGE || positions.size() + triangles.size() * 3 / 2 > 60000)
+				break;
+			std::map<std::tuple<int64_t, int64_t, int64_t>, RE::NiPoint3> welded;
+			const auto weldKey = [](const RE::NiPoint3& a_p) { return std::make_tuple(std::llround(a_p.x * 20.0), std::llround(a_p.y * 20.0), std::llround(a_p.z * 20.0)); };
+			for (std::size_t v = 0; v < positions.size(); v++)
+				welded[weldKey(positions[v])] += normals[v];
+			const auto smooth = [&](uint32_t a_v) { return normalize(welded[weldKey(positions[a_v])]); };
+			std::map<std::pair<uint32_t, uint32_t>, uint32_t> middles;
+			const auto middle = [&](uint32_t a_a, uint32_t a_b) {
+				const auto key = std::make_pair(std::min(a_a, a_b), std::max(a_a, a_b));
+				if (const auto it = middles.find(key); it != middles.end())
+					return it->second;
+				const RE::NiPoint3 p0 = positions[a_a], p1 = positions[a_b], n0 = smooth(a_a), n1 = smooth(a_b);
+				const RE::NiPoint3 b1 = (p0 * 2.0f + p1 - n0 * (p1 - p0).Dot(n0)) / 3.0f;
+				const RE::NiPoint3 b2 = (p1 * 2.0f + p0 - n1 * (p0 - p1).Dot(n1)) / 3.0f;
+				positions.push_back((p0 + b1 * 3.0f + b2 * 3.0f + p1) / 8.0f);
+				normals.push_back(normalize(normals[a_a] + normals[a_b]));
+				uvs.push_back(RE::NiPoint2((uvs[a_a].x + uvs[a_b].x) * 0.5f, (uvs[a_a].y + uvs[a_b].y) * 0.5f));
+				const RE::NiColorA& c0 = colors[a_a];
+				const RE::NiColorA& c1 = colors[a_b];
+				colors.push_back(RE::NiColorA((c0.red + c1.red) * 0.5f, (c0.green + c1.green) * 0.5f, (c0.blue + c1.blue) * 0.5f, (c0.alpha + c1.alpha) * 0.5f));
+				const auto index = static_cast<uint32_t>(positions.size() - 1);
+				middles[key] = index;
+				return index;
+			};
+			std::vector<std::array<uint32_t, 3>> finer;
+			finer.reserve(triangles.size() * 4);
+			for (const auto& tri : triangles) {
+				const uint32_t ab = middle(tri[0], tri[1]), bc = middle(tri[1], tri[2]), ca = middle(tri[2], tri[0]);
+				finer.push_back({ tri[0], ab, ca });
+				finer.push_back({ ab, tri[1], bc });
+				finer.push_back({ ca, bc, tri[2] });
+				finer.push_back({ ab, bc, ca });
+			}
+			triangles.swap(finer);
+		}
+		if (positions.size() > 65535)
+			return false;
+		// Tangents from the texture coordinates
+		std::vector<RE::NiPoint3> tangents(positions.size(), RE::NiPoint3(0.0f, 0.0f, 0.0f)), bitangents(positions.size(), RE::NiPoint3(0.0f, 0.0f, 0.0f));
+		for (const auto& tri : triangles) {
+			const RE::NiPoint3 e1 = positions[tri[1]] - positions[tri[0]], e2 = positions[tri[2]] - positions[tri[0]];
+			const float du1 = uvs[tri[1]].x - uvs[tri[0]].x, dv1 = uvs[tri[1]].y - uvs[tri[0]].y;
+			const float du2 = uvs[tri[2]].x - uvs[tri[0]].x, dv2 = uvs[tri[2]].y - uvs[tri[0]].y;
+			const float det = du1 * dv2 - du2 * dv1;
+			if (std::abs(det) < 1e-10f)
+				continue;
+			const RE::NiPoint3 tu = (e1 * dv2 - e2 * dv1) / det, tv = (e2 * du1 - e1 * du2) / det;
+			for (const uint32_t k : tri) {
+				tangents[k] += tu;
+				bitangents[k] += tv;
+			}
+		}
+		for (std::size_t v = 0; v < positions.size(); v++) {
+			const RE::NiPoint3& n = normals[v];
+			RE::NiPoint3 tangent = tangents[v] - n * n.Dot(tangents[v]);
+			tangent = tangent.Length() > 1e-6f ? normalize(tangent) : normalize(n.Cross(RE::NiPoint3(0.0f, 0.0f, 1.0f)).Length() > 1e-3f ? n.Cross(RE::NiPoint3(0.0f, 0.0f, 1.0f)) : RE::NiPoint3(1.0f, 0.0f, 0.0f));
+			RE::NiPoint3 bitangent = n.Cross(tangent);
+			if (bitangent.Dot(bitangents[v]) < 0.0f)
+				bitangent = -bitangent;
+			tangents[v] = tangent;
+			bitangents[v] = bitangent;
+		}
+		std::vector<uint16_t> indices;
+		indices.reserve(triangles.size() * 3);
+		for (const auto& tri : triangles) {
+			for (const uint32_t k : tri)
+				indices.push_back(static_cast<uint16_t>(k));
+		}
+		RE::BSTriShape* shape = BuildDenseShape(static_cast<uint32_t>(triangles.size()), indices.data(), static_cast<uint32_t>(positions.size()), positions.data(), uvs.data(), normals.data(),
+			tangents.data(), bitangents.data(), haveColors ? colors.data() : nullptr);
+		if (!shape)
+			return false;
+		RE::NiPointer<RE::BSTriShape> held(shape);
+		shape->name = a_geometry->name;
+		shape->local = a_geometry->local;
+		RE::NiCloningProcess cloning;
+		auto* copy = static_cast<RE::BSShaderProperty*>(source->CreateClone(cloning));
+		if (!copy)
+			return false;
+		shape->GetGeometryRuntimeData().shaderProperty.reset(copy);
+		shape->GetGeometryRuntimeData().alphaProperty = a_geometry->GetGeometryRuntimeData().alphaProperty;
+		copy->SetupGeometry(shape);
+		copy->FinishSetupGeometry(shape);
+		parent->AttachChild(shape, true);
+		RE::NiUpdateData update;
+		shape->Update(update);
+		a_geometry->SetAppCulled(true);
+		denseOf[a_geometry] = { held, RE::NiPointer<RE::BSGeometry>(a_geometry), RE::NiPointer<RE::NiNode>(parent) };
+		denseShapes.insert(shape);
+		logger::info("[Fluid Field]   dense copy of '{}': {} to {} vertices, {} to {} triangles", a_geometry->name.c_str(), counts.vertexCount, positions.size(), counts.triangleCount,
+			triangles.size());
+		return true;
+	}
+
+	void FallSites::RemoveDense()
+	{
+		for (auto& [original, copy] : denseOf) {
+			if (copy.parent && copy.shape)
+				copy.parent->DetachChild(copy.shape.get());
+			if (copy.original)
+				copy.original->SetAppCulled(false);
+		}
+		denseOf.clear();
+		denseShapes.clear();
 	}
 
 	void FallSites::ComputeFades()
@@ -2870,6 +3099,46 @@ namespace FluidFieldSim
 			logger::info("[Fluid Field]   link: a mesh with its top at {:.0f} is fed by none: the nearest higher mesh is {:.0f} units from its top edge, {:.0f}% down it", node.top,
 				best < FLT_MAX ? std::sqrt(best) : -1.0f, row * 100.0f);
 		}
+		// D72: every mesh's texels in one grid of MEET_CELL world units (every other texel), with the way its water
+		// goes in the world (down +v, turned by its solve), so meshes that meet can pull each other's flow
+		struct Probe
+		{
+			uint32_t node;
+			RE::NiPoint3 position, direction;
+		};
+		std::unordered_map<uint64_t, std::vector<Probe>> probes;
+		const auto meetKey = [](float a_x, float a_y, float a_z) {
+			const auto cx = static_cast<int64_t>(std::floor(a_x / MEET_CELL)) & 0x1FFFFF, cy = static_cast<int64_t>(std::floor(a_y / MEET_CELL)) & 0x1FFFFF,
+					   cz = static_cast<int64_t>(std::floor(a_z / MEET_CELL)) & 0x1FFFFF;
+			return static_cast<uint64_t>(cx | (cy << 21) | (cz << 42));
+		};
+		const auto worldFlow = [](const BakeField& a_field, const std::vector<float>& a_turn, int32_t a_x, int32_t a_y, RE::NiPoint3& a_tu, RE::NiPoint3& a_tv) {
+			const auto w = static_cast<int32_t>(a_field.width), h = static_cast<int32_t>(a_field.height);
+			const auto at = [&](int32_t a_px, int32_t a_py) { return static_cast<std::size_t>(std::clamp(a_py, 0, h - 1)) * w + std::clamp(a_px, 0, w - 1); };
+			a_tu = a_field.position[at(a_x + 1, a_y)] - a_field.position[at(a_x - 1, a_y)];
+			a_tv = a_field.position[at(a_x, a_y + 1)] - a_field.position[at(a_x, a_y - 1)];
+			const RE::NiPoint3 direction = a_tv + a_tu * a_turn[at(a_x, a_y)];
+			const float length = direction.Length();
+			return length > 1e-4f ? direction / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
+		};
+		for (uint32_t n = 0; n < nodes.size(); n++) {
+			const BakeField& field = *nodes[n].field;
+			const auto w = static_cast<int32_t>(field.width), h = static_cast<int32_t>(field.height);
+			for (int32_t y = 1; y + 1 < h; y += 2) {
+				for (int32_t x = 1; x + 1 < w; x += 2) {
+					const std::size_t i = static_cast<std::size_t>(y) * w + x;
+					if (!field.covered[i])
+						continue;
+					RE::NiPoint3 tu, tv;
+					const RE::NiPoint3 direction = worldFlow(field, field.turn, x, y, tu, tv);
+					if (direction.Length() < 0.5f)
+						continue;
+					const auto& p = field.position[i];
+					probes[meetKey(p.x, p.y, p.z)].push_back({ n, p, direction });
+				}
+			}
+		}
+		uint32_t met = 0;
 		// Each mesh swept down from its top edge once its feeder is (meshes in a loop, if any, start as tops)
 		uint32_t linked = 0, flatTexels = 0;
 		const auto sweep = [&](Node& a_node) {
@@ -2946,6 +3215,60 @@ namespace FluidFieldSim
 					}
 				}
 				BlurGrid(turn, w, h, 6);
+			}
+			// D72: where another mesh's water runs within MEET_REACH, this mesh's flow is drawn to the way that water
+			// goes (in this mesh's texture axes; not where it runs back against this one): flows that meet merge
+			{
+				const auto self = static_cast<uint32_t>(&a_node - nodes.data());
+				std::vector<float> pulled = turn;
+				for (int32_t y = 1; y + 1 < h; y++) {
+					for (int32_t x = 1; x + 1 < w; x++) {
+						const std::size_t i = static_cast<std::size_t>(y) * w + x;
+						if (!field.covered[i])
+							continue;
+						const RE::NiPoint3& p = field.position[i];
+						RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
+						float weight = 0.0f;
+						for (int dz = -1; dz <= 1; dz++) {
+							for (int dy = -1; dy <= 1; dy++) {
+								for (int dx = -1; dx <= 1; dx++) {
+									const auto found = probes.find(meetKey(p.x + dx * MEET_CELL, p.y + dy * MEET_CELL, p.z + dz * MEET_CELL));
+									if (found == probes.end())
+										continue;
+									for (const auto& probe : found->second) {
+										if (probe.node == self)
+											continue;
+										const float distance = (probe.position - p).Length();
+										if (distance >= MEET_REACH)
+											continue;
+										const float k = 1.0f - distance / MEET_REACH;
+										sum += probe.direction * k;
+										weight = std::max(weight, k);
+									}
+								}
+							}
+						}
+						if (weight <= 0.0f || sum.Length() < 1e-3f)
+							continue;
+						RE::NiPoint3 tu, tv;
+						worldFlow(field, turn, x, y, tu, tv);
+						const RE::NiPoint3 direction = sum / sum.Length();
+						// The direction in this sheet's axes: solve [tu.tu tu.tv; tu.tv tv.tv] [a b] = [d.tu d.tv]
+						const float uu = tu.Dot(tu), uv = tu.Dot(tv), vv = tv.Dot(tv);
+						const float det = uu * vv - uv * uv;
+						if (std::abs(det) < 1e-6f)
+							continue;
+						const float du = direction.Dot(tu), dv = direction.Dot(tv);
+						const float a = (du * vv - dv * uv) / det, b = (dv * uu - du * uv) / det;
+						if (b < 0.2f * std::abs(a) || b <= 1e-4f)
+							continue;
+						const float wanted = std::clamp(a / b, -BAKE_NEAR_TURN, BAKE_NEAR_TURN);
+						pulled[i] += (wanted - pulled[i]) * weight * MEET_PULL;
+						met++;
+					}
+				}
+				BlurGrid(pulled, w, h, 3);
+				turn.swap(pulled);
 			}
 			// Down the sheet a row at a time (semi-Lagrangian, as D60's warp): each texel's streak and run time are
 			// those of the texel above it on its way down, its run time grown by the row's length over its speed
@@ -3042,8 +3365,8 @@ namespace FluidFieldSim
 		}
 		flowBakeVersion++;
 		linkedStreams = CountReadyStreams();
-		logger::info("[Fluid Field] Waterfall flow linked: {} meshes, {} fed by the mesh above them; {} flat texels join the main flow ({} sites' flows solved)", nodes.size(), linked,
-			flatTexels, linkedStreams);
+		logger::info("[Fluid Field] Waterfall flow linked: {} meshes, {} fed by the mesh above them; {} flat texels join the main flow; {} texels drawn by a mesh beside them ({} sites' flows solved)",
+			nodes.size(), linked, flatTexels, met, linkedStreams);
 	}
 
 	void FallSites::BakeStep()

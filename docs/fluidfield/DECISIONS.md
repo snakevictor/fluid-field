@@ -1658,3 +1658,36 @@ Entry format:
         from 4/s (was 2), impact from 90 units/s (30), along a wall from 320
         (200), breaking from Froude 2.5 (1.5).
 -   References: D36, D47, D59, D60, D70
+
+## D72: Falls meshes' flows draw each other where they meet
+
+-   Date: 2026-10-19
+-   Phase / spike: @Victor: "make waterfall meshes flows interact with each other"
+-   Decision: When the bakes are linked, every mesh's texels go into one
+    world grid (32 units) with the way their water goes (down +v, turned by
+    its solve). Where another mesh's water runs within 40 units, a texel's
+    flow is drawn toward it (put in this mesh's texture axes, 70% at its
+    nearest, softened), except where that water runs back against this
+    one: side-by-side flows bend together and merge. First run: 67826
+    texels drawn by a mesh beside them, over 18 meshes.
+-   References: D67, D68
+
+## D73: Dense copies of vanilla's lit falls meshes
+
+-   Date: 2026-10-19
+-   Phase / spike: @Victor's shading ideas (2a: subdivide the low-poly meshes)
+-   Decision: Each lit falls mesh is replaced by a denser copy built by the
+    engine's mesh builder (D62) in its own space, under the same parent,
+    with a copy of its material and its alpha property; the original is
+    hidden. Triangles are split until no edge exceeds 40 world units (three
+    halvings at most): the new points on the PN-triangle curve through the
+    vertices' normals (split texture-seam vertices share the position's mean
+    normal, so the curved edges meet), texture coordinates and vertex
+    colours (`NiColorA`) averaged, tangents from the texture coordinates.
+    Cuts, seams and bakes then work on the copies. First run:
+    FXWaterfallBodyTallInner01 276 to 15921 vertices, SlopeMesh01 180 to
+    10001; the silhouettes round out and the depth passes still agree.
+    The clones' materials do not animate, so the falls scroll at the
+    default rate (the shared scroll, D67).
+-   Next: the foam layer (idea 1), then light displacement (2b).
+-   References: D62, D67

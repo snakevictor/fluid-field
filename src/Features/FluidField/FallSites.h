@@ -344,6 +344,9 @@ namespace FluidFieldSim
 		static constexpr float BAKE_LEAST_DOWN = 0.3f;     ///< The flow keeps at least this much of vanilla's forward...
 		static constexpr float BAKE_MOST_TURN = 0.5f;      ///< ...and turns aside at most this across per down (D70: 27 degrees: vanilla's way down drives harder)
 		static constexpr float BAKE_NEAR_TURN = 1.0f;      ///< D71: ...but right beside rock up to 45 degrees
+		static constexpr float MEET_CELL = 32.0f;          ///< D72: world units per cell of the grid meshes find each other's water in
+		static constexpr float MEET_REACH = 40.0f;         ///< D72: another mesh's water this near draws this mesh's flow...
+		static constexpr float MEET_PULL = 0.7f;           ///< D72: ...this much at its nearest
 		static constexpr float BAKE_MOST_DRIFT = 8.0f;     ///< D71: texels a streak may drift across from where it came in
 		static constexpr float BAKE_MOST_DOWN = 1.6f;      ///< D60: and runs at most this much of it
 		static constexpr std::size_t BAKE_LEAST_ROCK = 6;  ///< D60: rock islands of this many texels or fewer are specks, taken as water
@@ -375,6 +378,28 @@ namespace FluidFieldSim
 		static constexpr float SOLID_REACH = 64.0f;    ///< D68: world units round a sheet its statics are gathered
 		static constexpr float FLAT_MOST_TURN = 1.5f;  ///< D68: on flat parts the flow may turn this much across per down (56 degrees) to join the main flow
 		static constexpr float SOLID_MARGIN = 40.0f;   ///< D68: a texel this deep inside a static's mesh is rock (vanilla's sheets dip into the cliffs they lie against)
+		/**
+		 * @brief D73: a denser copy of a vanilla lit falls mesh, built by the engine (D62's builder) in its own space and
+		 * drawn in its place (the original is hidden): its triangles split until no edge is longer than DENSE_EDGE, the
+		 * new points on the smooth surface through its vertices' normals (PN triangles), with its texture coordinates,
+		 * vertex colours and a copy of its material; everything else (cuts, seams, bakes) works on the copy.
+		 */
+		struct DenseCopy
+		{
+			RE::NiPointer<RE::BSTriShape> shape;
+			RE::NiPointer<RE::BSGeometry> original;
+			RE::NiPointer<RE::NiNode> parent;
+		};
+		std::unordered_map<const RE::BSGeometry*, DenseCopy> denseOf;  ///< By original
+		std::unordered_set<const RE::BSGeometry*> denseShapes;
+		bool refreshing = false;
+		static constexpr bool DENSE = true;
+		static constexpr float DENSE_EDGE = 40.0f;  ///< D73: world units the dense copy's edges are at most (when the vertex budget allows)
+		static constexpr int DENSE_LEVELS = 3;      ///< D73: halvings at most
+		/** @brief D73: builds and attaches a dense copy of a lit mesh; false where it cannot (no CPU data, or no engine builder). */
+		bool Densify(RE::BSGeometry* a_geometry);
+		/** @brief D73: removes every dense copy and shows the originals again. */
+		void RemoveDense();
 		/** @brief D68: gathers the statics' triangles round a bake job's sheet (main thread). */
 		void GatherSolids(BakeJob& a_job) const;
 		/** @brief D68: whether a point lies inside a static's render mesh, deeper than BAKE_ROCK_MARGIN (upward ray parity per mesh). */
