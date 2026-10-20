@@ -2461,3 +2461,20 @@ Entry format:
     positions are computed differently (as the cut always was), so a few pixels
     at the band may disagree between the depth pre-pass and the lit pass.
 -   References: D56, D70, D82, D84, D88, D89, D93, D94, D97, D98
+
+## D104: Clearances behind the sheet, baked (user's per-vertex depth idea, part 1)
+
+-   Date: 2026-10-20
+-   Context: the user: "use every X vertex to cast a ray downwards on its
+    perpendicular normal to estimate the area depth": a view-independent depth
+    behind the sheet for the see-through look (instead of the screen-depth
+    difference), and later foam and spray.
+-   Decision (part 1, the bake): during the bake's rock test, two more Havok
+    rays per tested texel, from 2 units off the surface along and against its
+    normal, record the first rock within 600 units (0 inside rock, 600 for none
+    or untested). Stored in the BakeField and the disk cache
+    (BAKE_CACHE_VERSION 4). About 50% more rays on a first bake; cached after.
+-   Part 2 (after the shading and culling branches merge): pick the inner side
+    per vertex (D92/D100 outward), pass the depth behind per vertex to the
+    shaders, and let the see-through pass take it as its "behind" depth.
+-   References: D57, D82, D92, D93, D100

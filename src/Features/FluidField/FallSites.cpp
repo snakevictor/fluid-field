@@ -1912,6 +1912,9 @@ namespace FluidFieldSim
 		field->along = std::move(strands.along);
 		field->normal = a_job.normal;
 		field->rock = rock;
+		// D104: the clearances (untested texels, the hidden lead-in, count as open)
+		field->clearFront = a_job.clearFront.size() == count ? a_job.clearFront : std::vector<float>(count, CLEAR_REACH);
+		field->clearBack = a_job.clearBack.size() == count ? a_job.clearBack : std::vector<float>(count, CLEAR_REACH);
 		// D82: the swell, softened to broad shapes (the vertices are 20 to 50 units apart)
 		field->swell = std::move(strands.swell);
 		blur(field->swell, PUSH_BLUR);
@@ -2023,6 +2026,8 @@ namespace FluidFieldSim
 			put(a_field.rock);
 			put(a_field.swell);
 			put(a_field.disturbance);
+			put(a_field.clearFront);
+			put(a_field.clearBack);
 			if (!file)
 				return false;
 		}
@@ -2069,6 +2074,8 @@ namespace FluidFieldSim
 		get(field->rock);
 		get(field->swell);
 		get(field->disturbance);
+		get(field->clearFront);
+		get(field->clearBack);
 		return ok ? field : nullptr;
 	}
 
@@ -2802,6 +2809,21 @@ namespace FluidFieldSim
 							break;
 					}
 					bakeJob->rock[i] = inside ? 1 : 0;
+					// D104: how far the rock lies off each side of the sheet (the water's depth behind it, D104's per-vertex
+					// depth): from just off the surface outward, the first rock
+					if (bakeJob->clearFront.size() != bakeJob->covered.size()) {
+						bakeJob->clearFront.assign(bakeJob->covered.size(), CLEAR_REACH);
+						bakeJob->clearBack.assign(bakeJob->covered.size(), CLEAR_REACH);
+					}
+					if (!inside) {
+						for (const float side : { 1.0f, -1.0f }) {
+							const RE::NiPoint3 out = bakeJob->normal[i] * side;
+							const float hit = RockAlong(world, bakeJob->position[i] + out * 2.0f, out, CLEAR_REACH);
+							(side > 0.0f ? bakeJob->clearFront : bakeJob->clearBack)[i] = hit >= 0.0f ? hit + 2.0f : CLEAR_REACH;
+						}
+					} else {
+						bakeJob->clearFront[i] = bakeJob->clearBack[i] = 0.0f;
+					}
 					bakedTexels++;
 					bakedRockTexels += bakeJob->rock[i];
 				}

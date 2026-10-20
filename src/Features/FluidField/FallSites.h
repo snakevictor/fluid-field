@@ -333,8 +333,9 @@ namespace FluidFieldSim
 			float uvMin[2]{}, uvSize[2]{};
 			std::vector<RE::NiPoint3> position, normal;
 			std::vector<uint8_t> covered, rock;
-			std::vector<uint8_t> untested;  ///< D83: hidden lead-in texels no strand comes near: the rock test passes them by
-			std::filesystem::path cache;    ///< D82: where its finished bake is kept (empty: not kept)
+			std::vector<uint8_t> untested;             ///< D83: hidden lead-in texels no strand comes near: the rock test passes them by
+			std::vector<float> clearFront, clearBack;  ///< D104: world units from each texel to the first rock along its normal (front) and against it (back), up to CLEAR_REACH
+			std::filesystem::path cache;               ///< D82: where its finished bake is kept (empty: not kept)
 			std::size_t next = 0;
 			bool worldMissing = false;  ///< Diagnostics: the wait for its cell's collision world logged
 			// D68: the render meshes of the statics round the sheet (boulders, the walls beside it), binned from above
@@ -386,11 +387,13 @@ namespace FluidFieldSim
 			std::vector<float> turn, speed, wake, foam;  ///< Across per down (texels), speed (vanilla's 1), aeration (D80) and foam
 			std::vector<float> seed, along;              ///< D80: the lip column each texel's strand came over (texels), and its run from the mesh's top (texture v)
 			std::vector<RE::NiPoint3> normal;
-			std::vector<uint8_t> rock;       ///< D75: texels inside rock (the debug arrows skip them)
-			std::vector<float> swell;        ///< D82: how much the water piles up there, softened (the vertex push)
-			std::vector<float> disturbance;  ///< D85: how stirred the water is there (the wobble's size), softened
+			std::vector<uint8_t> rock;                 ///< D75: texels inside rock (the debug arrows skip them)
+			std::vector<float> swell;                  ///< D82: how much the water piles up there, softened (the vertex push)
+			std::vector<float> disturbance;            ///< D85: how stirred the water is there (the wobble's size), softened
+			std::vector<float> clearFront, clearBack;  ///< D104: as BakeJob's: the open water or air on each side of the sheet (its depth behind, once its outer side is known)
 		};
-		static constexpr uint32_t BAKE_CACHE_VERSION = 3;  ///< D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies)
+		static constexpr uint32_t BAKE_CACHE_VERSION = 4;  ///< D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances)
+		static constexpr float CLEAR_REACH = 600.0f;       ///< D104: world units the clearance rays look for rock
 		/** @brief D82: where a bake job's finished bake is kept on disk: by its reference, model part, placement, the rock and ground round it, and the version. */
 		static std::filesystem::path BakeCachePath(const BakeJob& a_job);
 		static bool SaveBake(const std::filesystem::path& a_path, const BakeField& a_field);
