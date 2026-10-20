@@ -343,6 +343,8 @@ namespace FluidFieldSim
 		static constexpr double BAKE_BUDGET_MS = 3.0;
 		static constexpr float BAKE_LEAST_DOWN = 0.3f;     ///< The flow keeps at least this much of vanilla's forward...
 		static constexpr float BAKE_MOST_TURN = 0.5f;      ///< ...and turns aside at most this across per down (D70: 27 degrees: vanilla's way down drives harder)
+		static constexpr float BAKE_NEAR_TURN = 1.0f;      ///< D71: ...but right beside rock up to 45 degrees
+		static constexpr float BAKE_MOST_DRIFT = 8.0f;     ///< D71: texels a streak may drift across from where it came in
 		static constexpr float BAKE_MOST_DOWN = 1.6f;      ///< D60: and runs at most this much of it
 		static constexpr std::size_t BAKE_LEAST_ROCK = 6;  ///< D60: rock islands of this many texels or fewer are specks, taken as water
 		static constexpr float BAKE_BEND_NEAR = 3.0f;      ///< D60: the streaks bend in full this many texels from rock...

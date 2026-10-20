@@ -2031,7 +2031,8 @@ namespace FluidFieldSim
 					// the fall (a pool partway down, a whole cell) cut holes in the middle of the sheet
 					if (water > -FLT_MAX && positions[v].z < bottom + WATER_CUT_BAND)
 						clip = std::min(clip, above + WATER_KEEP);
-					vertexClips.push_back({ clip, 1.0f, above, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f });
+					// D71: w marks the mesh's foot, the only place the pools may cut it (the shader's pool cut)
+					vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f });
 					clipTested++;
 					clipInside += inside ? 1 : 0;
 				}
@@ -2557,6 +2558,26 @@ namespace FluidFieldSim
 				input.bed[index(x, y)] = input.surface[index(x, y)] - 100.0f;
 			}
 		}
+		// D71: water leaves only near the mesh's foot: a column ending higher up ends against rock (vanilla cut its
+		// sheet round a boulder or the bank), where it drained away and never turned; there it is a wall, and the
+		// solve turns the water round it toward the foot
+		float footZ = FLT_MAX, topZ = -FLT_MAX;
+		for (std::size_t i = 0; i < count; i++) {
+			if (a_job.covered[i]) {
+				footZ = std::min(footZ, a_job.position[i].z);
+				topZ = std::max(topZ, a_job.position[i].z);
+			}
+		}
+		const float footBand = std::max(64.0f, (topZ - footZ) * 0.2f);
+		bool anyOut = false;
+		for (int32_t x = 0; x < iw && !anyOut; x++) {
+			for (int32_t y = ih - 1; y >= 0; y--) {
+				if (a_job.covered[index(x, y)]) {
+					anyOut = a_job.position[index(x, y)].z < footZ + footBand;
+					break;
+				}
+			}
+		}
 		for (int32_t x = 0; x < iw; x++) {
 			int32_t first = -1, last = -1;
 			for (int32_t y = 0; y < ih; y++) {
@@ -2565,11 +2586,12 @@ namespace FluidFieldSim
 				first = first < 0 ? y : first;
 				last = y;
 			}
+			const bool outHere = !anyOut || (last >= 0 && a_job.position[index(x, last)].z < footZ + footBand);
 			for (int32_t y = std::max(first, 0); first >= 0 && y <= last; y++) {
 				if (!water(x, y))
 					continue;
-				input.kind[index(x, y)] = y == first ? FallStream::Inflow : y == last ? FallStream::Outflow :
-				                                                                        FallStream::Water;
+				input.kind[index(x, y)] = y == first ? FallStream::Inflow : (y == last && outHere) ? FallStream::Outflow :
+				                                                                                     FallStream::Water;
 			}
 		}
 		const FallStream::Result solved = FallStream::Solve(input);
@@ -2585,7 +2607,7 @@ namespace FluidFieldSim
 			if (!have || !water(x, y) || !solved.water[i])
 				continue;
 			const float down = std::clamp(solved.vy[i], BAKE_LEAST_DOWN, BAKE_MOST_DOWN);
-			turn[i] = std::clamp(solved.vx[i] / down, -BAKE_MOST_TURN, BAKE_MOST_TURN);
+			turn[i] = std::clamp(solved.vx[i] / down, -BAKE_NEAR_TURN, BAKE_NEAR_TURN);
 			// D67: and how fast it runs, against vanilla's (1)
 			speed[i] = std::clamp(std::sqrt(solved.vx[i] * solved.vx[i] + solved.vy[i] * solved.vy[i]), BAKE_LEAST_SPEED, BAKE_MOST_DOWN);
 			foam[i] = solved.rockFoam[i];
@@ -2655,7 +2677,9 @@ namespace FluidFieldSim
 			for (std::size_t i = 0; i < count; i++) {
 				const float closeness = std::clamp((BAKE_BEND_FAR - static_cast<float>(steps[i])) / (BAKE_BEND_FAR - BAKE_BEND_NEAR), 0.0f, 1.0f);
 				const float bend = closeness * closeness * (3.0f - 2.0f * closeness);
-				turn[i] *= bend;
+				// D71: up to 45 degrees right beside rock, easing to BAKE_MOST_TURN away from it
+				const float most = BAKE_MOST_TURN + (BAKE_NEAR_TURN - BAKE_MOST_TURN) * bend;
+				turn[i] = std::clamp(turn[i], -most, most) * bend;
 				speed[i] = 1.0f + (speed[i] - 1.0f) * bend;
 			}
 		}
@@ -2948,8 +2972,11 @@ namespace FluidFieldSim
 			// The streaks' bend (D60): partly collapsed (they run partly under the rock), softened, and eased back
 			// where they squeeze or spread too far
 			std::vector<float> offset(count);
+			// D71: and never drifting more than BAKE_MOST_DRIFT texels across (long sinuous drifts on flat runs
+			// looked like jelly)
+			const float texelAcross = field.uvSize[0] / static_cast<float>(w);
 			for (std::size_t i = 0; i < count; i++)
-				offset[i] = (a_node.across[i] - across0[i % w]) * BAKE_WARP_KEEP;
+				offset[i] = std::clamp((a_node.across[i] - across0[i % w]) * BAKE_WARP_KEEP, -BAKE_MOST_DRIFT * texelAcross, BAKE_MOST_DRIFT * texelAcross);
 			BlurGrid(offset, w, h, BAKE_WARP_BLUR);
 			std::vector<float> trust(count, 1.0f);
 			for (int32_t y = 0; y < h; y++) {

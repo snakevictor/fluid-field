@@ -148,15 +148,17 @@ float SampleFoam(float2 position)
 		}
 	}
 	// Fast water rushing along a rock or bank churns white as well, but only well past a calm river's speed
-	float wallRush = saturate(walls) * saturate((speed - 200.0) / 200.0);
+	float wallRush = saturate(walls) * saturate((speed - 320.0) / 200.0);
 
 	// Breaking: fast, shallow water; Froude number = speed / sqrt(g * depth)
 	float froude = speed / sqrt(Gravity * max(depth, 1.0));
 
 	// Thresholds sit above what an ordinary river does on this grid: at 150 units/s over 20 units of
 	// depth the Froude number is already about 1.3, and eddies shear at 1 to 2 per second
-	float made = SHEAR_RATE * saturate((shear - 2.0) / 4.0) + IMPACT_RATE * saturate((impact - 30.0) / 120.0) +
-	             WALL_RATE * wallRush + BREAKING_RATE * saturate((froude - 1.5) / 1.5);
+	// D71: @Victor: the river foamed too readily; the thresholds rose (not the rates): shear from 4/s, impact
+	// from 90 units/s, rushing along a wall from 320, breaking from Froude 2.5
+	float made = SHEAR_RATE * saturate((shear - 4.0) / 4.0) + IMPACT_RATE * saturate((impact - 90.0) / 120.0) +
+	             WALL_RATE * wallRush + BREAKING_RATE * saturate((froude - 2.5) / 1.5);
 
 	// Waterfalls plunging in (D44): white along their whole width, carried off downstream by the flow
 	const float plunge = Plunge((float2(GridMin + logical) + 0.5) * CellSize);

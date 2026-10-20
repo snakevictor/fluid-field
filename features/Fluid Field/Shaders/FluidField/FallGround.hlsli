@@ -160,8 +160,11 @@ namespace FallGround
 		const float3 position = a_position + CameraOffset;
 		// D58: held within CLIP_MOST, so a far value never drags the cut across a triangle onto its other corner
 		float distance = CLIP_MOST;
+		// D71: the pools cut a mesh only at its foot (VertexClip's a.w): near a lip the captured pool reaches over
+		// the drop, and cut a hole in the curtain just under it where a rock stands behind
 		float pool;
-		if (Pool(position.xy, pool))
+		const bool foot = VertexBase == NO_VERTEX_CLIP || VertexClip[VertexBase + a_vertex].a.w > 0.5;
+		if (foot && Pool(position.xy, pool))
 			distance = min(distance, position.z - (pool - POOL_CUT));
 		// D56: the rock per vertex, tested against the game's collision (FallSites::ClipStep): the top-down
 		// ground map called everything under an overhang buried, and holed the falls there

@@ -1632,3 +1632,29 @@ Entry format:
         foot (an arch's crest swirled). First run: 757 flat texels turn
         (was 68764).
 -   References: D56, D60, D68
+
+## D71: Pools cut only a mesh's foot; water against rock turns; turns strong only beside rock; calmer river foam
+
+-   Date: 2026-10-19
+-   Phase / spike: @Victor's review screenshots 812-815
+-   Decision:
+    -   The hole that stayed (814, 811, near RockL04Wet 0003AB64) was the
+        pools' cut in the shader (D36/D47): near a lip the captured pool
+        reaches over the drop, so the curtain just under it was cut where it
+        dipped under the upper pool's level, and the rock behind showed.
+        Checked against vanilla (our grounding off): no hole. The pools cut
+        a mesh only within 160 units of its foot now (a per-vertex flag).
+    -   Water running into terrain or big rocks did not curve (813): vanilla
+        cuts its sheet round them, and every column's last texel was an
+        outflow, so the water drained into the rock. Water leaves only near
+        the mesh's foot (its lowest 20%, 64 units at least); columns ending
+        higher are walls, and the solve turns the water round them.
+    -   Boulders mid-fall bent the flow too little after D70 (812): turns
+        reach 45 degrees right beside rock, easing to 27 away from it.
+    -   Jelly (815): streaks drift at most 8 texels across from where they
+        came in.
+    -   Shallow-water foam made where the flow shears, strikes or breaks
+        needs more to start (@Victor: not less foam, a higher bar): shear
+        from 4/s (was 2), impact from 90 units/s (30), along a wall from 320
+        (200), breaking from Froude 2.5 (1.5).
+-   References: D36, D47, D59, D60, D70
