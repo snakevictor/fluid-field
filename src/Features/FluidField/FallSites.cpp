@@ -3188,6 +3188,7 @@ namespace FluidFieldSim
 		field->wake = std::move(wake);
 		field->foam = std::move(foam);
 		field->normal = a_job.normal;
+		field->rock = rock;
 		logger::info("[Fluid Field]   bake: {}x{} texels, {} more inside the statics' meshes", w, h, meshRock);
 		return field;
 	}
@@ -4284,9 +4285,20 @@ namespace FluidFieldSim
 				}
 			}
 		}
-		// Flow: the sim's way and speed on each mesh, an arrow every few texels
+		// Flow: the sim's way and speed on each mesh, an arrow every few texels; not inside rock, under the water
+		// below, on a sheet's far side, or behind rock from the camera (rays, a few hundred a frame, cached until the
+		// camera moves)
 		if (a_mode & 2) {
 			static constexpr int32_t STRIDE = 5;
+			if ((eye - arrowEye).Length() > 48.0f) {
+				arrowSeen.clear();
+				arrowEye = eye;
+			}
+			auto* tes = RE::TES::GetSingleton();
+			auto* cell = tes ? (tes->interiorCell ? tes->interiorCell : tes->GetCell(eye)) : nullptr;
+			auto* bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
+			auto* world = bhkWorld ? bhkWorld->GetWorld1() : nullptr;
+			int rays = 0;
 			for (const auto& [geometry, field] : bakeFields) {
 				if (!field || !geometry || !nearCamera(geometry->worldBound))
 					continue;
@@ -4295,7 +4307,29 @@ namespace FluidFieldSim
 				for (int32_t y = STRIDE / 2; y < h; y += STRIDE) {
 					for (int32_t x = STRIDE / 2; x < w; x += STRIDE) {
 						const std::size_t i = at(x, y);
-						if (!field->covered[i])
+						if (!field->covered[i] || (!field->rock.empty() && field->rock[i]))
+							continue;
+						const RE::NiPoint3& here = field->position[i];
+						float pool;
+						if (PoolLevelAt(here.x, here.y, pool) && here.z < pool - 4.0f)
+							continue;
+						const uint64_t key = (reinterpret_cast<uint64_t>(geometry) << 20) ^ static_cast<uint64_t>(i);
+						auto seen = arrowSeen.find(key);
+						if (seen == arrowSeen.end()) {
+							if (!world || rays >= ARROW_RAYS)
+								continue;
+							rays++;
+							const RE::NiPoint3 toward = here - eye;
+							const float distance = toward.Length();
+							bool visible = true;
+							if (distance > 16.0f) {
+								const RE::BSReadLockGuard lock(bhkWorld->worldLock);
+								const float hit = RockAlong(world, eye, toward / distance, distance - 12.0f);
+								visible = hit < 0.0f;
+							}
+							seen = arrowSeen.emplace(key, visible ? 1 : 0).first;
+						}
+						if (!seen->second)
 							continue;
 						const RE::NiPoint3 tu = field->position[at(x + 1, y)] - field->position[at(x - 1, y)];
 						const RE::NiPoint3 tv = field->position[at(x, y + 1)] - field->position[at(x, y - 1)];

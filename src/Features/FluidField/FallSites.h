@@ -267,6 +267,10 @@ namespace FluidFieldSim
 		 * white where it strikes rock), 3 both. Meshes within a_range of the camera.
 		 */
 		void DrawMeshDebug(ImDrawList* a_drawList, float a_range, int a_mode) const;
+		/** @brief D75: which debug arrows the camera sees (a ray from it meets no rock first), checked a few hundred a frame. */
+		mutable std::unordered_map<uint64_t, uint8_t> arrowSeen;
+		mutable RE::NiPoint3 arrowEye;
+		static constexpr int ARROW_RAYS = 400;  ///< D75: occlusion rays per frame for the debug arrows
 
 		/**
 		 * @brief D36: the pools' surface over a ground map's lattice: per texel the highest water plane
@@ -434,6 +438,7 @@ namespace FluidFieldSim
 			std::vector<uint8_t> covered;
 			std::vector<float> turn, speed, wake, foam;  ///< Across per down (texels), speed (vanilla's 1), the rock's wake and foam
 			std::vector<RE::NiPoint3> normal;
+			std::vector<uint8_t> rock;  ///< D75: texels inside rock (the debug arrows skip them)
 		};
 		std::vector<std::pair<RE::NiPointer<RE::BSGeometry>, std::future<std::shared_ptr<BakeField>>>> bakesPending;
 		std::unordered_map<const RE::BSGeometry*, std::shared_ptr<BakeField>> bakeFields;
