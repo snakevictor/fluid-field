@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -47,8 +48,17 @@ namespace FluidFieldSim
 		 * Main thread. 1.7.104 only.
 		 */
 		void ToggleTestQuad(const FallSites& a_sites);
-		/** @brief Debug: each sheet's draped columns over the view (yellow in the air, blue lifted by rock) and its lip line (green). */
-		void DrawDebug(ImDrawList* a_drawList) const;
+		/** @brief D64 debug views, drawn over everything (through the ground, so what runs under it shows). */
+		enum class DebugView : int
+		{
+			Off,
+			Wireframe,  ///< The sheet's grid (yellow; red where a vertex lies under the captured ground)
+			Lip,        ///< The detected edge of the upper water (magenta), the seeds the columns start from (green), vanilla's lips (cyan), and the routes (orange in the air, blue on the ground)
+			Normals,    ///< The sheet's faces coloured by their normal, as a normal map (x red, y green, z blue)
+			All
+		};
+		/** @brief Debug: draws the chosen views of every sheet over the view. */
+		void DrawDebug(ImDrawList* a_drawList, DebugView a_view) const;
 
 		/** @brief The name our sheets carry, so the falls' own bookkeeping passes them by. */
 		static constexpr const char* SHEET_NAME = "FluidFieldSheet";
@@ -83,6 +93,25 @@ namespace FluidFieldSim
 		static constexpr float MOST_CURL = 120.0f;        ///< ...in world units at most
 		static constexpr float CURL_BAND = 0.25f;         ///< Share of the sheet's width that curls at a free edge
 		static constexpr float ACROSS_REPEAT = 512.0f;    ///< World units across per texture repeat
+		static constexpr float POOL_TUCK = 10.0f;         ///< D64: world units under the water below a column ends
+		static constexpr float EDGE_DROP = 8.0f;          ///< D64: the ground this far under the upper water's surface beside it is where the water spills over
+		static constexpr float EDGE_NEAR_LIPS = 96.0f;    ///< D64: only edge cells this near a vanilla lip are the fall's (other spills are other waters')
+		static constexpr float EDGE_DOWNSTREAM = 0.3f;    ///< D64: ...and only where the water spills the way the fall goes
+		static constexpr float BOUND_MARGIN = 192.0f;     ///< D64: world units round the vanilla pieces a column may run before it ends
+		static constexpr float FOOT_REACH = 24.0f;        ///< D64: a column this near the vanilla pieces' foot has landed
+		static constexpr float BREAK_LENGTH = 4.0f;       ///< D64: a grid edge this many times its column spacing at the lip is a tear: no faces there
+		static constexpr float LIP_UPSTREAM = 300.0f;     ///< D65: world units upstream of vanilla's lips the lip is looked for from...
+		static constexpr float LIP_DOWNSTREAM = 900.0f;   ///< ...and how far past them
+		static constexpr float RIVER_DEPTH = 160.0f;      ///< D64: ground no deeper than this under the upper water is its riverbed: the column rides the surface over it
+		static constexpr float LANDED = 80.0f;            ///< D64: a column on the ground this near the lower water's level has landed in it
+		static constexpr float STEER_BELOW = 24.0f;       ///< D64: a column is steered by the ground only once it is this far under the upper water
+		static constexpr float FILL_STEP = 0.05f;         ///< D64: world units each filled cell stands over the one it drains to
+		static constexpr float WATER_DEPTH = 6.0f;        ///< D64: world units the water lies over the ground at the top's least speed...
+		static constexpr float MOST_DEPTH = 24.0f;        ///< ...and at most, for a fast fall
+		static constexpr float ROUTE_STEP = 8.0f;         ///< D64: world units per tracing step
+		static constexpr uint32_t ROUTE_STEPS = 600;
+		static constexpr float STEER = 0.35f;          ///< D64: how much a slow column's heading turns to the downhill flow each step (less when fast)
+		static constexpr float SLIDE_FRICTION = 0.8f;  ///< D64: per second, sliding on the ground
 
 	private:
 		struct Sheet
@@ -92,6 +121,14 @@ namespace FluidFieldSim
 			RE::NiPointer<RE::NiNode> parent;
 			std::vector<std::vector<RE::NiPoint3>> columns;  ///< Debug: the draped columns
 			std::vector<std::vector<uint8_t>> columnRock;
+			std::vector<RE::NiPoint3> grid;                       ///< Debug: the drawn grid in world space, ROWS x COLUMNS
+			std::vector<RE::NiPoint3> normals;                    ///< ...and its normals
+			std::vector<uint8_t> underground;                     ///< ...and where a vertex lies under the captured ground
+			std::vector<RE::NiPoint3> edge;                       ///< Debug: the detected edge of the upper water
+			std::vector<RE::NiPoint3> seeds;                      ///< ...the columns' starts on it
+			std::vector<RE::NiPoint3> lips;                       ///< ...and vanilla's lips
+			std::vector<std::array<RE::NiPoint3, 2>> waterEdges;  ///< D65 debug: the upper water mesh's open edges near the fall (white)
+			std::vector<RE::NiPoint3> waterLip;                   ///< D65 debug: where the upper water meets the drop (red)
 		};
 
 		/** @brief One draped column: world points and the seconds the water has run to each. */
@@ -109,12 +146,30 @@ namespace FluidFieldSim
 			std::vector<RE::NiPointer<RE::BSGeometry>> pieces;
 			float upper = 0.0f;
 			float lower = 0.0f;
-			float speed = 150.0f;       ///< World units per second the water at the top moves at
-			std::vector<float> levels;  ///< Every water level of the site under the upper one (its tiers' and other falls' upper waters)
+			float speed = 150.0f;  ///< World units per second the water at the top moves at
+			uint32_t siteId = 0;
+			float boundMin[3]{ FLT_MAX, FLT_MAX, FLT_MAX };     ///< D64: the vanilla pieces' extent: the sheet stays within it...
+			float boundMax[3]{ -FLT_MAX, -FLT_MAX, -FLT_MAX };  ///< ...and ends at its foot
+			std::vector<float> levels;                          ///< Every water level of the site under the upper one (its tiers' and other falls' upper waters)
 		};
 		std::unique_ptr<Sheet> Build(const FallSites& a_sites, const Fall& a_fall);
+		/**
+		 * @brief D65: the upper water's own mesh near a fall: every engine water object at its level, its triangles in
+		 * the world, and the edges of them only one triangle uses (the mesh's border). Logged once per fall.
+		 */
+		static void UpperWaterMesh(float a_level, const RE::NiPoint3& a_near, float a_reach, std::vector<std::array<RE::NiPoint3, 3>>& a_triangles,
+			std::vector<std::array<RE::NiPoint3, 2>>& a_edges);
 		/** @brief D63: how many times a ray crosses rock (anything solid but the falls' own collision) on its way. */
 		static int RockCrossings(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_to);
+		/**
+		 * @brief D64: the columns routed over the site's captured ground, from the upper water's real edge to the water
+		 * below: the ground's hollows filled so every cell drains to the lower water, the water released along the
+		 * edge near the fall's lips and spread downhill, each column traced from the edge with the edge's speed, steered
+		 * by the downhill flow (less when fast), thrown on an arc off drops, never lower than the ground plus the water's
+		 * depth, ending in the water below. False where the site's ground is not known.
+		 */
+		static bool Route(const FallSites& a_sites, const Fall& a_fall, const std::vector<RE::NiPoint3>& a_lips, const RE::NiPoint3& a_flow, std::vector<Column>& a_columns,
+			std::vector<RE::NiPoint3>* a_edge = nullptr, std::vector<RE::NiPoint3>* a_seeds = nullptr);
 		/** @brief The sheet draped from the brink over the rock to the water below (see the class description). */
 		static void Drape(RE::hkpWorld* a_world, const FallSites& a_sites, const std::vector<RE::NiPoint3>& a_starts, const RE::NiPoint3& a_flow, const Fall& a_fall, std::vector<Column>& a_columns);
 		static void Remove(Sheet& a_sheet);

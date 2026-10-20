@@ -191,6 +191,9 @@ namespace FluidFieldSim
 				// The falling-water models carry layers of their own (and spray particles): show only the
 				// layers in the mask
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+					// D64: our own sheets live under vanilla's pieces' parent; the layer mask is for vanilla's
+					if (a_geometry->name == FallSheets::SHEET_NAME)
+						return RE::BSVisit::BSVisitControl::kContinue;
 					if (!(layerMask & (1u << static_cast<uint32_t>(LayerOf(a_geometry)))))
 						wanted.emplace(a_geometry, RE::NiPointer<RE::NiAVObject>(a_geometry));
 					return RE::BSVisit::BSVisitControl::kContinue;
@@ -2763,6 +2766,18 @@ namespace FluidFieldSim
 			found = true;
 		}
 		return found;
+	}
+
+	bool FallSites::GetSiteGround(uint32_t a_siteId, SiteGround& a_ground) const
+	{
+		for (const auto& [key, stream] : streams) {
+			const std::size_t count = static_cast<std::size_t>(stream.result.width) * stream.result.height;
+			if (stream.siteId != a_siteId || !stream.ready || count == 0 || stream.result.bed.size() != count || stream.result.cover.size() != count)
+				continue;
+			a_ground = { stream.originX, stream.originY, FallCapture::CELL, stream.result.width, stream.result.height, &stream.result.bed, &stream.result.cover };
+			return true;
+		}
+		return false;
 	}
 
 	bool FallSites::PoolLevelAt(float a_x, float a_y, float& a_level) const

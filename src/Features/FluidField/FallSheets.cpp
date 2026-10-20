@@ -1,5 +1,6 @@
 #include "FallSheets.h"
 
+#include "FallCapture.h"
 #include "FallSites.h"
 
 #include <DirectXPackedVector.h>
@@ -11,6 +12,7 @@
 #include <format>
 #include <fstream>
 #include <map>
+#include <queue>
 
 namespace FluidFieldSim
 {
@@ -89,6 +91,360 @@ namespace FluidFieldSim
 			copy->SetupGeometry(a_shape);
 			copy->FinishSetupGeometry(a_shape);
 		}
+	}
+
+	bool FallSheets::Route(const FallSites& a_sites, const Fall& a_fall, const std::vector<RE::NiPoint3>& a_lips, const RE::NiPoint3& a_flow, std::vector<Column>& a_columns,
+		std::vector<RE::NiPoint3>* a_edge, std::vector<RE::NiPoint3>* a_seeds)
+	{
+		FallSites::SiteGround ground;
+		if (!a_sites.GetSiteGround(a_fall.siteId, ground))
+			return false;
+		const auto w = static_cast<int32_t>(ground.width), h = static_cast<int32_t>(ground.height);
+		const std::size_t count = static_cast<std::size_t>(w) * h;
+		const auto& bed = *ground.bed;
+		const auto& cover = *ground.cover;
+		const auto index = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * w + a_x; };
+		const auto inside = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < w && a_y < h; };
+		const auto known = [&](std::size_t a_i) { return bed[a_i] > FallCapture::NONE; };
+		const float upper = a_fall.upper;
+		const auto isUpper = [&](std::size_t a_i) { return cover[a_i] > FallSites::NO_SURFACE && std::abs(cover[a_i] - upper) < LEVEL_REACH; };
+		// The water below: any pool under the upper one's level, or ground under the lower level
+		const auto isLower = [&](std::size_t a_i) {
+			return (cover[a_i] > FallSites::NO_SURFACE && cover[a_i] < upper - LEAST_DROP) || (known(a_i) && bed[a_i] < a_fall.lower);
+		};
+		static constexpr int32_t DX[8] = { 1, -1, 0, 0, 1, 1, -1, -1 }, DY[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
+
+		// 1. The ground's hollows filled from the water below up, so every cell drains to it (priority flood)
+		std::vector<float> filled(count, FLT_MAX);
+		{
+			using Entry = std::pair<float, std::size_t>;
+			std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> open;
+			for (std::size_t i = 0; i < count; i++) {
+				if (known(i) && isLower(i)) {
+					filled[i] = std::min(bed[i], cover[i] > FallSites::NO_SURFACE ? cover[i] : bed[i]);
+					open.emplace(filled[i], i);
+				}
+			}
+			if (open.empty()) {
+				logger::info("[Fluid Field]   route: no water below in the site's ground");
+				return false;
+			}
+			while (!open.empty()) {
+				const auto [level, i] = open.top();
+				open.pop();
+				if (level > filled[i])
+					continue;
+				const auto x = static_cast<int32_t>(i % w), y = static_cast<int32_t>(i / w);
+				for (int k = 0; k < 8; k++) {
+					const int32_t nx = x + DX[k], ny = y + DY[k];
+					if (!inside(nx, ny))
+						continue;
+					const std::size_t j = index(nx, ny);
+					if (!known(j) || isUpper(j))
+						continue;
+					const float next = std::max(bed[j], level + FILL_STEP);
+					if (next < filled[j]) {
+						filled[j] = next;
+						open.emplace(next, j);
+					}
+				}
+			}
+		}
+		const auto sample = [&](const std::vector<float>& a_field, float a_x, float a_y, float& a_value) {
+			const float fx = (a_x - ground.originX) / ground.cell, fy = (a_y - ground.originY) / ground.cell;
+			const auto ix = static_cast<int32_t>(std::floor(fx)), iy = static_cast<int32_t>(std::floor(fy));
+			if (!inside(ix, iy) || !inside(ix + 1, iy + 1))
+				return false;
+			const float tx = fx - static_cast<float>(ix), ty = fy - static_cast<float>(iy);
+			const float a = a_field[index(ix, iy)], b = a_field[index(ix + 1, iy)], c = a_field[index(ix, iy + 1)], d = a_field[index(ix + 1, iy + 1)];
+			if (std::min({ a, b, c, d }) <= FallCapture::NONE || std::max({ a, b, c, d }) >= FLT_MAX * 0.5f)
+				return false;
+			a_value = (a * (1.0f - tx) + b * tx) * (1.0f - ty) + (c * (1.0f - tx) + d * tx) * ty;
+			return true;
+		};
+		const auto cellOf = [&](float a_x, float a_y, int32_t& a_cx, int32_t& a_cy) {
+			a_cx = static_cast<int32_t>(std::lround((a_x - ground.originX) / ground.cell));
+			a_cy = static_cast<int32_t>(std::lround((a_y - ground.originY) / ground.cell));
+			return inside(a_cx, a_cy);
+		};
+		// The downhill flow per cell over the filled ground: spread over the lower neighbours, weighted to the steeper
+		// (multiple flow directions), then smoothed, so a column steered by it does not zigzag from cell to cell
+		std::vector<RE::NiPoint3> flowField(count, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+		for (int32_t y = 0; y < h; y++) {
+			for (int32_t x = 0; x < w; x++) {
+				const std::size_t i = index(x, y);
+				if (filled[i] >= FLT_MAX * 0.5f)
+					continue;
+				RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
+				for (int k = 0; k < 8; k++) {
+					const int32_t nx = x + DX[k], ny = y + DY[k];
+					if (!inside(nx, ny) || filled[index(nx, ny)] >= FLT_MAX * 0.5f)
+						continue;
+					const float length = std::sqrt(static_cast<float>(DX[k] * DX[k] + DY[k] * DY[k]));
+					const float drop = (filled[i] - filled[index(nx, ny)]) / length;
+					if (drop > 0.0f)
+						sum += RE::NiPoint3(static_cast<float>(DX[k]) / length, static_cast<float>(DY[k]) / length, 0.0f) * (drop * drop);
+				}
+				flowField[i] = Normalized(sum);
+			}
+		}
+		for (int pass = 0; pass < 3; pass++) {
+			std::vector<RE::NiPoint3> soft = flowField;
+			for (int32_t y = 1; y + 1 < h; y++) {
+				for (int32_t x = 1; x + 1 < w; x++) {
+					RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
+					for (int32_t dy = -1; dy <= 1; dy++) {
+						for (int32_t dx = -1; dx <= 1; dx++)
+							sum += flowField[index(x + dx, y + dy)] * ((dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f));
+					}
+					soft[index(x, y)] = Normalized(sum);
+				}
+			}
+			flowField.swap(soft);
+		}
+		const auto downhill = [&](float a_x, float a_y, RE::NiPoint3& a_direction) {
+			int32_t cx, cy;
+			if (!cellOf(a_x, a_y, cx, cy))
+				return false;
+			a_direction = flowField[index(cx, cy)];
+			return a_direction.Length() > 0.5f;
+		};
+
+		// 2. D65: the lip, from the upper water's plane and what stands in it. Vanilla's lips say where (they are the
+		// trigger); across their span, each column steps downstream over the captured ground from LIP_UPSTREAM before
+		// them, on the water's surface, while the plane is there and the ground lies under the surface no deeper than a
+		// riverbed. It stops where the ground rises out of the water (a rock rim: the visible edge), falls away (the
+		// drop), or the plane ends. That point is the lip
+		const RE::NiPoint3 across(-a_flow.y, a_flow.x, 0.0f);
+		float lo = FLT_MAX, hi = -FLT_MAX;
+		for (const auto& lip : a_lips) {
+			lo = std::min(lo, lip.Dot(across));
+			hi = std::max(hi, lip.Dot(across));
+		}
+		float plane[4] = { -FLT_MAX, -FLT_MAX, FLT_MAX, FLT_MAX };
+		bool havePlane = false;
+		{
+			RE::NiPoint3 centre(0.0f, 0.0f, 0.0f);
+			for (const auto& lip : a_lips)
+				centre += lip;
+			centre = centre / static_cast<float>(std::max<std::size_t>(a_lips.size(), 1));
+			havePlane = a_sites.WaterObjectBounds(centre.x - a_flow.x * LIP_UPSTREAM, centre.y - a_flow.y * LIP_UPSTREAM, upper, LEVEL_REACH, plane);
+			if (!havePlane)
+				logger::info("[Fluid Field]   route: no water object at the upper level; the ground alone gives the lip");
+		}
+		const auto onPlane = [&](const RE::NiPoint3& a_p) { return a_p.x >= plane[0] && a_p.x <= plane[2] && a_p.y >= plane[1] && a_p.y <= plane[3]; };
+		std::vector<RE::NiPoint3> edge;
+		std::vector<RE::NiPoint3> lipLine;
+		uint32_t rims = 0, drops = 0, borders = 0;
+		for (uint32_t k = 0; k < GUIDE_COLUMNS; k++) {
+			const float s = lo + (hi - lo) * static_cast<float>(k) / static_cast<float>(GUIDE_COLUMNS - 1);
+			// Vanilla's lip nearest across: where along the flow this column's lip is to be looked for
+			float along = 0.0f, best = FLT_MAX;
+			for (const auto& lip : a_lips) {
+				const float d = std::abs(lip.Dot(across) - s);
+				if (d < best) {
+					best = d;
+					along = lip.Dot(a_flow);
+				}
+			}
+			RE::NiPoint3 p = across * s + a_flow * (along - LIP_UPSTREAM);
+			p.z = upper;
+			RE::NiPoint3 last = p;
+			bool found = false;
+			for (float run = 0.0f; run <= LIP_UPSTREAM + LIP_DOWNSTREAM; run += 8.0f) {
+				const RE::NiPoint3 q = p + a_flow * run;
+				if (!onPlane(q)) {
+					borders++;
+					found = true;
+					break;
+				}
+				float floor;
+				if (!sample(bed, q.x, q.y, floor)) {
+					last = q;
+					continue;
+				}
+				// D65: rock standing out of the water before the plane's end is a boulder in the river (the sheet
+				// passes it); only where the water's own plane ends, or the ground falls away with no plane, is the lip
+				(void)rims;
+				if (!havePlane && floor < upper - RIVER_DEPTH) {
+					drops++;
+					found = true;
+					break;
+				}
+				last = q;
+			}
+			if (!found)
+				continue;
+			last.z = upper;
+			edge.push_back(last);
+			lipLine.push_back(last);
+		}
+		logger::info("[Fluid Field]   route: lip from the water plane: {} of {} columns found it ({} at a rock rim, {} at the drop, {} at the plane's end)", edge.size(),
+			GUIDE_COLUMNS, rims, drops, borders);
+		if (a_edge)
+			*a_edge = lipLine;
+		if (edge.size() < 2)
+			return false;
+		if (a_seeds)
+			*a_seeds = edge;
+		const float speed = std::clamp(a_fall.speed, SLOWEST_TOP * 0.25f, FASTEST_TOP);
+		const float fast = std::clamp((speed - SLOWEST_TOP) / (FASTEST_TOP - SLOWEST_TOP), 0.0f, 1.0f);
+		const float depth = WATER_DEPTH + (MOST_DEPTH - WATER_DEPTH) * fast;
+		const std::size_t n = GUIDE_COLUMNS;
+
+		// 3. Each column traced from its seed: flat on the upper water to the edge, then over the ground with the edge's
+		// speed, steered by the downhill flow (less when fast), thrown off drops on an arc, never under the ground plus
+		// the water's depth, until the water below
+		struct State
+		{
+			RE::NiPoint3 p, v;                                // Position; horizontal velocity
+			float vz = 0.0f;                                  // Vertical speed while thrown
+			bool air = false, done = false, onWater = false;  // D65: the seeds are on the lip already
+			float time = 0.0f;
+		};
+		std::vector<State> states(n);
+		a_columns.assign(n, {});
+		for (std::size_t k = 0; k < n; k++) {
+			const auto e = std::min(edge.size() - 1, static_cast<std::size_t>(std::lround(static_cast<float>(k) / static_cast<float>(n - 1) * static_cast<float>(edge.size() - 1))));
+			State& s = states[k];
+			s.p = edge[e];
+			RE::NiPoint3 dir;
+			if (!downhill(s.p.x, s.p.y, dir))
+				dir = a_flow;
+			s.v = Normalized(dir + a_flow) * speed;
+			// The top row: just back over the upper water, so the sheet overlaps it
+			a_columns[k].points.push_back(s.p - Normalized(s.v) * OVERLAP);
+			a_columns[k].times.push_back(0.0f);
+			a_columns[k].onRock.push_back(0);
+			a_columns[k].points.push_back(s.p);
+			a_columns[k].times.push_back(OVERLAP / speed);
+			a_columns[k].onRock.push_back(0);
+			s.time = OVERLAP / speed;
+		}
+		for (uint32_t step = 0; step < ROUTE_STEPS; step++) {
+			bool any = false;
+			for (std::size_t k = 0; k < n; k++) {
+				State& s = states[k];
+				if (s.done)
+					continue;
+				any = true;
+				const float horizontal = std::max(s.v.Length(), 40.0f);
+				const float dt = ROUTE_STEP / horizontal;
+				RE::NiPoint3 next = s.p + s.v * dt;
+				float floor;
+				if (!sample(bed, next.x, next.y, floor)) {
+					s.done = true;
+					continue;
+				}
+				// D64: over the upper river's bed it rides the upper water's surface (the pool map does not reach the
+				// whole river: its bed lies just under the surface there); the brink is where the ground falls away
+				// deeper than a riverbed under it
+				float surface = floor + depth;
+				if (s.onWater) {
+					if (floor >= upper - RIVER_DEPTH) {
+						surface = upper;
+						next.z = upper;
+					} else {
+						s.onWater = false;
+					}
+				}
+				if (s.onWater) {
+					// Straight on at the edge's speed along the surface
+				} else if (s.air) {
+					s.vz -= GRAVITY * dt;
+					next.z = s.p.z + s.vz * dt;
+					if (next.z <= surface) {
+						next.z = surface;
+						s.air = false;
+						s.vz = 0.0f;
+						s.v *= 0.8f;  // The landing takes some of it
+					}
+				} else if (surface < s.p.z - ROUTE_STEP * 1.5f) {
+					// The ground falls away steeper than the water can follow: it is thrown
+					s.air = true;
+					s.vz = 0.0f;
+					next.z = s.p.z;
+				} else {
+					// Sliding: gravity along the ground's slope, less friction
+					next.z = surface;
+					const float slope = (s.p.z - surface) / ROUTE_STEP;
+					s.v *= std::max(1.0f - SLIDE_FRICTION * dt, 0.0f);
+					s.v += Normalized(s.v) * (GRAVITY * std::clamp(slope, -1.0f, 1.0f) * dt);
+					if (s.v.Length() < 60.0f)
+						s.v = Normalized(s.v) * 60.0f;
+				}
+				// Steered by the downhill flow; a fast column keeps more of its own way
+				RE::NiPoint3 dir;
+				if (!s.air && !s.onWater && downhill(next.x, next.y, dir)) {
+					const float below = std::clamp((upper - STEER_BELOW - next.z) / STEER_BELOW + 1.0f, 0.0f, 1.0f);
+					const float steer = STEER * below * (1.0f - 0.7f * std::clamp(s.v.Length() / FASTEST_TOP, 0.0f, 1.0f));
+					const float keep = std::max(s.v.Length(), 40.0f);
+					s.v = Normalized(Normalized(s.v) * (1.0f - steer) + dir * steer) * keep;
+				}
+				s.p = next;
+				s.time += dt;
+				// Into the water below
+				int32_t cx, cy;
+				if (cellOf(s.p.x, s.p.y, cx, cy) && isLower(index(cx, cy)) && !s.air) {
+					const float level = cover[index(cx, cy)] > FallSites::NO_SURFACE ? cover[index(cx, cy)] : a_fall.lower;
+					s.p.z = std::max(level - POOL_TUCK, floor + 2.0f);
+					s.done = true;
+				}
+				// D64: at the vanilla pieces' foot it has landed; out of their extent it ends (vanilla's grouping says
+				// where the fall goes)
+				if (!s.done && !s.air && !s.onWater && s.p.z <= a_fall.lower + LANDED) {
+					s.p.z = std::min(s.p.z, a_fall.lower) - POOL_TUCK;
+					s.done = true;
+				}
+				if (!s.done && s.p.z <= a_fall.lower - POOL_TUCK) {
+					s.p.z = std::max(a_fall.lower - POOL_TUCK, floor + 2.0f);
+					s.done = true;
+				}
+				// Kept within the vanilla pieces' extent sideways (it bounds the column, never ends it)
+				if (!s.done) {
+					const float x = std::clamp(s.p.x, a_fall.boundMin[0] - BOUND_MARGIN, a_fall.boundMax[0] + BOUND_MARGIN);
+					const float y = std::clamp(s.p.y, a_fall.boundMin[1] - BOUND_MARGIN, a_fall.boundMax[1] + BOUND_MARGIN);
+					if (x != s.p.x)
+						s.v.x = 0.0f;
+					if (y != s.p.y)
+						s.v.y = 0.0f;
+					s.p.x = x;
+					s.p.y = y;
+					if (s.v.Length() < 1.0f)
+						s.v = a_flow * 60.0f;
+				}
+				a_columns[k].points.push_back(s.p);
+				a_columns[k].times.push_back(s.time);
+				a_columns[k].onRock.push_back(s.air ? 0 : 1);
+			}
+			if (!any)
+				break;
+			// Held together: each column's heading drawn a little toward its neighbours'
+			std::vector<RE::NiPoint3> headings(n);
+			for (std::size_t k = 0; k < n; k++)
+				headings[k] = Normalized(states[k].v);
+			for (std::size_t k = 0; k < n; k++) {
+				State& s = states[k];
+				if (s.done)
+					continue;
+				RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
+				for (const std::size_t j : { k - 1, k + 1 }) {
+					if (j < n && !states[j].done)
+						sum += headings[j];
+				}
+				if (sum.Length() < 1e-3f)
+					continue;
+				s.v = Normalized(headings[k] * 0.75f + Normalized(sum) * 0.25f) * s.v.Length();
+			}
+		}
+		uint32_t reached = 0;
+		for (std::size_t k = 0; k < n; k++) {
+			int32_t cx, cy;
+			const auto& last = a_columns[k].points.back();
+			reached += cellOf(last.x, last.y, cx, cy) && isLower(index(cx, cy)) ? 1 : 0;
+		}
+		logger::info("[Fluid Field]   route: {} edge cells, {:.0f} units/s at the edge, water {:.0f} deep; {} of {} columns reach the water below", edge.size(), speed, depth, reached, n);
+		return true;
 	}
 
 	void FallSheets::Drape(RE::hkpWorld* a_world, const FallSites& a_sites, const std::vector<RE::NiPoint3>& a_starts, const RE::NiPoint3& a_flow, const Fall& a_fall, std::vector<Column>& a_columns)
@@ -252,6 +608,69 @@ namespace FluidFieldSim
 				a_columns[k].times.push_back(time);
 				a_columns[k].onRock.push_back(lifted[r * n + k]);
 			}
+		}
+	}
+
+	void FallSheets::UpperWaterMesh(float a_level, const RE::NiPoint3& a_near, float a_reach, std::vector<std::array<RE::NiPoint3, 3>>& a_triangles,
+		std::vector<std::array<RE::NiPoint3, 2>>& a_edges)
+	{
+		a_triangles.clear();
+		a_edges.clear();
+		auto* waterSystem = RE::TESWaterSystem::GetSingleton();
+		if (!waterSystem)
+			return;
+		RE::BSSpinLockGuard guard(waterSystem->lock);
+		for (const auto& waterObject : waterSystem->waterObjects) {
+			if (!waterObject || !waterObject->shape)
+				continue;
+			const auto& plane = waterObject->plane;
+			const float height = std::abs(plane.normal.z) > 1e-4f ? plane.constant / plane.normal.z : NAN;
+			auto* shape = waterObject->shape.get();
+			auto* triShape = shape->AsTriShape();
+			auto* renderer = shape->GetGeometryRuntimeData().rendererData;
+			const auto& counts = triShape ? triShape->GetTrishapeRuntimeData() : RE::BSTriShape::TRISHAPE_RUNTIME_DATA{};
+			// The shape's extent in the world, for the log
+			const RE::NiBound& bound = shape->worldBound;
+			const bool close = std::abs(bound.center.x - a_near.x) < bound.radius + a_reach && std::abs(bound.center.y - a_near.y) < bound.radius + a_reach;
+			if (!close)
+				continue;
+			logger::info("[Fluid Field]   upper water: object at {:.0f} (want {:.0f}), shape '{}' {} vertices {} triangles, raw data {}, world bound ({:.0f}, {:.0f}, {:.0f}) r {:.0f}",
+				height, a_level, shape->name.c_str(), counts.vertexCount, counts.triangleCount, renderer && renderer->rawVertexData ? "yes" : "no", bound.center.x, bound.center.y,
+				bound.center.z, bound.radius);
+			if (std::isnan(height) || std::abs(bound.center.z - a_level) > LEVEL_REACH * 2.0f || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
+				continue;
+			const uint32_t stride = renderer->vertexDesc.GetSize();
+			const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+			const auto vertex = [&](uint16_t a_index) {
+				float local[3];
+				std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(a_index) * stride + positionOffset, sizeof(local));
+				return shape->world * RE::NiPoint3(local[0], local[1], local[2]);
+			};
+			std::map<std::pair<uint16_t, uint16_t>, int> uses;
+			float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+			for (uint32_t i = 0; i < counts.triangleCount; i++) {
+				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+				if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+					continue;
+				const std::array<RE::NiPoint3, 3> tri = { vertex(index[0]), vertex(index[1]), vertex(index[2]) };
+				a_triangles.push_back(tri);
+				for (const auto& p : tri) {
+					lo[0] = std::min(lo[0], p.x), lo[1] = std::min(lo[1], p.y), lo[2] = std::min(lo[2], p.z);
+					hi[0] = std::max(hi[0], p.x), hi[1] = std::max(hi[1], p.y), hi[2] = std::max(hi[2], p.z);
+				}
+				for (int k = 0; k < 3; k++) {
+					const uint16_t a = index[k], b = index[(k + 1) % 3];
+					uses[{ std::min(a, b), std::max(a, b) }]++;
+				}
+			}
+			std::size_t border = 0;
+			for (const auto& [edge, count] : uses) {
+				if (count != 1)
+					continue;
+				a_edges.push_back({ vertex(edge.first), vertex(edge.second) });
+				border++;
+			}
+			logger::info("[Fluid Field]     its mesh spans x {:.0f}..{:.0f}, y {:.0f}..{:.0f}, z {:.0f}..{:.0f}; {} border edges", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], border);
 		}
 	}
 
@@ -438,6 +857,19 @@ namespace FluidFieldSim
 			return nullptr;
 		}
 		std::vector<Column> columns;
+		std::vector<RE::NiPoint3> debugEdge, debugSeeds;
+		// D65: the upper water's own mesh, and where it meets the drop: the line, across the mesh, beyond which the
+		// ground under the water surface falls away (or the mesh itself ends) along the flow
+		std::vector<std::array<RE::NiPoint3, 3>> waterTriangles;
+		std::vector<std::array<RE::NiPoint3, 2>> waterEdges;
+		std::vector<RE::NiPoint3> waterLip;
+		{
+			RE::NiPoint3 centre(0.0f, 0.0f, 0.0f);
+			for (const auto& lip : lips)
+				centre += lip;
+			centre = centre / static_cast<float>(std::max<std::size_t>(lips.size(), 1));
+			UpperWaterMesh(a_fall.upper, centre, 4096.0f, waterTriangles, waterEdges);
+		}
 		{
 			const RE::BSReadLockGuard lock(bhkWorld->worldLock);
 			Fall fall = a_fall;
@@ -445,30 +877,30 @@ namespace FluidFieldSim
 				fall.speed = topSpeed / topSamples;
 			fall.speed = std::clamp(std::max(fall.speed, SLOWEST_TOP) * arcScale, SLOWEST_TOP * 0.25f, FASTEST_TOP);
 			logger::info("[Fluid Field]   sheet: water at the top {:.0f} units/s, {:.0f} wide", fall.speed, width);
-			Drape(world, a_sites, starts, mean, fall, columns);
+			// D64: routed over the site's ground; the drape only where its ground is not known
+			if (!Route(a_sites, fall, lips, mean, columns, &debugEdge, &debugSeeds)) {
+				// D64: no route, no sheet: vanilla's pieces stay (the drape went straight into the ground)
+				logger::info("[Fluid Field]   sheet skipped: no route over the ground; vanilla's pieces stay");
+				return nullptr;
+			}
 		}
 		for (uint32_t k = 0; k < GUIDE_COLUMNS; k++) {
 			auto& column = columns[k];
 			column.u = (sA + width * static_cast<float>(k) / static_cast<float>(GUIDE_COLUMNS - 1)) / ACROSS_REPEAT;
 		}
-		// Each column resampled to ROWS rows by distance along it; then filled across to COLUMNS
-		const auto resample = [](const Column& a_column, float a_f, RE::NiPoint3& a_point, float& a_time) {
-			float total = 0.0f;
-			for (std::size_t i = 1; i < a_column.points.size(); i++)
-				total += (a_column.points[i] - a_column.points[i - 1]).Length();
-			float target = a_f * total, run = 0.0f;
-			for (std::size_t i = 1; i < a_column.points.size(); i++) {
-				const float length = (a_column.points[i] - a_column.points[i - 1]).Length();
-				if (run + length >= target || i + 1 == a_column.points.size()) {
-					const float t = length > 1e-4f ? std::clamp((target - run) / length, 0.0f, 1.0f) : 0.0f;
-					a_point = a_column.points[i - 1] + (a_column.points[i] - a_column.points[i - 1]) * t;
-					a_time = a_column.times[i - 1] + (a_column.times[i] - a_column.times[i - 1]) * t;
-					return;
-				}
-				run += length;
-			}
-			a_point = a_column.points.back();
-			a_time = a_column.times.back();
+		// D64: each column resampled to ROWS rows by the march's step, the time all columns share (by its length it
+		// stitched rows of short and long columns across the rock between them); a column that ended stays where it
+		// ended; then filled across to COLUMNS
+		std::size_t longest = 2;
+		for (const auto& column : columns)
+			longest = std::max(longest, column.points.size());
+		const auto resample = [&](const Column& a_column, float a_f, RE::NiPoint3& a_point, float& a_time) {
+			const float place = a_f * static_cast<float>(longest - 1);
+			const auto i0 = std::min(static_cast<std::size_t>(place), a_column.points.size() - 1);
+			const auto i1 = std::min(i0 + 1, a_column.points.size() - 1);
+			const float t = std::clamp(place - static_cast<float>(i0), 0.0f, 1.0f);
+			a_point = a_column.points[i0] + (a_column.points[i1] - a_column.points[i0]) * t;
+			a_time = a_column.times[i0] + (a_column.times[i1] - a_column.times[i0]) * t;
 		};
 		const uint32_t guides = static_cast<uint32_t>(columns.size());
 		std::vector<RE::NiPoint3> grid(static_cast<std::size_t>(ROWS) * COLUMNS);
@@ -518,6 +950,7 @@ namespace FluidFieldSim
 		const RE::NiTransform inverse = parent->world.Invert();
 		std::vector<RE::NiPoint3> positions(grid.size()), normals(grid.size()), tangents(grid.size()), bitangents(grid.size());
 		std::vector<RE::NiPoint2> uvs(grid.size());
+		std::vector<RE::NiPoint3> worldNormals(grid.size());
 		const RE::NiPoint3 outward = mean + RE::NiPoint3(0.0f, 0.0f, 1.0f);
 		for (uint32_t r = 0; r < ROWS; r++) {
 			for (uint32_t c = 0; c < COLUMNS; c++) {
@@ -529,20 +962,44 @@ namespace FluidFieldSim
 					normal = -normal;
 				positions[i] = inverse * grid[i];
 				normals[i] = Normalized(inverse.rotate * normal);
+				worldNormals[i] = normal;
 				tangents[i] = Normalized(inverse.rotate * alongU);
 				bitangents[i] = Normalized(inverse.rotate * alongV);
 				// Along the flow, the texture runs with the water's travel time at vanilla's scroll
 				uvs[i] = RE::NiPoint2(us[i], times[i] * SCROLL);
 			}
 		}
+		// D64: no faces across a tear (an edge far longer than the columns' spacing at the lip: neighbours that went
+		// round opposite sides of a rock) or under the captured ground
+		const float spacing = std::max((grid[COLUMNS - 1] - grid[0]).Length() / static_cast<float>(COLUMNS - 1), 4.0f);
+		const float tear = spacing * BREAK_LENGTH * static_cast<float>(COLUMNS) / static_cast<float>(GUIDE_COLUMNS);
+		FallSites::SiteGround siteGround;
+		const bool haveGround = a_sites.GetSiteGround(a_fall.siteId, siteGround);
+		const auto underground = [&](const RE::NiPoint3& a_p) {
+			if (!haveGround)
+				return false;
+			const auto x = static_cast<int32_t>(std::lround((a_p.x - siteGround.originX) / siteGround.cell));
+			const auto y = static_cast<int32_t>(std::lround((a_p.y - siteGround.originY) / siteGround.cell));
+			if (x < 0 || y < 0 || x >= static_cast<int32_t>(siteGround.width) || y >= static_cast<int32_t>(siteGround.height))
+				return false;
+			const float bed = (*siteGround.bed)[static_cast<std::size_t>(y) * siteGround.width + x];
+			return bed > FallCapture::NONE && a_p.z < bed - 8.0f;
+		};
 		std::vector<uint16_t> indices;
 		indices.reserve(static_cast<std::size_t>(ROWS - 1) * (COLUMNS - 1) * 6);
+		uint32_t torn = 0;
 		for (uint32_t r = 0; r + 1 < ROWS; r++) {
 			for (uint32_t c = 0; c + 1 < COLUMNS; c++) {
 				const auto a = static_cast<uint16_t>(r * COLUMNS + c), b = static_cast<uint16_t>(a + 1), d = static_cast<uint16_t>(a + COLUMNS), e = static_cast<uint16_t>(d + 1);
+				// D64: one whole sheet: rock it crosses pokes through it (and drives the flow), nothing is cut out
+				(void)tear;
+				(void)underground;
 				indices.insert(indices.end(), { a, d, b, b, d, e });
 			}
 		}
+		(void)torn;
+		if (indices.empty())
+			return nullptr;
 		RE::BSTriShape* shape = BuildShape(static_cast<uint32_t>(indices.size() / 3), indices.data(), static_cast<uint32_t>(grid.size()), positions.data(), uvs.data(), normals.data(),
 			tangents.data(), bitangents.data());
 		if (!shape) {
@@ -565,6 +1022,41 @@ namespace FluidFieldSim
 		for (const auto& column : columns) {
 			sheet->columns.push_back(column.points);
 			sheet->columnRock.push_back(column.onRock);
+		}
+		sheet->waterEdges.clear();
+		{
+			RE::NiPoint3 centre(0.0f, 0.0f, 0.0f);
+			for (const auto& lip : lips)
+				centre += lip;
+			centre = centre / static_cast<float>(std::max<std::size_t>(lips.size(), 1));
+			for (const auto& edge : waterEdges) {
+				const RE::NiPoint3 mid = (edge[0] + edge[1]) * 0.5f;
+				if (std::abs(mid.x - centre.x) < 3000.0f && std::abs(mid.y - centre.y) < 3000.0f)
+					sheet->waterEdges.push_back(edge);
+			}
+		}
+		sheet->waterLip = waterLip;
+		// Debug views (D64): the grid, its normals, where it lies under the captured ground, the edge and the seeds
+		sheet->grid = grid;
+		sheet->normals = worldNormals;
+		sheet->edge = std::move(debugEdge);
+		sheet->seeds = std::move(debugSeeds);
+		sheet->lips = lips;
+		{
+			FallSites::SiteGround ground;
+			sheet->underground.assign(grid.size(), 0);
+			if (a_sites.GetSiteGround(a_fall.siteId, ground)) {
+				for (std::size_t i = 0; i < grid.size(); i++) {
+					const auto x = static_cast<int32_t>(std::lround((grid[i].x - ground.originX) / ground.cell));
+					const auto y = static_cast<int32_t>(std::lround((grid[i].y - ground.originY) / ground.cell));
+					if (x < 0 || y < 0 || x >= static_cast<int32_t>(ground.width) || y >= static_cast<int32_t>(ground.height))
+						continue;
+					const float bed = (*ground.bed)[static_cast<std::size_t>(y) * ground.width + x];
+					sheet->underground[i] = bed > FallCapture::NONE && grid[i].z < bed - 2.0f ? 1 : 0;
+				}
+			}
+			const auto under = static_cast<std::size_t>(std::count(sheet->underground.begin(), sheet->underground.end(), static_cast<uint8_t>(1)));
+			logger::info("[Fluid Field]   sheet: {} of {} vertices under the captured ground", under, grid.size());
 		}
 		// Debug: the columns and the grid, next to the log
 		if (const auto directory = logger::log_directory()) {
@@ -600,8 +1092,10 @@ namespace FluidFieldSim
 		}
 	}
 
-	void FallSheets::DrawDebug(ImDrawList* a_drawList) const
+	void FallSheets::DrawDebug(ImDrawList* a_drawList, DebugView a_view) const
 	{
+		if (a_view == DebugView::Off || !a_drawList)
+			return;
 		auto* camera = RE::PlayerCamera::GetSingleton();
 		RE::NiCamera* niCamera = nullptr;
 		if (camera && camera->cameraRoot) {
@@ -610,7 +1104,7 @@ namespace FluidFieldSim
 					break;
 			}
 		}
-		if (!niCamera || !a_drawList)
+		if (!niCamera)
 			return;
 		const ImVec2 display = ImGui::GetIO().DisplaySize;
 		const auto project = [&](const RE::NiPoint3& a_p, ImVec2& a_screen) {
@@ -620,17 +1114,76 @@ namespace FluidFieldSim
 			a_screen = ImVec2(sx * display.x, (1.0f - sy) * display.y);
 			return true;
 		};
+		const bool all = a_view == DebugView::All;
 		for (const auto& sheet : sheets) {
-			for (std::size_t c = 0; c < sheet->columns.size(); c++) {
-				const auto& points = sheet->columns[c];
-				for (std::size_t i = 1; i < points.size(); i++) {
-					ImVec2 a, b;
-					if (project(points[i - 1], a) && project(points[i], b))
-						a_drawList->AddLine(a, b, sheet->columnRock[c][i] ? IM_COL32(60, 140, 255, 255) : IM_COL32(255, 230, 60, 255), 2.0f);
+			const auto& grid = sheet->grid;
+			if (grid.size() != static_cast<std::size_t>(ROWS) * COLUMNS)
+				continue;
+			// Normals: each face filled with its normal as a colour
+			if (a_view == DebugView::Normals || all) {
+				for (uint32_t r = 0; r + 1 < ROWS; r++) {
+					for (uint32_t c = 0; c + 1 < COLUMNS; c++) {
+						const std::size_t i = static_cast<std::size_t>(r) * COLUMNS + c;
+						ImVec2 a, b, d, e;
+						if (!project(grid[i], a) || !project(grid[i + 1], b) || !project(grid[i + COLUMNS], d) || !project(grid[i + COLUMNS + 1], e))
+							continue;
+						const RE::NiPoint3& n = sheet->normals[i];
+						const ImU32 color = IM_COL32(static_cast<int>((n.x * 0.5f + 0.5f) * 255.0f), static_cast<int>((n.y * 0.5f + 0.5f) * 255.0f),
+							static_cast<int>((n.z * 0.5f + 0.5f) * 255.0f), all ? 120 : 220);
+						a_drawList->AddQuadFilled(a, b, e, d, color);
+					}
 				}
-				ImVec2 a, b;
-				if (c > 0 && project(sheet->columns[c - 1].front(), a) && project(points.front(), b))
-					a_drawList->AddLine(a, b, IM_COL32(60, 255, 90, 255), 3.0f);
+			}
+			// Wireframe: the grid, red where it lies under the captured ground
+			if (a_view == DebugView::Wireframe || all) {
+				for (uint32_t r = 0; r < ROWS; r++) {
+					for (uint32_t c = 0; c < COLUMNS; c++) {
+						const std::size_t i = static_cast<std::size_t>(r) * COLUMNS + c;
+						ImVec2 a, b;
+						if (!project(grid[i], a))
+							continue;
+						const bool under = !sheet->underground.empty() && sheet->underground[i];
+						const ImU32 color = under ? IM_COL32(255, 40, 40, 255) : IM_COL32(255, 230, 60, 200);
+						if (c + 1 < COLUMNS && project(grid[i + 1], b))
+							a_drawList->AddLine(a, b, color, 1.0f);
+						if (r + 1 < ROWS && project(grid[i + COLUMNS], b))
+							a_drawList->AddLine(a, b, color, 1.0f);
+					}
+				}
+			}
+			// Lip: the detected edge, the seeds, vanilla's lips, and the routes
+			if (a_view == DebugView::Lip || all) {
+				for (const auto& p : sheet->lips) {
+					ImVec2 s;
+					if (project(p, s))
+						a_drawList->AddCircleFilled(s, 3.0f, IM_COL32(60, 230, 255, 255));
+				}
+				for (const auto& edge : sheet->waterEdges) {
+					ImVec2 a, b;
+					if (project(edge[0], a) && project(edge[1], b))
+						a_drawList->AddLine(a, b, IM_COL32(255, 255, 255, 255), 3.0f);
+				}
+				for (const auto& p : sheet->edge) {
+					ImVec2 s;
+					if (project(p, s))
+						a_drawList->AddCircleFilled(s, 4.0f, IM_COL32(255, 60, 255, 255));
+				}
+				for (std::size_t k = 0; k < sheet->seeds.size(); k++) {
+					ImVec2 s, prev;
+					if (!project(sheet->seeds[k], s))
+						continue;
+					a_drawList->AddCircleFilled(s, 6.0f, IM_COL32(60, 255, 90, 255));
+					if (k > 0 && project(sheet->seeds[k - 1], prev))
+						a_drawList->AddLine(prev, s, IM_COL32(60, 255, 90, 255), 3.0f);
+				}
+				for (std::size_t c = 0; c < sheet->columns.size(); c++) {
+					const auto& points = sheet->columns[c];
+					for (std::size_t i = 1; i < points.size(); i++) {
+						ImVec2 a, b;
+						if (project(points[i - 1], a) && project(points[i], b))
+							a_drawList->AddLine(a, b, sheet->columnRock[c][i] ? IM_COL32(60, 140, 255, 255) : IM_COL32(255, 150, 40, 255), 2.0f);
+					}
+				}
 			}
 		}
 	}
@@ -743,10 +1296,17 @@ namespace FluidFieldSim
 				const uint32_t stride = renderer->vertexDesc.GetSize();
 				const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
 				float top = -FLT_MAX;
+				float pieceMin[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, pieceMax[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
 				for (uint32_t v = 0; v < triShape->GetTrishapeRuntimeData().vertexCount; v++) {
 					float local[3];
 					std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
-					top = std::max(top, (mesh.geometry->world * RE::NiPoint3(local[0], local[1], local[2])).z);
+					const RE::NiPoint3 world = mesh.geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
+					top = std::max(top, world.z);
+					const float c[3] = { world.x, world.y, world.z };
+					for (int a = 0; a < 3; a++) {
+						pieceMin[a] = std::min(pieceMin[a], c[a]);
+						pieceMax[a] = std::max(pieceMax[a], c[a]);
+					}
 				}
 				// Its upper water: the lowest level the lip stands under by at most LEVEL_REACH, or the lip itself;
 				// its lower water: the highest level LEAST_DROP or more under that
@@ -770,6 +1330,11 @@ namespace FluidFieldSim
 					fall.speed = fall.pieces.empty() ? speed : 0.5f * (fall.speed + speed);
 				}
 				fall.pieces.push_back(mesh.geometry);
+				fall.siteId = mesh.siteId;
+				for (int a = 0; a < 3; a++) {
+					fall.boundMin[a] = std::min(fall.boundMin[a], pieceMin[a]);
+					fall.boundMax[a] = std::max(fall.boundMax[a], pieceMax[a]);
+				}
 				fall.upper = upper;
 				fall.lower = lower;
 			}

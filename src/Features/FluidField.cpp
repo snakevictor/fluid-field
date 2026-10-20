@@ -273,6 +273,11 @@ void FluidField::DrawSettings()
 				"Fall Meshes: vanilla's falling-water triangles, one colour per mesh, red where they run inside rock. Intersections: where the meshes meet (yellow: a mesh ends against another; magenta: two cross), where they cross the water above or below (green), and the spray emitters (cyan: drops, blue: plunges and impacts, orange: seams). Drawn through everything. Not saved."));
 			ImGui::Checkbox(T(TKEY("show_waterfall_sites"), "Show Waterfall Sites"), &showFallSites);
 			tooltip(T(TKEY("show_waterfall_sites_tooltip"), "Draws the waterfall sites found in vanilla's layout: effect meshes by class, each site's water levels (green top, blue bottom, teal tiers) and a label. Also prints each cell's summary to the console."));
+			const char* sheetViews[] = { T(TKEY("fall_sheet_debug_off"), "Off"), T(TKEY("fall_sheet_debug_wireframe"), "Wireframe"), T(TKEY("fall_sheet_debug_lip"), "Lip and Routes"),
+				T(TKEY("fall_sheet_debug_normals"), "Normals"), T(TKEY("fall_sheet_debug_all"), "All") };
+			ImGui::Combo(T(TKEY("fall_sheet_debug"), "Generated Falls Debug"), &fallSheetDebug, sheetViews, IM_ARRAYSIZE(sheetViews));
+			tooltip(T(TKEY("fall_sheet_debug_tooltip"),
+				"Drawn over everything, through the ground. Wireframe: the generated sheets' grid, red where it lies under the ground. Lip and Routes: the detected edge of the upper water (magenta), where the columns start (green), vanilla's lips (cyan), and each column's route (orange in the air, blue on the ground). Normals: the sheets' faces coloured by their normal (x red, y green, z blue). Not saved."));
 			if (ImGui::Button(T(TKEY("fall_test_quad"), "Toggle Test Quad")))
 				fallTestQuadRequested = true;
 			tooltip(T(TKEY("fall_test_quad_tooltip"), "Probe: builds a quad in front of the player with the engine's own mesh builder and a vanilla waterfall material, or removes it."));
@@ -343,8 +348,8 @@ void FluidField::DrawOverlay()
 	if ((showFallSites || fallDebugView > 0) && loaded && settings.Enabled)
 		fallSites.DrawDebug(ImGui::GetBackgroundDrawList(), FALL_SITES_DEBUG_RANGE, showFallSites, fallDebugView);
 	// D61: the sheets' marched columns
-	if (settings.WaterfallDebug != 0 && loaded && settings.Enabled)
-		fallSheets.DrawDebug(ImGui::GetBackgroundDrawList());
+	if (fallSheetDebug != 0 && loaded && settings.Enabled)
+		fallSheets.DrawDebug(ImGui::GetBackgroundDrawList(), static_cast<FluidFieldSim::FallSheets::DebugView>(fallSheetDebug));
 	if (!(showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews))
 		return;
 
