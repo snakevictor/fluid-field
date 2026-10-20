@@ -1913,3 +1913,25 @@ Entry format:
     about 27 degrees. The edge fade is gone (the relaxation already bounds the
     squeeze), and the shear is now up to 1.2 texels per row (about 50 degrees).
     Offline: across p95 1.64-2.31, shear p95 0.75-1.12.
+-   Fourth look (SS 843): still not curvy enough. Measured as the texture
+    mapping's distortion on vanilla's own texel grid (singular values of its
+    Jacobian; scratchpad strand/plot.py), the deployed build had median
+    anisotropy 1.1-1.6: the run was taken a row at a time, so a turning
+    streak's texture sheared instead of turning, and copying the strands'
+    bunching squeezed it one way. Now:
+    -   The streaks are a least-squares fit over the grid's cells: they follow
+        the strands' way at every cell (weight 1) and keep vanilla's spacing
+        only weakly (0.05, plus 0.03 on each neighbour pair against a
+        checkerboard). Where the water gathers or spreads they close up or
+        open out smoothly.
+    -   The run is solved as their partner (its gradient their gradient turned
+        square), so the texture turns with the flow and shrinks evenly instead
+        of squishing.
+    -   The strands heal to their column over 1.5 s (was 0.6 s): water a bank
+        turns keeps its new way.
+    -   Measured in world units on the mesh first, rows 3-28 units apart
+        weighted the short ones 3x and bent the texture where it looks like
+        vanilla's; the texel grid is the right frame.
+    -   Offline: median anisotropy 1.2-1.4 (deployed 1.1-1.6) at the same or
+        more turn (p95 29-53 degrees); the strands themselves turn p95 39-69.
+        About 0.3-0.5 s per mesh on the bake's thread.

@@ -28,17 +28,19 @@ namespace FluidFieldSim::FallStrands
 		constexpr float MOST_ESCAPE = 14.0f;     ///< Texels: rock wider than this either way lies under the sheet (it runs over)
 		constexpr float MOST_TURN = 1.7320508f;  ///< The most a strand turns from straight down (60 degrees)
 		constexpr float ACROSS_PULL = 0.35f;     ///< Share of gravity across the surface the strands feel (vanilla's UVs already run the right way; in full it rolled them off every dome)
-		constexpr float HEAL = 0.6f;             ///< Seconds a strand turned aside takes to come back to its column
+		constexpr float HEAL = 1.5f;             ///< Seconds a strand turned aside takes to come back to its column
 		constexpr float LEAST_SPACING = 0.5f;    ///< Strands press together to this share of their spacing at most (the streaks squeeze 2x)
 		constexpr float OPEN_SPACING = 3.0f;     ///< A gap this many spacings wide (and 3 texels) is open: the wake behind rock
 		constexpr float AERATION_FADE = 3.0f;    ///< Seconds aeration from strikes and pile-ups fades over
 		constexpr float UNITS_PER_METRE = 70.0f;
 		constexpr float NOWHERE = 1e6f;
-		constexpr int SOFTEN = 3;              ///< Passes softening the streaks' bend on the texture grid
-		constexpr float LEAST_STRETCH = 0.6f;  ///< The texture across stays within this much of vanilla's scale...
-		constexpr float MOST_STRETCH = 1.6f;   ///< ...and this (pressed together, the strands squeezed it 3-6x into ripples)
-		constexpr float MOST_SHEAR = 1.2f;     ///< Texels the streaks shift across per row at most (about 50 degrees: water a bank turns swings back into the flow)
-		constexpr int RELAX = 300;             ///< Passes easing the bend into those bounds
+		constexpr int SOFTEN = 3;              ///< Passes softening the flow's way before the mapping follows it
+		constexpr float MOST_ASLANT = 2.75f;   ///< The streaks turn at most 70 degrees from straight down the mesh
+		constexpr float MOST_SLANT = 2.5f;     ///< A strand's run grows at most this much a row where it runs aslant
+		constexpr float KEEP_SPACING = 0.05f;  ///< How much the streaks keep vanilla's spacing, against following the flow's way (1)
+		constexpr float KEEP_SMOOTH = 0.03f;   ///< And how much each pair of neighbours keeps its own step (no checkerboard)
+		constexpr float TIE = 0.001f;          ///< How strongly the mapping keeps to the strands' labels and vanilla's run (only its offset)
+		constexpr int SOLVE = 1500;            ///< Conjugate-gradient iterations of the mapping's solve
 
 		float Smoothstep(float a_from, float a_to, float a_x)
 		{
@@ -470,9 +472,11 @@ namespace FluidFieldSim::FallStrands
 			a_node.fallen += drop * std::clamp((0.8f - flat) / 0.6f, 0.0f, 1.0f);
 			const float stirred = a_node.aeration * std::exp(-dt / AERATION_FADE) + dt * 1.5f * std::max(a_node.squeeze - 1.5f, 0.0f) + 0.6f * strike / std::max(nextDown, 1.0f);
 			a_node.aeration = std::clamp(std::max(Smoothstep(0.3f * breakup, breakup, a_node.fallen), stirred), 0.0f, 1.0f);
-			// The texture keeps vanilla's speed down the mesh (its UVs carry the artist's speeding up down the drops;
-			// retimed by the physics it stretched and squeezed): the strands only bend it
-			a_node.along += texelV;
+			// The texture keeps vanilla's speed (its UVs carry the artist's speeding up down the drops; retimed by the
+			// physics it stretched and squeezed), along the strand's own way: a row's worth, more where it runs aslant
+			// (taken a row at a time down, a turning streak's texture sheared instead of turning with it)
+			const float slant = (x - a_node.x) * lu / lv;
+			a_node.along += texelV * std::min(std::sqrt(1.0f + slant * slant), MOST_SLANT);
 			a_node.time += dt;
 			a_node.x = x;
 			a_node.across = nextAcross;
@@ -621,55 +625,163 @@ namespace FluidFieldSim::FallStrands
 				fill(b, f, lip[order[right]]);
 			}
 		}
-		// Softened (the offset from straight down): a strand's step from texel to texel stepped the texture's scale
-		// and mip there, a blocky pattern at the bake's resolution
+		// The texture's mapping, on vanilla's own texture grid (the frame its look is drawn in). Its streaks follow the
+		// strands' way at every cell (every turn kept), keeping vanilla's spacing only as far as that allows: where the
+		// water gathers or spreads they close up or open out instead of copying the strands' own bunching (copied, it
+		// squeezed the texture one way: ripples). Its run is their partner, square to them and spaced as they are, so
+		// the texture turns with the flow instead of shearing and where it gathers shrinks evenly instead of squishing.
+		// Each a least squares fit over the grid's cells, solved by conjugate gradients
 		{
-			std::vector<float> offset(count), scratch(count);
-			for (std::size_t i = 0; i < count; i++)
-				offset[i] = result.seed[i] - static_cast<float>(i % w);
-			// Eased into the bounds: each pair of neighbours out of them moves halfway back, both ways, many times over
-			for (int pass = 0; pass < RELAX; pass++) {
-				for (int32_t y = 0; y < h; y++) {
-					for (int32_t x = 1; x < w; x++) {
-						float& a = offset[index(x - 1, y)];
-						float& b = offset[index(x, y)];
-						const float step = b - a, bounded = std::clamp(step, LEAST_STRETCH - 1.0f, MOST_STRETCH - 1.0f);
-						a += 0.5f * (step - bounded);
-						b -= 0.5f * (step - bounded);
-					}
-				}
-				for (int32_t y = 1; y < h; y++) {
-					for (int32_t x = 0; x < w; x++) {
-						if (result.leadIn[index(x, y)] != result.leadIn[index(x, y - 1)])
-							continue;
-						float& a = offset[index(x, y - 1)];
-						float& b = offset[index(x, y)];
-						const float step = b - a, bounded = std::clamp(step, -MOST_SHEAR, MOST_SHEAR);
-						a += 0.5f * (step - bounded);
-						b -= 0.5f * (step - bounded);
-					}
-				}
-			}
+			std::vector<float> slope = result.turn, scratch(count);
 			for (int pass = 0; pass < SOFTEN; pass++) {
 				for (int32_t y = 0; y < h; y++) {
 					for (int32_t x = 0; x < w; x++) {
 						float total = 0.0f, weight = 0.0f;
 						for (int32_t dy = -1; dy <= 1; dy++) {
 							for (int32_t dx = -1; dx <= 1; dx++) {
-								if (!inside(x + dx, y + dy) || result.leadIn[index(x + dx, y + dy)] != result.leadIn[index(x, y)])
+								if (!inside(x + dx, y + dy))
 									continue;
 								const float k = (dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f);
-								total += offset[index(x + dx, y + dy)] * k;
+								total += slope[index(x + dx, y + dy)] * k;
 								weight += k;
 							}
 						}
 						scratch[index(x, y)] = total / weight;
 					}
 				}
-				offset.swap(scratch);
+				slope.swap(scratch);
+			}
+			// Per cell (its four corner texels) the flow's way, and the streaks' wanted step across and down: vanilla's
+			// turned to it
+			const std::size_t cells = static_cast<std::size_t>(w - 1) * (h - 1);
+			const auto cellAt = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(std::clamp(a_y, 0, h - 2)) * (w - 1) + std::clamp(a_x, 0, w - 2); };
+			std::vector<float> wayX(cells), wayY(cells), wantX(cells), wantY(cells);
+			for (int32_t y = 0; y + 1 < h; y++) {
+				for (int32_t x = 0; x + 1 < w; x++) {
+					const std::size_t c = cellAt(x, y), i = index(x, y);
+					const bool lead = result.leadIn[i] || result.leadIn[i + 1] || result.leadIn[i + w] || result.leadIn[i + w + 1];
+					const float tangent = lead ? 0.0f : std::clamp(0.25f * (slope[i] + slope[i + 1] + slope[i + w] + slope[i + w + 1]), -MOST_ASLANT, MOST_ASLANT);
+					const float cosine = 1.0f / std::sqrt(1.0f + tangent * tangent), sine = tangent * cosine;
+					wayX[c] = sine;
+					wayY[c] = cosine;
+					wantX[c] = cosine;
+					wantY[c] = -sine;
+				}
+			}
+			// A cell's gradient from its corners, and back (its transpose)
+			const auto gradient = [&](const std::vector<float>& a_field, int32_t a_x, int32_t a_y, float& a_gx, float& a_gy) {
+				const std::size_t i = index(a_x, a_y);
+				a_gx = 0.5f * ((a_field[i + 1] - a_field[i]) + (a_field[i + w + 1] - a_field[i + w]));
+				a_gy = 0.5f * ((a_field[i + w] - a_field[i]) + (a_field[i + w + 1] - a_field[i + 1]));
+			};
+			const auto spread = [&](std::vector<float>& a_out, int32_t a_x, int32_t a_y, float a_gx, float a_gy) {
+				const std::size_t i = index(a_x, a_y);
+				a_out[i] += 0.5f * (-a_gx - a_gy);
+				a_out[i + 1] += 0.5f * (a_gx - a_gy);
+				a_out[i + w] += 0.5f * (-a_gx + a_gy);
+				a_out[i + w + 1] += 0.5f * (a_gx + a_gy);
+			};
+			// Minimise over the cells (gradient . way)^2 (for the streaks) + keep |gradient - wanted|^2, over neighbour
+			// pairs KEEP_SMOOTH (difference - wanted)^2, and TIE (value - tie)^2
+			const auto solve = [&](std::vector<float>& a_field, const std::vector<float>& a_tie, bool a_follow, float a_keep, const std::vector<float>& a_wantX,
+								   const std::vector<float>& a_wantY) {
+				const auto apply = [&](const std::vector<float>& a_in, std::vector<float>& a_out) {
+					for (std::size_t i = 0; i < count; i++)
+						a_out[i] = TIE * a_in[i];
+					for (int32_t y = 0; y + 1 < h; y++) {
+						for (int32_t x = 0; x + 1 < w; x++) {
+							const std::size_t c = cellAt(x, y);
+							float gx, gy;
+							gradient(a_in, x, y, gx, gy);
+							const float along = a_follow ? gx * wayX[c] + gy * wayY[c] : 0.0f;
+							spread(a_out, x, y, along * wayX[c] + a_keep * gx, along * wayY[c] + a_keep * gy);
+						}
+					}
+					for (int32_t y = 0; y < h; y++) {
+						for (int32_t x = 0; x < w; x++) {
+							const std::size_t i = index(x, y);
+							if (x + 1 < w) {
+								const float d = KEEP_SMOOTH * (a_in[i + 1] - a_in[i]);
+								a_out[i] -= d;
+								a_out[i + 1] += d;
+							}
+							if (y + 1 < h) {
+								const float d = KEEP_SMOOTH * (a_in[i + w] - a_in[i]);
+								a_out[i] -= d;
+								a_out[i + w] += d;
+							}
+						}
+					}
+				};
+				std::vector<float> rhs(count), residual(count), direction(count), product(count);
+				for (std::size_t i = 0; i < count; i++)
+					rhs[i] = TIE * a_tie[i];
+				for (int32_t y = 0; y + 1 < h; y++) {
+					for (int32_t x = 0; x + 1 < w; x++) {
+						const std::size_t c = cellAt(x, y);
+						spread(rhs, x, y, a_keep * a_wantX[c], a_keep * a_wantY[c]);
+					}
+				}
+				// The pairs' wanted steps: the mean of the cells either side
+				for (int32_t y = 0; y < h; y++) {
+					for (int32_t x = 0; x < w; x++) {
+						const std::size_t i = index(x, y);
+						if (x + 1 < w) {
+							const float step = 0.5f * (a_wantX[cellAt(x, y - 1)] + a_wantX[cellAt(x, y)]);
+							rhs[i] -= KEEP_SMOOTH * step;
+							rhs[i + 1] += KEEP_SMOOTH * step;
+						}
+						if (y + 1 < h) {
+							const float step = 0.5f * (a_wantY[cellAt(x - 1, y)] + a_wantY[cellAt(x, y)]);
+							rhs[i] -= KEEP_SMOOTH * step;
+							rhs[i + w] += KEEP_SMOOTH * step;
+						}
+					}
+				}
+				apply(a_field, product);
+				double rr = 0.0;
+				for (std::size_t i = 0; i < count; i++) {
+					residual[i] = rhs[i] - product[i];
+					direction[i] = residual[i];
+					rr += static_cast<double>(residual[i]) * residual[i];
+				}
+				for (int iteration = 0; iteration < SOLVE && rr > 1e-10; iteration++) {
+					apply(direction, product);
+					double pAp = 0.0;
+					for (std::size_t i = 0; i < count; i++)
+						pAp += static_cast<double>(direction[i]) * product[i];
+					if (pAp <= 0.0)
+						break;
+					const auto alpha = static_cast<float>(rr / pAp);
+					double next = 0.0;
+					for (std::size_t i = 0; i < count; i++) {
+						a_field[i] += alpha * direction[i];
+						residual[i] -= alpha * product[i];
+						next += static_cast<double>(residual[i]) * residual[i];
+					}
+					const auto beta = static_cast<float>(next / rr);
+					for (std::size_t i = 0; i < count; i++)
+						direction[i] = residual[i] + beta * direction[i];
+					rr = next;
+				}
+			};
+			const std::vector<float> labels = result.seed;
+			solve(result.seed, labels, true, KEEP_SPACING, wantX, wantY);
+			// The run's wanted steps per cell: the solved streaks' turned square, at their spacing
+			std::vector<float> runX(cells), runY(cells), run(count), straight(count);
+			for (int32_t y = 0; y + 1 < h; y++) {
+				for (int32_t x = 0; x + 1 < w; x++) {
+					float gx, gy;
+					gradient(result.seed, x, y, gx, gy);
+					runX[cellAt(x, y)] = -gy;
+					runY[cellAt(x, y)] = gx;
+				}
 			}
 			for (std::size_t i = 0; i < count; i++)
-				result.seed[i] = static_cast<float>(i % w) + offset[i];
+				run[i] = straight[i] = static_cast<float>(static_cast<int32_t>(i / w) - rowTop);
+			solve(run, straight, false, 1.0f, runX, runY);
+			for (std::size_t i = 0; i < count; i++)
+				result.along[i] = run[i] * texelV;
 		}
 		return result;
 	}
