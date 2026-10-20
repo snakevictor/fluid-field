@@ -2286,3 +2286,8 @@ Entry format:
         vanilla's scroll and zoom) and takes those back out, so the see-through
         texture slid with vanilla's scroll against the flow (SS 884).
 -   References: D67, D69, D79, D86, D92, D93
+-   **Bug (D94's first run): the falls stretched into spikes across the
+    valley.** Renaming the edge blend's `next` to fix a shadowing warning
+    missed its copy-back line, which then read the edge smoothing's `next`
+    (world positions) as moves. Fixed; ComposeShifts now leaves any move that
+    is not finite or past 120 units still and logs the count by source.

@@ -1422,7 +1422,7 @@ namespace FluidFieldSim
 						blended[v] = ring[v].empty() ? shifts[v] : sum / static_cast<float>(ring[v].size()) * std::min(1.0f, taper * 1.5f);
 					}
 					for (const uint32_t v : inner)
-						shifts[v] = next[v];
+						shifts[v] = blended[v];
 				}
 			}
 		}
@@ -1999,16 +1999,29 @@ namespace FluidFieldSim
 
 	void FallSites::ComposeShifts()
 	{
+		float largest = 0.0f;
+		uint32_t broken = 0, badGaps = 0, badPushes = 0;
 		for (const auto& [geometry, base] : vertexClipBase) {
 			const auto gap = gapShifts.find(geometry);
 			const auto push = vertexPushes.find(geometry);
 			const std::size_t gaps = gap != gapShifts.end() ? gap->second.size() : 0, pushes = push != vertexPushes.end() ? push->second.size() : 0;
 			for (std::size_t v = 0; v < std::max(gaps, pushes) && base + v < vertexClips.size(); v++) {
 				RE::NiPoint3 shift(0.0f, 0.0f, 0.0f);
-				if (v < gaps)
+				const auto bad = [&](const RE::NiPoint3& a_p) { return !std::isfinite(a_p.x) || !std::isfinite(a_p.y) || !std::isfinite(a_p.z) || a_p.Length() > MOST_SHIFT; };
+				if (v < gaps) {
+					badGaps += bad(gap->second[v]) ? 1 : 0;
 					shift += gap->second[v];
-				if (v < pushes)
+				}
+				if (v < pushes) {
+					badPushes += bad(push->second[v]) ? 1 : 0;
 					shift += push->second[v];
+				}
+				// D96: a move that is not a number or far past anything we push is a bug: none, and counted
+				if (!std::isfinite(shift.x) || !std::isfinite(shift.y) || !std::isfinite(shift.z) || shift.Length() > MOST_SHIFT) {
+					shift = RE::NiPoint3(0.0f, 0.0f, 0.0f);
+					broken++;
+				}
+				largest = std::max(largest, shift.Length());
 				auto& value = vertexClips[base + v];
 				value[4] = shift.x;
 				value[5] = shift.y;
@@ -2016,6 +2029,8 @@ namespace FluidFieldSim
 			}
 		}
 		vertexClipVersion++;
+		logger::info("[Fluid Field]   vertex moves: largest {:.1f} units; {} broken (not finite or past {:.0f}) left still: {} from the seams, {} from the swell", largest, broken,
+			MOST_SHIFT, badGaps, badPushes);
 	}
 
 	void FallSites::ComputePushes()
