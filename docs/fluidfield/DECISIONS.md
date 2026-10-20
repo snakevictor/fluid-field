@@ -1781,3 +1781,33 @@ Entry format:
 -   What is drawn is unchanged: the bakes' turn keeps both blurs, the cut's
     clip value is the constant the off rock cut gave.
 -   References: D26, D32, D37, D53, D56, D61, D62, D63, D68, D70, D72, D74
+
+## D78: The top-down site flow retired; its consumers fed from the meshes' own sims
+
+-   Date: 2026-10-20
+-   Decision: The site's top-down flow solve (FallStream, D28) and the merged
+    surface built on it (D30, D34, D49, D52) are deleted; what still read them
+    now reads the per-mesh data (D74):
+    -   Whitening on the falls: the bake's own foam (where the water strikes
+        rock), its wake, the run time's aeration and the water below; the
+        stream map (t122) and its 16-unit foam are gone, so a mesh without a
+        bake gets no extra foam. Waterfall Shading's first view shows the
+        bake (dark magenta where a mesh has none); the direction view's full
+        brightness is a constant (420 units/s).
+    -   Pools: worked out on their own once a site's capture is complete
+        (FallSites::ComputePools), the same algorithm and results as the
+        cover the solve was given (D40, D45, D52, D53); the shader's pool cut,
+        the debug arrows and the plunges read it.
+    -   Plunges and spray (FallSites::BuildPlunges, when the bakes are linked,
+        the pools are found or meshes go): texels on a mesh's foot (its lowest
+        160 units) at or under the water below (the pool there, else the
+        engine's highest plane under the mesh's top) with the texel above them
+        out of it; the crossing, every 24 units, is a plunge point, its way the
+        sim's (down the mesh, turned), its speed the fall down the mesh (as
+        SolveBake's, to 900 units/s). Spray at the plunges and where the bake's
+        foam is high (rock strikes). The shallow water's pushes, the plunge
+        foam map and the spray read them unchanged.
+    -   Gone with them: the drops' (lip) spray, the seams' and impacts' foam and
+        spray, and the Waterfall Overlay's mesh and intersection views (it now
+        shows the spray emitters and plunge points).
+-   References: D28, D30, D34, D36, D40, D44, D49, D52, D53, D59, D74, D75

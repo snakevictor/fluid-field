@@ -8,14 +8,6 @@
 
 namespace FluidFieldSim
 {
-	/** @brief One vertex of a site's merged falls surface (D30), on which FallSites finds plunges, impacts and seams. */
-	struct FallSurfaceVertex
-	{
-		float position[3];  ///< World units, on the water surface
-		float speed;        ///< 1 for free flow
-		float normal[3];
-	};
-
 	/** @brief Where the falls throw spray and mist (D31), matching Emitter in FallSpray.hlsl. */
 	struct FallEmitter
 	{

@@ -1,8 +1,8 @@
 // Fluid Field waterfall flow (D28, D32, D59): vanilla's lit falling-water meshes, their textures carried
-// by the falls' solved flow so they part round rock and close up behind it, foamed where the flow piles
-// against rock or squeezes past it, and cut where they run under the pools (D36, D56). FluidField binds
-// the constants, the pools' surface (FallSites::BuildPoolMap) and the flow (FallSites::BuildStreamMap)
-// only for the draws of grounded meshes; Enabled is 0 for every other draw.
+// by each mesh's own solved flow so they part round rock and close up behind it, foamed where the water
+// strikes rock, and cut where they run under the pools (D36, D56). FluidField binds the constants, the
+// pools' surface (FallSites::BuildPoolMap) and each mesh's flow bake only for the draws of grounded
+// meshes; Enabled is 0 for every other draw.
 
 #ifndef FLUID_FIELD_FALL_GROUND_HLSLI
 #define FLUID_FIELD_FALL_GROUND_HLSLI
@@ -15,24 +15,22 @@ namespace FallGround
 		float InverseCell;     // Texels per world unit
 		float Size;            // Texels along each side
 		uint Enabled;          // This draw is a grounded mesh
-		uint DebugMode;        // 0 off; 1: speed as red, foam as green, water as blue; 2: the flow's direction; 3: vanilla's own texture
+		uint DebugMode;        // 0 off; 1: the mesh's bake; 2: the flow's direction; 3: vanilla's own texture
 		float Time;            // Seconds
-		float FlowSpeed;       // World units per second of free-flowing water (speed 1)
+		float PoolFoamHeight;  // World units above the water below over which the falls foam into it
 		float2 Scroll;         // D67: the falls' one scroll (texture coordinates, a repeat at most), and its rate per second
 		float2 TexOffset;      // This mesh's texture scroll (vanilla's), taken back out of its coordinates
 		float3 CameraOffset;   // FrameBuffer::CameraPosAdjust, for the vertex shaders that have none (D38)
 		uint Whitening;        // The falls whiten with their foam and speed (D34); 0 for the debug comparison (D39)
 		uint VertexBase;       // D56: this mesh's first value in VertexClip, or NO_VERTEX_CLIP
 		uint HideUnderwater;   // Falling water under the pools' surface is not drawn (D36)
-		float PoolFoamHeight;  // World units above the water below over which the falls foam into it
-		uint BakeOn;           // D59: this mesh has a flow bake (FlowBake)
 		float2 InverseScale;   // D57: undoes vanilla's animated texture scale (its slow zoom), with TexOffset its scroll
-		float2 GroundPad;
+		uint BakeOn;           // D59: this mesh has a flow bake (FlowBake)
+		float3 GroundPad;
 		float4 BakeRect;  // D59: the bake's texture coordinates: its least u and v, and one over its extent
 	};
 
 	Texture2D<float2> Heights : register(t120);  // The captured rock (x, not read here), and the pools' surface (y, D36)
-	Texture2D<float4> Stream : register(t122);   // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
 	// D56: per vertex of the falls' lit meshes, how far it stands out of the rock (negative inside); D67: and how
 	// much of it shows where it overlaps a mesh leading it (its seam edge fades, dithered, in both passes)
 	/** D69: per vertex of the falls' lit meshes: the rock cut, fade, height above the water below (a), and its move across a seam's gap, in its mesh's space (b). */
@@ -54,6 +52,8 @@ namespace FallGround
 	static const float AERATION_SECONDS = 1.2;
 	static const float AERATION_WHITE = 0.3;
 	static const float NONE = -1.0e6;  // Below this, no ground is captured
+	/** D78: world units per second the flow direction view (DebugMode 2) shows at full brightness. */
+	static const float DEBUG_FLOW_SPEED = 420.0;
 
 	/** The pools' surface over a world position (the water the falls leave and land in), or false where there is none (D36). */
 	bool Pool(float2 a_position, out float a_height)
@@ -146,54 +146,11 @@ namespace FallGround
 		return noise >= smoothstep(0.0, 1.0, a_fade);
 	}
 
-	/**
-	 * The falls' flow at a world position, bilinear over its water texels only: velocity (x, y),
-	 * foam, and how much water is around (0 to 1); and the head the water there has fallen from.
-	 */
-	float4 StreamAt(float2 a_position, out float a_head)
-	{
-		a_head = 0.0;
-		const float2 texel = (a_position - Origin) * InverseCell;
-		const int2 base = int2(floor(texel));
-		if (any(base < 0) || any(base + 1 >= int(Size)))
-			return 0.0;
-		const float2 t = texel - float2(base);
-		float4 s[4];
-		s[0] = Stream.Load(int3(base, 0));
-		s[1] = Stream.Load(int3(base + int2(1, 0), 0));
-		s[2] = Stream.Load(int3(base + int2(0, 1), 0));
-		s[3] = Stream.Load(int3(base + int2(1, 1), 0));
-		const float4 corner = float4((1.0 - t.x) * (1.0 - t.y), t.x * (1.0 - t.y), (1.0 - t.x) * t.y, t.x * t.y);
-		// Weighted by water, so rock beside the flow does not slow it toward 0
-		float3 value = 0.0;
-		float total = 0.0, water = 0.0;
-		[unroll] for (int i = 0; i < 4; i++)
-		{
-			const float wet = s[i].z >= 1.5 ? 1.0 : 0.0;
-			const float k = corner[i] * wet;
-			value += float3(s[i].xy, s[i].z - 2.0) * k;
-			a_head += s[i].w * k;
-			total += k;
-			water += corner[i] * wet;
-		}
-		if (total <= 1e-4)
-			return 0.0;
-		a_head /= total;
-		return float4(value / total, water);
-	}
-
-	float4 StreamAt(float2 a_position)
-	{
-		float head;
-		return StreamAt(a_position, head);
-	}
-
 	/** A pixel of falling water's texture coordinates under the flowmap (Flow). */
 	struct FlowSample
 	{
 		float2 uvA;       // The texture coordinates the water reads
 		float3 velocity;  // World units per second, along the surface
-		float4 stream;    // StreamAt
 		float foam;       // D59: the bake's foam: the rock's rim, the water piling against it and squeezing past it
 		float wake;       // D60: the wake of a rock above, fading down the streaks
 		float runTime;    // D59: seconds the water has run since it came onto this mesh (0 without a bake)
@@ -226,7 +183,6 @@ namespace FallGround
 	FlowSample Flow(float2 a_uv, float3 a_position)
 	{
 		FlowSample result;
-		result.stream = StreamAt(a_position.xy);
 		const float2 uvStill = (a_uv - TexOffset) * InverseScale;
 		const float4 baked = BakeAt(uvStill);
 		result.foam = baked.w;

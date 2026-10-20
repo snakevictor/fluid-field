@@ -88,7 +88,7 @@ struct FluidField : OverlayFeature
 		float FoamStrength = 1.0f;           ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
 		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
 		bool Waterfalls = true;              ///< Waterfalls landing on the simulated water drive it (D22)
-		int WaterfallDebug = 0;              ///< Debug: 1 the flow's speed, foam and water; 2 its streamlines; 3 grounding without the streamline texture
+		int WaterfallDebug = 0;              ///< Debug: 1 the mesh's bake (spread, run time, foam, wake); 2 the texture's direction of motion; 3 grounding without the flow
 		uint32_t FallLayerMask = 0x1;        ///< Which parts of vanilla's falling-water models show while waterfall effects are hidden (bits: inner surface, white-water sheet, streaks, particles)
 		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		bool HideUnderwaterFalls = true;     ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
@@ -299,8 +299,8 @@ private:
 	float fallRate = 0.0f;                           ///< D67: ...and its rate, texture coordinates per second (vanilla's, averaged over the falls' materials)
 
 	/**
-	 * @brief D28 and D36: the pools' surface around the player, where vanilla's falling water is cut, and
-	 * the falls' steady flow, whose streamlines vanilla's streaks follow. Matches FallGroundCB in FallGround.hlsli.
+	 * @brief D28 and D36: the pools' surface around the player, where vanilla's falling water is cut, and each
+	 * lit falls mesh's own flow (D59). Matches FallGroundCB in FallGround.hlsli.
 	 */
 	struct FallGroundData
 	{
@@ -310,29 +310,26 @@ private:
 		uint32_t Enabled;
 		uint32_t DebugMode;
 		float Time;
-		float FlowSpeed;
+		float PoolFoamHeight;
 		float Scroll[2];
 		float TexOffset[2];
 		float CameraOffset[3];
 		uint32_t Whitening;
 		uint32_t VertexBase;
 		uint32_t HideUnderwater;
-		float PoolFoamHeight;
-		uint32_t BakeOn;
 		float InverseScale[2];
-		float Pad[2];
+		uint32_t BakeOn;
+		float Pad[3];
 		float BakeRect[4];
 	};
 	static_assert(sizeof(FallGroundData) == 112);
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
-	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must be FallCapture::CELL: the flows are copied texel for texel
+	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must be FallCapture::CELL: the pools are copied texel for texel
 	static constexpr float DEFAULT_FALL_SCROLL = 0.15f;     ///< D60: vanilla's scroll before it is measured (texture coordinates per second)
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
 	static constexpr float FALL_POOL_FOAM = 26.0f;          ///< World units above the water below over which the falls foam into it (D36)
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> fallGroundSRV;
-	winrt::com_ptr<ID3D11Texture2D> fallStreamTexture;  ///< FallSites::BuildStreamMap: velocity (x, y), foam, water
-	winrt::com_ptr<ID3D11ShaderResourceView> fallStreamSRV;
 	winrt::com_ptr<ID3D11Buffer> fallClipBuffer;  ///< D56: the falls' per-vertex rock cut (FallSites::GetVertexClips)
 	winrt::com_ptr<ID3D11ShaderResourceView> fallClipSRV;
 	uint64_t fallClipVersion = UINT64_MAX;
@@ -349,7 +346,6 @@ private:
 		float scaleTime = 0.0f;  ///< ...as of this fallSurfaceTime
 	};
 	std::unordered_map<const void*, FallScroll> fallScrolls;
-	std::vector<float> fallStreamScratch;
 	winrt::com_ptr<ID3D11Buffer> fallGroundOn;  ///< Constants for grounded draws, rewritten per draw (each mesh's texture scroll)
 	FallGroundData fallGroundData{};
 	winrt::com_ptr<ID3D11Buffer> fallGroundOff;  ///< Enabled = 0, for every other effect draw
@@ -361,10 +357,10 @@ private:
 	winrt::com_ptr<ID3D11Texture2D> fallPlungeTexture;  ///< FallSites::BuildPlungeMap, for the water's foam (D44)
 	winrt::com_ptr<ID3D11ShaderResourceView> fallPlungeSRV;
 	std::vector<float> fallPlungeScratch;
-	/** @brief Rebuilds the ground and flow maps when the sites change or the player moves far; uploads the constants. */
+	/** @brief Rebuilds the ground, pool and plunge maps when the sites change or the player moves far; uploads the constants. */
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
 	void ReleaseFallGround();
-	int fallDebugView = 0;                                   ///< Debug: 1 vanilla's fall meshes, 2 their intersections and the spray emitters (D36); not saved
+	int fallDebugView = 0;                                   ///< Debug: 1 the spray emitters and plunges (D36, D78); not saved
 	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
 	int fallMeshDebug = 0;                                   ///< D75: the falls' meshes debug overlay (FallSites::DrawMeshDebug: 1 wireframe, 2 flow, 3 both); not saved
 	bool hideFallEffects = true;                             ///< Debug: hides vanilla's mist, skirt, splash and rapids meshes; not saved

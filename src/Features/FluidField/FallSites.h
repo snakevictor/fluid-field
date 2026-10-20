@@ -1,7 +1,6 @@
 #pragma once
 
 #include "FallCapture.h"
-#include "FallStream.h"
 #include "FallSurfaceRenderer.h"
 #include "ShallowWaterSolver.h"
 
@@ -133,7 +132,7 @@ namespace FluidFieldSim
 		{
 			RE::NiPointer<RE::BSGeometry> geometry;
 		};
-		/** @brief D61: the surface of the pool over a world point (a site's solved flow's cover), or false where there is none (yet). */
+		/** @brief D61: the surface of the pool over a world point (a site's pools, D78: ComputePools), or false where there is none (yet). */
 		bool PoolLevelAt(float a_x, float a_y, float& a_level) const;
 		/** @brief D66: every engine water plane (water objects and cells' water) over a box: min x, min y, max x, max y, height. */
 		void CollectWaterPlanes(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<std::array<float, 5>>& a_planes) const;
@@ -141,7 +140,7 @@ namespace FluidFieldSim
 		/**
 		 * @brief D59: a lit falls mesh's flow, solved once on its own texture grid (u across, v down), with the
 		 * rock in it found by rays against the game's collision: so the water parts round a boulder through a
-		 * curtain as well as on a flat run, which the top-down solve cannot see. D67: per texel, as floats, the
+		 * curtain as well as on a flat run. D67: per texel, as floats, the
 		 * texture coordinates the water there reads (a straight scroll of the second runs it along the flow):
 		 * across, the streak it is on, carried down the flow from where it came in (so streaks part round a
 		 * boulder and close behind it), and along, the time it has run since the top of its cascade, in texture
@@ -170,15 +169,8 @@ namespace FluidFieldSim
 		 */
 		void BuildGroundMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const;
 
-		/**
-		 * @brief The steady flow of every site whose flow is solved (D28), on a ground map's lattice
-		 * (a_cell must be FallCapture::CELL): per texel the velocity (x, y; 1 for free flow), foam plus 2
-		 * where there is water (so 2 to 3 on water, 0 elsewhere), and the head (D33), world height.
-		 */
-		void BuildStreamMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
-
-		/** @brief D30: every site's spray emitters, from its merged falls surface; changes with GetSurfaceVersion. */
-		const std::vector<FallEmitter>& GetSurfaceEmitters() const { return surfaceEmitters; }
+		/** @brief D30: the falls' spray emitters (D78: from the lit meshes' sims, BuildPlunges); changes with GetSurfaceVersion. */
+		const std::vector<FallEmitter>& GetSurfaceEmitters() const { return sprayEmitters; }
 
 		/**
 		 * @brief D35: the plunges' pushes on the simulated water, in a water level's logical texel
@@ -188,7 +180,7 @@ namespace FluidFieldSim
 		void AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_strength,
 			uint32_t a_maxEmitters, bool a_foam) const;
 
-		uint64_t GetSurfaceVersion() const { return surfaceVersion; }
+		uint64_t GetSurfaceVersion() const { return emitterVersion; }
 
 		/**
 		 * @brief Debug: hides vanilla's mist, skirt, splash and rapids meshes, and the spray particles
@@ -206,9 +198,6 @@ namespace FluidFieldSim
 			Particles  ///< Spray: particle systems and parts with no triangles
 		};
 		static Layer LayerOf(RE::BSGeometry* a_geometry);
-		static constexpr float STREAM_MIN_DEPTH = -2.0f;     ///< Rock is a wall only where it stands this far through the water's surface (D38: rock lying under the falls does not count)
-		static constexpr float STREAM_INFLOW_BAND = 64.0f;   ///< Water within this of the site's top comes in there
-		static constexpr float STREAM_OUTFLOW_BAND = 32.0f;  ///< Water within this of the site's bottom leaves there
 		static constexpr float NO_SURFACE = -1.0e7f;
 
 		/** @brief Counts for the menu: sites by kind. */
@@ -217,8 +206,7 @@ namespace FluidFieldSim
 		/**
 		 * @brief Draws the debug views in the world, within a_range of the camera. a_sites: classified
 		 * references as boxes by class, site footprints at their levels, and a label per site. a_view 1:
-		 * vanilla's falling-water triangles by piece, red inside rock; 2: their seams, where they cross
-		 * the water levels, and the spray emitters by kind (D36).
+		 * the spray emitters by kind and the plunges' pushes on the water below (D36, D78).
 		 */
 		void DrawDebug(ImDrawList* a_drawList, float a_range, bool a_sites, int a_view) const;
 		/**
@@ -233,12 +221,12 @@ namespace FluidFieldSim
 		static constexpr int ARROW_RAYS = 400;  ///< D75: occlusion rays per frame for the debug arrows
 
 		/**
-		 * @brief D36: the pools' surface over a ground map's lattice: per texel the highest water plane
-		 * of any site covering it, else FallCapture::NONE. Falling water under it is hidden.
+		 * @brief D36: the pools' surface over a ground map's lattice (a_cell must be FallCapture::CELL): per texel the
+		 * highest pool of any site covering it (ComputePools), else FallCapture::NONE. Falling water under it is hidden.
 		 */
 		void BuildPoolMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const;
 
-		/** @brief D44: per texel of a ground map's lattice, how strongly the falls plunge into the water there (0 to 1). */
+		/** @brief D44: per texel of a ground map's lattice, how strongly the falls plunge into the water there (0 to 1), round the plunge points (D78). */
 		void BuildPlungeMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
 
 		/** @brief Prints each cell's summary to the game console too, not only the log. */
@@ -397,116 +385,57 @@ namespace FluidFieldSim
 		static std::shared_ptr<BakeField> SolveBake(const BakeJob& a_job);
 		std::unordered_set<std::string> loggedParts;  ///< Diagnostics: falling-water mesh parts already logged
 
-		/** @brief A triangle of vanilla's falling-water surface, in world space. */
-		struct SourceTriangle
-		{
-			float position[3][3];
-			float normal[3][3];  ///< Smooth, facing up
-			float uv[3][2];
-			uint32_t piece;  ///< Which vanilla mesh it is from
-		};
-		struct SurfaceMesh
-		{
-			std::vector<FallSurfaceVertex> vertices;
-			std::vector<uint32_t> indices;
-			std::vector<FallEmitter> emitters;             ///< Where it throws spray and mist (D31)
-			uint32_t culled = 0;                           ///< Source triangles dropped where another piece lies on them
-			std::vector<float> seamFoam;                   ///< Per flow cell, 0 to 1: foam where vanilla's pieces meet (D34)
-			uint32_t seams = 0;                            ///< Points found along the seams
-			uint32_t impacts = 0;                          ///< Where falling water lands (D49)
-			std::vector<FallPlunge> plunges;               ///< Where falling water meets the water below (D35)
-			std::vector<std::array<float, 4>> seamPoints;  ///< Position and kind (0: an open edge against another piece, 1: two pieces crossing), for the debug view
-			std::vector<std::array<float, 6>> waterLines;  ///< Where vanilla's pieces cross a water level, as segments, for the debug view
-		};
-		/** @brief A site's steady flow, solved on its capture's lattice on a worker thread. */
-		struct Stream
-		{
-			std::future<FallStream::Result> pending;
-			FallStream::Result result;
-			float originX = 0.0f;
-			float originY = 0.0f;
-			uint32_t siteId = 0;
-			bool ready = false;
-			std::vector<FallSurfaceVertex> vertices;  ///< Its surface mesh, built once the flow is solved
-			std::vector<uint32_t> indices;
-			std::vector<FallEmitter> emitters;
-			std::vector<float> seamFoam;  ///< SurfaceMesh::seamFoam
-			std::vector<FallPlunge> plunges;
-			std::vector<std::array<float, 4>> seamPoints;
-			std::vector<std::array<float, 6>> waterLines;
-			std::vector<SourceTriangle> sources;
-			float top = 0.0f;           ///< The site's top level (D50)
-			std::vector<float> levels;  ///< The site's water levels, where the falls meet bodies of water  ///< Vanilla's falling-water triangles, gathered when the solve starts
-			std::future<SurfaceMesh> meshPending;
-			bool meshReady = false;
-		};
-		/** @brief Vanilla's falling-water surfaces at a site: each model's lit surface, else its largest effect layer. */
-		void GatherSources(const Site& a_site, std::vector<SourceTriangle>& a_sources) const;
 		/**
-		 * @brief One merged surface for a site (D30): vanilla's pieces, where two lie on each other only
-		 * the upper kept, each subdivided evenly to about SURFACE_EDGE, welded where they meet, with the
-		 * solved flow's coordinates at every vertex. Runs on a worker thread.
+		 * @brief D78: from the lit meshes' sims (bakeFields): the plunge points, where each mesh goes into the water below
+		 * (texels on its foot at or under that water, coming from above it), grouped every PLUNGE_WATER_SPACING, with the
+		 * sim's way there and the speed of its fall; and the spray emitters, at the plunges and where its water strikes
+		 * rock (the bake's foam). Run when the bakes are linked, the pools are found, or meshes go.
 		 */
-		static SurfaceMesh BuildMergedSurface(const FallStream::Result& a_flow, float a_originX, float a_originY, const std::vector<SourceTriangle>& a_sources, const std::vector<float>& a_levels);
-		static constexpr float SURFACE_EDGE = 12.0f;       ///< Target edge length of the subdivided surface, world units
-		static constexpr uint32_t SURFACE_MAX_SPLIT = 10;  ///< Most pieces a source edge is split into
-		static constexpr float SURFACE_WELD = 1.0f;        ///< Vertices this close are one
-		static constexpr float MERGE_FACE_UP = 0.35f;      ///< Only pieces at least this level are merged (curtains are left)
-		static constexpr float MERGE_BUCKET = 64.0f;       ///< World units per bucket when finding overlaps
-		static constexpr float MERGE_ABOVE = 3.0f;         ///< Only near-duplicates are dropped: another piece this close above or below covers a triangle
-		static constexpr float MERGE_BELOW = 3.0f;
-		static constexpr float EMITTER_SPACING = 20.0f;       ///< World units between spray emitters
-		static constexpr float SEAM_STEP = 10.0f;             ///< World units between points tested along a piece's open edges (D34)
-		static constexpr float SEAM_REACH = 20.0f;            ///< An open edge this close to another piece is a seam
-		static constexpr float SEAM_FOAM_RADIUS = 44.0f;      ///< World units round a seam that foam (D47: wider, so the seam is covered)
-		static constexpr float LIP_CELLS = 2.0f;              ///< Flow cells downstream the surface is looked at for a drop (D35)
-		static constexpr float LIP_DROP = 40.0f;              ///< The surface falling this far within LIP_CELLS is a drop
-		static constexpr float PLUNGE_BAND = 14.0f;           ///< World units round a lower water level where falling water plunges
-		static constexpr float PLUNGE_HEAD = 40.0f;           ///< Water that has fallen at least this far below its head plunges
-		static constexpr float PLUNGE_STEEP = 0.8f;           ///< Water this steep (upward normal) at a pool's level plunges whatever its head (D46)
+		void BuildPlunges();
+		static constexpr float PLUNGE_BAND = 14.0f;           ///< A texel this near above the water below, or under it, is in it
+		static constexpr float PLUNGE_HEAD = 40.0f;           ///< Water that has fallen at least this far down its mesh plunges
+		static constexpr float PLUNGE_STEEP = 0.8f;           ///< Water this steep (upward normal) at the water's level plunges whatever its head (D46)
 		static constexpr float PLUNGE_SPACING = 16.0f;        ///< World units between plunge emitters
-		static constexpr float PLUNGE_WATER_SPACING = 24.0f;  ///< World units between the plunge's pushes on the simulated water
+		static constexpr float PLUNGE_WATER_SPACING = 24.0f;  ///< World units between the plunge points (their pushes on the simulated water)
 		static constexpr float OBSTACLE_FOAM = 0.6f;          ///< Rock foam at least this much throws spray
 		static constexpr float OBSTACLE_SPACING = 28.0f;
-		static constexpr float IMPACT_FLAT = 0.7f;   ///< D49: a vertex at least this flat (upward normal) can be where water lands...
-		static constexpr float IMPACT_STEEP = 0.5f;  ///< ...with water this steep within IMPACT_CELLS upstream...
-		static constexpr int32_t IMPACT_CELLS = 2;
-		static constexpr float IMPACT_DROP = 30.0f;         ///< ...standing at least this far above it
-		static constexpr float IMPACT_SPACING = 24.0f;      ///< World units between impact points
-		static constexpr float ROCK_HIT_MARGIN = 4.0f;      ///< D52: an edge of the falls this far under the rock is inside it...
-		static constexpr float ROCK_HIT_DEPTH = 12.0f;      ///< ...and one end at least this far in, for a rock hit
-		static constexpr float ROCK_HIT_SPACING = 20.0f;    ///< World units between rock-hit emitters
-		static constexpr float FALL_VIEW_RANGE = 2500.0f;   ///< World units round the camera the fall debug views draw (D36)
-		static constexpr float SEAM_CROSSING_ANGLE = 0.9f;  ///< Pieces crossing with their faces closer than this (cosine) lie along each other: no seam shows (D36)
+		static constexpr float FALL_VIEW_RANGE = 2500.0f;   ///< World units round the camera the fall debug view draws (D36)
 		static constexpr float POOL_COVER = 2.0f;           ///< Water lying under a pool's surface by more than this is the pool's (D36)
 		static constexpr float POOL_BAND = 24.0f;           ///< D40: a pool's water is where vanilla's falling water lies at its level, within this...
 		static constexpr float TOP_POOL_CUT = 24.0f;        ///< D50: how much deeper the falls are cut under the pool they come from
 		static constexpr float POOL_SHALLOW = 160.0f;       ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
 		static constexpr int32_t POOL_LIP_REACH = 3;        ///< D53: cells round a pool's cell its falls are looked at: a fall dropping away below the level...
 		static constexpr float POOL_LIP_DROP = 48.0f;       ///< ...this far, with none coming in from above it, is the pool's lip or a curtain under it: not the pool's water
-		static constexpr float BURIED_MARGIN = 120.0f;      ///< D49: falling water this far under the captured rock is buried in it
-		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;  ///< World units round each point where the falls meet a pool that the water foams (D44, D47)
-		static constexpr float PLUNGE_FOAM_BAND = 40.0f;    ///< The falls' vertices this close to a pool's surface meet it (D47, D50)
+		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;  ///< World units round each point where the falls meet the water below that it foams (D44, D47)
 		static constexpr float PLUNGE_PUSH_OFFSET = 32.0f;  ///< D56: world units downstream of the falls' line the plunge pushes the water
 		static constexpr float PLUNGE_MARK = 0.001f;        ///< D56: radial speed marking a fall's emitter (its own foam rate) without spreading the water
 		static constexpr float PLUNGE_PULL = 0.2f;          ///< Fraction of the falling water's speed the water below is pulled along at
-		static constexpr int FLOW_DILATE_CELLS = 6;         ///< Cells the flow is carried past the water's edge for the surface
-		std::vector<std::future<SurfaceMesh>> retiredMeshes;
-		/** @brief Gathers every site's surface into one list. */
-		void RefreshSurfaces();
-		std::vector<FallSurfaceVertex> surfaceVertices;
-		std::vector<FallEmitter> surfaceEmitters;
+		std::vector<FallEmitter> sprayEmitters;
+		std::vector<FallPlunge> plungePoints;
+		uint64_t emitterVersion = 0;
 		const WaterSurfaces* waterSurfaces = nullptr;  ///< Set each update: the engine's water, for the pools' extent (D45)
-		std::vector<FallPlunge> surfacePlunges;
-		uint64_t surfaceVersion = 0;
-		std::unordered_map<uint64_t, Stream> streams;          ///< By Site::captureKey
-		std::vector<std::future<FallStream::Result>> retired;  ///< Solves of sites that went away, left to finish
-		/** @brief Vanilla's falling-water meshes of a site seen from above, and its pools, on a lattice; NO_SURFACE where none. */
-		void RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface, bool a_planes = true,
+		/** @brief D78: a site's pools on its capture's lattice: per cell the pool's surface, NO_SURFACE where there is none. */
+		struct PoolField
+		{
+			float originX = 0.0f;
+			float originY = 0.0f;
+			uint32_t width = 0;
+			uint32_t height = 0;
+			float top = 0.0f;  ///< The site's top level: the pool the falls come from is cut deeper (D50)
+			std::vector<float> cover;
+		};
+		std::unordered_map<uint64_t, PoolField> sitePools;  ///< By Site::captureKey
+		/** @brief Vanilla's falling-water meshes of a site seen from above on a lattice (NO_SURFACE where none), and the lowest and highest of them along their edges too (D53). */
+		void RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface,
 			std::vector<float>* a_lowest = nullptr, std::vector<float>* a_highest = nullptr) const;
-		void StartStream(const Site& a_site, const FallCapture& a_capture);
-		/** @brief Starts the flows of newly captured sites and collects finished ones. */
-		void PollStreams();
+		/**
+		 * @brief D40, D45, D52, D53: where a site's pools have water, on its capture's lattice: the engine's water height
+		 * sampled per cell, kept where the rock lies under it and the falls lie at its level or the bed is shallow, and
+		 * flooded through the basin; a pool's lip and the air under a curtain falling from it are kept out.
+		 */
+		void ComputePools(const Site& a_site, const FallCapture& a_capture);
+		/** @brief D78: works out the pools of newly captured sites. */
+		void PollPools();
 		bool hideEffects = false;
 		uint32_t layerMask = 0x1;                                                                ///< Bit per Layer: the falling-water model parts shown while effects are hidden
 		std::unordered_map<const RE::NiAVObject*, RE::NiPointer<RE::NiAVObject>> hiddenEffects;  ///< Culled effect 3D: whole effect references, and the spray particles in the falling-water models

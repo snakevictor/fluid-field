@@ -275,6 +275,10 @@ namespace FluidFieldSim
 			flowBakeVersion++;
 		flowBakes.clear();
 		bakeFields.clear();
+		if (!plungePoints.empty() || !sprayEmitters.empty())
+			emitterVersion++;
+		plungePoints.clear();
+		sprayEmitters.clear();
 		vertexClipBase.clear();
 		groundVersion++;
 		refs.clear();
@@ -283,7 +287,7 @@ namespace FluidFieldSim
 		waterSignature = 0;
 		updatesUntilScan = 0;
 		cellSummaries.clear();
-		// Captures stay: turning waterfalls back on finds the same sites, and their rock, at once
+		// Captures stay, and their pools: turning waterfalls back on finds the same sites, and their rock, at once
 	}
 
 	const FallCapture* FallSites::GetCapture(const Site& a_site) const
@@ -292,7 +296,7 @@ namespace FluidFieldSim
 		return it != captures.end() ? &it->second : nullptr;
 	}
 
-	void FallSites::RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface, bool a_planes,
+	void FallSites::RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface,
 		std::vector<float>* a_lowest, std::vector<float>* a_highest) const
 	{
 		a_surface.assign(static_cast<std::size_t>(a_width) * a_height, NO_SURFACE);
@@ -386,1222 +390,153 @@ namespace FluidFieldSim
 				return RE::BSVisit::BSVisitControl::kContinue;
 			});
 		}
-		// The site's pools
-		for (const auto& plane : a_planes ? a_site.planes : std::vector<Site::Plane>{}) {
-			int32_t x0, x1, y0, y1;
-			range(plane.min[0], plane.max[0], a_originX, a_width, x0, x1);
-			range(plane.min[1], plane.max[1], a_originY, a_height, y0, y1);
-			for (int32_t y = y0; y <= y1; y++) {
-				for (int32_t x = x0; x <= x1; x++) {
-					float& stored = a_surface[window(x, y)];
-					stored = std::max(stored, plane.height);
-				}
-			}
-		}
 	}
 
-	void FallSites::StartStream(const Site& a_site, const FallCapture& a_capture)
+	void FallSites::ComputePools(const Site& a_site, const FallCapture& a_capture)
 	{
-		FallStream::Input input;
-		input.width = a_capture.GetWidth();
-		input.height = a_capture.GetHeight();
-		input.cell = FallCapture::CELL;
-		std::vector<float> lowest, highest;
-		RasterSurface(a_site, a_capture.GetOriginX(), a_capture.GetOriginY(), FallCapture::CELL, static_cast<int32_t>(input.width), static_cast<int32_t>(input.height), input.surface, false, &lowest,
-			&highest);
-		input.kind.assign(input.surface.size(), FallStream::Wall);
-		input.bed.assign(input.surface.size(), 0.0f);
-		for (uint32_t y = 0; y < input.height; y++) {
-			for (uint32_t x = 0; x < input.width; x++)
-				input.bed[static_cast<std::size_t>(y) * input.width + x] = a_capture.At(x, y);
+		// D78: the pools' water over a site's capture, worked out once the capture is complete (it was the old top-down
+		// flow solve's cover, D36, worked out as that solve started): the shader's pool cut, the debug arrows and the
+		// plunges read it
+		PoolField pools;
+		pools.originX = a_capture.GetOriginX();
+		pools.originY = a_capture.GetOriginY();
+		pools.width = a_capture.GetWidth();
+		pools.height = a_capture.GetHeight();
+		pools.top = a_site.top;
+		const auto cw = static_cast<int32_t>(pools.width);
+		const auto ch = static_cast<int32_t>(pools.height);
+		const std::size_t cells = static_cast<std::size_t>(pools.width) * pools.height;
+		std::vector<float> surface, lowest, highest;
+		RasterSurface(a_site, pools.originX, pools.originY, FallCapture::CELL, cw, ch, surface, &lowest, &highest);
+		std::vector<float> bed(cells, 0.0f);
+		for (uint32_t y = 0; y < pools.height; y++) {
+			for (uint32_t x = 0; x < pools.width; x++)
+				bed[static_cast<std::size_t>(y) * pools.width + x] = a_capture.At(x, y);
 		}
 		// D40, D45: the pools' water. The site's paired planes miss pools (a tier between two falls is in
 		// none), and planes are whole cells, far wider than their water, so the engine's own water height
 		// is sampled on every cell. A pool's water is where the rock lies under it and either the falls'
 		// own surface lies at its level or the rock lies shallow under it (a river or pool bed, not the face
 		// of a fall)
-		input.cover.assign(input.surface.size(), NO_SURFACE);
+		pools.cover.assign(cells, NO_SURFACE);
+		std::vector<float> levels(cells, NO_SURFACE);
+		std::vector<std::size_t> open;
+		// D53: the lowest and highest of the falls round each cell (POOL_LIP_REACH): where they drop
+		// away below a pool's level with none coming in from above it, the cell is the pool's lip or
+		// the air under a curtain falling from it, which the top-down rock calls deep water
+		std::vector<float> lowNear(cells, FLT_MAX), highNear(cells, NO_SURFACE);
 		{
-			const auto cw = static_cast<int32_t>(input.width);
-			const auto ch = static_cast<int32_t>(input.height);
-			std::vector<float> levels(input.surface.size(), NO_SURFACE);
-			std::vector<std::size_t> open;
-			// D53: the lowest and highest of the falls round each cell (POOL_LIP_REACH): where they drop
-			// away below a pool's level with none coming in from above it, the cell is the pool's lip or
-			// the air under a curtain falling from it, which the top-down rock calls deep water
-			std::vector<float> lowNear(input.surface.size(), FLT_MAX), highNear(input.surface.size(), NO_SURFACE);
-			{
-				std::vector<float> lowRow(input.surface.size(), FLT_MAX), highRow(input.surface.size(), NO_SURFACE);
-				for (int32_t y = 0; y < ch; y++) {
-					for (int32_t x = 0; x < cw; x++) {
-						const std::size_t i = static_cast<std::size_t>(y) * cw + x;
-						for (int32_t d = std::max(0, x - POOL_LIP_REACH); d <= std::min(cw - 1, x + POOL_LIP_REACH); d++) {
-							lowRow[i] = std::min(lowRow[i], lowest[static_cast<std::size_t>(y) * cw + d]);
-							highRow[i] = std::max(highRow[i], highest[static_cast<std::size_t>(y) * cw + d]);
-						}
-					}
-				}
-				for (int32_t y = 0; y < ch; y++) {
-					for (int32_t x = 0; x < cw; x++) {
-						const std::size_t i = static_cast<std::size_t>(y) * cw + x;
-						for (int32_t d = std::max(0, y - POOL_LIP_REACH); d <= std::min(ch - 1, y + POOL_LIP_REACH); d++) {
-							lowNear[i] = std::min(lowNear[i], lowRow[static_cast<std::size_t>(d) * cw + x]);
-							highNear[i] = std::max(highNear[i], highRow[static_cast<std::size_t>(d) * cw + x]);
-						}
-					}
-				}
-			}
-			const auto dropsAway = [&](std::size_t a_i, float a_level) {
-				return lowNear[a_i] < a_level - POOL_LIP_DROP && highNear[a_i] < a_level + POOL_BAND && a_level > a_site.bottom + POOL_BAND;
-			};
-			uint32_t lips = 0;
+			std::vector<float> lowRow(cells, FLT_MAX), highRow(cells, NO_SURFACE);
 			for (int32_t y = 0; y < ch; y++) {
 				for (int32_t x = 0; x < cw; x++) {
 					const std::size_t i = static_cast<std::size_t>(y) * cw + x;
-					float level = NO_SURFACE;
-					if (waterSurfaces) {
-						float height;
-						if (waterSurfaces->SampleHeight(a_capture.GetOriginX() + static_cast<float>(x) * FallCapture::CELL, a_capture.GetOriginY() + static_cast<float>(y) * FallCapture::CELL, height) !=
-							WaterSurfaces::Source::None)
-							level = height;
-					}
-					levels[i] = level;
-					const float bed = input.bed[i];
-					const float mesh = input.surface[i];
-					if (level <= NO_SURFACE || bed <= FallCapture::NONE || bed >= level - POOL_COVER)
-						continue;
-					const bool meshAtLevel = mesh > NO_SURFACE && mesh >= level - POOL_BAND;
-					const bool bottomPool = level <= a_site.bottom + POOL_BAND;  // D50: the pool the falls end in: nothing lower to mistake it for
-					const bool shallowBed = bed >= level - POOL_SHALLOW;
-					if (dropsAway(i, level)) {
-						lips++;
-						continue;
-					}
-					if (meshAtLevel || shallowBed || bottomPool) {
-						input.cover[i] = level;
-						open.push_back(i);
+					for (int32_t d = std::max(0, x - POOL_LIP_REACH); d <= std::min(cw - 1, x + POOL_LIP_REACH); d++) {
+						lowRow[i] = std::min(lowRow[i], lowest[static_cast<std::size_t>(y) * cw + d]);
+						highRow[i] = std::max(highRow[i], highest[static_cast<std::size_t>(y) * cw + d]);
 					}
 				}
 			}
-			// D52: from there through the basin: cells at the same level with the rock under it, where no
-			// falls run below the surface (a falls' face under a pool's plane stops the flood), so a deep
-			// middle tier's water is found too
-			while (!open.empty()) {
-				const std::size_t i = open.back();
-				open.pop_back();
-				const auto x = static_cast<int32_t>(i % cw), y = static_cast<int32_t>(i / cw);
-				const float level = input.cover[i];
-				static constexpr int32_t DX[4] = { 1, -1, 0, 0 }, DY[4] = { 0, 0, 1, -1 };
-				for (int k = 0; k < 4; k++) {
-					const int32_t nx = x + DX[k], ny = y + DY[k];
-					if (nx < 0 || ny < 0 || nx >= cw || ny >= ch)
-						continue;
-					const std::size_t j = static_cast<std::size_t>(ny) * cw + nx;
-					if (input.cover[j] > NO_SURFACE || std::abs(levels[j] - level) > 1.0f)
-						continue;
-					const float bed = input.bed[j];
-					const float mesh = input.surface[j];
-					if (bed <= FallCapture::NONE || bed >= level - POOL_COVER || (mesh > NO_SURFACE && mesh < level - POOL_BAND) || dropsAway(j, level))
-						continue;
-					input.cover[j] = level;
-					open.push_back(j);
+			for (int32_t y = 0; y < ch; y++) {
+				for (int32_t x = 0; x < cw; x++) {
+					const std::size_t i = static_cast<std::size_t>(y) * cw + x;
+					for (int32_t d = std::max(0, y - POOL_LIP_REACH); d <= std::min(ch - 1, y + POOL_LIP_REACH); d++) {
+						lowNear[i] = std::min(lowNear[i], lowRow[static_cast<std::size_t>(d) * cw + x]);
+						highNear[i] = std::max(highNear[i], highRow[static_cast<std::size_t>(d) * cw + x]);
+					}
 				}
 			}
-			for (std::size_t i = 0; i < input.surface.size(); i++)
-				input.surface[i] = std::max(input.surface[i], input.cover[i]);
-			logger::info("[Fluid Field] Waterfall site #{} pools: {} cells, {} kept out as lips and curtains", a_site.id,
-				std::count_if(input.cover.begin(), input.cover.end(), [](float a_cover) { return a_cover > NO_SURFACE; }), lips);
 		}
-		uint32_t water = 0, inflow = 0, outflow = 0;
-		for (uint32_t y = 0; y < input.height; y++) {
-			for (uint32_t x = 0; x < input.width; x++) {
-				const std::size_t i = static_cast<std::size_t>(y) * input.width + x;
-				const float bed = a_capture.At(x, y);
-				const float surface = input.surface[i];
-				// Water only where its surface stands above the rock: rock standing through it is a wall
-				if (bed <= FallCapture::NONE || surface <= NO_SURFACE || surface < bed + STREAM_MIN_DEPTH)
+		const auto dropsAway = [&](std::size_t a_i, float a_level) {
+			return lowNear[a_i] < a_level - POOL_LIP_DROP && highNear[a_i] < a_level + POOL_BAND && a_level > a_site.bottom + POOL_BAND;
+		};
+		uint32_t lips = 0;
+		for (int32_t y = 0; y < ch; y++) {
+			for (int32_t x = 0; x < cw; x++) {
+				const std::size_t i = static_cast<std::size_t>(y) * cw + x;
+				float level = NO_SURFACE;
+				if (waterSurfaces) {
+					float height;
+					if (waterSurfaces->SampleHeight(pools.originX + static_cast<float>(x) * FallCapture::CELL, pools.originY + static_cast<float>(y) * FallCapture::CELL, height) !=
+						WaterSurfaces::Source::None)
+						level = height;
+				}
+				levels[i] = level;
+				const float rock = bed[i];
+				const float mesh = surface[i];
+				if (level <= NO_SURFACE || rock <= FallCapture::NONE || rock >= level - POOL_COVER)
 					continue;
-				input.kind[i] = FallStream::Water;
-			}
-		}
-		// The open boundaries are a rim only: water near the top or bottom that borders no water (the
-		// edge of where it comes in or leaves). Inside, even the pools are solved
-		std::vector<uint8_t> kind = input.kind;
-		const auto w = static_cast<int32_t>(input.width);
-		const auto h = static_cast<int32_t>(input.height);
-		for (int32_t y = 0; y < h; y++) {
-			for (int32_t x = 0; x < w; x++) {
-				const std::size_t i = static_cast<std::size_t>(y) * w + x;
-				if (input.kind[i] != FallStream::Water)
+				const bool meshAtLevel = mesh > NO_SURFACE && mesh >= level - POOL_BAND;
+				const bool bottomPool = level <= a_site.bottom + POOL_BAND;  // D50: the pool the falls end in: nothing lower to mistake it for
+				const bool shallowBed = rock >= level - POOL_SHALLOW;
+				if (dropsAway(i, level)) {
+					lips++;
 					continue;
-				bool rim = false;
-				for (int32_t dy = -1; dy <= 1 && !rim; dy++) {
-					for (int32_t dx = -1; dx <= 1 && !rim; dx++) {
-						const int32_t nx = x + dx;
-						const int32_t ny = y + dy;
-						rim = nx < 0 || ny < 0 || nx >= w || ny >= h || input.kind[static_cast<std::size_t>(ny) * w + nx] == FallStream::Wall;
-					}
 				}
-				const float surface = input.surface[i];
-				if (rim && surface >= a_site.top - STREAM_INFLOW_BAND) {
-					kind[i] = FallStream::Inflow;
-					inflow++;
-				} else if (rim && surface <= a_site.bottom + STREAM_OUTFLOW_BAND) {
-					kind[i] = FallStream::Outflow;
-					outflow++;
-				} else {
-					water++;
+				if (meshAtLevel || shallowBed || bottomPool) {
+					pools.cover[i] = level;
+					open.push_back(i);
 				}
 			}
 		}
-		// D36: water under a pool's surface (vanilla's meshes dipping into the water above or below) is the
-		// pool's: under the top it is where the falls' water comes from, under the bottom where it goes.
-		// The flow then starts where the falls leave the water above, and ends where they meet the water below
-		{
-			const std::vector<float>& cover = input.cover;
-			for (std::size_t i = 0; i < kind.size(); i++) {
-				if (kind[i] != FallStream::Water || cover[i] <= NO_SURFACE || cover[i] < input.surface[i] - POOL_COVER)
+		// D52: from there through the basin: cells at the same level with the rock under it, where no
+		// falls run below the surface (a falls' face under a pool's plane stops the flood), so a deep
+		// middle tier's water is found too
+		while (!open.empty()) {
+			const std::size_t i = open.back();
+			open.pop_back();
+			const auto x = static_cast<int32_t>(i % cw), y = static_cast<int32_t>(i / cw);
+			const float level = pools.cover[i];
+			static constexpr int32_t DX[4] = { 1, -1, 0, 0 }, DY[4] = { 0, 0, 1, -1 };
+			for (int k = 0; k < 4; k++) {
+				const int32_t nx = x + DX[k], ny = y + DY[k];
+				if (nx < 0 || ny < 0 || nx >= cw || ny >= ch)
 					continue;
-				if (cover[i] >= a_site.top - STREAM_INFLOW_BAND) {
-					kind[i] = FallStream::Inflow;
-					inflow++;
-					water--;
-				} else if (cover[i] <= a_site.bottom + STREAM_OUTFLOW_BAND) {
-					kind[i] = FallStream::Outflow;
-					outflow++;
-					water--;
-				}
+				const std::size_t j = static_cast<std::size_t>(ny) * cw + nx;
+				if (pools.cover[j] > NO_SURFACE || std::abs(levels[j] - level) > 1.0f)
+					continue;
+				const float rock = bed[j];
+				const float mesh = surface[j];
+				if (rock <= FallCapture::NONE || rock >= level - POOL_COVER || (mesh > NO_SURFACE && mesh < level - POOL_BAND) || dropsAway(j, level))
+					continue;
+				pools.cover[j] = level;
+				open.push_back(j);
 			}
 		}
-		input.kind.swap(kind);
-		logger::info("[Fluid Field] Waterfall site #{} flow: solving {}x{}, {} water, {} inflow, {} outflow cells", a_site.id, input.width, input.height, water, inflow, outflow);
-		auto& stream = streams[a_site.captureKey];
-		stream.originX = a_capture.GetOriginX();
-		stream.originY = a_capture.GetOriginY();
-		stream.siteId = a_site.id;
-		stream.ready = false;
-		stream.meshReady = false;
-		GatherSources(a_site, stream.sources);
-		stream.levels = a_site.levels;
-		stream.top = a_site.top;
-		stream.pending = std::async(std::launch::async, [input = std::move(input)]() { return FallStream::Solve(input); });
+		logger::info("[Fluid Field] Waterfall site #{} pools: {} cells, {} kept out as lips and curtains", a_site.id,
+			std::count_if(pools.cover.begin(), pools.cover.end(), [](float a_cover) { return a_cover > NO_SURFACE; }), lips);
+		sitePools[a_site.captureKey] = std::move(pools);
 	}
 
-	void FallSites::PollStreams()
+	void FallSites::PollPools()
 	{
-		// Retired solves finish on their own; let them go once done
-		std::erase_if(retired, [](std::future<FallStream::Result>& a_future) { return a_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; });
-		std::erase_if(retiredMeshes, [](std::future<SurfaceMesh>& a_future) { return a_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready; });
 		bool changed = false;
 		for (const auto& site : sites) {
-			if (!site.captureKey)
+			if (!site.captureKey || sitePools.contains(site.captureKey))
 				continue;
 			const FallCapture* capture = GetCapture(site);
 			if (!capture || !capture->IsComplete())
 				continue;
-			auto it = streams.find(site.captureKey);
-			if (it == streams.end()) {
-				StartStream(site, *capture);
-				continue;
-			}
-			auto& stream = it->second;
-			// The merged surface, once its build is done
-			if (stream.ready && !stream.meshReady && stream.meshPending.valid() && stream.meshPending.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-				SurfaceMesh mesh = stream.meshPending.get();
-				stream.vertices.swap(mesh.vertices);
-				stream.indices.swap(mesh.indices);
-				stream.emitters.swap(mesh.emitters);
-				stream.seamFoam.swap(mesh.seamFoam);
-				stream.plunges.swap(mesh.plunges);
-				stream.seamPoints.swap(mesh.seamPoints);
-				stream.waterLines.swap(mesh.waterLines);
-				stream.meshReady = true;
-				changed = true;
-				uint32_t kinds[3]{};
-				for (const auto& emitter : stream.emitters)
-					kinds[std::clamp(static_cast<int>(emitter.kind), 0, 2)]++;
-				logger::info("[Fluid Field] Waterfall site #{} surface: {} source triangles ({} under another piece dropped), {} vertices, {} triangles, {} seam points ({} impacts); emitters: {} at drops, {} at plunges and impacts, {} striking; {} plunge pushes",
-					stream.siteId, stream.sources.size(), mesh.culled, stream.vertices.size(), stream.indices.size() / 3, mesh.seams, mesh.impacts, kinds[0], kinds[1], kinds[2], stream.plunges.size());
-				continue;
-			}
-			if (stream.ready || !stream.pending.valid() || stream.pending.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-				continue;
-			stream.result = stream.pending.get();
-			stream.ready = true;
-			stream.meshPending = std::async(std::launch::async, [flow = stream.result, originX = stream.originX, originY = stream.originY, sources = stream.sources, levels = stream.levels]() {
-				return BuildMergedSurface(flow, originX, originY, sources, levels);
-			});
+			ComputePools(site, *capture);
 			changed = true;
-			float speed = 0.0f, foam = 0.0f;
-			uint32_t water = 0;
-			for (std::size_t i = 0; i < stream.result.water.size(); i++) {
-				if (!stream.result.water[i])
-					continue;
-				speed += stream.result.speed[i];
-				foam += stream.result.foam[i] > 0.5f ? 1.0f : 0.0f;
-				water++;
-			}
-			logger::info("[Fluid Field] Waterfall site #{} flow: solved in {} sweeps (last change {:.3f}), mean speed {:.2f}, {:.0f} foam cells of {}", stream.siteId,
-				stream.result.iterations, stream.result.residual, water ? speed / static_cast<float>(water) : 0.0f, foam, water);
 		}
-		if (changed) {
-			groundVersion++;
-			RefreshSurfaces();
-			RefreshHiddenEffects();
-		}
-	}
-
-	void FallSites::GatherSources(const Site& a_site, std::vector<SourceTriangle>& a_sources) const
-	{
-		a_sources.clear();
-		uint32_t piece = 0;
-		for (const uint32_t member : a_site.members) {
-			if (refs[member].cls != FxClass::Body)
-				continue;
-			auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refs[member].formID);
-			auto* root = ref ? ref->Get3D() : nullptr;
-			if (!root)
-				continue;
-			// The water's own surface: the lit one where the model has it, else its largest effect layer
-			std::vector<RE::BSGeometry*> lit;
-			RE::BSGeometry* largest = nullptr;
-			uint32_t largestCount = 0;
-			RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-				auto* triShape = a_geometry->AsTriShape();
-				auto* renderer = a_geometry->GetGeometryRuntimeData().rendererData;
-				if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || triShape->GetTrishapeRuntimeData().triangleCount == 0)
-					return RE::BSVisit::BSVisitControl::kContinue;
-				auto* property = a_geometry->GetGeometryRuntimeData().shaderProperty.get();
-				if (property && netimmerse_cast<RE::BSLightingShaderProperty*>(property)) {
-					lit.push_back(a_geometry);
-				} else if (property && netimmerse_cast<RE::BSEffectShaderProperty*>(property) && triShape->GetTrishapeRuntimeData().triangleCount > largestCount) {
-					largest = a_geometry;
-					largestCount = triShape->GetTrishapeRuntimeData().triangleCount;
-				}
-				return RE::BSVisit::BSVisitControl::kContinue;
-			});
-			if (lit.empty() && largest)
-				lit.push_back(largest);
-			for (auto* geometry : lit) {
-				auto* triShape = geometry->AsTriShape();
-				auto* renderer = geometry->GetGeometryRuntimeData().rendererData;
-				const auto& counts = triShape->GetTrishapeRuntimeData();
-				const uint32_t stride = renderer->vertexDesc.GetSize();
-				const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-				const bool hasUV = renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV);
-				const uint32_t uvOffset = hasUV ? renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0) : 0;
-				if (stride < positionOffset + 12)
-					continue;
-				const auto& transform = geometry->world;
-				std::vector<RE::NiPoint3> positions(counts.vertexCount);
-				std::vector<std::array<float, 2>> uvs(counts.vertexCount, { 0.0f, 0.0f });
-				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					const uint8_t* data = renderer->rawVertexData + static_cast<std::size_t>(v) * stride;
-					float local[3];
-					std::memcpy(local, data + positionOffset, sizeof(local));
-					positions[v] = transform * RE::NiPoint3(local[0], local[1], local[2]);
-					if (hasUV) {
-						const auto* uv = reinterpret_cast<const uint16_t*>(data + uvOffset);
-						uvs[v] = { DirectX::PackedVector::XMConvertHalfToFloat(uv[0]), DirectX::PackedVector::XMConvertHalfToFloat(uv[1]) };
-					}
-				}
-				// Smooth normals: each vertex's faces, area weighted
-				std::vector<RE::NiPoint3> normals(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
-				for (uint32_t t = 0; t < counts.triangleCount; t++) {
-					const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(t) * 3;
-					if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
-						continue;
-					const RE::NiPoint3 face = (positions[index[1]] - positions[index[0]]).Cross(positions[index[2]] - positions[index[0]]);
-					for (int k = 0; k < 3; k++)
-						normals[index[k]] += face;
-				}
-				for (auto& normal : normals) {
-					const float length = normal.Length();
-					// Upward, so every piece agrees which side is the top
-					normal = length > 1e-6f ? normal / length : RE::NiPoint3(0.0f, 0.0f, 1.0f);
-					if (normal.z < 0.0f)
-						normal = -normal;
-				}
-				for (uint32_t t = 0; t < counts.triangleCount; t++) {
-					const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(t) * 3;
-					if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
-						continue;
-					SourceTriangle triangle{};
-					for (int k = 0; k < 3; k++) {
-						const auto& p = positions[index[k]];
-						const auto& n = normals[index[k]];
-						triangle.position[k][0] = p.x;
-						triangle.position[k][1] = p.y;
-						triangle.position[k][2] = p.z;
-						triangle.normal[k][0] = n.x;
-						triangle.normal[k][1] = n.y;
-						triangle.normal[k][2] = n.z;
-						triangle.uv[k][0] = uvs[index[k]][0];
-						triangle.uv[k][1] = uvs[index[k]][1];
-					}
-					triangle.piece = piece;
-					a_sources.push_back(triangle);
-				}
-				piece++;
-			}
-		}
-	}
-
-	FallSites::SurfaceMesh FallSites::BuildMergedSurface(const FallStream::Result& a_flow, float a_originX, float a_originY, const std::vector<SourceTriangle>& a_sources, const std::vector<float>& a_levels)
-	{
-		SurfaceMesh mesh;
-		const auto w = static_cast<int32_t>(a_flow.width);
-		const auto h = static_cast<int32_t>(a_flow.height);
-		const float cell = FallCapture::CELL;
-
-		// The flow carried a few cells past the water's edge (each dry cell takes its wet neighbours'
-		// mean), so vanilla's pieces reaching beyond the solved water keep one texture field
-		FallStream::Result dilated = a_flow;
-		std::vector<uint8_t> known = a_flow.water;
-		for (int pass = 0; pass < FLOW_DILATE_CELLS; pass++) {
-			std::vector<uint8_t> next = known;
-			for (int32_t y = 0; y < h; y++) {
-				for (int32_t x = 0; x < w; x++) {
-					const std::size_t i = static_cast<std::size_t>(y) * w + x;
-					if (known[i])
-						continue;
-					float sums[4]{};
-					int count = 0;
-					for (int32_t dy = -1; dy <= 1; dy++) {
-						for (int32_t dx = -1; dx <= 1; dx++) {
-							const int32_t nx = x + dx, ny = y + dy;
-							if (nx < 0 || ny < 0 || nx >= w || ny >= h)
-								continue;
-							const std::size_t j = static_cast<std::size_t>(ny) * w + nx;
-							if (!known[j])
-								continue;
-							sums[0] += dilated.speed[j];
-							sums[1] += dilated.vx[j];
-							sums[2] += dilated.vy[j];
-							sums[3] += dilated.head[j];
-							count++;
-						}
-					}
-					if (!count)
-						continue;
-					const float k = 1.0f / static_cast<float>(count);
-					dilated.speed[i] = sums[0] * k;
-					dilated.vx[i] = sums[1] * k;
-					dilated.vy[i] = sums[2] * k;
-					dilated.head[i] = sums[3] * k;
-					next[i] = 1;
-				}
-			}
-			known.swap(next);
-		}
-		dilated.water = known;
-		const FallStream::Result& flowField = dilated;
-
-		// The flow under a point, bilinear over its water cells; the weight is how much water is around
-		struct Flow
-		{
-			float speed, water, vx, vy, head;
-		};
-		const auto flowAt = [&](float a_x, float a_y) {
-			Flow flow{};
-			const float fx = (a_x - a_originX) / cell;
-			const float fy = (a_y - a_originY) / cell;
-			const auto ix = static_cast<int32_t>(std::floor(fx));
-			const auto iy = static_cast<int32_t>(std::floor(fy));
-			const float tx = fx - static_cast<float>(ix);
-			const float ty = fy - static_cast<float>(iy);
-			float weight = 0.0f;
-			for (int32_t dy = 0; dy <= 1; dy++) {
-				for (int32_t dx = 0; dx <= 1; dx++) {
-					const int32_t x = ix + dx;
-					const int32_t y = iy + dy;
-					if (x < 0 || y < 0 || x >= w || y >= h)
-						continue;
-					const std::size_t i = static_cast<std::size_t>(y) * w + x;
-					const float k = (dx ? tx : 1.0f - tx) * (dy ? ty : 1.0f - ty);
-					flow.water += flowField.water[i] ? k : 0.0f;
-					if (!flowField.water[i])
-						continue;
-					flow.speed += flowField.speed[i] * k;
-					flow.vx += flowField.vx[i] * k;
-					flow.vy += flowField.vy[i] * k;
-					flow.head += flowField.head[i] * k;
-					weight += k;
-				}
-			}
-			if (weight > 1e-4f) {
-				const float inverse = 1.0f / weight;
-				flow.speed *= inverse;
-				flow.vx *= inverse;
-				flow.vy *= inverse;
-				flow.head *= inverse;
-			}
-			return flow;
-		};
-
-		// Where two pieces lie on each other, only the upper one stays: the doubled layers, and their
-		// seams, go. Steep parts (curtains) are left as they are
-		const auto faceUp = [](const SourceTriangle& a_t) {
-			const float ax = a_t.position[1][0] - a_t.position[0][0], ay = a_t.position[1][1] - a_t.position[0][1], az = a_t.position[1][2] - a_t.position[0][2];
-			const float bx = a_t.position[2][0] - a_t.position[0][0], by = a_t.position[2][1] - a_t.position[0][1], bz = a_t.position[2][2] - a_t.position[0][2];
-			const float nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
-			const float length = std::sqrt(nx * nx + ny * ny + nz * nz);
-			return length > 1e-6f ? std::abs(nz) / length : 0.0f;
-		};
-		const auto heightAt = [](const SourceTriangle& a_t, float a_x, float a_y, float& a_z) {
-			const auto& a = a_t.position[0];
-			const auto& b = a_t.position[1];
-			const auto& c = a_t.position[2];
-			const float area = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
-			if (std::abs(area) < 1e-3f)
-				return false;
-			const float w0 = ((b[0] - a_x) * (c[1] - a_y) - (c[0] - a_x) * (b[1] - a_y)) / area;
-			const float w1 = ((c[0] - a_x) * (a[1] - a_y) - (a[0] - a_x) * (c[1] - a_y)) / area;
-			const float w2 = 1.0f - w0 - w1;
-			if (w0 < -1e-3f || w1 < -1e-3f || w2 < -1e-3f)
-				return false;
-			a_z = w0 * a[2] + w1 * b[2] + w2 * c[2];
-			return true;
-		};
-		std::unordered_map<int64_t, std::vector<uint32_t>> buckets;
-		const auto bucketKey = [](int32_t a_x, int32_t a_y) { return (static_cast<int64_t>(a_x) << 32) ^ static_cast<uint32_t>(a_y); };
-		for (uint32_t t = 0; t < a_sources.size(); t++) {
-			const auto& triangle = a_sources[t];
-			if (faceUp(triangle) < MERGE_FACE_UP)
-				continue;
-			float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
-			for (int k = 0; k < 3; k++) {
-				for (int a = 0; a < 2; a++) {
-					lo[a] = std::min(lo[a], triangle.position[k][a]);
-					hi[a] = std::max(hi[a], triangle.position[k][a]);
-				}
-			}
-			for (auto by = static_cast<int32_t>(std::floor(lo[1] / MERGE_BUCKET)); by <= static_cast<int32_t>(std::floor(hi[1] / MERGE_BUCKET)); by++) {
-				for (auto bx = static_cast<int32_t>(std::floor(lo[0] / MERGE_BUCKET)); bx <= static_cast<int32_t>(std::floor(hi[0] / MERGE_BUCKET)); bx++)
-					buckets[bucketKey(bx, by)].push_back(t);
-			}
-		}
-		std::vector<uint8_t> kept(a_sources.size(), 1);
-		for (uint32_t t = 0; t < a_sources.size(); t++) {
-			const auto& triangle = a_sources[t];
-			if (faceUp(triangle) < MERGE_FACE_UP)
-				continue;
-			// Covered at its centre and at its corners pulled a little inward
-			bool covered = true;
-			for (int probe = 0; probe < 4 && covered; probe++) {
-				float px = 0.0f, py = 0.0f, pz = 0.0f;
-				for (int k = 0; k < 3; k++) {
-					const float weight = probe == 3 ? 1.0f / 3.0f : (k == probe ? 0.6f : 0.2f);
-					px += triangle.position[k][0] * weight;
-					py += triangle.position[k][1] * weight;
-					pz += triangle.position[k][2] * weight;
-				}
-				bool found = false;
-				const auto it = buckets.find(bucketKey(static_cast<int32_t>(std::floor(px / MERGE_BUCKET)), static_cast<int32_t>(std::floor(py / MERGE_BUCKET))));
-				if (it != buckets.end()) {
-					for (const uint32_t other : it->second) {
-						if (a_sources[other].piece == triangle.piece)
-							continue;
-						float oz;
-						if (!heightAt(a_sources[other], px, py, oz))
-							continue;
-						const float above = oz - pz;
-						if (above < -MERGE_BELOW || above > MERGE_ABOVE)
-							continue;
-						if (a_sources[other].piece < triangle.piece) {
-							found = true;
-							break;
-						}
-					}
-				}
-				covered = found;
-			}
-			if (covered)
-				kept[t] = 0;
-		}
-
-		// Each piece subdivided evenly, so it has no cracks of its own; vertices welded where pieces meet
-		std::vector<uint32_t> splits;
-		for (const auto& triangle : a_sources) {
-			if (splits.size() <= triangle.piece)
-				splits.resize(triangle.piece + 1, 1);
-			float longest = 0.0f;
-			for (int k = 0; k < 3; k++) {
-				const auto& a = triangle.position[k];
-				const auto& b = triangle.position[(k + 1) % 3];
-				longest = std::max(longest, std::sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) + (b[2] - a[2]) * (b[2] - a[2])));
-			}
-			splits[triangle.piece] = std::max(splits[triangle.piece], std::clamp(static_cast<uint32_t>(std::ceil(longest / SURFACE_EDGE)), 1u, SURFACE_MAX_SPLIT));
-		}
-		std::unordered_map<int64_t, uint32_t> welded;
-		const auto weldKey = [](const float a_p[3]) {
-			const auto qx = static_cast<int64_t>(std::lround(a_p[0] / SURFACE_WELD)) & 0x1FFFFF;
-			const auto qy = static_cast<int64_t>(std::lround(a_p[1] / SURFACE_WELD)) & 0x1FFFFF;
-			const auto qz = static_cast<int64_t>(std::lround(a_p[2] / SURFACE_WELD)) & 0x1FFFFF;
-			return (qx << 42) | (qy << 21) | qz;
-		};
-		const auto vertexFor = [&](const SourceTriangle& a_t, float a_u, float a_v) {
-			const float w0 = 1.0f - a_u - a_v;
-			FallSurfaceVertex vertex{};
-			for (int k = 0; k < 3; k++) {
-				vertex.position[k] = a_t.position[0][k] * w0 + a_t.position[1][k] * a_u + a_t.position[2][k] * a_v;
-				vertex.normal[k] = a_t.normal[0][k] * w0 + a_t.normal[1][k] * a_u + a_t.normal[2][k] * a_v;
-			}
-			const auto key = weldKey(vertex.position);
-			if (const auto it = welded.find(key); it != welded.end())
-				return it->second;
-			const float length = std::sqrt(vertex.normal[0] * vertex.normal[0] + vertex.normal[1] * vertex.normal[1] + vertex.normal[2] * vertex.normal[2]);
-			for (float& component : vertex.normal)
-				component = length > 1e-6f ? component / length : 0.0f;
-			vertex.speed = flowAt(vertex.position[0], vertex.position[1]).speed;
-			const auto index = static_cast<uint32_t>(mesh.vertices.size());
-			mesh.vertices.push_back(vertex);
-			welded.emplace(key, index);
-			return index;
-		};
-		for (uint32_t t = 0; t < a_sources.size(); t++) {
-			if (!kept[t])
-				continue;
-			const auto& triangle = a_sources[t];
-			const uint32_t n = splits[triangle.piece];
-			const float step = 1.0f / static_cast<float>(n);
-			std::vector<uint32_t> grid((n + 1) * (n + 2) / 2);
-			const auto at = [&](uint32_t a_i, uint32_t a_j) -> uint32_t& { return grid[a_i * (n + 1) - a_i * (a_i - 1) / 2 + a_j]; };
-			for (uint32_t i = 0; i <= n; i++) {
-				for (uint32_t j = 0; j + i <= n; j++)
-					at(i, j) = vertexFor(triangle, static_cast<float>(i) * step, static_cast<float>(j) * step);
-			}
-			for (uint32_t i = 0; i < n; i++) {
-				for (uint32_t j = 0; j + i < n; j++) {
-					const uint32_t a = at(i, j), b = at(i + 1, j), c = at(i, j + 1);
-					if (a != b && b != c && a != c)
-						mesh.indices.insert(mesh.indices.end(), { a, b, c });
-					if (i + j + 1 < n) {
-						const uint32_t d = at(i + 1, j + 1);
-						if (b != d && d != c && b != c)
-							mesh.indices.insert(mesh.indices.end(), { b, d, c });
-					}
-				}
-			}
-		}
-		mesh.culled = static_cast<uint32_t>(std::count(kept.begin(), kept.end(), static_cast<uint8_t>(0)));
-
-		// Spray and mist (D35) where the falls throw it, with the water's own motion there: at the drops
-		// (where the surface falls away downstream), at the plunges (where falling water meets the water
-		// below), and where the water strikes something (rock in its way, vanilla's pieces meeting)
-		constexpr float KEPT_GRAVITY = 687.0f * 0.6f;
-		const auto motionAt = [&](const float a_p[3], const float a_n[3], float a_direction[3]) {
-			const Flow flow = flowAt(a_p[0], a_p[1]);
-			const float vx = flow.vx * FallStream::BASE_SPEED, vy = flow.vy * FallStream::BASE_SPEED;
-			const float solved = std::sqrt(vx * vx + vy * vy);
-			const float nz = std::max(a_n[2], 0.15f);
-			float lifted[3] = { vx, vy, -(a_n[0] * vx + a_n[1] * vy) / nz };
-			float down[3] = { a_n[0] * a_n[2], a_n[1] * a_n[2], -1.0f + a_n[2] * a_n[2] };
-			const auto normalize = [](float a_v[3]) {
-				const float length = std::sqrt(a_v[0] * a_v[0] + a_v[1] * a_v[1] + a_v[2] * a_v[2]);
-				for (int k = 0; k < 3; k++)
-					a_v[k] = length > 1e-5f ? a_v[k] / length : 0.0f;
-				return length;
-			};
-			const bool moving = flow.water > 0.1f && normalize(lifted) > 1e-3f;
-			const bool sloped = normalize(down) > 1e-3f;
-			const float steep = 1.0f - std::clamp((a_n[2] - 0.35f) / 0.25f, 0.0f, 1.0f);
-			const float agree = sloped && moving ? std::clamp((lifted[0] * down[0] + lifted[1] * down[1] + lifted[2] * down[2]) * 4.0f, 0.0f, 1.0f) : 0.0f;
-			for (int k = 0; k < 3; k++)
-				a_direction[k] = moving ? lifted[k] + (down[k] - lifted[k]) * steep * agree : down[k];
-			normalize(a_direction);
-			const float speed = moving ? solved + (std::max(solved, FallStream::BASE_SPEED) - solved) * steep * agree : FallStream::BASE_SPEED * 0.5f;
-			const float drop = std::max(flow.head - a_p[2], 0.0f);
-			return std::sqrt(speed * speed + 2.0f * KEPT_GRAVITY * drop);
-		};
-		// D37: vanilla's meshes reach on into rock, the ground and the pools, where nothing of them shows:
-		// nothing is thrown from there
-		const auto buried = [&](const float a_p[3], bool a_pools) {
-			const auto x = static_cast<int32_t>(std::lround((a_p[0] - a_originX) / cell));
-			const auto y = static_cast<int32_t>(std::lround((a_p[1] - a_originY) / cell));
-			if (x < 0 || y < 0 || x >= w || y >= h)
-				return false;
-			const std::size_t i = static_cast<std::size_t>(y) * w + x;
-			if (a_flow.bed.size() == static_cast<std::size_t>(w) * h && a_flow.bed[i] > FallCapture::NONE && a_p[2] < a_flow.bed[i] - BURIED_MARGIN)
-				return true;
-			return a_pools && a_flow.cover.size() == static_cast<std::size_t>(w) * h && a_p[2] < a_flow.cover[i] - POOL_COVER;
-		};
-		std::unordered_map<int64_t, FallEmitter> chosen;
-		const auto offer = [&](const float a_p[3], const float a_n[3], float a_strength, FallEmitterKind a_kind, float a_spacing) {
-			// Plunges stand at the pool's own level: only the rock hides them
-			if (buried(a_p, a_kind != FallEmitterKind::Plunge))
-				return;
-			const auto key = (static_cast<int64_t>(std::floor(a_p[0] / a_spacing)) << 40) ^ (static_cast<int64_t>(std::floor(a_p[1] / a_spacing)) << 18) ^
-			                 static_cast<int64_t>(std::floor(a_p[2] / a_spacing)) ^ (static_cast<int64_t>(a_kind) << 60);
-			auto [it, added] = chosen.try_emplace(key);
-			if (!added && it->second.strength >= a_strength)
-				return;
-			FallEmitter& emitter = it->second;
-			for (int k = 0; k < 3; k++) {
-				emitter.position[k] = a_p[k];
-				emitter.normal[k] = a_n[k];
-			}
-			emitter.strength = std::clamp(a_strength, 0.0f, 1.0f);
-			emitter.speed = motionAt(a_p, a_n, emitter.direction);
-			emitter.kind = static_cast<float>(a_kind);
-		};
-		float bottomLevel = FLT_MAX, topLevel = -FLT_MAX;
-		for (const float level : a_levels) {
-			bottomLevel = std::min(bottomLevel, level);
-			topLevel = std::max(topLevel, level);
-		}
-
-		// The drops: water cells whose surface falls away a cell or two downstream, but not just before them
-		{
-			const auto levelAt = [&](float a_x, float a_y, float& a_level) {
-				const auto ix = static_cast<int32_t>(std::floor(a_x));
-				const auto iy = static_cast<int32_t>(std::floor(a_y));
-				const float tx = a_x - static_cast<float>(ix), ty = a_y - static_cast<float>(iy);
-				float sum = 0.0f, weight = 0.0f;
-				for (int32_t dy = 0; dy <= 1; dy++) {
-					for (int32_t dx = 0; dx <= 1; dx++) {
-						const int32_t x = ix + dx, y = iy + dy;
-						if (x < 0 || y < 0 || x >= w || y >= h || !a_flow.water[static_cast<std::size_t>(y) * w + x])
-							continue;
-						const float k = (dx ? tx : 1.0f - tx) * (dy ? ty : 1.0f - ty);
-						sum += a_flow.level[static_cast<std::size_t>(y) * w + x] * k;
-						weight += k;
-					}
-				}
-				if (weight < 0.2f)
-					return false;
-				a_level = sum / weight;
-				return true;
-			};
-			for (int32_t y = 0; y < h; y++) {
-				for (int32_t x = 0; x < w; x++) {
-					const std::size_t i = static_cast<std::size_t>(y) * w + x;
-					if (!a_flow.water[i] || a_flow.speed[i] < 0.05f)
-						continue;
-					const float dx = a_flow.vx[i] / a_flow.speed[i], dy = a_flow.vy[i] / a_flow.speed[i];
-					const float here = a_flow.level[i];
-					float down, up;
-					if (!levelAt(static_cast<float>(x) + dx * LIP_CELLS, static_cast<float>(y) + dy * LIP_CELLS, down))
-						continue;
-					if (!levelAt(static_cast<float>(x) - dx * LIP_CELLS, static_cast<float>(y) - dy * LIP_CELLS, up))
-						up = here;
-					const float drop = here - down;
-					if (drop < LIP_DROP || up - here > drop * 0.5f)
-						continue;
-					const float p[3] = { a_originX + static_cast<float>(x) * cell, a_originY + static_cast<float>(y) * cell, here };
-					const float n[3] = { 0.0f, 0.0f, 1.0f };
-					offer(p, n, std::clamp(drop / (LIP_DROP * 3.0f), 0.5f, 1.0f), FallEmitterKind::Lip, EMITTER_SPACING);  // D53: where the water above goes over
-				}
-			}
-		}
-
-		// D53: rock in the water's way, as the solve sees it: water piling against rock or squeezed past it
-		// (a boulder standing out of a run, where no piece of the falls dips into it) throws spray too
-		if (a_flow.rockFoam.size() == static_cast<std::size_t>(w) * h) {
-			for (int32_t y = 0; y < h; y++) {
-				for (int32_t x = 0; x < w; x++) {
-					const std::size_t i = static_cast<std::size_t>(y) * w + x;
-					if (!a_flow.water[i] || a_flow.rockFoam[i] < OBSTACLE_FOAM)
-						continue;
-					const float p[3] = { a_originX + static_cast<float>(x) * cell, a_originY + static_cast<float>(y) * cell, a_flow.level[i] };
-					const float n[3] = { 0.0f, 0.0f, 1.0f };
-					offer(p, n, std::clamp(0.4f + 0.6f * a_flow.rockFoam[i], 0.0f, 1.0f), FallEmitterKind::Strike, OBSTACLE_SPACING);
-				}
-			}
-		}
-
-		// The plunges and the rock in the way: on the surface's own vertices
-		std::unordered_map<int64_t, FallPlunge> plunges;
-		for (const auto& vertex : mesh.vertices) {
-			const Flow flow = flowAt(vertex.position[0], vertex.position[1]);
-			// D45: the pool's own level under the vertex (the engine's water), not only the site's paired levels
-			float nearestLevel = FLT_MAX;
-			{
-				const auto cx = static_cast<int32_t>(std::lround((vertex.position[0] - a_originX) / cell));
-				const auto cy = static_cast<int32_t>(std::lround((vertex.position[1] - a_originY) / cell));
-				for (int32_t dy = -1; dy <= 1; dy++) {
-					for (int32_t dx = -1; dx <= 1; dx++) {
-						const int32_t x = cx + dx, y = cy + dy;
-						if (x < 0 || y < 0 || x >= w || y >= h || a_flow.cover.size() != static_cast<std::size_t>(w) * h)
-							continue;
-						const float level = a_flow.cover[static_cast<std::size_t>(y) * w + x];
-						if (level > NO_SURFACE && std::abs(vertex.position[2] - level) < std::abs(vertex.position[2] - nearestLevel))
-							nearestLevel = level;
-					}
-				}
-			}
-			for (const float level : a_levels) {
-				if (level < topLevel - 1.0f && std::abs(vertex.position[2] - level) < std::abs(vertex.position[2] - nearestLevel))
-					nearestLevel = level;
-			}
-			const bool atLevel = std::abs(vertex.position[2] - nearestLevel) < PLUNGE_BAND;
-			const float fallen = flow.head - vertex.position[2];
-			// D46: or steep water reaching the level (where the solve is slow, its head says little)
-			const bool steepIn = vertex.normal[2] < PLUNGE_STEEP;
-			if (atLevel && (fallen > PLUNGE_HEAD || steepIn)) {
-				const float strength = std::clamp(std::max(fallen / (PLUNGE_HEAD * 4.0f), steepIn ? 0.6f : 0.0f), 0.25f, 1.0f);
-				offer(vertex.position, vertex.normal, strength, FallEmitterKind::Plunge, PLUNGE_SPACING);
-				const auto key = (static_cast<int64_t>(std::floor(vertex.position[0] / PLUNGE_WATER_SPACING)) << 32) ^
-				                 static_cast<uint32_t>(static_cast<int32_t>(std::floor(vertex.position[1] / PLUNGE_WATER_SPACING)));
-				auto [it, added] = plunges.try_emplace(key);
-				if (added || it->second.strength < strength) {
-					FallPlunge& plunge = it->second;
-					for (int k = 0; k < 3; k++)
-						plunge.position[k] = vertex.position[k];
-					plunge.position[2] = nearestLevel;
-					float direction[3];
-					plunge.speed = motionAt(vertex.position, vertex.normal, direction);
-					const float horizontal = std::sqrt(direction[0] * direction[0] + direction[1] * direction[1]);
-					plunge.direction[0] = horizontal > 1e-3f ? direction[0] / horizontal : 0.0f;
-					plunge.direction[1] = horizontal > 1e-3f ? direction[1] / horizontal : 0.0f;
-					plunge.strength = strength;
-				}
-			}
-		}
-
-		// D49: impacts, where falling water lands: a flatter vertex with steep water just upstream of it,
-		// standing well above it. Each throws spray up and out by how far the water fell, whitens the falls
-		// round it and makes fog, as vanilla's foam cards there pretended to
-		std::vector<std::array<float, 6>> impacts;  // Position, strength, unused x2
-		{
-			std::vector<float> cellSteep(static_cast<std::size_t>(w) * h, 1.0f);
-			std::vector<float> cellTop(static_cast<std::size_t>(w) * h, -FLT_MAX);
-			const auto cellOf = [&](const float a_p[3], int32_t& a_x, int32_t& a_y) {
-				a_x = static_cast<int32_t>(std::floor((a_p[0] - a_originX) / cell));
-				a_y = static_cast<int32_t>(std::floor((a_p[1] - a_originY) / cell));
-				return a_x >= 0 && a_y >= 0 && a_x < w && a_y < h;
-			};
-			for (const auto& vertex : mesh.vertices) {
-				int32_t x, y;
-				if (!cellOf(vertex.position, x, y) || buried(vertex.position, true))
-					continue;
-				const std::size_t i = static_cast<std::size_t>(y) * w + x;
-				cellSteep[i] = std::min(cellSteep[i], vertex.normal[2]);
-				cellTop[i] = std::max(cellTop[i], vertex.position[2]);
-			}
-			std::unordered_map<int64_t, std::array<float, 6>> best;
-			for (const auto& vertex : mesh.vertices) {
-				if (vertex.normal[2] < IMPACT_FLAT)
-					continue;
-				int32_t x, y;
-				if (!cellOf(vertex.position, x, y) || buried(vertex.position, true))
-					continue;
-				const Flow flow = flowAt(vertex.position[0], vertex.position[1]);
-				const float speed = std::sqrt(flow.vx * flow.vx + flow.vy * flow.vy);
-				// Upstream: against the flow, or every way round where the flow says little
-				float drop = 0.0f;
-				for (int32_t dy = -IMPACT_CELLS; dy <= IMPACT_CELLS; dy++) {
-					for (int32_t dx = -IMPACT_CELLS; dx <= IMPACT_CELLS; dx++) {
-						const int32_t nx = x + dx, ny = y + dy;
-						if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= h)
-							continue;
-						if (speed > 0.05f && (static_cast<float>(dx) * flow.vx + static_cast<float>(dy) * flow.vy) > 0.0f)
-							continue;  // Downstream
-						const std::size_t j = static_cast<std::size_t>(ny) * w + nx;
-						if (cellSteep[j] < IMPACT_STEEP)
-							drop = std::max(drop, cellTop[j] - vertex.position[2]);
-					}
-				}
-				if (drop < IMPACT_DROP)
-					continue;
-				const float strength = std::clamp(drop / (IMPACT_DROP * 4.0f), 0.35f, 1.0f);
-				const auto key = (static_cast<int64_t>(std::floor(vertex.position[0] / IMPACT_SPACING)) << 32) ^
-				                 static_cast<uint32_t>(static_cast<int32_t>(std::floor(vertex.position[1] / IMPACT_SPACING)));
-				auto [it, added] = best.try_emplace(key);
-				if (added || it->second[3] < strength)
-					it->second = { vertex.position[0], vertex.position[1], vertex.position[2], strength, 0.0f, 0.0f };
-			}
-			for (const auto& [key, impact] : best)
-				impacts.push_back(impact);  // D52: foam only; the spray comes from rock hits and seams
-			mesh.impacts = static_cast<uint32_t>(impacts.size());
-		}
-		for (const auto& [key, plunge] : plunges)
-			mesh.plunges.push_back(plunge);
-
-		// D52: rock hits, where the falls strike something that is not water: an edge of vanilla's falls
-		// that runs from above the captured rock into it. Spray thrown by the water's speed there, foam round it
-		std::vector<std::array<float, 6>> rockHits;
-		{
-			const auto bedAt = [&](float a_x, float a_y, float& a_bed) {
-				const auto x = static_cast<int32_t>(std::lround((a_x - a_originX) / cell));
-				const auto y = static_cast<int32_t>(std::lround((a_y - a_originY) / cell));
-				if (x < 0 || y < 0 || x >= w || y >= h || a_flow.bed.size() != static_cast<std::size_t>(w) * h)
-					return false;
-				a_bed = a_flow.bed[static_cast<std::size_t>(y) * w + x];
-				return a_bed > FallCapture::NONE;
-			};
-			std::unordered_map<int64_t, std::array<float, 6>> best;
-			for (const auto& triangle : a_sources) {
-				for (int k = 0; k < 3; k++) {
-					const float* a = triangle.position[k];
-					const float* b = triangle.position[(k + 1) % 3];
-					float bedA, bedB;
-					if (!bedAt(a[0], a[1], bedA) || !bedAt(b[0], b[1], bedB))
-						continue;
-					const float above = a[2] - bedA, belowB = b[2] - bedB;
-					// One end on or above the rock, the other inside it: the crossing is where the water hits
-					const bool aOut = above > -ROCK_HIT_MARGIN, bOut = belowB > -ROCK_HIT_MARGIN;
-					if (aOut == bOut || std::min(above, belowB) > -ROCK_HIT_DEPTH)
-						continue;
-					const float s = std::clamp(above / (above - belowB), 0.0f, 1.0f);
-					float p[3];
-					for (int c = 0; c < 3; c++)
-						p[c] = a[c] + (b[c] - a[c]) * s;
-					if (buried(p, true))
-						continue;
-					const Flow flow = flowAt(p[0], p[1]);
-					const float fallen = std::max(flow.head - p[2], 0.0f);
-					const float strength = std::clamp(0.4f + fallen / 200.0f, 0.4f, 1.0f);
-					const auto key = (static_cast<int64_t>(std::floor(p[0] / ROCK_HIT_SPACING)) << 32) ^
-					                 static_cast<uint32_t>(static_cast<int32_t>(std::floor(p[1] / ROCK_HIT_SPACING))) ^ (static_cast<int64_t>(std::floor(p[2] / ROCK_HIT_SPACING)) << 48);
-					auto [it, added] = best.try_emplace(key);
-					if (added || it->second[3] < strength)
-						it->second = { p[0], p[1], p[2], strength, triangle.normal[k][0] + triangle.normal[(k + 1) % 3][0], triangle.normal[k][1] + triangle.normal[(k + 1) % 3][1] };
-				}
-			}
-			for (const auto& [key, hit] : best) {
-				rockHits.push_back(hit);
-				const float n[3] = { 0.0f, 0.0f, 1.0f };
-				offer(hit.data(), n, hit[3], FallEmitterKind::Plunge, ROCK_HIT_SPACING);
-			}
-		}
-
-		// Where vanilla's pieces cross each water level, for the debug view (D36)
-		for (const auto& triangle : a_sources) {
-			for (const float level : a_levels) {
-				float points[2][3];
-				int count = 0;
-				for (int k = 0; k < 3 && count < 2; k++) {
-					const float* a = triangle.position[k];
-					const float* b = triangle.position[(k + 1) % 3];
-					if ((a[2] - level) * (b[2] - level) >= 0.0f)
-						continue;
-					const float s = (level - a[2]) / (b[2] - a[2]);
-					for (int c = 0; c < 3; c++)
-						points[count][c] = a[c] + (b[c] - a[c]) * s;
-					count++;
-				}
-				if (count == 2)
-					mesh.waterLines.push_back({ points[0][0], points[0][1], points[0][2], points[1][0], points[1][1], points[1][2] });
-			}
-		}
-
-		// The seams (D34): where one of vanilla's pieces ends against another, the join shows on their own
-		// meshes. Points along each piece's open edges (used by one of its triangles) that lie close to
-		// another piece foam on the flow's map and throw spray and mist
-		{
-			const auto quantize = [](const float a_p[3]) {
-				const auto qx = static_cast<int64_t>(std::lround(a_p[0] * 2.0f)) & 0x1FFFFF;
-				const auto qy = static_cast<int64_t>(std::lround(a_p[1] * 2.0f)) & 0x1FFFFF;
-				const auto qz = static_cast<int64_t>(std::lround(a_p[2] * 2.0f)) & 0x1FFFFF;
-				return (qx << 42) | (qy << 21) | qz;
-			};
-			struct EdgeUse
-			{
-				uint32_t triangle;
-				int corner;
-				uint32_t uses;
-			};
-			std::map<std::tuple<uint32_t, int64_t, int64_t>, EdgeUse> edges;
-			for (uint32_t t = 0; t < a_sources.size(); t++) {
-				const auto& triangle = a_sources[t];
-				for (int k = 0; k < 3; k++) {
-					int64_t a = quantize(triangle.position[k]), b = quantize(triangle.position[(k + 1) % 3]);
-					if (a > b)
-						std::swap(a, b);
-					auto [it, added] = edges.try_emplace({ triangle.piece, a, b }, EdgeUse{ t, k, 0 });
-					it->second.uses++;
-				}
-			}
-			// Every piece's triangles, by area, reach included
-			std::unordered_map<int64_t, std::vector<uint32_t>> nearby;
-			for (uint32_t t = 0; t < a_sources.size(); t++) {
-				const auto& triangle = a_sources[t];
-				float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
-				for (int k = 0; k < 3; k++) {
-					for (int a = 0; a < 2; a++) {
-						lo[a] = std::min(lo[a], triangle.position[k][a] - SEAM_REACH);
-						hi[a] = std::max(hi[a], triangle.position[k][a] + SEAM_REACH);
-					}
-				}
-				for (auto by = static_cast<int32_t>(std::floor(lo[1] / MERGE_BUCKET)); by <= static_cast<int32_t>(std::floor(hi[1] / MERGE_BUCKET)); by++) {
-					for (auto bx = static_cast<int32_t>(std::floor(lo[0] / MERGE_BUCKET)); bx <= static_cast<int32_t>(std::floor(hi[0] / MERGE_BUCKET)); bx++)
-						nearby[bucketKey(bx, by)].push_back(t);
-				}
-			}
-			// Squared distance from a point to a triangle (closest point by region)
-			const auto distance2 = [](const float a_p[3], const SourceTriangle& a_t) {
-				const auto sub3 = [](const float* a, const float* b, float* r) { r[0] = a[0] - b[0]; r[1] = a[1] - b[1]; r[2] = a[2] - b[2]; };
-				const auto dot3 = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
-				const float* a = a_t.position[0];
-				const float* b = a_t.position[1];
-				const float* c = a_t.position[2];
-				float ab[3], ac[3], ap[3], bp[3], cp[3], closest[3];
-				sub3(b, a, ab);
-				sub3(c, a, ac);
-				sub3(a_p, a, ap);
-				const auto at = [&](float a_v, float a_w) {
-					for (int k = 0; k < 3; k++)
-						closest[k] = a[k] + ab[k] * a_v + ac[k] * a_w;
-				};
-				const float d1 = dot3(ab, ap), d2 = dot3(ac, ap);
-				sub3(a_p, b, bp);
-				const float d3 = dot3(ab, bp), d4 = dot3(ac, bp);
-				sub3(a_p, c, cp);
-				const float d5 = dot3(ab, cp), d6 = dot3(ac, cp);
-				const float va = d3 * d6 - d5 * d4, vb = d5 * d2 - d1 * d6, vc = d1 * d4 - d3 * d2;
-				if (d1 <= 0.0f && d2 <= 0.0f)
-					at(0.0f, 0.0f);
-				else if (d3 >= 0.0f && d4 <= d3)
-					at(1.0f, 0.0f);
-				else if (d6 >= 0.0f && d5 <= d6)
-					at(0.0f, 1.0f);
-				else if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f)
-					at(d1 / (d1 - d3), 0.0f);
-				else if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f)
-					at(0.0f, d2 / (d2 - d6));
-				else if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f) {
-					const float k = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-					at(1.0f - k, k);
-				} else {
-					const float denominator = 1.0f / (va + vb + vc);
-					at(vb * denominator, vc * denominator);
-				}
-				float d[3];
-				sub3(a_p, closest, d);
-				return dot3(d, d);
-			};
-			std::vector<std::array<float, 6>> seams;  // Position, normal
-			std::vector<uint8_t> seamKinds;           // 0 an open edge against another piece, 1 two pieces crossing
-			for (const auto& [key, use] : edges) {
-				if (use.uses != 1)
-					continue;
-				const auto& triangle = a_sources[use.triangle];
-				const float* from = triangle.position[use.corner];
-				const float* to = triangle.position[(use.corner + 1) % 3];
-				const float length = std::sqrt((to[0] - from[0]) * (to[0] - from[0]) + (to[1] - from[1]) * (to[1] - from[1]) + (to[2] - from[2]) * (to[2] - from[2]));
-				const auto steps = std::max(1, static_cast<int>(std::ceil(length / SEAM_STEP)));
-				for (int s = 0; s <= steps; s++) {
-					const float k = static_cast<float>(s) / static_cast<float>(steps);
-					const float p[3] = { from[0] + (to[0] - from[0]) * k, from[1] + (to[1] - from[1]) * k, from[2] + (to[2] - from[2]) * k };
-					const auto it = nearby.find(bucketKey(static_cast<int32_t>(std::floor(p[0] / MERGE_BUCKET)), static_cast<int32_t>(std::floor(p[1] / MERGE_BUCKET))));
-					if (it == nearby.end())
-						continue;
-					bool seam = false;
-					for (const uint32_t other : it->second) {
-						if (a_sources[other].piece != triangle.piece && distance2(p, a_sources[other]) < SEAM_REACH * SEAM_REACH) {
-							seam = true;
-							break;
-						}
-					}
-					if (!seam)
-						continue;
-					if (buried(p, true))
-						continue;
-					const float* n0 = triangle.normal[use.corner];
-					const float* n1 = triangle.normal[(use.corner + 1) % 3];
-					seams.push_back({ p[0], p[1], p[2], n0[0] + n1[0], n0[1] + n1[1], n0[2] + n1[2] });
-					seamKinds.push_back(0);
-				}
-			}
-			// ...and where two pieces cut through each other: the line where their triangles intersect
-			{
-				const auto segmentHits = [](const float* a_from, const float* a_to, const SourceTriangle& a_t, float a_hit[3]) {
-					const float* p0 = a_t.position[0];
-					float e1[3], e2[3], d[3], s[3], q[3], pv[3];
-					for (int k = 0; k < 3; k++) {
-						e1[k] = a_t.position[1][k] - p0[k];
-						e2[k] = a_t.position[2][k] - p0[k];
-						d[k] = a_to[k] - a_from[k];
-						s[k] = a_from[k] - p0[k];
-					}
-					pv[0] = d[1] * e2[2] - d[2] * e2[1];
-					pv[1] = d[2] * e2[0] - d[0] * e2[2];
-					pv[2] = d[0] * e2[1] - d[1] * e2[0];
-					const float det = e1[0] * pv[0] + e1[1] * pv[1] + e1[2] * pv[2];
-					if (std::abs(det) < 1e-6f)
-						return false;
-					const float inverse = 1.0f / det;
-					const float u = (s[0] * pv[0] + s[1] * pv[1] + s[2] * pv[2]) * inverse;
-					if (u < 0.0f || u > 1.0f)
-						return false;
-					q[0] = s[1] * e1[2] - s[2] * e1[1];
-					q[1] = s[2] * e1[0] - s[0] * e1[2];
-					q[2] = s[0] * e1[1] - s[1] * e1[0];
-					const float v = (d[0] * q[0] + d[1] * q[1] + d[2] * q[2]) * inverse;
-					if (v < 0.0f || u + v > 1.0f)
-						return false;
-					const float along = (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]) * inverse;
-					if (along < 0.0f || along > 1.0f)
-						return false;
-					for (int k = 0; k < 3; k++)
-						a_hit[k] = a_from[k] + d[k] * along;
-					return true;
-				};
-				std::vector<uint32_t> seen(a_sources.size(), UINT32_MAX);
-				for (uint32_t t = 0; t < a_sources.size(); t++) {
-					const auto& first = a_sources[t];
-					float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
-					for (int k = 0; k < 3; k++) {
-						for (int c = 0; c < 3; c++) {
-							lo[c] = std::min(lo[c], first.position[k][c]);
-							hi[c] = std::max(hi[c], first.position[k][c]);
-						}
-					}
-					for (auto by = static_cast<int32_t>(std::floor(lo[1] / MERGE_BUCKET)); by <= static_cast<int32_t>(std::floor(hi[1] / MERGE_BUCKET)); by++) {
-						for (auto bx = static_cast<int32_t>(std::floor(lo[0] / MERGE_BUCKET)); bx <= static_cast<int32_t>(std::floor(hi[0] / MERGE_BUCKET)); bx++) {
-							const auto it = nearby.find(bucketKey(bx, by));
-							if (it == nearby.end())
-								continue;
-							for (const uint32_t other : it->second) {
-								if (other <= t || seen[other] == t || a_sources[other].piece == first.piece)
-									continue;
-								seen[other] = t;
-								const auto& second = a_sources[other];
-								bool apart = false;
-								for (int c = 0; c < 3 && !apart; c++) {
-									const float olo = std::min({ second.position[0][c], second.position[1][c], second.position[2][c] });
-									const float ohi = std::max({ second.position[0][c], second.position[1][c], second.position[2][c] });
-									apart = ohi < lo[c] || olo > hi[c];
-								}
-								if (apart)
-									continue;
-								// Pieces lying along each other (layers of the same water) show no seam where they cross
-								const auto faceNormal = [](const SourceTriangle& a_t, float a_n[3]) {
-									const float ax = a_t.position[1][0] - a_t.position[0][0], ay = a_t.position[1][1] - a_t.position[0][1], az = a_t.position[1][2] - a_t.position[0][2];
-									const float bx = a_t.position[2][0] - a_t.position[0][0], by = a_t.position[2][1] - a_t.position[0][1], bz = a_t.position[2][2] - a_t.position[0][2];
-									a_n[0] = ay * bz - az * by;
-									a_n[1] = az * bx - ax * bz;
-									a_n[2] = ax * by - ay * bx;
-									const float length = std::sqrt(a_n[0] * a_n[0] + a_n[1] * a_n[1] + a_n[2] * a_n[2]);
-									for (int c = 0; c < 3; c++)
-										a_n[c] = length > 1e-6f ? a_n[c] / length : 0.0f;
-								};
-								float na[3], nb[3];
-								faceNormal(first, na);
-								faceNormal(second, nb);
-								if (std::abs(na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2]) > SEAM_CROSSING_ANGLE)
-									continue;
-								float hits[6][3];
-								int count = 0;
-								for (int k = 0; k < 3; k++) {
-									if (segmentHits(first.position[k], first.position[(k + 1) % 3], second, hits[count]))
-										count++;
-									if (segmentHits(second.position[k], second.position[(k + 1) % 3], first, hits[count]))
-										count++;
-								}
-								if (count == 0)
-									continue;
-								// The intersection runs between the two hits farthest apart
-								int from = 0, to = 0;
-								float farthest = -1.0f;
-								for (int i = 0; i < count; i++) {
-									for (int j = i; j < count; j++) {
-										const float dx = hits[i][0] - hits[j][0], dy = hits[i][1] - hits[j][1], dz = hits[i][2] - hits[j][2];
-										const float distance = dx * dx + dy * dy + dz * dz;
-										if (distance > farthest) {
-											farthest = distance;
-											from = i;
-											to = j;
-										}
-									}
-								}
-								const auto steps = std::max(1, static_cast<int>(std::ceil(std::sqrt(farthest) / SEAM_STEP)));
-								for (int s = 0; s <= steps; s++) {
-									const float k = static_cast<float>(s) / static_cast<float>(steps);
-									std::array<float, 6> seam{};
-									for (int c = 0; c < 3; c++) {
-										seam[c] = hits[from][c] + (hits[to][c] - hits[from][c]) * k;
-										seam[3 + c] = first.normal[0][c] + first.normal[1][c] + first.normal[2][c];
-									}
-									if (buried(seam.data(), true))
-										continue;
-									seams.push_back(seam);
-									seamKinds.push_back(1);
-								}
-							}
-						}
-					}
-				}
-			}
-			for (const auto& impact : impacts) {
-				seams.push_back({ impact[0], impact[1], impact[2], 0.0f, 0.0f, 1.0f });
-				seamKinds.push_back(2);
-			}
-			for (const auto& hit : rockHits) {
-				seams.push_back({ hit[0], hit[1], hit[2], 0.0f, 0.0f, 1.0f });
-				seamKinds.push_back(2);  // Foam round it; it threw its own spray
-			}
-			mesh.seams = static_cast<uint32_t>(seams.size());
-			for (std::size_t i = 0; i < seams.size(); i++)
-				mesh.seamPoints.push_back({ seams[i][0], seams[i][1], seams[i][2], static_cast<float>(seamKinds[i]) });
-
-			// Foam on the flow's map, round every seam point
-			mesh.seamFoam.assign(static_cast<std::size_t>(w) * h, 0.0f);
-			const auto reach = static_cast<int32_t>(std::ceil(SEAM_FOAM_RADIUS / cell));
-			for (const auto& seam : seams) {
-				const auto cx = static_cast<int32_t>(std::floor((seam[0] - a_originX) / cell));
-				const auto cy = static_cast<int32_t>(std::floor((seam[1] - a_originY) / cell));
-				for (int32_t y = cy - reach; y <= cy + reach; y++) {
-					for (int32_t x = cx - reach; x <= cx + reach; x++) {
-						if (x < 0 || y < 0 || x >= w || y >= h)
-							continue;
-						const float ox = a_originX + (static_cast<float>(x) + 0.5f) * cell - seam[0];
-						const float oy = a_originY + (static_cast<float>(y) + 0.5f) * cell - seam[1];
-						const float falloff = std::clamp(1.0f - std::sqrt(ox * ox + oy * oy) / SEAM_FOAM_RADIUS, 0.0f, 1.0f);
-						const float foam = std::min(falloff * 1.8f, 1.0f);  // Solid along the seam (D47)
-						float& value = mesh.seamFoam[static_cast<std::size_t>(y) * w + x];
-						value = std::max(value, foam);
-					}
-				}
-			}
-
-			// Spray and mist along the seams, where the water strikes the other piece (less where two cross)
-			for (std::size_t i = 0; i < seams.size(); i++) {
-				if (seamKinds[i] == 2)
-					continue;  // An impact: it threw its own
-				const auto& seam = seams[i];
-				float normal[3] = { seam[3], seam[4], seam[5] };
-				const float n = std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
-				for (float& component : normal)
-					component = n > 1e-6f ? component / n : 0.0f;
-				if (n <= 1e-6f)
-					normal[2] = 1.0f;
-				const float p[3] = { seam[0], seam[1], seam[2] };
-				offer(p, normal, seamKinds[i] == 0 ? 1.0f : 0.7f, FallEmitterKind::Strike, EMITTER_SPACING);  // D52: (b) the falls' pieces clashing
-			}
-		}
-		mesh.emitters.reserve(chosen.size());
-		for (const auto& [key, emitter] : chosen)
-			mesh.emitters.push_back(emitter);
-		return mesh;
-	}
-
-	void FallSites::RefreshSurfaces()
-	{
-		surfaceVertices.clear();
-		surfaceEmitters.clear();
-		surfacePlunges.clear();
-		for (const auto& [key, stream] : streams) {
-			if (!stream.meshReady || stream.vertices.empty())
-				continue;
-			surfaceVertices.insert(surfaceVertices.end(), stream.vertices.begin(), stream.vertices.end());
-			surfaceEmitters.insert(surfaceEmitters.end(), stream.emitters.begin(), stream.emitters.end());
-			surfacePlunges.insert(surfacePlunges.end(), stream.plunges.begin(), stream.plunges.end());
-		}
-		surfaceVersion++;
+		if (!changed)
+			return;
+		groundVersion++;
+		// D78: the plunges stand on the pools' water
+		if (!bakeFields.empty())
+			BuildPlunges();
 	}
 
 	void FallSites::AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes,
 		float a_strength, uint32_t a_maxEmitters, bool a_foam) const
 	{
-		if (a_strength <= 0.0f || !(a_cellSize > 0.0f) || surfacePlunges.empty() || a_emitters.size() >= a_maxEmitters)
+		if (a_strength <= 0.0f || !(a_cellSize > 0.0f) || plungePoints.empty() || a_emitters.size() >= a_maxEmitters)
 			return;
 		// Nearest the grid's centre first
 		const float centre = 0.5f * static_cast<float>(a_gridRes);
 		std::vector<std::pair<float, const FallPlunge*>> order;
-		order.reserve(surfacePlunges.size());
-		for (const auto& plunge : surfacePlunges) {
+		order.reserve(plungePoints.size());
+		for (const auto& plunge : plungePoints) {
 			const float tx = plunge.position[0] / a_cellSize - static_cast<float>(a_gridMin[0]);
 			const float ty = plunge.position[1] / a_cellSize - static_cast<float>(a_gridMin[1]);
 			if (tx < 0.0f || ty < 0.0f || tx >= static_cast<float>(a_gridRes) || ty >= static_cast<float>(a_gridRes))
@@ -1621,35 +556,6 @@ namespace FluidFieldSim
 				.depthRate = 0.0f,  // D55: no dent in the surface (it broke the foam along the falls' cut); the flow and foam only
 				.velocity = { plunge->direction[0] * pull, plunge->direction[1] * pull },
 				.pad1 = { PLUNGE_MARK, a_foam ? 4.0f * std::max(plunge->strength, 0.6f) * a_strength : 0.0f } });  // D56: no spreading out (it dented the water)
-		}
-	}
-
-	void FallSites::BuildStreamMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
-	{
-		a_field.assign(static_cast<std::size_t>(a_size) * a_size * 4, 0.0f);
-		const auto n = static_cast<int32_t>(a_size);
-		for (const auto& [key, stream] : streams) {
-			if (!stream.ready)
-				continue;
-			const auto& result = stream.result;
-			const auto w = static_cast<int32_t>(result.width);
-			const auto h = static_cast<int32_t>(result.height);
-			// Both grids sit on the same world lattice, a_cell (FallCapture::CELL) apart
-			const auto offsetX = static_cast<int32_t>(std::lround((stream.originX - a_originX) / a_cell));
-			const auto offsetY = static_cast<int32_t>(std::lround((stream.originY - a_originY) / a_cell));
-			for (int32_t y = std::max(0, -offsetY); y < h && y + offsetY < n; y++) {
-				for (int32_t x = std::max(0, -offsetX); x < w && x + offsetX < n; x++) {
-					const std::size_t from = static_cast<std::size_t>(y) * w + x;
-					const std::size_t to = (static_cast<std::size_t>(y + offsetY) * a_size + static_cast<std::size_t>(x + offsetX)) * 4;
-					if (!result.water[from] || a_field[to + 2] >= 2.0f)
-						continue;
-					a_field[to + 0] = result.vx[from];
-					a_field[to + 1] = result.vy[from];
-					const float seam = stream.seamFoam.size() == result.water.size() ? stream.seamFoam[from] : 0.0f;
-					a_field[to + 2] = 2.0f + std::clamp(std::max(result.foam[from], seam), 0.0f, 1.0f);  // 2 and up: water
-					a_field[to + 3] = result.head.size() == result.water.size() ? result.head[from] : result.level[from];
-				}
-			}
 		}
 	}
 
@@ -1786,7 +692,9 @@ namespace FluidFieldSim
 		std::erase_if(vertexClipBase, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
 		if (std::erase_if(flowBakes, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); }))
 			flowBakeVersion++;
-		std::erase_if(bakeFields, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
+		// D78: the plunges and spray of meshes that went go with them
+		if (std::erase_if(bakeFields, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); }))
+			BuildPlunges();
 		groundVersion++;
 	}
 
@@ -3273,6 +2181,7 @@ namespace FluidFieldSim
 		}
 		flowBakeVersion++;
 		logger::info("[Fluid Field] Waterfall flow linked: {} meshes, {} fed by the mesh above them", nodes.size(), linked);
+		BuildPlunges();
 	}
 
 	void FallSites::BakeStep()
@@ -3392,7 +2301,7 @@ namespace FluidFieldSim
 		CaptureStep();
 		ClipStep();
 		BakeStep();
-		PollStreams();
+		PollPools();
 		if (updatesUntilScan > 0) {
 			updatesUntilScan--;
 			return;
@@ -3670,18 +2579,8 @@ namespace FluidFieldSim
 			capture.Begin(site.fallMin, site.fallMax, site.top, site.bottom);
 		}
 		captures.swap(kept);
-		// Flows of sites that are gone; a solve still running finishes in the background
-		for (auto it = streams.begin(); it != streams.end();) {
-			if (captures.contains(it->first)) {
-				++it;
-				continue;
-			}
-			if (it->second.pending.valid())
-				retired.push_back(std::move(it->second.pending));
-			if (it->second.meshPending.valid())
-				retiredMeshes.push_back(std::move(it->second.meshPending));
-			it = streams.erase(it);
-		}
+		// Pools of sites that are gone
+		std::erase_if(sitePools, [&](const auto& a_entry) { return !captures.contains(a_entry.first); });
 		RefreshGrounded();
 		RefreshHiddenEffects();
 	}
@@ -3728,14 +2627,12 @@ namespace FluidFieldSim
 	bool FallSites::PoolLevelAt(float a_x, float a_y, float& a_level) const
 	{
 		bool found = false;
-		for (const auto& [key, stream] : streams) {
-			if (!stream.ready || stream.result.cover.size() != static_cast<std::size_t>(stream.result.width) * stream.result.height)
+		for (const auto& [key, pools] : sitePools) {
+			const auto x = static_cast<int32_t>(std::lround((a_x - pools.originX) / FallCapture::CELL));
+			const auto y = static_cast<int32_t>(std::lround((a_y - pools.originY) / FallCapture::CELL));
+			if (x < 0 || y < 0 || x >= static_cast<int32_t>(pools.width) || y >= static_cast<int32_t>(pools.height))
 				continue;
-			const auto x = static_cast<int32_t>(std::lround((a_x - stream.originX) / FallCapture::CELL));
-			const auto y = static_cast<int32_t>(std::lround((a_y - stream.originY) / FallCapture::CELL));
-			if (x < 0 || y < 0 || x >= static_cast<int32_t>(stream.result.width) || y >= static_cast<int32_t>(stream.result.height))
-				continue;
-			const float cover = stream.result.cover[static_cast<std::size_t>(y) * stream.result.width + x];
+			const float cover = pools.cover[static_cast<std::size_t>(y) * pools.width + x];
 			if (cover <= NO_SURFACE)
 				continue;
 			a_level = found ? std::max(a_level, cover) : cover;
@@ -3746,23 +2643,21 @@ namespace FluidFieldSim
 
 	void FallSites::BuildPoolMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const
 	{
-		// D40: where each site's pools really have water (its flow's cover), on the same lattice as its flow
+		// D40: where each site's pools really have water (D78: ComputePools), on the same lattice as its capture
 		a_heights.assign(static_cast<std::size_t>(a_size) * a_size, FallCapture::NONE);
 		const auto n = static_cast<int32_t>(a_size);
-		for (const auto& [key, stream] : streams) {
-			if (!stream.ready || stream.result.cover.size() != stream.result.water.size())
-				continue;
-			const auto w = static_cast<int32_t>(stream.result.width);
-			const auto h = static_cast<int32_t>(stream.result.height);
-			const auto offsetX = static_cast<int32_t>(std::lround((stream.originX - a_originX) / a_cell));
-			const auto offsetY = static_cast<int32_t>(std::lround((stream.originY - a_originY) / a_cell));
+		for (const auto& [key, pools] : sitePools) {
+			const auto w = static_cast<int32_t>(pools.width);
+			const auto h = static_cast<int32_t>(pools.height);
+			const auto offsetX = static_cast<int32_t>(std::lround((pools.originX - a_originX) / a_cell));
+			const auto offsetY = static_cast<int32_t>(std::lround((pools.originY - a_originY) / a_cell));
 			for (int32_t y = std::max(0, -offsetY); y < h && y + offsetY < n; y++) {
 				for (int32_t x = std::max(0, -offsetX); x < w && x + offsetX < n; x++) {
-					const float cover = stream.result.cover[static_cast<std::size_t>(y) * w + x];
+					const float cover = pools.cover[static_cast<std::size_t>(y) * w + x];
 					if (cover <= NO_SURFACE)
 						continue;
 					// D50: the pool the falls come from is cut deeper: the lip dips under it where its water does not show
-					const float cut = cover >= stream.top - POOL_BAND ? cover - TOP_POOL_CUT : cover;
+					const float cut = cover >= pools.top - POOL_BAND ? cover - TOP_POOL_CUT : cover;
 					float& stored = a_heights[static_cast<std::size_t>(y + offsetY) * a_size + static_cast<std::size_t>(x + offsetX)];
 					stored = std::max(stored, cut);
 				}
@@ -3772,41 +2667,189 @@ namespace FluidFieldSim
 
 	void FallSites::BuildPlungeMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
 	{
-		// D44, D47: where the falls meet the water below, along their whole intersection with it: every
-		// vertex of the falls' surface lying at the pools' surface foams the water round it (steeper and
-		// faster water more), and the simulated flow carries the foam off downstream
+		// D44, D47: where the falls meet the water below, along their whole line into it: every plunge point (D78: from
+		// the meshes' own sims, BuildPlunges) foams the water round it, harder plunges more, and the simulated flow
+		// carries the foam off downstream
 		a_field.assign(static_cast<std::size_t>(a_size) * a_size, 0.0f);
-		std::vector<float> pools;
-		BuildPoolMap(a_originX, a_originY, a_cell, a_size, pools);
 		const auto reach = static_cast<int32_t>(std::ceil(PLUNGE_FOAM_RADIUS / a_cell));
 		const auto n = static_cast<int32_t>(a_size);
-		for (const auto& vertex : surfaceVertices) {
-			const auto cx = static_cast<int32_t>(std::lround((vertex.position[0] - a_originX) / a_cell));
-			const auto cy = static_cast<int32_t>(std::lround((vertex.position[1] - a_originY) / a_cell));
-			if (cx < 1 || cy < 1 || cx >= n - 1 || cy >= n - 1)
+		for (const auto& plunge : plungePoints) {
+			const auto cx = static_cast<int32_t>(std::lround((plunge.position[0] - a_originX) / a_cell));
+			const auto cy = static_cast<int32_t>(std::lround((plunge.position[1] - a_originY) / a_cell));
+			if (cx < -reach || cy < -reach || cx >= n + reach || cy >= n + reach)
 				continue;
-			// The pool's level round the vertex (its own cell may be the falls' own, uncovered)
-			float level = FallCapture::NONE;
-			for (int32_t dy = -1; dy <= 1; dy++) {
-				for (int32_t dx = -1; dx <= 1; dx++)
-					level = std::max(level, pools[static_cast<std::size_t>(cy + dy) * a_size + (cx + dx)]);
-			}
-			if (level <= FallCapture::NONE || std::abs(vertex.position[2] - level) > PLUNGE_FOAM_BAND)
-				continue;
-			const float steep = std::clamp((1.0f - vertex.normal[2]) * 2.5f, 0.0f, 1.0f);
-			const float strength = std::clamp(0.85f + 0.15f * std::max(steep, std::clamp(vertex.speed, 0.0f, 1.0f)), 0.0f, 1.0f);  // D52: the rim is solid for every fall
+			const float strength = std::clamp(0.85f + 0.15f * plunge.strength, 0.0f, 1.0f);  // D52: the rim is solid for every fall
 			for (int32_t y = cy - reach; y <= cy + reach; y++) {
 				for (int32_t x = cx - reach; x <= cx + reach; x++) {
 					if (x < 0 || y < 0 || x >= n || y >= n)
 						continue;
-					const float dx = a_originX + static_cast<float>(x) * a_cell - vertex.position[0];
-					const float dy = a_originY + static_cast<float>(y) * a_cell - vertex.position[1];
+					const float dx = a_originX + static_cast<float>(x) * a_cell - plunge.position[0];
+					const float dy = a_originY + static_cast<float>(y) * a_cell - plunge.position[1];
 					const float falloff = std::clamp(1.0f - std::sqrt(dx * dx + dy * dy) / PLUNGE_FOAM_RADIUS, 0.0f, 1.0f);
 					float& value = a_field[static_cast<std::size_t>(y) * a_size + x];
 					value = std::max(value, strength * falloff);
 				}
 			}
 		}
+	}
+
+	void FallSites::BuildPlunges()
+	{
+		// D78: from each lit mesh's own sim (its BakeField): where it goes into the water below (texels on its foot at or
+		// under that water, from above it), and where its water strikes rock (the bake's foam). The water's way there is
+		// the sim's (down the mesh, turned), its speed the height it has fallen down the mesh (as SolveBake's)
+		std::unordered_map<int64_t, FallPlunge> points;
+		std::unordered_map<int64_t, FallEmitter> chosen;
+		const auto offer = [&](const RE::NiPoint3& a_p, const RE::NiPoint3& a_n, const RE::NiPoint3& a_direction, float a_speed, float a_strength, FallEmitterKind a_kind, float a_spacing) {
+			const auto key = (static_cast<int64_t>(std::floor(a_p.x / a_spacing)) << 40) ^ (static_cast<int64_t>(std::floor(a_p.y / a_spacing)) << 18) ^
+			                 static_cast<int64_t>(std::floor(a_p.z / a_spacing)) ^ (static_cast<int64_t>(a_kind) << 60);
+			auto [it, added] = chosen.try_emplace(key);
+			if (!added && it->second.strength >= a_strength)
+				return;
+			FallEmitter& emitter = it->second;
+			emitter.position[0] = a_p.x;
+			emitter.position[1] = a_p.y;
+			emitter.position[2] = a_p.z;
+			emitter.normal[0] = a_n.x;
+			emitter.normal[1] = a_n.y;
+			emitter.normal[2] = a_n.z;
+			emitter.direction[0] = a_direction.x;
+			emitter.direction[1] = a_direction.y;
+			emitter.direction[2] = a_direction.z;
+			emitter.speed = a_speed;
+			emitter.strength = std::clamp(a_strength, 0.0f, 1.0f);
+			emitter.kind = static_cast<float>(a_kind);
+		};
+		std::vector<std::array<float, 5>> planes;
+		uint32_t meets = 0;
+		for (const auto& [geometry, field] : bakeFields) {
+			if (!field || !grounded.contains(geometry))
+				continue;
+			const auto w = static_cast<int32_t>(field->width), h = static_cast<int32_t>(field->height);
+			const std::size_t count = static_cast<std::size_t>(w) * h;
+			if (field->position.size() != count || field->turn.size() != count || field->normal.size() != count)
+				continue;
+			const auto index = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * w + a_x; };
+			const auto covered = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < w && a_y < h && field->covered[index(a_x, a_y)]; };
+			float top = -FLT_MAX, bottom = FLT_MAX, lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
+			for (std::size_t i = 0; i < count; i++) {
+				if (!field->covered[i])
+					continue;
+				const RE::NiPoint3& p = field->position[i];
+				top = std::max(top, p.z);
+				bottom = std::min(bottom, p.z);
+				lo[0] = std::min(lo[0], p.x);
+				lo[1] = std::min(lo[1], p.y);
+				hi[0] = std::max(hi[0], p.x);
+				hi[1] = std::max(hi[1], p.y);
+			}
+			if (top < bottom)
+				continue;
+			// The water this mesh falls into: the pools' surface (ComputePools), else the engine's highest plane under the
+			// mesh's top (as ClipStep's cut); looked for only on its foot, where a plane's bound reaching over the fall
+			// cannot be mistaken for its water (D70)
+			CollectWaterPlanes(lo[0], lo[1], hi[0], hi[1], planes);
+			std::erase_if(planes, [&](const auto& a_plane) { return a_plane[4] >= top - 32.0f; });
+			const auto waterAt = [&](const RE::NiPoint3& a_p, float& a_level) {
+				if (PoolLevelAt(a_p.x, a_p.y, a_level) && a_level < top - 32.0f)
+					return true;
+				a_level = -FLT_MAX;
+				for (const auto& plane : planes) {
+					if (a_p.x >= plane[0] && a_p.x <= plane[2] && a_p.y >= plane[1] && a_p.y <= plane[3])
+						a_level = std::max(a_level, plane[4]);
+				}
+				return a_level > -FLT_MAX;
+			};
+			// The water's way in the world: down the mesh (texture v) turned across it by the sim (D75's arrows)
+			const std::vector<float>& turn = field->swept.size() == count ? field->swept : field->turn;
+			const auto flowAt = [&](int32_t a_x, int32_t a_y) {
+				const auto side = [&](int32_t a_dx, int32_t a_dy) {
+					const bool f = covered(a_x + a_dx, a_y + a_dy), b = covered(a_x - a_dx, a_y - a_dy);
+					const RE::NiPoint3& here = field->position[index(a_x, a_y)];
+					if (f && b)
+						return (field->position[index(a_x + a_dx, a_y + a_dy)] - field->position[index(a_x - a_dx, a_y - a_dy)]) * 0.5f;
+					if (f)
+						return field->position[index(a_x + a_dx, a_y + a_dy)] - here;
+					if (b)
+						return here - field->position[index(a_x - a_dx, a_y - a_dy)];
+					return RE::NiPoint3(0.0f, 0.0f, 0.0f);
+				};
+				RE::NiPoint3 direction = side(0, 1) + side(1, 0) * turn[index(a_x, a_y)];
+				const float length = direction.Length();
+				return length > 1e-4f ? direction / length : RE::NiPoint3(0.0f, 0.0f, -1.0f);
+			};
+			const auto speedAt = [&](float a_z) { return std::min(SIM_TERMINAL, std::sqrt(SIM_INFLOW * SIM_INFLOW + SIM_GRAVITY * std::max(top - a_z, 0.0f))); };
+			const auto upward = [&](std::size_t a_i) {
+				const RE::NiPoint3& n = field->normal[a_i];
+				return n.z < 0.0f ? -n : n;
+			};
+			for (int32_t y = 0; y < h; y++) {
+				for (int32_t x = 0; x < w; x++) {
+					const std::size_t i = index(x, y);
+					if (!field->covered[i] || (!field->rock.empty() && field->rock[i]))
+						continue;
+					const RE::NiPoint3& here = field->position[i];
+					float level = -FLT_MAX;
+					const bool foot = here.z < bottom + WATER_CUT_BAND;
+					const bool water = foot && waterAt(here, level);
+					// Where the water strikes rock (the bake's foam), above the water below
+					if (field->foam[i] >= OBSTACLE_FOAM && !(water && here.z < level - POOL_COVER)) {
+						float pool;
+						if (!PoolLevelAt(here.x, here.y, pool) || here.z >= pool - POOL_COVER)
+							offer(here, upward(i), flowAt(x, y), speedAt(here.z), 0.4f + 0.6f * field->foam[i], FallEmitterKind::Strike, OBSTACLE_SPACING);
+					}
+					// Where it goes into the water below: at or under it, coming from above it (texture v runs downstream)
+					if (!water || here.z > level + PLUNGE_BAND || !covered(x, y - 1))
+						continue;
+					const RE::NiPoint3& above = field->position[index(x, y - 1)];
+					if (above.z <= level + PLUNGE_BAND)
+						continue;
+					const float s = std::clamp((above.z - level) / std::max(above.z - here.z, 1e-3f), 0.0f, 1.0f);
+					RE::NiPoint3 p = above + (here - above) * s;
+					p.z = level;
+					const float fallen = top - p.z;
+					// D46: or steep water reaching the level (a short mesh's head says little)
+					const bool steepIn = upward(i).z < PLUNGE_STEEP;
+					if (fallen <= PLUNGE_HEAD && !steepIn)
+						continue;
+					meets++;
+					const float strength = std::clamp(std::max(fallen / (PLUNGE_HEAD * 4.0f), steepIn ? 0.6f : 0.0f), 0.25f, 1.0f);
+					const RE::NiPoint3 direction = flowAt(x, y);
+					const float speed = speedAt(p.z);
+					offer(p, RE::NiPoint3(0.0f, 0.0f, 1.0f), direction, speed, strength, FallEmitterKind::Plunge, PLUNGE_SPACING);
+					const auto key = (static_cast<int64_t>(std::floor(p.x / PLUNGE_WATER_SPACING)) << 32) ^
+					                 static_cast<uint32_t>(static_cast<int32_t>(std::floor(p.y / PLUNGE_WATER_SPACING)));
+					auto [it, added] = points.try_emplace(key);
+					if (!added && it->second.strength >= strength)
+						continue;
+					FallPlunge& plunge = it->second;
+					plunge.position[0] = p.x;
+					plunge.position[1] = p.y;
+					plunge.position[2] = p.z;
+					// Straight down a curtain the way across is noise: no pull then
+					const float horizontal = std::sqrt(direction.x * direction.x + direction.y * direction.y);
+					plunge.direction[0] = horizontal > 0.05f ? direction.x / horizontal : 0.0f;
+					plunge.direction[1] = horizontal > 0.05f ? direction.y / horizontal : 0.0f;
+					plunge.speed = speed;
+					plunge.strength = strength;
+				}
+			}
+		}
+		plungePoints.clear();
+		plungePoints.reserve(points.size());
+		for (const auto& [key, plunge] : points)
+			plungePoints.push_back(plunge);
+		sprayEmitters.clear();
+		sprayEmitters.reserve(chosen.size());
+		uint32_t kinds[3]{};
+		for (const auto& [key, emitter] : chosen) {
+			sprayEmitters.push_back(emitter);
+			kinds[std::clamp(static_cast<int>(emitter.kind), 0, 2)]++;
+		}
+		emitterVersion++;
+		groundVersion++;  // The plunge map
+		logger::info("[Fluid Field] Waterfall plunges: {} texels meet the water below, {} plunge points; spray emitters: {} at plunges, {} striking rock", meets, plungePoints.size(),
+			kinds[1], kinds[2]);
 	}
 
 	void FallSites::Summarise()
@@ -4063,74 +3106,25 @@ namespace FluidFieldSim
 			}
 		};
 
-		// D36: vanilla's fall meshes, and where they meet each other, the water and the rock
+		// D36, D78: the spray emitters by kind, and the plunges' pushes on the water below (a line the way they pull it)
 		if (a_view > 0) {
-			// A short segment, only when both ends are in front of the camera
-			const auto segment = [&](const float a[3], const float b[3], ImU32 a_color, float a_thickness) {
-				ImVec2 pa, pb;
-				if (project(a[0], a[1], a[2], pa) && project(b[0], b[1], b[2], pb))
-					a_drawList->AddLine(pa, pb, a_color, a_thickness);
-			};
-			const auto mark = [&](const float p[3], ImU32 a_color, float a_size) {
-				ImVec2 s;
-				if (!project(p[0], p[1], p[2], s))
-					return;
-				a_drawList->AddLine(ImVec2(s.x - a_size, s.y - a_size), ImVec2(s.x + a_size, s.y + a_size), a_color, 2.0f);
-				a_drawList->AddLine(ImVec2(s.x - a_size, s.y + a_size), ImVec2(s.x + a_size, s.y - a_size), a_color, 2.0f);
-			};
 			const auto inView = [&](const float p[3]) {
 				const float dx = p[0] - eye.x, dy = p[1] - eye.y, dz = p[2] - eye.z;
 				return dx * dx + dy * dy + dz * dz < FALL_VIEW_RANGE * FALL_VIEW_RANGE;
 			};
-			for (const auto& site : sites) {
-				const auto it = site.captureKey ? streams.find(site.captureKey) : streams.end();
-				if (it == streams.end())
+			static constexpr ImU32 KIND_COLORS[3] = { IM_COL32(60, 230, 255, 255), IM_COL32(60, 110, 255, 255), IM_COL32(255, 150, 40, 255) };
+			for (const auto& emitter : sprayEmitters) {
+				ImVec2 s;
+				if (inView(emitter.position) && project(emitter.position[0], emitter.position[1], emitter.position[2], s))
+					a_drawList->AddCircleFilled(s, 2.5f, KIND_COLORS[std::clamp(static_cast<int>(emitter.kind), 0, 2)]);
+			}
+			for (const auto& plunge : plungePoints) {
+				if (!inView(plunge.position))
 					continue;
-				const auto& stream = it->second;
-				const FallCapture* capture = GetCapture(site);
-				const auto insideRock = [&](const float p[3]) {
-					float ground;
-					return capture && capture->IsComplete() && capture->Sample(p[0], p[1], ground) && ground > p[2] + 4.0f;
-				};
-				if (a_view == 1) {
-					for (const auto& triangle : stream.sources) {
-						if (!inView(triangle.position[0]))
-							continue;
-						// One colour per piece, round the hue circle by the golden angle
-						const float hue = std::fmod(static_cast<float>(triangle.piece) * 0.618034f, 1.0f);
-						float r, g, b;
-						ImGui::ColorConvertHSVtoRGB(hue, 0.65f, 1.0f, r, g, b);
-						const ImU32 pieceColor = IM_COL32(static_cast<int>(r * 255.0f), static_cast<int>(g * 255.0f), static_cast<int>(b * 255.0f), 200);
-						for (int k = 0; k < 3; k++) {
-							const float* a = triangle.position[k];
-							const float* b2 = triangle.position[(k + 1) % 3];
-							segment(a, b2, insideRock(a) && insideRock(b2) ? IM_COL32(255, 40, 40, 230) : pieceColor, 1.0f);
-						}
-					}
-				} else {
-					for (const auto& point : stream.seamPoints) {
-						if (inView(point.data()))
-							mark(point.data(), point[3] < 0.5f ? IM_COL32(255, 230, 40, 255) : IM_COL32(255, 60, 255, 255), 3.0f);
-					}
-					for (const auto& waterLine : stream.waterLines) {
-						if (inView(waterLine.data()))
-							segment(waterLine.data(), waterLine.data() + 3, IM_COL32(60, 255, 90, 255), 2.5f);
-					}
-					for (const auto& triangle : stream.sources) {
-						for (int k = 0; k < 3; k++) {
-							if (inView(triangle.position[k]) && insideRock(triangle.position[k]))
-								mark(triangle.position[k], IM_COL32(255, 40, 40, 200), 2.0f);
-						}
-					}
-					static constexpr ImU32 KIND_COLORS[3] = { IM_COL32(60, 230, 255, 255), IM_COL32(60, 110, 255, 255), IM_COL32(255, 150, 40, 255) };
-					for (const auto& emitter : stream.emitters) {
-						if (inView(emitter.position)) {
-							ImVec2 s;
-							if (project(emitter.position[0], emitter.position[1], emitter.position[2], s))
-								a_drawList->AddCircleFilled(s, 2.5f, KIND_COLORS[std::clamp(static_cast<int>(emitter.kind), 0, 2)]);
-						}
-					}
-				}
+				const float to[3] = { plunge.position[0] + plunge.direction[0] * PLUNGE_PUSH_OFFSET, plunge.position[1] + plunge.direction[1] * PLUNGE_PUSH_OFFSET, plunge.position[2] };
+				ImVec2 a, b;
+				if (project(plunge.position[0], plunge.position[1], plunge.position[2], a) && project(to[0], to[1], to[2], b))
+					a_drawList->AddLine(a, b, IM_COL32(60, 255, 90, 255), 1.5f + 1.5f * plunge.strength);
 			}
 		}
 		if (!a_sites)

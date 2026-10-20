@@ -1512,17 +1512,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	{
 		rawBaseColor = saturate(rawBaseColor);
 		normalColor = saturate(normalColor);
-		// White water (D34): aerated where it falls fast, foamed where it piles against rock, squeezes past
-		// it, meets still water or where vanilla's pieces meet; broken up by the texture's own streaks
-		// The foam map's cells are coarse (16 units): softened over its neighbourhood, so it does not show as blocks
-		const float2 fallXY = input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy;
-		const float foamSoft = 0.2 * (fallFlow.stream.z + FallGround::StreamAt(fallXY + float2(14.0, 6.0)).z + FallGround::StreamAt(fallXY - float2(14.0, 6.0)).z +
-										 FallGround::StreamAt(fallXY + float2(-6.0, 14.0)).z + FallGround::StreamAt(fallXY + float2(6.0, -14.0)).z);
+		// White water (D34): aerated where it falls fast, foamed where it strikes rock and meets still water;
+		// broken up by the texture's own streaks. D78: from the mesh's own bake only (none without one)
 		// D59: the water starts glassy where it comes onto the falls and whitens as it runs and falls (air
-		// worked into it), foams where it piles against rock, squeezes past it and frays at its edges
+		// worked into it), foams where it strikes rock
 		const float aerated = 1.0 - exp(-fallFlow.runTime / FallGround::AERATION_SECONDS);
 		// D60: below a rock the water is broken: whiter in its wake, fading down the streaks
-		float white = FallGround::Whitening ? saturate(max(max(foamSoft, fallFlow.foam), max(aerated * FallGround::AERATION_WHITE, fallFlow.wake * 0.6))) : 0.0;
+		float white = FallGround::Whitening ? saturate(max(fallFlow.foam, max(aerated * FallGround::AERATION_WHITE, fallFlow.wake * 0.6))) : 0.0;
 		// D36: wholly white where the falls meet the water below, thinning up the falls; D58: and back out
 		// under it, so the part under the pool's see-through surface is not a solid white band
 		[flatten] if (fallPool && FallGround::Whitening)
@@ -1543,8 +1539,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		const float3 foamColor = lerp(float3(0.9, 0.9, 0.9), waterHue * 0.9, 0.25);  // Mostly white (D44: the water's own hue tinted it blue)
 		rawBaseColor.rgb = lerp(rawBaseColor.rgb, foamColor, white > 0.0 ? cover * 0.9 : 0.0);
 
-		// Debug (D40): 1 the solved flow's speed (red), foam (green) and water (blue); 2 the texture's direction of motion
-		// D59: on a baked mesh, 1 shows the bake instead
+		// Debug (D40): 1 the mesh's bake (D59; dark magenta without one, D78); 2 the texture's direction of motion
 		[branch] if (FallGround::DebugMode == 1 && FallGround::BakeOn)
 		{
 			// D67: red how the streaks spread (half: as at the top; brighter spread, darker squeezed), green the run
@@ -1556,9 +1551,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			rawBaseColor.rgb = lerp(float3(saturate(0.5 * spread), frac(fallFlow.runTime), saturate(baked.w)), 1.0, saturate(baked.z) * 0.5);
 		}
 		else if (FallGround::DebugMode == 1)
-			rawBaseColor.rgb = float3(saturate(length(fallFlow.stream.xy) * 0.5), saturate(fallFlow.stream.z), fallFlow.stream.w);
+			rawBaseColor.rgb = float3(0.25, 0.0, 0.25);
 		else if (FallGround::DebugMode == 2)
-			rawBaseColor.rgb = (0.5 + 0.5 * fallFlow.velocity / max(length(fallFlow.velocity), 1e-3)) * saturate(length(fallFlow.velocity) / FallGround::FlowSpeed);
+			rawBaseColor.rgb = (0.5 + 0.5 * fallFlow.velocity / max(length(fallFlow.velocity), 1e-3)) * saturate(length(fallFlow.velocity) / FallGround::DEBUG_FLOW_SPEED);
 		baseColor = float4(Color::Diffuse(rawBaseColor.rgb), rawBaseColor.a);
 	}
 #		endif

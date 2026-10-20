@@ -134,7 +134,7 @@ void FluidField::DrawSettings()
 
 		ImGui::SeparatorText(T(TKEY("waterfall_look"), "Water"));
 		ImGui::Checkbox(T(TKEY("fall_whitening"), "Foam on the Falls"), &settings.FallWhitening);
-		tooltip(T(TKEY("fall_whitening_tooltip"), "White water on the falls where they strike rock, where vanilla's pieces meet, into the water below and where they fall fast."));
+		tooltip(T(TKEY("fall_whitening_tooltip"), "White water on the falls where they strike rock, below rock, into the water below and as they run and fall."));
 		ImGui::Checkbox(T(TKEY("hide_underwater_falls"), "Hide Buried Falls"), &settings.HideUnderwaterFalls);
 		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes under the water above or below them, or deep in the rock."));
 		ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Plunge Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -246,15 +246,16 @@ void FluidField::DrawSettings()
 		ImGui::PushID("DebugSection");
 		ImGui::SeparatorText(T(TKEY("debug_waterfalls"), "Waterfalls"));
 		{
-			const char* fallDebugModes[] = { T(TKEY("waterfall_debug_off"), "Off"), T(TKEY("waterfall_debug_fields"), "Speed, Foam, Water"), T(TKEY("waterfall_debug_direction"), "Flow Direction"),
+			const char* fallDebugModes[] = { T(TKEY("waterfall_debug_off"), "Off"), T(TKEY("waterfall_debug_bake"), "Mesh Flow Bake"), T(TKEY("waterfall_debug_direction"), "Flow Direction"),
 				T(TKEY("waterfall_debug_vanilla"), "Vanilla Texture (No Flow)") };
 			settings.WaterfallDebug = std::clamp(settings.WaterfallDebug, 0, 3);
 			ImGui::Combo(T(TKEY("waterfall_debug"), "Waterfall Shading"), &settings.WaterfallDebug, fallDebugModes, IM_ARRAYSIZE(fallDebugModes));
-			tooltip(T(TKEY("waterfall_debug_tooltip"), "Paints the falling water with its solved flow. Speed, Foam, Water: red for speed, green for foam, blue for water. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster. Vanilla Texture: the falls without the flow."));
-			const char* fallViews[] = { T(TKEY("fall_view_off"), "Off"), T(TKEY("fall_view_meshes"), "Fall Meshes"), T(TKEY("fall_view_intersections"), "Intersections") };
+			tooltip(T(TKEY("waterfall_debug_tooltip"), "Paints the falling water with its flow. Mesh Flow Bake: red how the streaks spread, green the run time (a band per second), blue foam, white the wake of rock; dark magenta where a mesh has no bake. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster. Vanilla Texture: the falls without the flow."));
+			fallDebugView = std::clamp(fallDebugView, 0, 1);
+			const char* fallViews[] = { T(TKEY("fall_view_off"), "Off"), T(TKEY("fall_view_emitters"), "Spray and Plunges") };
 			ImGui::Combo(T(TKEY("fall_view"), "Waterfall Overlay"), &fallDebugView, fallViews, IM_ARRAYSIZE(fallViews));
 			tooltip(T(TKEY("fall_view_tooltip"),
-				"Fall Meshes: vanilla's falling-water triangles, one colour per mesh, red where they run inside rock. Intersections: where the meshes meet (yellow: a mesh ends against another; magenta: two cross), where they cross the water above or below (green), and the spray emitters (cyan: drops, blue: plunges and impacts, orange: seams). Drawn through everything. Not saved."));
+				"The spray emitters (blue: where the falls go into the water below, orange: where they strike rock) and the plunges' pushes on the water below (green, the way they pull it). Drawn through everything. Not saved."));
 			ImGui::Checkbox(T(TKEY("show_waterfall_sites"), "Show Waterfall Sites"), &showFallSites);
 			tooltip(T(TKEY("show_waterfall_sites_tooltip"), "Draws the waterfall sites found in vanilla's layout: effect meshes by class, each site's water levels (green top, blue bottom, teal tiers) and a label. Also prints each cell's summary to the console."));
 			const char* meshViews[] = { T(TKEY("fall_mesh_debug_off"), "Off"), T(TKEY("fall_mesh_debug_wireframe"), "Wireframe"), T(TKEY("fall_mesh_debug_flow"), "Flow"),
@@ -1434,8 +1435,6 @@ void FluidField::ReleaseFallGround()
 {
 	fallGroundTexture = nullptr;
 	fallGroundSRV = nullptr;
-	fallStreamTexture = nullptr;
-	fallStreamSRV = nullptr;
 	fallClipBuffer = nullptr;
 	fallClipSRV = nullptr;
 	fallClipVersion = UINT64_MAX;
@@ -1460,8 +1459,6 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		onDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 		const FallGroundData off{};
 		const D3D11_SUBRESOURCE_DATA offData{ &off, 0, 0 };
-		D3D11_TEXTURE2D_DESC streamDesc = desc;
-		streamDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 		D3D11_TEXTURE2D_DESC plungeDesc = desc;
 		plungeDesc.Format = DXGI_FORMAT_R16_FLOAT;
 		if (FAILED(device->CreateTexture2D(&plungeDesc, nullptr, fallPlungeTexture.put())) || FAILED(device->CreateShaderResourceView(fallPlungeTexture.get(), nullptr, fallPlungeSRV.put()))) {
@@ -1473,7 +1470,6 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		}
 		desc.Format = DXGI_FORMAT_R32G32_FLOAT;  // The rock, and the pools' surface (D36)
 		if (FAILED(device->CreateTexture2D(&desc, nullptr, fallGroundTexture.put())) || FAILED(device->CreateShaderResourceView(fallGroundTexture.get(), nullptr, fallGroundSRV.put())) ||
-			FAILED(device->CreateTexture2D(&streamDesc, nullptr, fallStreamTexture.put())) || FAILED(device->CreateShaderResourceView(fallStreamTexture.get(), nullptr, fallStreamSRV.put())) ||
 			FAILED(device->CreateBuffer(&onDesc, &offData, fallGroundOn.put())) || FAILED(device->CreateBuffer(&cbDesc, &offData, fallGroundOff.put()))) {
 			logger::warn("[Fluid Field] Could not create the waterfall ground map; waterfalls are not grounded");
 			ReleaseFallGround();
@@ -1481,8 +1477,6 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		}
 		Util::SetResourceName(fallGroundTexture.get(), "FluidField::FallGround");
 		Util::SetResourceName(fallGroundSRV.get(), "FluidField::FallGround SRV");
-		Util::SetResourceName(fallStreamTexture.get(), "FluidField::FallStream");
-		Util::SetResourceName(fallStreamSRV.get(), "FluidField::FallStream SRV");
 		Util::SetResourceName(fallGroundOn.get(), "FluidField::FallGroundOn");
 		Util::SetResourceName(fallGroundOff.get(), "FluidField::FallGroundOff");
 	}
@@ -1550,12 +1544,10 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 				halves[i] = DirectX::PackedVector::XMConvertFloatToHalf(fallPlungeScratch[i]);
 			context->UpdateSubresource(fallPlungeTexture.get(), 0, nullptr, halves.data(), FALL_GROUND_SIZE * sizeof(uint16_t), 0);
 		}
-		fallSites.BuildStreamMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallStreamScratch);
-		context->UpdateSubresource(fallStreamTexture.get(), 0, nullptr, fallStreamScratch.data(), FALL_GROUND_SIZE * 4 * sizeof(float), 0);
 	}
 	fallGroundData = { { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u,
-		static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 3)), fallSurfaceTime, FluidFieldSim::FallStream::BASE_SPEED, {}, {}, {}, settings.FallWhitening ? 1u : 0u,
-		UINT32_MAX, settings.HideUnderwaterFalls ? 1u : 0u, FALL_POOL_FOAM, 0u, { 1.0f, 1.0f }, {}, {} };
+		static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 3)), fallSurfaceTime, FALL_POOL_FOAM, {}, {}, {}, settings.FallWhitening ? 1u : 0u, UINT32_MAX,
+		settings.HideUnderwaterFalls ? 1u : 0u, { 1.0f, 1.0f }, 0u, {}, {} };
 }
 
 void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
@@ -1641,12 +1633,10 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
 		context->VSSetConstantBuffers(13, 1, &constants);
 		context->PSSetConstantBuffers(13, 1, &constants);
 		ID3D11ShaderResourceView* ground = fallGroundSRV.get();
-		ID3D11ShaderResourceView* stream = fallStreamSRV.get();
 		context->VSSetShaderResources(120, 1, &ground);
 		ID3D11ShaderResourceView* clip = fallClipSRV.get();
 		context->VSSetShaderResources(123, 1, &clip);
 		context->PSSetShaderResources(120, 1, &ground);
-		context->PSSetShaderResources(122, 1, &stream);
 		fallGroundBound = true;
 	} else if (fallGroundBound) {
 		ID3D11Buffer* constants = fallGroundOff.get();
