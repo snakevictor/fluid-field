@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <future>
 #include <string>
 #include <unordered_map>
@@ -17,6 +18,7 @@ struct ImDrawList;
 namespace FluidFieldSim
 {
 	class WaterSurfaces;
+	class LandscapeCache;
 
 	/**
 	 * @brief Waterfall sites reconstructed from vanilla's layout (D25, stages S1 to S3 of
@@ -96,6 +98,8 @@ namespace FluidFieldSim
 		/** @brief Rescans every few updates; rebuilds the sites when the references or water changed. */
 		void Update(const WaterSurfaces& a_water);
 		void Clear();
+		/** @brief D82: the landscape heights the bakes' rock test reads (the ground the sheets lie on); may be null. */
+		void SetLandscape(const LandscapeCache* a_landscape) { landscape = a_landscape; }
 
 		const std::vector<FxRef>& GetRefs() const { return refs; }
 		const std::vector<Site>& GetSites() const { return sites; }
@@ -300,6 +304,8 @@ namespace FluidFieldSim
 			float uvMin[2]{}, uvSize[2]{};
 			std::vector<RE::NiPoint3> position, normal;
 			std::vector<uint8_t> covered, rock;
+			std::vector<float> ground;    ///< D82: the landscape's height under each texel (NaN where unknown)
+			std::filesystem::path cache;  ///< D82: where its finished bake is kept (empty: not kept)
 			std::size_t next = 0;
 			// D68: the render meshes of the statics round the sheet (boulders, the walls beside it), binned from above
 			std::vector<std::array<RE::NiPoint3, 3>> solids;
@@ -351,7 +357,36 @@ namespace FluidFieldSim
 			std::vector<float> seed, along;              ///< D80: the lip column each texel's strand came over (texels), and its run from the mesh's top (texture v)
 			std::vector<RE::NiPoint3> normal;
 			std::vector<uint8_t> rock;  ///< D75: texels inside rock (the debug arrows skip them)
+			std::vector<float> swell;   ///< D82: how much the water piles up there, softened (the vertex push)
 		};
+		static constexpr uint32_t BAKE_CACHE_VERSION = 1;  ///< D82: bump whenever a bake would come out different
+		/** @brief D82: where a bake job's finished bake is kept on disk: by its reference, model part, placement, the rock and ground round it, and the version. */
+		static std::filesystem::path BakeCachePath(const BakeJob& a_job);
+		static bool SaveBake(const std::filesystem::path& a_path, const BakeField& a_field);
+		static std::shared_ptr<BakeField> LoadBake(const std::filesystem::path& a_path);
+		uint32_t bakesCached = 0, bakesSolved = 0;
+		/**
+		 * @brief D82: each lit mesh's vertices pushed out along their normals where its water piles up (the bake's swell),
+		 * in its own space, broad shapes only; none at its open edges (cracks between meshes)
+		 */
+		void ComputePushes();
+		static constexpr float PUSH_MOST = 12.0f;  ///< D82: world units the water swells out at most
+		static constexpr float PUSH_FROM = 1.0f;   ///< D82: swell the push starts at (the sheet mostly runs 0 to 2.5)...
+		static constexpr float PUSH_FULL = 4.0f;   ///< D82: ...and is whole at (piling against rock, squeezing between rocks: 5 to 20)
+		static constexpr int PUSH_BLUR = 4;        ///< D82: passes softening the swell to broad shapes
+		/** @brief D82: the vertex shifts the shaders read (vertexClips 4-6): the seams' gap shift (D69) and the push together. */
+		void ComposeShifts();
+		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> gapShifts, vertexPushes;
+		/** @brief D82 diagnostics: each fall's own vanilla scroll, measured on its hidden original and on its copy, logged once. */
+		void ProbeScrolls();
+		struct ScrollProbe
+		{
+			float offset = 0.0f, copyOffset = 0.0f, travelled = 0.0f, copyTravelled = 0.0f, scale = 0.0f;
+			double start = -1.0, last = -1.0;
+			bool logged = false;
+		};
+		std::unordered_map<const RE::BSGeometry*, ScrollProbe> scrollProbes;
+		const LandscapeCache* landscape = nullptr;
 		std::vector<std::pair<RE::NiPointer<RE::BSGeometry>, std::future<std::shared_ptr<BakeField>>>> bakesPending;
 		std::unordered_map<const RE::BSGeometry*, std::shared_ptr<BakeField>> bakeFields;
 		/**

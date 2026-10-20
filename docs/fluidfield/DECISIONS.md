@@ -1935,3 +1935,33 @@ Entry format:
     -   Offline: median anisotropy 1.2-1.4 (deployed 1.1-1.6) at the same or
         more turn (p95 29-53 degrees); the strands themselves turn p95 39-69.
         About 0.3-0.5 s per mesh on the bake's thread.
+
+## D82: Bake cache, a vertex swell, and data for a faster rock test
+
+-   Date: 2026-10-20
+-   Context: review "Fluid Field Waterfalls Q&A 2026-10-20": the 10+ s wait
+    for the falls is the bake's collision rock test (Havok rays on the main
+    thread in a 3 ms budget a frame, about 2 s a mesh), not the subdivision.
+-   Decision:
+    -   **Bake cache.** A finished bake is written to
+        `<log dir>/FluidFieldBakes/<ref>_<hash>.bin`, keyed on the reference,
+        the model part, its placement, the covered texels, the statics'
+        triangles round it (summed, so the cells' visiting order does not
+        matter), the ground under it, BAKE_CACHE_VERSION and the bake code's
+        build time (while it is tuned, every build bakes afresh). A hit skips
+        the rock test and the solve.
+    -   **Rock test data.** The render-mesh test (D68) now runs on every
+        texel, with the ground (the landscape cache) under the sheet, on the
+        worker thread, and its result is logged and dumped against the
+        collision test's. The rock used is unchanged (collision or render
+        meshes); whether the collision test can go is decided on that data.
+    -   **Vertex swell.** The strands' swell (pressed together, striking
+        rock), softened 4 passes, pushes the dense copy's vertices out along
+        their normals: from swell 1 to full (12 units) at 4, none at open
+        edges and half beside them. It rides the seams' shift (D69, now kept
+        apart and composed), so both depth passes move it alike. Offline,
+        swell is 0-2.5 over most of the sheet and 5-20 where it piles up.
+    -   **Scroll probe.** Each fall's hidden original and its copy log their
+        measured scroll once, to decide whether vanilla's per-fall speeds can
+        come back.
+-   References: D67, D68, D69, D73, D80

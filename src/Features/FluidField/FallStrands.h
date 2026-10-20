@@ -25,6 +25,7 @@ namespace FluidFieldSim::FallStrands
 		/// texture's speed: D67's along), aeration, foam where it strikes rock or piles up, its turn (texels across
 		/// per row; the debug arrows) and speed (vanilla's 1)
 		std::vector<float> seed, along, aeration, foam, turn, speed;
+		std::vector<float> swell;     ///< D82: per texel how much the water piles up (pressed together, striking rock): 0 where it runs free
 		std::vector<int32_t> crest;   ///< D79: per column, the row its water starts at (-1: none)
 		std::vector<uint8_t> leadIn;  ///< D79: texels before their column's crest
 		uint32_t strands = 0, nodes = 0, reachedFoot = 0, openTexels = 0, leadTexels = 0, inflows = 0;
@@ -41,4 +42,7 @@ namespace FluidFieldSim::FallStrands
 	 * healing back toward their own column behind it, leaving the wake open meanwhile; aerating as they fall.
 	 */
 	Output March(const Input& a_input);
+
+	/** @brief D82: this code's build, for the bake cache (a rebuilt sheet bakes afresh). */
+	const char* Version();
 }

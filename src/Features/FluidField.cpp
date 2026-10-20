@@ -859,6 +859,7 @@ void FluidField::Prepass()
 				fallPhase += fallRate * std::clamp(deltaTime, 0.0f, 0.25f);
 				fallPhase -= std::floor(fallPhase);
 			}
+			fallSites.SetLandscape(&landscape);
 			fallSites.Update(water);
 			UpdateFallGround(playerPos);
 		} else {

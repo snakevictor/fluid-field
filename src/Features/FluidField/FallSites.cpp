@@ -1,6 +1,7 @@
 #include "FallSites.h"
 
 #include "FallStrands.h"
+#include "LandscapeCache.h"
 
 #include "EngineGrid.h"
 #include "FallSurfaceRenderer.h"
@@ -698,6 +699,8 @@ namespace FluidFieldSim
 		}
 		// Meshes no longer grounded (their cell unloaded) lose their cut, so a reused address is not mistaken for them
 		std::erase_if(vertexClipBase, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
+		std::erase_if(gapShifts, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
+		std::erase_if(vertexPushes, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
 		if (std::erase_if(flowBakes, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); }))
 			flowBakeVersion++;
 		// D78: the plunges and spray of meshes that went go with them
@@ -1119,9 +1122,9 @@ namespace FluidFieldSim
 			// middle by GAP_OVERLAP; the other mesh's edge moves to meet it the same way. In the mesh's own space, for
 			// both depth passes' vertex shaders
 			const RE::NiTransform inverse = mesh.geometry->world.Invert();
+			auto& shifts = gapShifts[mesh.geometry];
+			shifts.assign(mesh.positions.size(), RE::NiPoint3(0.0f, 0.0f, 0.0f));
 			for (std::size_t v = 0; v < mesh.positions.size(); v++) {
-				auto& value = vertexClips[mesh.base + v];
-				value[4] = value[5] = value[6] = 0.0f;
 				if (!mesh.open[v] || onLead[v])
 					continue;
 				const RE::NiPoint3& p = mesh.positions[v];
@@ -1162,14 +1165,11 @@ namespace FluidFieldSim
 				const RE::NiPoint3 across = target - p;
 				const float gap = std::sqrt(best);
 				const RE::NiPoint3 moved = p + across * ((0.5f * gap + GAP_OVERLAP) / gap);
-				const RE::NiPoint3 local = inverse * moved - inverse * p;
-				value[4] = local.x;
-				value[5] = local.y;
-				value[6] = local.z;
+				shifts[v] = inverse * moved - inverse * p;
 				gaps++;
 			}
 		}
-		vertexClipVersion++;
+		ComposeShifts();
 		logger::info("[Fluid Field] Waterfall seams: {} of {} open-edge vertices of {} lit meshes lie on a mesh leading them, and fade; {} move across a gap to the mesh beside them", faded,
 			edges, meshes.size(), gaps);
 	}
@@ -1450,14 +1450,30 @@ namespace FluidFieldSim
 		// collision the sheet grazes, not boulders; they only scattered the flow
 		std::vector<uint8_t> rock = a_job.rock;
 		// D68: and rock from the statics' render meshes: a boulder resting on the ground failed the collision test
-		// (it wants rock on both sides of the sheet, and the ray from under the boulder started in the ground)
-		uint32_t meshRock = 0;
+		// (it wants rock on both sides of the sheet, and the ray from under the boulder started in the ground).
+		// D82: tested on every texel, with the ground under the landscape, against the collision (Havok, on the main
+		// thread, 2 s a mesh) as the reference, to see whether these two alone (here, milliseconds) can take its place
+		const auto testStart = std::chrono::steady_clock::now();
+		std::vector<uint8_t> inMesh(count, 0), inGround(count, 0);
+		uint32_t meshRock = 0, collisionRock = 0, meshTexels = 0, groundTexels = 0, collisionOnly = 0, newOnly = 0;
 		for (std::size_t i = 0; i < count; i++) {
-			if (a_job.covered[i] && !rock[i] && InsideSolid(a_job, a_job.position[i], std::abs(a_job.normal[i].z) > 0.5f)) {
+			if (!a_job.covered[i])
+				continue;
+			inMesh[i] = InsideSolid(a_job, a_job.position[i], std::abs(a_job.normal[i].z) > 0.5f) ? 1 : 0;
+			inGround[i] = i < a_job.ground.size() && !std::isnan(a_job.ground[i]) && a_job.position[i].z < a_job.ground[i] - BAKE_ROCK_MARGIN ? 1 : 0;
+			collisionRock += a_job.rock[i];
+			meshTexels += inMesh[i];
+			groundTexels += inGround[i];
+			collisionOnly += a_job.rock[i] && !inMesh[i] && !inGround[i] ? 1 : 0;
+			newOnly += !a_job.rock[i] && (inMesh[i] || inGround[i]) ? 1 : 0;
+			if (!rock[i] && inMesh[i]) {
 				rock[i] = 1;
 				meshRock++;
 			}
 		}
+		const double testMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - testStart).count();
+		logger::info("[Fluid Field]   rock test: collision {} texels; render meshes {}, ground {} ({:.1f} ms); {} only in the collision, {} only in meshes or ground", collisionRock,
+			meshTexels, groundTexels, testMs, collisionOnly, newOnly);
 		{
 			std::vector<uint8_t> seen(count, 0);
 			std::vector<std::size_t> island, open;
@@ -1498,6 +1514,10 @@ namespace FluidFieldSim
 			file.write(reinterpret_cast<const char*>(a_job.covered.data()), static_cast<std::streamsize>(count));
 			file.write(reinterpret_cast<const char*>(rock.data()), static_cast<std::streamsize>(count));
 			file.write(reinterpret_cast<const char*>(a_job.position.data()), static_cast<std::streamsize>(count * sizeof(RE::NiPoint3)));
+			// D82: the rock tests apart: the collision's, the render meshes', the ground's
+			file.write(reinterpret_cast<const char*>(a_job.rock.data()), static_cast<std::streamsize>(count));
+			file.write(reinterpret_cast<const char*>(inMesh.data()), static_cast<std::streamsize>(count));
+			file.write(reinterpret_cast<const char*>(inGround.data()), static_cast<std::streamsize>(count));
 		}
 		// D80: the water on this mesh as a sheet of strands (FallStrands): from each column's crest (D79), parting round
 		// the rock, its wake left open behind it, never crossing or turning back; the texture keeps vanilla's speed down
@@ -1571,8 +1591,303 @@ namespace FluidFieldSim
 		field->along = std::move(strands.along);
 		field->normal = a_job.normal;
 		field->rock = rock;
+		// D82: the swell, softened to broad shapes (the vertices are 20 to 50 units apart)
+		field->swell = std::move(strands.swell);
+		blur(field->swell, PUSH_BLUR);
 		logger::info("[Fluid Field]   bake: {}x{} texels, {} more inside the statics' meshes", w, h, meshRock);
+		if (!a_job.cache.empty() && !SaveBake(a_job.cache, *field))
+			logger::warn("[Fluid Field]   bake cache: could not write {}", a_job.cache.string());
 		return field;
+	}
+
+	std::filesystem::path FallSites::BakeCachePath(const BakeJob& a_job)
+	{
+		const auto directory = logger::log_directory();
+		auto* geometry = a_job.geometry.get();
+		if (!directory || !geometry)
+			return {};
+		RE::TESObjectREFR* ref = nullptr;
+		for (RE::NiAVObject* object = geometry; object && !ref; object = object->parent)
+			ref = object->GetUserData();
+		if (!ref)
+			return {};
+		// FNV-1a over everything the bake depends on; the static triangles summed in any order (the cells are visited
+		// from the player's side, so their order moves)
+		const auto fnv = [](uint64_t a_hash, const void* a_data, std::size_t a_size) {
+			const auto* bytes = static_cast<const uint8_t*>(a_data);
+			for (std::size_t i = 0; i < a_size; i++) {
+				a_hash ^= bytes[i];
+				a_hash *= 1099511628211ull;
+			}
+			return a_hash;
+		};
+		uint64_t hash = 14695981039346656037ull;
+		const auto mix = [&](int64_t a_value) { hash = fnv(hash, &a_value, sizeof(a_value)); };
+		const auto quantise = [](float a_value, float a_step) { return std::isfinite(a_value) ? static_cast<int64_t>(std::llround(a_value / a_step)) : INT64_MIN; };
+		// The bake code's own build too: while it is being tuned, every build bakes afresh
+		const std::string build = std::format("{} {}|{}", __DATE__, __TIME__, FallStrands::Version());
+		hash = fnv(hash, build.data(), build.size());
+		mix(BAKE_CACHE_VERSION);
+		mix(ref->GetFormID());
+		const std::string name = geometry->name.c_str();
+		hash = fnv(hash, name.data(), name.size());
+		for (int r = 0; r < 3; r++) {
+			for (int c = 0; c < 3; c++)
+				mix(quantise(geometry->world.rotate.entry[r][c], 0.001f));
+		}
+		mix(quantise(geometry->world.translate.x, 0.1f));
+		mix(quantise(geometry->world.translate.y, 0.1f));
+		mix(quantise(geometry->world.translate.z, 0.1f));
+		mix(quantise(geometry->world.scale, 0.001f));
+		mix(a_job.width);
+		mix(a_job.height);
+		for (int k = 0; k < 2; k++) {
+			mix(quantise(a_job.uvMin[k], 1e-4f));
+			mix(quantise(a_job.uvSize[k], 1e-4f));
+		}
+		hash = fnv(hash, a_job.covered.data(), a_job.covered.size());
+		uint64_t solidSum = 0, solidXor = 0;
+		for (const auto& triangle : a_job.solids) {
+			uint64_t one = 14695981039346656037ull;
+			for (const auto& corner : triangle) {
+				const int64_t q[3] = { quantise(corner.x, 0.5f), quantise(corner.y, 0.5f), quantise(corner.z, 0.5f) };
+				one = fnv(one, q, sizeof(q));
+			}
+			solidSum += one;
+			solidXor ^= one * 0x9E3779B97F4A7C15ull;
+		}
+		mix(static_cast<int64_t>(solidSum));
+		mix(static_cast<int64_t>(solidXor));
+		mix(static_cast<int64_t>(a_job.solids.size()));
+		for (const float height : a_job.ground)
+			mix(quantise(height, 1.0f));
+		return *directory / "FluidFieldBakes" / std::format("{:08X}_{:016X}.bin", ref->GetFormID(), hash);
+	}
+
+	namespace
+	{
+		constexpr uint32_t BAKE_CACHE_MAGIC = 0x4B424646;  // "FFBK"
+	}
+
+	bool FallSites::SaveBake(const std::filesystem::path& a_path, const BakeField& a_field)
+	{
+		std::error_code error;
+		std::filesystem::create_directories(a_path.parent_path(), error);
+		auto partial = a_path;
+		partial += ".part";
+		{
+			std::ofstream file(partial, std::ios::binary);
+			if (!file)
+				return false;
+			const uint32_t header[4] = { BAKE_CACHE_MAGIC, BAKE_CACHE_VERSION, a_field.width, a_field.height };
+			file.write(reinterpret_cast<const char*>(header), sizeof(header));
+			file.write(reinterpret_cast<const char*>(a_field.uvMin), sizeof(a_field.uvMin));
+			file.write(reinterpret_cast<const char*>(a_field.uvSize), sizeof(a_field.uvSize));
+			const auto put = [&](const auto& a_vector) {
+				const uint64_t size = a_vector.size();
+				file.write(reinterpret_cast<const char*>(&size), sizeof(size));
+				file.write(reinterpret_cast<const char*>(a_vector.data()), static_cast<std::streamsize>(size * sizeof(a_vector[0])));
+			};
+			put(a_field.position);
+			put(a_field.covered);
+			put(a_field.turn);
+			put(a_field.speed);
+			put(a_field.wake);
+			put(a_field.foam);
+			put(a_field.seed);
+			put(a_field.along);
+			put(a_field.normal);
+			put(a_field.rock);
+			put(a_field.swell);
+			if (!file)
+				return false;
+		}
+		std::filesystem::rename(partial, a_path, error);
+		return !error;
+	}
+
+	std::shared_ptr<FallSites::BakeField> FallSites::LoadBake(const std::filesystem::path& a_path)
+	{
+		std::ifstream file(a_path, std::ios::binary);
+		if (!file)
+			return nullptr;
+		uint32_t header[4]{};
+		auto field = std::make_shared<BakeField>();
+		file.read(reinterpret_cast<char*>(header), sizeof(header));
+		file.read(reinterpret_cast<char*>(field->uvMin), sizeof(field->uvMin));
+		file.read(reinterpret_cast<char*>(field->uvSize), sizeof(field->uvSize));
+		if (!file || header[0] != BAKE_CACHE_MAGIC || header[1] != BAKE_CACHE_VERSION || header[2] == 0 || header[3] == 0 || header[2] > BAKE_MOST_SIDE || header[3] > BAKE_MOST_SIDE)
+			return nullptr;
+		field->width = header[2];
+		field->height = header[3];
+		const std::size_t count = static_cast<std::size_t>(field->width) * field->height;
+		bool ok = true;
+		const auto get = [&](auto& a_vector) {
+			uint64_t size = 0;
+			file.read(reinterpret_cast<char*>(&size), sizeof(size));
+			if (!file || size != count) {
+				ok = false;
+				return;
+			}
+			a_vector.resize(count);
+			file.read(reinterpret_cast<char*>(a_vector.data()), static_cast<std::streamsize>(count * sizeof(a_vector[0])));
+			ok = ok && static_cast<bool>(file);
+		};
+		get(field->position);
+		get(field->covered);
+		get(field->turn);
+		get(field->speed);
+		get(field->wake);
+		get(field->foam);
+		get(field->seed);
+		get(field->along);
+		get(field->normal);
+		get(field->rock);
+		get(field->swell);
+		return ok ? field : nullptr;
+	}
+
+	void FallSites::ComposeShifts()
+	{
+		for (const auto& [geometry, base] : vertexClipBase) {
+			const auto gap = gapShifts.find(geometry);
+			const auto push = vertexPushes.find(geometry);
+			const std::size_t gaps = gap != gapShifts.end() ? gap->second.size() : 0, pushes = push != vertexPushes.end() ? push->second.size() : 0;
+			for (std::size_t v = 0; v < std::max(gaps, pushes) && base + v < vertexClips.size(); v++) {
+				RE::NiPoint3 shift(0.0f, 0.0f, 0.0f);
+				if (v < gaps)
+					shift += gap->second[v];
+				if (v < pushes)
+					shift += push->second[v];
+				auto& value = vertexClips[base + v];
+				value[4] = shift.x;
+				value[5] = shift.y;
+				value[6] = shift.z;
+			}
+		}
+		vertexClipVersion++;
+	}
+
+	void FallSites::ComputePushes()
+	{
+		uint32_t meshes = 0, pushed = 0;
+		float most = 0.0f;
+		for (const auto& lit : litMeshList) {
+			auto* geometry = lit.geometry.get();
+			const auto field = bakeFields.find(geometry);
+			auto* triShape = geometry ? geometry->AsTriShape() : nullptr;
+			auto* renderer = geometry ? geometry->GetGeometryRuntimeData().rendererData : nullptr;
+			if (field == bakeFields.end() || !field->second || field->second->swell.empty() || !vertexClipBase.contains(geometry) || !triShape || !renderer || !renderer->rawVertexData ||
+				!renderer->rawIndexData || !renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV))
+				continue;
+			const BakeField& bake = *field->second;
+			const auto& counts = triShape->GetTrishapeRuntimeData();
+			const uint32_t stride = renderer->vertexDesc.GetSize();
+			const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+			const uint32_t uvOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
+			std::vector<RE::NiPoint3> positions(counts.vertexCount), normals(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+			std::vector<std::array<float, 2>> uvs(counts.vertexCount);
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				const uint8_t* data = renderer->rawVertexData + static_cast<std::size_t>(v) * stride;
+				float local[3];
+				std::memcpy(local, data + positionOffset, sizeof(local));
+				positions[v] = RE::NiPoint3(local[0], local[1], local[2]);
+				const auto* uv = reinterpret_cast<const uint16_t*>(data + uvOffset);
+				uvs[v] = { DirectX::PackedVector::XMConvertHalfToFloat(uv[0]), DirectX::PackedVector::XMConvertHalfToFloat(uv[1]) };
+			}
+			// Its normals (area weighted, by its winding: the face it shows) and its open edges
+			std::map<std::pair<uint16_t, uint16_t>, int> uses;
+			std::vector<std::array<uint16_t, 3>> triangles;
+			for (uint32_t i = 0; i < counts.triangleCount; i++) {
+				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+				if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+					continue;
+				triangles.push_back({ index[0], index[1], index[2] });
+				const RE::NiPoint3 face = (positions[index[1]] - positions[index[0]]).Cross(positions[index[2]] - positions[index[0]]);
+				for (int k = 0; k < 3; k++) {
+					normals[index[k]] += face;
+					uses[{ std::min(index[k], index[(k + 1) % 3]), std::max(index[k], index[(k + 1) % 3]) }]++;
+				}
+			}
+			std::vector<uint8_t> open(counts.vertexCount, 0), nearOpen(counts.vertexCount, 0);
+			for (const auto& [edge, count] : uses) {
+				if (count == 1)
+					open[edge.first] = open[edge.second] = 1;
+			}
+			for (const auto& triangle : triangles) {
+				if (open[triangle[0]] || open[triangle[1]] || open[triangle[2]])
+					nearOpen[triangle[0]] = nearOpen[triangle[1]] = nearOpen[triangle[2]] = 1;
+			}
+			// The swell at each vertex's texture coordinate (bilinear on the bake's grid), to a push along its normal
+			const auto w = static_cast<int32_t>(bake.width), h = static_cast<int32_t>(bake.height);
+			const auto swellAt = [&](float a_u, float a_v) {
+				const float gx = std::clamp((a_u - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(w) - 0.5f, 0.0f, static_cast<float>(w - 1));
+				const float gy = std::clamp((a_v - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(h) - 0.5f, 0.0f, static_cast<float>(h - 1));
+				const int32_t x0 = std::min(static_cast<int32_t>(gx), w - 1), y0 = std::min(static_cast<int32_t>(gy), h - 1);
+				const int32_t x1 = std::min(x0 + 1, w - 1), y1 = std::min(y0 + 1, h - 1);
+				const float fx = gx - static_cast<float>(x0), fy = gy - static_cast<float>(y0);
+				const auto at = [&](int32_t a_x, int32_t a_y) { return bake.swell[static_cast<std::size_t>(a_y) * w + a_x]; };
+				return (at(x0, y0) * (1.0f - fx) + at(x1, y0) * fx) * (1.0f - fy) + (at(x0, y1) * (1.0f - fx) + at(x1, y1) * fx) * fy;
+			};
+			const float scale = std::max(geometry->world.scale, 1e-3f);
+			auto& push = vertexPushes[geometry];
+			push.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				const float length = normals[v].Length();
+				if (open[v] || length < 1e-6f)
+					continue;
+				const float t = std::clamp((swellAt(uvs[v][0], uvs[v][1]) - PUSH_FROM) / (PUSH_FULL - PUSH_FROM), 0.0f, 1.0f);
+				const float amount = PUSH_MOST * t * t * (3.0f - 2.0f * t) * (nearOpen[v] ? 0.5f : 1.0f);
+				if (amount < 0.05f)
+					continue;
+				push[v] = normals[v] * (amount / (length * scale));
+				pushed++;
+				most = std::max(most, amount);
+			}
+			meshes++;
+		}
+		ComposeShifts();
+		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units", pushed, meshes, most);
+	}
+
+	void FallSites::ProbeScrolls()
+	{
+		const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+		const auto materialOf = [](RE::BSGeometry* a_geometry) -> RE::BSShaderMaterial* {
+			auto* property = a_geometry ? netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get()) : nullptr;
+			return property ? property->material : nullptr;
+		};
+		for (const auto& [key, copy] : denseOf) {
+			auto& probe = scrollProbes[key];
+			auto* original = materialOf(copy.original.get());
+			auto* dense = materialOf(copy.shape.get());
+			if (probe.logged || !original)
+				continue;
+			const float offset = original->texCoordOffset[0].y, denseOffset = dense ? dense->texCoordOffset[0].y : 0.0f;
+			if (probe.start < 0.0) {
+				probe.offset = offset;
+				probe.copyOffset = denseOffset;
+				probe.scale = original->texCoordScale[0].y;
+				probe.start = probe.last = now;
+				continue;
+			}
+			if (now - probe.last < 0.2)
+				continue;
+			float delta = offset - probe.offset, denseDelta = denseOffset - probe.copyOffset;
+			delta -= std::round(delta);
+			denseDelta -= std::round(denseDelta);
+			probe.travelled += delta;
+			probe.copyTravelled += denseDelta;
+			probe.offset = offset;
+			probe.copyOffset = denseOffset;
+			probe.last = now;
+			if (now - probe.start >= 6.0) {
+				const auto seconds = static_cast<float>(now - probe.start);
+				logger::info("[Fluid Field]   scroll probe: '{}' (its copy shares the material: {}): the hidden original scrolls {:.4f} a second (scale {:.3f}), the copy {:.4f}",
+					copy.original ? copy.original->name.c_str() : "?", original == dense, -probe.travelled / seconds, probe.scale, -probe.copyTravelled / seconds);
+				probe.logged = true;
+			}
+		}
 	}
 
 	void FallSites::LinkBakes()
@@ -1799,6 +2114,7 @@ namespace FluidFieldSim
 		flowBakeVersion++;
 		logger::info("[Fluid Field] Waterfall flow linked: {} meshes, {} fed by the mesh above them", nodes.size(), linked);
 		BuildPlunges();
+		ComputePushes();
 	}
 
 	void FallSites::BakeStep()
@@ -1815,7 +2131,8 @@ namespace FluidFieldSim
 			it = bakesPending.erase(it);
 			// D67: linked once all are solved, so each mesh carries on from the one above it
 			if (bakesPending.empty() && bakeQueue.empty() && !bakeJob) {
-				logger::info("[Fluid Field] Waterfall flow bakes: {} meshes, {} texels, {} inside rock", bakeFields.size(), bakedTexels, bakedRockTexels);
+				logger::info("[Fluid Field] Waterfall flow bakes: {} meshes ({} read from the cache, {} solved), {} texels tested, {} inside rock", bakeFields.size(), bakesCached,
+					bakesSolved, bakedTexels, bakedRockTexels);
 				LinkBakes();
 			}
 		}
@@ -1832,8 +2149,29 @@ namespace FluidFieldSim
 				if (!geometry || !grounded.contains(geometry.get()))
 					continue;
 				bakeJob = StartBake(geometry.get());
-				if (bakeJob)
-					GatherSolids(*bakeJob);
+				if (!bakeJob)
+					continue;
+				GatherSolids(*bakeJob);
+				// D82: the ground under each texel, for the rock test
+				bakeJob->ground.assign(bakeJob->position.size(), std::numeric_limits<float>::quiet_NaN());
+				for (std::size_t i = 0; i < bakeJob->position.size() && landscape; i++) {
+					float height = 0.0f;
+					if (bakeJob->covered[i] && landscape->SampleHeight(bakeJob->position[i].x, bakeJob->position[i].y, height))
+						bakeJob->ground[i] = height;
+				}
+				// D82: baked before (same reference, placement, rock and ground): read back, no rock test or solve
+				bakeJob->cache = BakeCachePath(*bakeJob);
+				if (!bakeJob->cache.empty() && std::filesystem::exists(bakeJob->cache)) {
+					if (auto field = LoadBake(bakeJob->cache)) {
+						std::promise<std::shared_ptr<BakeField>> ready;
+						ready.set_value(std::move(field));
+						bakesPending.emplace_back(bakeJob->geometry, ready.get_future());
+						bakesCached++;
+						bakeJob.reset();
+						continue;
+					}
+				}
+				bakesSolved++;
 				continue;
 			}
 			auto* cell = tes->interiorCell ? tes->interiorCell : tes->GetCell(bakeJob->geometry->world.translate);
@@ -1919,6 +2257,7 @@ namespace FluidFieldSim
 		ClipStep();
 		BakeStep();
 		PollPools();
+		ProbeScrolls();
 		if (updatesUntilScan > 0) {
 			updatesUntilScan--;
 			return;

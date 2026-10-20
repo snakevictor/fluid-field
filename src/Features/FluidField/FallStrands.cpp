@@ -139,6 +139,11 @@ namespace FluidFieldSim::FallStrands
 		};
 	}
 
+	const char* Version()
+	{
+		return __DATE__ " " __TIME__;
+	}
+
 	Output March(const Input& a_input)
 	{
 		Output result;
@@ -150,6 +155,7 @@ namespace FluidFieldSim::FallStrands
 		result.foam.assign(count, 0.0f);
 		result.turn.assign(count, 0.0f);
 		result.speed.assign(count, 1.0f);
+		result.swell.assign(count, 0.0f);
 		result.crest.assign(static_cast<std::size_t>(std::max(w, 0)), -1);
 		result.leadIn.assign(count, 0);
 		if (w < 2 || h < 2 || !a_input.position || !a_input.covered || !a_input.rock)
@@ -598,6 +604,7 @@ namespace FluidFieldSim::FallStrands
 					result.foam[i] += std::clamp(1.5f * a_node.strike / std::max(a_node.down, 1.0f) + 0.5f * std::max(a_node.squeeze - 1.5f, 0.0f), 0.0f, 1.0f) * a_weight;
 					result.turn[i] += a_node.across / std::max(a_node.down, 1.0f) * sample(perRow, a_node.x, static_cast<float>(y)) / sample(perColumn, a_node.x, static_cast<float>(y)) * a_weight;
 					result.speed[i] += std::clamp(a_node.down / std::max(sample(vanilla, a_node.x, static_cast<float>(y)), 1.0f), LEAST_RATIO, MOST_RATIO) * a_weight;
+					result.swell[i] += (std::max(a_node.squeeze - 1.0f, 0.0f) + 2.0f * a_node.strike / std::max(a_node.down, 1.0f)) * a_weight;
 				};
 				result.speed[i] = 0.0f;
 				if (right == 0 || right == order.size()) {
