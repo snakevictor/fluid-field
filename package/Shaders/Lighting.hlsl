@@ -1565,6 +1565,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		else if (FallGround::DebugMode == 2)
 			rawBaseColor.rgb = (0.5 + 0.5 * fallFlow.velocity / max(length(fallFlow.velocity), 1e-3)) * saturate(length(fallFlow.velocity) / FallGround::DEBUG_FLOW_SPEED);
 		baseColor = float4(Color::Diffuse(rawBaseColor.rgb), rawBaseColor.a);
+		// D91 experiment: a dense copy built blended lets its clear water through, its white water stays opaque
+		[flatten] if (FallGround::BlendAlpha > 0.0)
+			baseColor.a *= lerp(1.0 - FallGround::BlendAlpha, 1.0, saturate(max(white > 0.0 ? cover : 0.0, aerated * 0.5)));
 	}
 #		endif
 	normal = normalColor;
