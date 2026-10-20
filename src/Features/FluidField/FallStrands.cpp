@@ -10,33 +10,35 @@ namespace FluidFieldSim::FallStrands
 {
 	namespace
 	{
-		constexpr float GRAVITY = 686.0f;        ///< World units per second squared (Skyrim's)
-		constexpr float INFLOW = 250.0f;         ///< World units per second the water comes over a crest at
-		constexpr float LIP_THICKNESS = 6.0f;    ///< World units of water coming over a crest (8.6 cm)
-		constexpr float TERMINAL = 900.0f;       ///< World units per second a falling sheet tends to (air drag)
-		constexpr float LEAST_SPEED = 150.0f;    ///< World units per second: on the flat the water behind pushes it on
-		constexpr float FRICTION = 1.5f;         ///< Per second, the bed's friction, by how much the surface lies
-		constexpr float CREST_RISE = 48.0f;      ///< D79: a column climbing more than this to its highest row starts there
-		constexpr float BAND = 0.15f;            ///< Share of the mesh's rows its foot band is (the water leaves there)
-		constexpr float VANILLA_SCROLL = 0.15f;  ///< Texture coordinates per second (D56)
-		constexpr float LEAST_RATIO = 0.5f;      ///< The debug arrows' speed (vanilla's 1) at least...
-		constexpr float MOST_RATIO = 1.6f;       ///< ...and at most this
-		constexpr uint32_t MOST_STRANDS = 128;   ///< Strands per mesh at most (one per crest column below that)
-		constexpr int32_t LOOK = 5;              ///< Rows ahead a strand sees rock coming (the pillow in front of it)
-		constexpr float CLEAR = 1.2f;            ///< Texels a strand steers to pass rock by
-		constexpr float LEAST_CLEAR = 0.5f;      ///< Texels: nearer than this it is pushed out
-		constexpr float MOST_ESCAPE = 14.0f;     ///< Texels: rock wider than this either way lies under the sheet (it runs over)
-		constexpr float MOST_TURN = 1.7320508f;  ///< The most a strand turns from straight down (60 degrees)
-		constexpr float ACROSS_PULL = 0.35f;     ///< Share of gravity across the surface the strands feel (vanilla's UVs already run the right way; in full it rolled them off every dome)
-		constexpr float HEAL = 1.5f;             ///< Seconds a strand turned aside takes to come back to its column
-		constexpr float LEAST_SPACING = 0.5f;    ///< Strands press together to this share of their spacing at most (the streaks squeeze 2x)
-		constexpr float OPEN_SPACING = 3.0f;     ///< A gap this many spacings wide (and 3 texels) is open: the wake behind rock
-		constexpr float PILLOW_SWELL = 3.0f;     ///< D84: swell of water piling up head-on against rock just ahead (the pillow)
-		constexpr float WAKE_SWELL = 3.5f;       ///< D84: swell behind a boulder, its two streams meeting (the rooster tail)...
-		constexpr float WAKE_PEAK = 4.0f;        ///< D84: ...highest this many rows behind it...
-		constexpr float WAKE_FADE = 8.0f;        ///< D84: ...fading over this many rows down the flow
-		constexpr int32_t BOULDER_WIDEST = 48;   ///< D84: rock with water both sides of it no wider than this (texels) is a boulder
-		constexpr float AERATION_FADE = 3.0f;    ///< Seconds aeration from strikes and pile-ups fades over
+		constexpr float GRAVITY = 686.0f;         ///< World units per second squared (Skyrim's)
+		constexpr float INFLOW = 250.0f;          ///< World units per second the water comes over a crest at
+		constexpr float LIP_THICKNESS = 6.0f;     ///< World units of water coming over a crest (8.6 cm)
+		constexpr float TERMINAL = 900.0f;        ///< World units per second a falling sheet tends to (air drag)
+		constexpr float LEAST_SPEED = 150.0f;     ///< World units per second: on the flat the water behind pushes it on
+		constexpr float FRICTION = 1.5f;          ///< Per second, the bed's friction, by how much the surface lies
+		constexpr float CREST_RISE = 48.0f;       ///< D79: a column climbing more than this to its highest row starts there
+		constexpr float BAND = 0.15f;             ///< Share of the mesh's rows its foot band is (the water leaves there)
+		constexpr float VANILLA_SCROLL = 0.15f;   ///< Texture coordinates per second (D56)
+		constexpr float LEAST_RATIO = 0.5f;       ///< The debug arrows' speed (vanilla's 1) at least...
+		constexpr float MOST_RATIO = 1.6f;        ///< ...and at most this
+		constexpr uint32_t MOST_STRANDS = 128;    ///< Strands per mesh at most (one per crest column below that)
+		constexpr int32_t LOOK = 5;               ///< Rows ahead a strand sees rock coming (the pillow in front of it)
+		constexpr float CLEAR = 1.2f;             ///< Texels a strand steers to pass rock by
+		constexpr float LEAST_CLEAR = 0.5f;       ///< Texels: nearer than this it is pushed out
+		constexpr float MOST_ESCAPE = 14.0f;      ///< Texels: rock wider than this either way lies under the sheet (it runs over)
+		constexpr float MOST_TURN = 1.7320508f;   ///< The most a strand turns from straight down (60 degrees)
+		constexpr float ACROSS_PULL = 0.35f;      ///< Share of gravity across the surface the strands feel (vanilla's UVs already run the right way; in full it rolled them off every dome)
+		constexpr float HEAL = 1.5f;              ///< Seconds a strand turned aside takes to come back to its column
+		constexpr float LEAST_SPACING = 0.5f;     ///< Strands press together to this share of their spacing at most (the streaks squeeze 2x)
+		constexpr float OPEN_SPACING = 3.0f;      ///< A gap this many spacings wide (and 3 texels) is open: the wake behind rock
+		constexpr float PILLOW_SWELL = 3.0f;      ///< D84: swell of water piling up head-on against rock just ahead (the pillow)
+		constexpr float WAKE_SWELL = 3.5f;        ///< D84: swell behind a boulder, its two streams meeting (the rooster tail)...
+		constexpr float WAKE_PEAK = 4.0f;         ///< D84: ...highest this many rows behind it...
+		constexpr float WAKE_FADE = 8.0f;         ///< D84: ...fading over this many rows down the flow
+		constexpr int32_t BOULDER_WIDEST = 48;    ///< D84: rock with water both sides of it no wider than this (texels) is a boulder
+		constexpr float DISTURBANCE_FADE = 0.8f;  ///< D85: seconds a strand's stirring (the wobble's size) fades over as it runs on
+		constexpr float WAKE_DISTURBANCE = 1.5f;  ///< D85: stirring behind a boulder, on its wake's middle
+		constexpr float AERATION_FADE = 3.0f;     ///< Seconds aeration from strikes and pile-ups fades over
 		constexpr float UNITS_PER_METRE = 70.0f;
 		constexpr float NOWHERE = 1e6f;
 		constexpr int SOFTEN = 3;              ///< Passes softening the flow's way before the mapping follows it
@@ -139,8 +141,9 @@ namespace FluidFieldSim::FallStrands
 			float squeeze = 1.0f;
 			float strike = 0.0f;  ///< World units per second of across speed lost against rock this row
 			float spacing = 1.0f;
-			int side = 0;         ///< Which way it passes the rock ahead (-1 left, 1 right)
-			float pillow = 0.0f;  ///< D84: piling up against the rock just ahead (1 head-on, at it)
+			int side = 0;              ///< Which way it passes the rock ahead (-1 left, 1 right)
+			float pillow = 0.0f;       ///< D84: piling up against the rock just ahead (1 head-on, at it)
+			float disturbance = 0.0f;  ///< D85: how stirred it is, from what it met upstream, fading as it runs on
 			bool alive = false;
 		};
 	}
@@ -226,6 +229,7 @@ namespace FluidFieldSim::FallStrands
 		result.turn.assign(count, 0.0f);
 		result.speed.assign(count, 1.0f);
 		result.swell.assign(count, 0.0f);
+		result.disturbance.assign(count, 0.0f);
 		result.crest.assign(static_cast<std::size_t>(std::max(w, 0)), -1);
 		result.leadIn.assign(count, 0);
 		if (w < 2 || h < 2 || !a_input.position || !a_input.covered || !a_input.rock)
@@ -547,6 +551,9 @@ namespace FluidFieldSim::FallStrands
 			a_node.across = nextAcross;
 			a_node.down = nextDown;
 			a_node.strike = strike;
+			// D85: stirred where it piles up, strikes rock or presses against the rock ahead; carried on, fading
+			const float stirredNow = std::max(a_node.squeeze - 1.0f, 0.0f) + 2.0f * strike / std::max(nextDown, 1.0f) + a_node.pillow;
+			a_node.disturbance = std::max(a_node.disturbance * std::exp(-dt / DISTURBANCE_FADE), stirredNow);
 		};
 
 		std::vector<int32_t> order;
@@ -665,6 +672,7 @@ namespace FluidFieldSim::FallStrands
 					result.speed[i] += std::clamp(a_node.down / std::max(sample(vanilla, a_node.x, static_cast<float>(y)), 1.0f), LEAST_RATIO, MOST_RATIO) * a_weight;
 					result.swell[i] += (std::max(a_node.squeeze - 1.0f, 0.0f) + 2.0f * a_node.strike / std::max(a_node.down, 1.0f) + PILLOW_SWELL * a_node.pillow) *
 					                   a_weight;
+					result.disturbance[i] += a_node.disturbance * a_weight;
 				};
 				result.speed[i] = 0.0f;
 				if (right == 0 || right == order.size()) {
@@ -727,6 +735,8 @@ namespace FluidFieldSim::FallStrands
 					const float past = behind[i], across = std::abs(static_cast<float>(x) - middle[i]) / std::max(half[i], 1.0f);
 					const float ridge = std::max(1.0f - across * across, 0.0f);
 					result.swell[i] += WAKE_SWELL * ridge * (past < WAKE_PEAK ? Smoothstep(0.0f, WAKE_PEAK, past) : std::exp(-(past - WAKE_PEAK) / WAKE_FADE));
+					// D85: and stirred there, longer: the wake's waves run on further than its mound
+					result.disturbance[i] = std::max(result.disturbance[i], WAKE_DISTURBANCE * ridge * (past < WAKE_PEAK ? Smoothstep(0.0f, WAKE_PEAK, past) : std::exp(-(past - WAKE_PEAK) / (2.0f * WAKE_FADE))));
 				}
 			}
 		}

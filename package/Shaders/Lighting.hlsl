@@ -155,8 +155,11 @@ VS_OUTPUT main(VS_INPUT input)
 	VS_OUTPUT vsout;
 
 #	if defined(FLUID_FIELD)
-	// Fluid Field (D69): a falls seam's edge moved across its gap, the same in the depth pre-pass (Utility.hlsl)
-	input.Position.xyz += FallGround::Shift(input.VertexID);
+	// Fluid Field (D69): a falls seam's edge moved across its gap, the same in the depth pre-pass (Utility.hlsl); D85:
+	// and its wobble, where it was a frame ago too (its motion vector)
+	const float3 fallShift = FallGround::Shift(input.VertexID, FallGround::Scroll.x);
+	const float3 fallShiftPrevious = FallGround::Shift(input.VertexID, FallGround::PreviousPhase);
+	input.Position.xyz += fallShift;
 #	endif
 	precise float4 inputPosition = float4(input.Position.xyz, 1.0);
 
@@ -165,6 +168,9 @@ VS_OUTPUT main(VS_INPUT input)
 #	endif  // defined(LODLANDNOISE) || defined(LODLANDSCAPE)                                                                   \
 
 	precise float4 previousInputPosition = inputPosition;
+#	if defined(FLUID_FIELD)
+	previousInputPosition.xyz += fallShiftPrevious - fallShift;
+#	endif
 
 #	if defined(TREE_ANIM)
 	precise float2 treeShiftVector = GetTreeShiftVector(input.Position, input.Color);
@@ -186,8 +192,12 @@ VS_OUTPUT main(VS_INPUT input)
 	precise float4 worldPosition = float4(mul(inputPosition, transpose(worldMatrix)), 1);
 
 	float4 viewPos = mul(ViewProj, worldPosition);
-#	else   // !SKINNED
+#	else  // !SKINNED
+#		if defined(FLUID_FIELD)
+	precise float4 previousWorldPosition = float4(mul(PreviousWorld, previousInputPosition), 1);  // D85: the falls' wobble a frame ago
+#		else
 	precise float4 previousWorldPosition = float4(mul(PreviousWorld, inputPosition), 1);
+#		endif
 	precise float4 worldPosition = float4(mul(World, inputPosition), 1);
 	precise float4x4 world4x4 = float4x4(World[0], World[1], World[2], float4(0, 0, 0, 1));
 	precise float4x4 modelView = mul(ViewProj, world4x4);

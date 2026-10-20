@@ -127,7 +127,7 @@ namespace FluidFieldSim
 			a_base = it->second;
 			return true;
 		}
-		const std::vector<std::array<float, 8>>& GetVertexClips() const { return vertexClips; }
+		const std::vector<std::array<float, 12>>& GetVertexClips() const { return vertexClips; }
 		/** @brief D61: a grounded site's lit falls piece. */
 		struct LitMesh
 		{
@@ -266,7 +266,7 @@ namespace FluidFieldSim
 		/** @brief D57: the nearest rock along a ray from a point, world units, or a negative value for none (the falls' own collision passed through). */
 		float RockAlong(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, int* a_crossings = nullptr, float* a_last = nullptr) const;
 		std::unordered_map<const RE::BSGeometry*, uint32_t> vertexClipBase;
-		std::vector<std::array<float, 8>> vertexClips;
+		std::vector<std::array<float, 12>> vertexClips;
 		static constexpr float GAP_REACH = 40.0f;        ///< D69: an open edge this near another mesh's open edge, and not over it, closes the gap
 		static constexpr float GAP_OVERLAP = 4.0f;       ///< D69: ...each side moving past the middle by this much
 		static constexpr float WATER_KEEP = 24.0f;       ///< D68: falling water is cut this far under the water it falls into
@@ -277,7 +277,9 @@ namespace FluidFieldSim
 		 * (higher, or as high and larger) fade to 0, so that mesh shows through; the rest stay 1.
 		 */
 		void ComputeFades();
-		static constexpr float FADE_REACH = 32.0f;  ///< D67: an open edge's vertex this near another mesh's surface fades
+		static constexpr float FADE_REACH = 32.0f;        ///< D67: an open edge's vertex this near another mesh's surface fades
+		static constexpr int EDGE_SMOOTH_PASSES = 6;      ///< D86: rounds smoothing each mesh's open edge as a curve...
+		static constexpr float EDGE_SMOOTH_MOST = 24.0f;  ///< D86: ...moving a vertex at most this far
 		std::vector<RE::NiPointer<RE::BSGeometry>> clipQueue;
 		uint64_t vertexClipVersion = 0;
 		uint32_t clipTested = 0;
@@ -354,10 +356,11 @@ namespace FluidFieldSim
 			std::vector<float> turn, speed, wake, foam;  ///< Across per down (texels), speed (vanilla's 1), aeration (D80) and foam
 			std::vector<float> seed, along;              ///< D80: the lip column each texel's strand came over (texels), and its run from the mesh's top (texture v)
 			std::vector<RE::NiPoint3> normal;
-			std::vector<uint8_t> rock;  ///< D75: texels inside rock (the debug arrows skip them)
-			std::vector<float> swell;   ///< D82: how much the water piles up there, softened (the vertex push)
+			std::vector<uint8_t> rock;       ///< D75: texels inside rock (the debug arrows skip them)
+			std::vector<float> swell;        ///< D82: how much the water piles up there, softened (the vertex push)
+			std::vector<float> disturbance;  ///< D85: how stirred the water is there (the wobble's size), softened
 		};
-		static constexpr uint32_t BAKE_CACHE_VERSION = 1;  ///< D82: bump whenever a bake would come out different
+		static constexpr uint32_t BAKE_CACHE_VERSION = 2;  ///< D82: bump whenever a bake would come out different (D85: 2, the disturbance)
 		/** @brief D82: where a bake job's finished bake is kept on disk: by its reference, model part, placement, the rock and ground round it, and the version. */
 		static std::filesystem::path BakeCachePath(const BakeJob& a_job);
 		static bool SaveBake(const std::filesystem::path& a_path, const BakeField& a_field);
@@ -373,6 +376,9 @@ namespace FluidFieldSim
 		static constexpr float PUSH_FULL = 3.0f;        ///< D82: ...and is whole at (piling against rock, squeezing between rocks: 5 to 20; D83: 3, was 4)
 		static constexpr int32_t LEAD_TEST_REACH = 12;  ///< D83: hidden lead-in texels this far across from running water still get the rock test
 		static constexpr int PUSH_BLUR = 2;             ///< D82: passes softening the swell to broad shapes (D84: 2, was 4: steeper, rounder mounds)
+		static constexpr float WOBBLE_MOST = 6.0f;      ///< D85: world units the water wobbles at most, where it is most stirred...
+		static constexpr float WOBBLE_CALM = 1.0f;      ///< D85: ...and everywhere else (its breathing)
+		static constexpr float WOBBLE_STIRRED = 1.5f;   ///< D85: disturbance at which the wobble is whole
 		/** @brief D82: the vertex shifts the shaders read (vertexClips 4-6): the seams' gap shift (D69) and the push together. */
 		void ComposeShifts();
 		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> gapShifts, vertexPushes;

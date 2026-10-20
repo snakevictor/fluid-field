@@ -856,6 +856,7 @@ void FluidField::Prepass()
 				}
 				const float rate = count > 0.0f ? total / count : DEFAULT_FALL_SCROLL;
 				fallRate = fallRate > 0.0f ? fallRate + (rate - fallRate) * std::min(deltaTime, 1.0f) : rate;
+				fallPhasePrevious = fallPhase;
 				fallPhase += fallRate * std::clamp(deltaTime, 0.0f, 0.25f);
 				fallPhase -= std::floor(fallPhase);
 			}
@@ -1595,6 +1596,7 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
 			}
 			// D67: the falls' one scroll (this material's own only measures vanilla's rate for it)
 			fallGroundData.Scroll[0] = fallPhase;
+			fallGroundData.PreviousPhase = fallPhasePrevious;
 			fallGroundData.Scroll[1] = fallRate > 0.0f ? fallRate : DEFAULT_FALL_SCROLL;
 		}
 		// D56: the per-vertex cut

@@ -2043,3 +2043,45 @@ Entry format:
         never closes on the mesh, and short-lived gaps at the crests (strands
         starting on different rows) raised false humps.
 -   References: D80, D82, D83
+
+## D85: The falls wobble with the flow
+
+-   Date: 2026-10-20
+-   Context: the user wanted the bake to drive the water's volume up and down as
+    it passes, "not random, but driven by the baked flow" (then: "you can mix
+    both"). A shallow-water solve (scratchpad pipesim.py on bake 4) gave pillows
+    but a dry wake, not a rooster tail, and settles to a steady state, so no
+    wobble; and on near-vertical curtains it needs an invented stiffness (the
+    user: "wouldn't shallow water break here because the falls ... get very
+    vertical?"). A falling sheet is supercritical: a disturbance only rides
+    down the flow, at its speed.
+-   Decision:
+    -   **Disturbance in the bake:** each strand is stirred where it piles up,
+        strikes rock or presses against the rock ahead, and carries that down,
+        fading over 0.8 s; behind each boulder its wake's middle is stirred too.
+        Softened like the swell; cached (BAKE_CACHE_VERSION 2).
+    -   **Per vertex** (the per-vertex buffer grows to 12 floats): its normal
+        times the wobble's size (1 unit calm, up to 6 where most stirred; half
+        beside an open edge, none on it), and its streak and run from the
+        linked bake (what the texture reads).
+    -   **In both vertex shaders** (Lighting, Utility): waves square to the flow,
+        6 crests per texture repeat, phased by the run less the shared scroll,
+        so they ride down with the texture; broken up by a smooth noise carried
+        the same way (65/35). Periodic over a repeat, so the phase's wrap never
+        jumps. The falls' Lighting shader also offsets its previous position by
+        the wobble a frame ago (PreviousPhase), for motion vectors.
+-   References: D67, D69, D80, D82, D84
+
+## D86: Smoothed open edges; foam off by default
+
+-   Date: 2026-10-20
+-   Decision:
+    -   **Open edges smoothed as curves** (SS 852: vanilla's ragged teeth along a
+        sheet's lower edge, once covered by its effect layers): each edge vertex
+        drawn half way toward the middle of its two neighbours along the edge, 6
+        rounds, at most 24 units; joints of three or more edge runs, vertices
+        closing a gap (D69) and edges over a leading mesh are kept. Through the
+        same shift as the seams, so both depth passes agree.
+    -   **"Foam on the Falls" off by default** until the foam layer replaces it:
+        at its 30% cap, lace on vanilla's near-white texture, it barely shows.
+-   References: D34, D42, D67, D69, D73

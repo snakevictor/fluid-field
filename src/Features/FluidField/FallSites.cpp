@@ -805,7 +805,7 @@ namespace FluidFieldSim
 				if (water > -FLT_MAX && positions[v].z < bottom + WATER_CUT_BAND)
 					clip = std::min(clip, above + WATER_KEEP);
 				// D71: w marks the mesh's foot, the only place the pools may cut it (the shader's pool cut)
-				vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f });
+				vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f });
 				clipTested++;
 			}
 			vertexClipBase[geometry.get()] = base;
@@ -1076,7 +1076,7 @@ namespace FluidFieldSim
 		const auto leads = [&](const Mesh& a_lead, const Mesh& a_mesh) {
 			return a_lead.top > a_mesh.top + 8.0f || (std::abs(a_lead.top - a_mesh.top) <= 8.0f && a_lead.area > a_mesh.area);
 		};
-		uint32_t faded = 0, edges = 0, gaps = 0;
+		uint32_t faded = 0, edges = 0, gaps = 0, smoothed = 0;
 		for (const auto& mesh : meshes) {
 			// Which vertices lie on a mesh leading this one
 			std::vector<uint8_t> onLead(mesh.positions.size(), 0);
@@ -1167,10 +1167,50 @@ namespace FluidFieldSim
 				shifts[v] = inverse * moved - inverse * p;
 				gaps++;
 			}
+			// D86: the open edge's ragged outline (vanilla's teeth, its effect layers no longer covering them) smoothed as a
+			// curve: each edge vertex drawn toward the middle of its two neighbours along the edge, a few rounds, at most
+			// EDGE_SMOOTH_MOST from where it was; not a vertex already closing a gap (D69)
+			std::vector<std::array<int32_t, 2>> along(mesh.positions.size(), { -1, -1 });
+			std::vector<uint8_t> ends(mesh.positions.size(), 0);
+			for (const auto& edge : mesh.openEdges) {
+				for (int k = 0; k < 2; k++) {
+					auto& slot = along[edge[k]];
+					const int32_t other = edge[1 - k];
+					if (slot[0] < 0)
+						slot[0] = other;
+					else if (slot[1] < 0)
+						slot[1] = other;
+					else
+						ends[edge[k]] = 1;  // Where three or more edge runs meet: kept
+				}
+			}
+			std::vector<RE::NiPoint3> curve = mesh.positions, next = mesh.positions;
+			for (int pass = 0; pass < EDGE_SMOOTH_PASSES; pass++) {
+				for (std::size_t v = 0; v < curve.size(); v++) {
+					const auto& [a, b] = along[v];
+					next[v] = curve[v];
+					if (a < 0 || b < 0 || ends[v])
+						continue;
+					const RE::NiPoint3 middle = (curve[a] + curve[b]) * 0.5f;
+					RE::NiPoint3 moved = curve[v] + (middle - curve[v]) * 0.5f;
+					const RE::NiPoint3 offset = moved - mesh.positions[v];
+					const float distance = offset.Length();
+					if (distance > EDGE_SMOOTH_MOST)
+						moved = mesh.positions[v] + offset * (EDGE_SMOOTH_MOST / distance);
+					next[v] = moved;
+				}
+				curve.swap(next);
+			}
+			for (std::size_t v = 0; v < mesh.positions.size(); v++) {
+				if (!mesh.open[v] || onLead[v] || shifts[v].Length() > 0.0f || (curve[v] - mesh.positions[v]).Length() < 0.01f)
+					continue;
+				shifts[v] = inverse * curve[v] - inverse * mesh.positions[v];
+				smoothed++;
+			}
 		}
 		ComposeShifts();
-		logger::info("[Fluid Field] Waterfall seams: {} of {} open-edge vertices of {} lit meshes lie on a mesh leading them, and fade; {} move across a gap to the mesh beside them", faded,
-			edges, meshes.size(), gaps);
+		logger::info("[Fluid Field] Waterfall seams: {} of {} open-edge vertices of {} lit meshes lie on a mesh leading them, and fade; {} move across a gap to the mesh beside them; {} edge vertices smoothed", faded,
+			edges, meshes.size(), gaps, smoothed);
 	}
 
 	std::unique_ptr<FallSites::BakeJob> FallSites::StartBake(RE::BSGeometry* a_geometry)
@@ -1582,6 +1622,9 @@ namespace FluidFieldSim
 		// D82: the swell, softened to broad shapes (the vertices are 20 to 50 units apart)
 		field->swell = std::move(strands.swell);
 		blur(field->swell, PUSH_BLUR);
+		// D85: the disturbance, softened alike
+		field->disturbance = std::move(strands.disturbance);
+		blur(field->disturbance, PUSH_BLUR);
 		logger::info("[Fluid Field]   bake: {}x{} texels, {} more inside the statics' meshes", w, h, meshRock);
 		if (!a_job.cache.empty() && !SaveBake(a_job.cache, *field))
 			logger::warn("[Fluid Field]   bake cache: could not write {}", a_job.cache.string());
@@ -1686,6 +1729,7 @@ namespace FluidFieldSim
 			put(a_field.normal);
 			put(a_field.rock);
 			put(a_field.swell);
+			put(a_field.disturbance);
 			if (!file)
 				return false;
 		}
@@ -1731,6 +1775,7 @@ namespace FluidFieldSim
 		get(field->normal);
 		get(field->rock);
 		get(field->swell);
+		get(field->disturbance);
 		return ok ? field : nullptr;
 	}
 
@@ -1819,8 +1864,49 @@ namespace FluidFieldSim
 			const float scale = std::max(geometry->world.scale, 1e-3f);
 			auto& push = vertexPushes[geometry];
 			push.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+			// D85: the wobble: per vertex its normal times its size (by how stirred the bake says the water is there),
+			// and where it lies in the flow (the linked bake's streak and run: what the texture reads), so the shaders
+			// move its waves down the flow with the texture
+			const auto linked = flowBakes.find(geometry);
+			const auto flowAt = [&](float a_u, float a_v, float& a_across, float& a_along) {
+				const FlowBake& flow = linked->second;
+				const auto fw = static_cast<int32_t>(flow.width), fh = static_cast<int32_t>(flow.height);
+				const float gx = std::clamp((a_u - flow.uvMin[0]) / std::max(flow.uvSize[0], 1e-6f) * static_cast<float>(fw) - 0.5f, 0.0f, static_cast<float>(fw - 1));
+				const float gy = std::clamp((a_v - flow.uvMin[1]) / std::max(flow.uvSize[1], 1e-6f) * static_cast<float>(fh) - 0.5f, 0.0f, static_cast<float>(fh - 1));
+				const int32_t x0 = std::min(static_cast<int32_t>(gx), fw - 1), y0 = std::min(static_cast<int32_t>(gy), fh - 1);
+				const int32_t x1 = std::min(x0 + 1, fw - 1), y1 = std::min(y0 + 1, fh - 1);
+				const float fx = gx - static_cast<float>(x0), fy = gy - static_cast<float>(y0);
+				const auto at = [&](int32_t a_x, int32_t a_y, int a_k) { return flow.texels[(static_cast<std::size_t>(a_y) * fw + a_x) * 4 + a_k]; };
+				const auto mix = [&](int a_k) { return (at(x0, y0, a_k) * (1.0f - fx) + at(x1, y0, a_k) * fx) * (1.0f - fy) + (at(x0, y1, a_k) * (1.0f - fx) + at(x1, y1, a_k) * fx) * fy; };
+				a_across = mix(0);
+				a_along = mix(1);
+			};
+			const auto stirredAt = [&](float a_u, float a_v) {
+				if (bake.disturbance.empty())
+					return 0.0f;
+				const float gx = std::clamp((a_u - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(w) - 0.5f, 0.0f, static_cast<float>(w - 1));
+				const float gy = std::clamp((a_v - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(h) - 0.5f, 0.0f, static_cast<float>(h - 1));
+				return bake.disturbance[static_cast<std::size_t>(std::lround(gy)) * w + std::lround(gx)];
+			};
+			const uint32_t base = vertexClipBase[geometry];
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
 				const float length = normals[v].Length();
+				if (base + v < vertexClips.size()) {
+					auto& value = vertexClips[base + v];
+					value[7] = value[8] = value[9] = value[10] = value[11] = 0.0f;
+					if (!open[v] && length > 1e-6f && linked != flowBakes.end()) {
+						float across = 0.0f, along = 0.0f;
+						flowAt(uvs[v][0], uvs[v][1], across, along);
+						const float stirred = std::clamp(stirredAt(uvs[v][0], uvs[v][1]) / WOBBLE_STIRRED, 0.0f, 1.0f);
+						const float size = (WOBBLE_CALM + (WOBBLE_MOST - WOBBLE_CALM) * stirred * stirred * (3.0f - 2.0f * stirred)) * (nearOpen[v] ? 0.5f : 1.0f);
+						const RE::NiPoint3 wobble = normals[v] * (size / (length * scale));
+						value[7] = across;
+						value[8] = wobble.x;
+						value[9] = wobble.y;
+						value[10] = wobble.z;
+						value[11] = along;
+					}
+				}
 				if (open[v] || length < 1e-6f)
 					continue;
 				const float t = std::clamp((swellAt(uvs[v][0], uvs[v][1]) - PUSH_FROM) / (PUSH_FULL - PUSH_FROM), 0.0f, 1.0f);

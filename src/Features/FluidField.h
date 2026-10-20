@@ -92,7 +92,7 @@ struct FluidField : OverlayFeature
 		uint32_t FallLayerMask = 0x1;        ///< Which parts of vanilla's falling-water models show while waterfall effects are hidden (bits: inner surface, white-water sheet, streaks, particles)
 		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		bool HideUnderwaterFalls = true;     ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
-		bool FallWhitening = true;           ///< The falls whiten with their foam and speed (D34)
+		bool FallWhitening = false;          ///< The falls whiten with their foam and speed (D34); D86: off by default until the foam layer replaces it (barely visible)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		int SprayAmount = 200;               ///< Spray droplets alive per emitter at once (D31)
 		float SpraySize = 1.4f;              ///< Spray droplet width, world units
@@ -296,6 +296,7 @@ private:
 	FluidFieldSim::FallSurfaceRenderer fallSurface;  ///< D30: the falls' own water surfaces
 	float fallSurfaceTime = 0.0f;                    ///< Seconds, for the surfaces' flow
 	float fallPhase = 0.0f;                          ///< D67: the falls' one scroll, integrated each frame (a repeat at most): every mesh of a cascade reads the same
+	float fallPhasePrevious = 0.0f;                  ///< D85: the phase a frame ago
 	float fallRate = 0.0f;                           ///< D67: ...and its rate, texture coordinates per second (vanilla's, averaged over the falls' materials)
 
 	/**
@@ -319,7 +320,8 @@ private:
 		uint32_t HideUnderwater;
 		float InverseScale[2];
 		uint32_t BakeOn;
-		float Pad[3];
+		float PreviousPhase;  ///< D85: last frame's Scroll[0] (the wobble's motion vectors)
+		float Pad[2];
 		float BakeRect[4];
 	};
 	static_assert(sizeof(FallGroundData) == 112);

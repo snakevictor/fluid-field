@@ -26,7 +26,8 @@ namespace FallGround
 		uint HideUnderwater;   // Falling water under the pools' surface is not drawn (D36)
 		float2 InverseScale;   // D57: undoes vanilla's animated texture scale (its slow zoom), with TexOffset its scroll
 		uint BakeOn;           // D59: this mesh has a flow bake (FlowBake)
-		float3 GroundPad;
+		float PreviousPhase;   // D85: last frame's Scroll.x (the wobble's motion vectors)
+		float2 GroundPad;
 		float4 BakeRect;  // D59: the bake's texture coordinates: its least u and v, and one over its extent
 	};
 
@@ -37,7 +38,8 @@ namespace FallGround
 	struct FallVertex
 	{
 		float4 a;
-		float4 b;
+		float4 b;  // D69: its move across a seam's gap, D82: and its swell, in its mesh's space; D85: w its streak
+		float4 c;  // D85: its wobble's direction and size (its normal), and its run down the flow
 	};
 	StructuredBuffer<FallVertex> VertexClip : register(t123);  // D68: and how far it stands above the water it falls into (z)
 	// D59, D67: this mesh's flow, solved on its own texture grid and linked to the mesh above it (FallSites::LinkBakes):
@@ -124,11 +126,43 @@ namespace FallGround
 	}
 
 	/** D69: how far a vertex of falling water moves, in its mesh's space, to close a seam's gap; 0 on every other draw. The same in both depth passes. */
-	float3 Shift(uint a_vertex)
+	float WobbleHash(float2 a_p)
+	{
+		a_p = frac(a_p * float2(0.1031, 0.1030));
+		a_p += dot(a_p, a_p.yx + 33.33);
+		return frac((a_p.x + a_p.y) * a_p.x) * 2.0 - 1.0;
+	}
+
+	/** D85: smooth noise on a lattice of a_cells per texture repeat, wrapping each repeat (the scroll's phase wraps at 1). */
+	float WobbleNoise(float2 a_p, float2 a_cells)
+	{
+		const float2 p = a_p * a_cells;
+		const float2 i = floor(p);
+		const float2 f = p - i;
+		const float2 u = f * f * (3.0 - 2.0 * f);
+		const float2 i0 = i - a_cells * floor(i / a_cells), i1 = (i + 1.0) - a_cells * floor((i + 1.0) / a_cells);
+		return lerp(lerp(WobbleHash(i0), WobbleHash(float2(i1.x, i0.y)), u.x), lerp(WobbleHash(float2(i0.x, i1.y)), WobbleHash(i1), u.x), u.y);
+	}
+
+	/**
+	 * D85: the falls' wobble at a point of the flow (its streak, and its run less the scroll's phase): waves square to
+	 * the flow riding down it with the texture, broken up by a smooth noise carried the same way. Periodic over a
+	 * texture repeat, so the phase's wrap never jumps. -1 to 1.
+	 */
+	float Wobble(float a_across, float a_run)
+	{
+		static const float WAVES = 6.0;  // Crests per texture repeat down the flow
+		const float wave = sin(6.2831853 * WAVES * a_run + 1.7 * WobbleNoise(float2(a_across, a_run), float2(3.0, 3.0)));
+		return 0.65 * wave + 0.35 * WobbleNoise(float2(a_across, a_run), float2(5.0, 9.0));
+	}
+
+	/** D69, D82, D85: a falls vertex's move: across a seam's gap, its swell, and its wobble at the scroll's phase a_phase. */
+	float3 Shift(uint a_vertex, float a_phase)
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
 			return 0.0;
-		return VertexClip[VertexBase + a_vertex].b.xyz;
+		const FallVertex fallVertex = VertexClip[VertexBase + a_vertex];
+		return fallVertex.b.xyz + fallVertex.c.xyz * Wobble(fallVertex.b.w, fallVertex.c.w - a_phase);
 	}
 
 	/**
