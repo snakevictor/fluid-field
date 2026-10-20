@@ -1982,3 +1982,24 @@ Entry format:
         shared scroll stands in at about their mean).
     -   Swell: 3555 vertices of 18 meshes pushed out, at most 12 units. The
         user: "IT LOOKS GREAT NOW", "not perfect but a definitive improvement".
+
+## D83: Falls appear sooner; a stronger swell; no ground test
+
+-   Date: 2026-10-20
+-   Decision:
+    -   **The rock test skips the hidden lead-in** that no strand comes near:
+        lead-in texels more than 12 texels across from running water in the
+        same row (crests lie on different rows, so a row hidden in one column
+        runs in the next, and its rock walls that water in). Offline on the 18
+        dumps: 37% fewer rays; visible streaks moved more than a texel on
+        0.08% of texels on average, 1.5% on the worst mesh (skipping the whole
+        lead-in saved 43% but moved 12% on one mesh).
+        `FallStrands::FindCrests` is shared by the bake and the march (outputs
+        bit-identical on all 18 dumps).
+    -   **Nearest first:** the bake queue is sorted by distance from the camera
+        before each job.
+    -   **Swell:** up to 20 units (was 12), whole at swell 3 (was 4).
+    -   **The ground test is gone** (D82: unusable), and with it the ground in
+        the cache key: the landscape cache fills in over time, so a fall baked
+        before its cell's heights arrived would miss the cache on the next visit.
+-   References: D79, D80, D82

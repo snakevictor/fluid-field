@@ -1,7 +1,6 @@
 #include "FallSites.h"
 
 #include "FallStrands.h"
-#include "LandscapeCache.h"
 
 #include "EngineGrid.h"
 #include "FallSurfaceRenderer.h"
@@ -1451,29 +1450,19 @@ namespace FluidFieldSim
 		std::vector<uint8_t> rock = a_job.rock;
 		// D68: and rock from the statics' render meshes: a boulder resting on the ground failed the collision test
 		// (it wants rock on both sides of the sheet, and the ray from under the boulder started in the ground).
-		// D82: tested on every texel, with the ground under the landscape, against the collision (Havok, on the main
-		// thread, 2 s a mesh) as the reference, to see whether these two alone (here, milliseconds) can take its place
-		const auto testStart = std::chrono::steady_clock::now();
-		std::vector<uint8_t> inMesh(count, 0), inGround(count, 0);
-		uint32_t meshRock = 0, collisionRock = 0, meshTexels = 0, groundTexels = 0, collisionOnly = 0, newOnly = 0;
+		// D82: both tests kept apart for the dump (D82 found the render meshes alone moved the streaks too much to replace
+		// the collision; the ground under the landscape's 128-unit grid called a third of the falls rock)
+		std::vector<uint8_t> inMesh(count, 0);
+		uint32_t meshRock = 0;
 		for (std::size_t i = 0; i < count; i++) {
 			if (!a_job.covered[i])
 				continue;
 			inMesh[i] = InsideSolid(a_job, a_job.position[i], std::abs(a_job.normal[i].z) > 0.5f) ? 1 : 0;
-			inGround[i] = i < a_job.ground.size() && !std::isnan(a_job.ground[i]) && a_job.position[i].z < a_job.ground[i] - BAKE_ROCK_MARGIN ? 1 : 0;
-			collisionRock += a_job.rock[i];
-			meshTexels += inMesh[i];
-			groundTexels += inGround[i];
-			collisionOnly += a_job.rock[i] && !inMesh[i] && !inGround[i] ? 1 : 0;
-			newOnly += !a_job.rock[i] && (inMesh[i] || inGround[i]) ? 1 : 0;
 			if (!rock[i] && inMesh[i]) {
 				rock[i] = 1;
 				meshRock++;
 			}
 		}
-		const double testMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - testStart).count();
-		logger::info("[Fluid Field]   rock test: collision {} texels; render meshes {}, ground {} ({:.1f} ms); {} only in the collision, {} only in meshes or ground", collisionRock,
-			meshTexels, groundTexels, testMs, collisionOnly, newOnly);
 		{
 			std::vector<uint8_t> seen(count, 0);
 			std::vector<std::size_t> island, open;
@@ -1514,10 +1503,9 @@ namespace FluidFieldSim
 			file.write(reinterpret_cast<const char*>(a_job.covered.data()), static_cast<std::streamsize>(count));
 			file.write(reinterpret_cast<const char*>(rock.data()), static_cast<std::streamsize>(count));
 			file.write(reinterpret_cast<const char*>(a_job.position.data()), static_cast<std::streamsize>(count * sizeof(RE::NiPoint3)));
-			// D82: the rock tests apart: the collision's, the render meshes', the ground's
+			// D82: the rock tests apart: the collision's, the render meshes'
 			file.write(reinterpret_cast<const char*>(a_job.rock.data()), static_cast<std::streamsize>(count));
 			file.write(reinterpret_cast<const char*>(inMesh.data()), static_cast<std::streamsize>(count));
-			file.write(reinterpret_cast<const char*>(inGround.data()), static_cast<std::streamsize>(count));
 		}
 		// D80: the water on this mesh as a sheet of strands (FallStrands): from each column's crest (D79), parting round
 		// the rock, its wake left open behind it, never crossing or turning back; the texture keeps vanilla's speed down
@@ -1659,8 +1647,6 @@ namespace FluidFieldSim
 		mix(static_cast<int64_t>(solidSum));
 		mix(static_cast<int64_t>(solidXor));
 		mix(static_cast<int64_t>(a_job.solids.size()));
-		for (const float height : a_job.ground)
-			mix(quantise(height, 1.0f));
 		return *directory / "FluidFieldBakes" / std::format("{:08X}_{:016X}.bin", ref->GetFormID(), hash);
 	}
 
@@ -2144,6 +2130,14 @@ namespace FluidFieldSim
 			if (!bakeJob) {
 				if (bakeQueue.empty())
 					return;
+				// D83: the falls nearest the camera first
+				if (auto* camera = PlayerCamera(); camera && bakeQueue.size() > 1) {
+					const RE::NiPoint3 eye = camera->world.translate;
+					std::sort(bakeQueue.begin(), bakeQueue.end(), [&](const auto& a_a, const auto& a_b) {
+						const float da = a_a ? (a_a->worldBound.center - eye).Length() : FLT_MAX, db = a_b ? (a_b->worldBound.center - eye).Length() : FLT_MAX;
+						return da > db;
+					});
+				}
 				RE::NiPointer<RE::BSGeometry> geometry = bakeQueue.back();
 				bakeQueue.pop_back();
 				if (!geometry || !grounded.contains(geometry.get()))
@@ -2152,13 +2146,6 @@ namespace FluidFieldSim
 				if (!bakeJob)
 					continue;
 				GatherSolids(*bakeJob);
-				// D82: the ground under each texel, for the rock test
-				bakeJob->ground.assign(bakeJob->position.size(), std::numeric_limits<float>::quiet_NaN());
-				for (std::size_t i = 0; i < bakeJob->position.size() && landscape; i++) {
-					float height = 0.0f;
-					if (bakeJob->covered[i] && landscape->SampleHeight(bakeJob->position[i].x, bakeJob->position[i].y, height))
-						bakeJob->ground[i] = height;
-				}
 				// D82: baked before (same reference, placement, rock and ground): read back, no rock test or solve
 				bakeJob->cache = BakeCachePath(*bakeJob);
 				if (!bakeJob->cache.empty() && std::filesystem::exists(bakeJob->cache)) {
@@ -2170,6 +2157,15 @@ namespace FluidFieldSim
 						bakeJob.reset();
 						continue;
 					}
+				}
+				// D83: the hidden lead-in no strand comes near is not tested (a third of the rays)
+				{
+					FallStrands::Input input;
+					input.width = bakeJob->width;
+					input.height = bakeJob->height;
+					input.position = reinterpret_cast<const float*>(bakeJob->position.data());
+					input.covered = bakeJob->covered.data();
+					bakeJob->untested = FallStrands::HiddenLeadIn(input, LEAD_TEST_REACH);
 				}
 				bakesSolved++;
 				continue;
@@ -2186,7 +2182,7 @@ namespace FluidFieldSim
 				int rays = 0;
 				for (; bakeJob->next < bakeJob->covered.size() && rays < 64; bakeJob->next++) {
 					const std::size_t i = bakeJob->next;
-					if (!bakeJob->covered[i])
+					if (!bakeJob->covered[i] || (i < bakeJob->untested.size() && bakeJob->untested[i]))
 						continue;
 					rays++;
 					// From both sides of the sheet: a curtain before a cliff has the cliff on one side only (a ray

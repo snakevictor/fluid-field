@@ -43,6 +43,20 @@ namespace FluidFieldSim::FallStrands
 	 */
 	Output March(const Input& a_input);
 
+	/**
+	 * @brief D79: each column's crest (the row its water starts at, -1 for none) and the lead-in before it (vanilla's
+	 * sheets climb a hidden face under the upper water to their lip). Only position and covered are read.
+	 * @return The lead-in's texels.
+	 */
+	uint32_t FindCrests(const Input& a_input, std::vector<int32_t>& a_crest, std::vector<uint8_t>& a_leadIn);
+
+	/**
+	 * @brief D83: the lead-in texels no strand comes near: more than a_reach texels across from any texel past its
+	 * crest in the same row (crests lie on different rows, so a row hidden in one column runs in the next, and its
+	 * rock walls that water in). The rock test passes them by. Only position and covered are read.
+	 */
+	std::vector<uint8_t> HiddenLeadIn(const Input& a_input, int32_t a_reach);
+
 	/** @brief D82: this code's build, for the bake cache (a rebuilt sheet bakes afresh). */
 	const char* Version();
 }

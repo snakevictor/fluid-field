@@ -18,7 +18,6 @@ struct ImDrawList;
 namespace FluidFieldSim
 {
 	class WaterSurfaces;
-	class LandscapeCache;
 
 	/**
 	 * @brief Waterfall sites reconstructed from vanilla's layout (D25, stages S1 to S3 of
@@ -98,8 +97,6 @@ namespace FluidFieldSim
 		/** @brief Rescans every few updates; rebuilds the sites when the references or water changed. */
 		void Update(const WaterSurfaces& a_water);
 		void Clear();
-		/** @brief D82: the landscape heights the bakes' rock test reads (the ground the sheets lie on); may be null. */
-		void SetLandscape(const LandscapeCache* a_landscape) { landscape = a_landscape; }
 
 		const std::vector<FxRef>& GetRefs() const { return refs; }
 		const std::vector<Site>& GetSites() const { return sites; }
@@ -304,8 +301,8 @@ namespace FluidFieldSim
 			float uvMin[2]{}, uvSize[2]{};
 			std::vector<RE::NiPoint3> position, normal;
 			std::vector<uint8_t> covered, rock;
-			std::vector<float> ground;    ///< D82: the landscape's height under each texel (NaN where unknown)
-			std::filesystem::path cache;  ///< D82: where its finished bake is kept (empty: not kept)
+			std::vector<uint8_t> untested;  ///< D83: hidden lead-in texels no strand comes near: the rock test passes them by
+			std::filesystem::path cache;    ///< D82: where its finished bake is kept (empty: not kept)
 			std::size_t next = 0;
 			// D68: the render meshes of the statics round the sheet (boulders, the walls beside it), binned from above
 			std::vector<std::array<RE::NiPoint3, 3>> solids;
@@ -370,10 +367,11 @@ namespace FluidFieldSim
 		 * in its own space, broad shapes only; none at its open edges (cracks between meshes)
 		 */
 		void ComputePushes();
-		static constexpr float PUSH_MOST = 12.0f;  ///< D82: world units the water swells out at most
-		static constexpr float PUSH_FROM = 1.0f;   ///< D82: swell the push starts at (the sheet mostly runs 0 to 2.5)...
-		static constexpr float PUSH_FULL = 4.0f;   ///< D82: ...and is whole at (piling against rock, squeezing between rocks: 5 to 20)
-		static constexpr int PUSH_BLUR = 4;        ///< D82: passes softening the swell to broad shapes
+		static constexpr float PUSH_MOST = 20.0f;       ///< D82: world units the water swells out at most (D83: 20, was 12)
+		static constexpr float PUSH_FROM = 1.0f;        ///< D82: swell the push starts at (the sheet mostly runs 0 to 2.5)...
+		static constexpr float PUSH_FULL = 3.0f;        ///< D82: ...and is whole at (piling against rock, squeezing between rocks: 5 to 20; D83: 3, was 4)
+		static constexpr int32_t LEAD_TEST_REACH = 12;  ///< D83: hidden lead-in texels this far across from running water still get the rock test
+		static constexpr int PUSH_BLUR = 4;             ///< D82: passes softening the swell to broad shapes
 		/** @brief D82: the vertex shifts the shaders read (vertexClips 4-6): the seams' gap shift (D69) and the push together. */
 		void ComposeShifts();
 		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> gapShifts, vertexPushes;
@@ -386,7 +384,7 @@ namespace FluidFieldSim
 			bool logged = false;
 		};
 		std::unordered_map<const RE::BSGeometry*, ScrollProbe> scrollProbes;
-		const LandscapeCache* landscape = nullptr;
+
 		std::vector<std::pair<RE::NiPointer<RE::BSGeometry>, std::future<std::shared_ptr<BakeField>>>> bakesPending;
 		std::unordered_map<const RE::BSGeometry*, std::shared_ptr<BakeField>> bakeFields;
 		/**

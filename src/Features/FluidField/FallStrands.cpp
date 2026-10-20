@@ -144,6 +144,70 @@ namespace FluidFieldSim::FallStrands
 		return __DATE__ " " __TIME__;
 	}
 
+	uint32_t FindCrests(const Input& a_input, std::vector<int32_t>& a_crest, std::vector<uint8_t>& a_leadIn)
+	{
+		const auto w = static_cast<int32_t>(a_input.width), h = static_cast<int32_t>(a_input.height);
+		a_crest.assign(static_cast<std::size_t>(std::max(w, 0)), -1);
+		a_leadIn.assign(static_cast<std::size_t>(std::max(w, 0)) * std::max(h, 0), 0);
+		if (!a_input.position || !a_input.covered)
+			return 0;
+		const auto index = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * w + a_x; };
+		const auto height = [&](int32_t a_x, int32_t a_y) { return a_input.position[index(a_x, a_y) * 3 + 2]; };
+		uint32_t texels = 0;
+		for (int32_t x = 0; x < w; x++) {
+			int32_t first = -1, top = -1;
+			for (int32_t y = 0; y < h; y++) {
+				if (!a_input.covered[index(x, y)])
+					continue;
+				first = first < 0 ? y : first;
+				if (top < 0 || height(x, y) > height(x, top))
+					top = y;
+			}
+			if (first < 0)
+				continue;
+			a_crest[x] = first;
+			if (top > first && height(x, top) - height(x, first) > CREST_RISE) {
+				a_crest[x] = top;
+				for (int32_t y = first; y < top; y++) {
+					if (a_input.covered[index(x, y)]) {
+						a_leadIn[index(x, y)] = 1;
+						texels++;
+					}
+				}
+			}
+		}
+		return texels;
+	}
+
+	std::vector<uint8_t> HiddenLeadIn(const Input& a_input, int32_t a_reach)
+	{
+		const auto w = static_cast<int32_t>(a_input.width), h = static_cast<int32_t>(a_input.height);
+		std::vector<int32_t> crest;
+		std::vector<uint8_t> leadIn;
+		FindCrests(a_input, crest, leadIn);
+		std::vector<uint8_t> hidden(leadIn.size(), 0);
+		std::vector<int32_t> away(static_cast<std::size_t>(std::max(w, 0)));
+		for (int32_t y = 0; y < h; y++) {
+			const auto live = [&](int32_t a_x) {
+				const std::size_t i = static_cast<std::size_t>(y) * w + a_x;
+				return a_input.covered[i] && !leadIn[i];
+			};
+			int32_t seen = -(1 << 20);
+			for (int32_t x = 0; x < w; x++) {
+				seen = live(x) ? x : seen;
+				away[x] = x - seen;
+			}
+			seen = 1 << 20;
+			for (int32_t x = w - 1; x >= 0; x--) {
+				seen = live(x) ? x : seen;
+				away[x] = std::min(away[x], seen - x);
+				const std::size_t i = static_cast<std::size_t>(y) * w + x;
+				hidden[i] = leadIn[i] && away[x] > a_reach ? 1 : 0;
+			}
+		}
+		return hidden;
+	}
+
 	Output March(const Input& a_input)
 	{
 		Output result;
@@ -239,33 +303,19 @@ namespace FluidFieldSim::FallStrands
 		float footZ = std::numeric_limits<float>::max(), topZ = -std::numeric_limits<float>::max();
 		int32_t rowTop = h, rowBottom = -1;
 		for (int32_t x = 0; x < w; x++) {
-			int32_t top = -1;
 			for (int32_t y = 0; y < h; y++) {
 				const std::size_t i = index(x, y);
 				if (!covered[i])
 					continue;
 				first[x] = first[x] < 0 ? y : first[x];
 				last[x] = y;
-				if (top < 0 || height[i] > height[index(x, top)])
-					top = y;
 				footZ = std::min(footZ, height[i]);
 				topZ = std::max(topZ, height[i]);
 				rowTop = std::min(rowTop, y);
 				rowBottom = std::max(rowBottom, y);
 			}
-			if (first[x] < 0)
-				continue;
-			result.crest[x] = first[x];
-			if (top > first[x] && height[index(x, top)] - height[index(x, first[x])] > CREST_RISE) {
-				result.crest[x] = top;
-				for (int32_t y = first[x]; y < top; y++) {
-					if (covered[index(x, y)]) {
-						result.leadIn[index(x, y)] = 1;
-						result.leadTexels++;
-					}
-				}
-			}
 		}
+		result.leadTexels = FindCrests(a_input, result.crest, result.leadIn);
 		const float band = std::max(64.0f, (topZ - footZ) * 0.2f);
 		const int32_t rows = std::max(3, static_cast<int32_t>(static_cast<float>(rowBottom - rowTop) * BAND));
 
