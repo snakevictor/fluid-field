@@ -1148,6 +1148,7 @@ namespace FluidFieldSim
 			float lo[3]{ FLT_MAX, FLT_MAX, FLT_MAX }, hi[3]{ -FLT_MAX, -FLT_MAX, -FLT_MAX };
 			float top = -FLT_MAX, area = 0.0f;
 			std::unordered_map<int64_t, std::vector<uint32_t>> bins;  ///< D91: its triangles by SEAM_BIN cell (each in every cell its bound touches)
+			RE::NiPoint3 travel;                                      ///< D98: the way its water travels, level, tipped up: its outer side
 		};
 		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
 		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
@@ -1220,6 +1221,36 @@ namespace FluidFieldSim
 					}
 				}
 			}
+			// D98: its outer side: from its highest tenth to its lowest, level, tipped up (the pushes' D92 by height)
+			{
+				std::vector<float> heights;
+				heights.reserve(mesh.positions.size());
+				for (const auto& p : mesh.positions)
+					heights.push_back(p.z);
+				std::vector<float> sorted = heights;
+				std::sort(sorted.begin(), sorted.end());
+				const float high = sorted[sorted.size() * 9 / 10], low = sorted[sorted.size() / 10];
+				RE::NiPoint3 head(0.0f, 0.0f, 0.0f), foot(0.0f, 0.0f, 0.0f);
+				float heads = 0.0f, feet = 0.0f;
+				for (const auto& p : mesh.positions) {
+					if (p.z >= high) {
+						head += p;
+						heads += 1.0f;
+					} else if (p.z <= low) {
+						foot += p;
+						feet += 1.0f;
+					}
+				}
+				RE::NiPoint3 travel(0.0f, 0.0f, 0.0f);
+				if (heads > 0.0f && feet > 0.0f) {
+					travel = foot / feet - head / heads;
+					travel.z = 0.0f;
+					const float length = travel.Length();
+					travel = length > 1e-3f ? travel / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
+				}
+				travel.z = 0.3f;
+				mesh.travel = travel;
+			}
 			mesh.open.assign(counts.vertexCount, 0);
 			for (const auto& [edge, count] : uses) {
 				if (count != 1)
@@ -1277,7 +1308,46 @@ namespace FluidFieldSim
 					faded += fade == 0.0f ? 1 : 0;
 				}
 				vertexClips[mesh.base + v][1] = fade;
-				// D95 (off since D97): inside a leading mesh, cut; it holed the sheets wherever the leading mesh was itself cut
+			}
+			// D98: inside a leading mesh's curl (behind its outer face, within INSIDE_REACH of it, its face there not itself
+			// cut): cut. Two C-shaped sheets crossing each leave the one inside the other; see-through, both showed
+			for (std::size_t v = 0; v < mesh.positions.size(); v++) {
+				if (mesh.open[v])
+					continue;
+				const RE::NiPoint3& p = mesh.positions[v];
+				for (const auto& other : meshes) {
+					if (&other == &mesh || !leads(other, mesh) || p.x < other.lo[0] - INSIDE_REACH || p.x > other.hi[0] + INSIDE_REACH || p.y < other.lo[1] - INSIDE_REACH ||
+						p.y > other.hi[1] + INSIDE_REACH || p.z < other.lo[2] - INSIDE_REACH || p.z > other.hi[2] + INSIDE_REACH)
+						continue;
+					float best = INSIDE_REACH * INSIDE_REACH;
+					const std::array<uint16_t, 3>* nearest = nullptr;
+					nearby(other, p, INSIDE_REACH, [&](const auto& tri) {
+						const float d = TriangleDistanceSquared(p, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]]);
+						if (d < best) {
+							best = d;
+							nearest = &tri;
+						}
+						return false;
+					});
+					if (!nearest)
+						continue;
+					const auto& tri = *nearest;
+					// Its face there cut (in rock, under the water): nothing to hide behind
+					bool faceShown = true;
+					for (int k = 0; k < 3; k++)
+						faceShown = faceShown && vertexClips[other.base + tri[k]][0] > 0.0f;
+					if (!faceShown)
+						continue;
+					RE::NiPoint3 n = (other.positions[tri[1]] - other.positions[tri[0]]).Cross(other.positions[tri[2]] - other.positions[tri[0]]);
+					if (n.Dot(other.travel) < 0.0f)
+						n = -n;
+					const RE::NiPoint3 centre = (other.positions[tri[0]] + other.positions[tri[1]] + other.positions[tri[2]]) / 3.0f;
+					if ((p - centre).Dot(n) < -INSIDE_MARGIN * n.Length()) {
+						vertexClips[mesh.base + v][0] = std::min(vertexClips[mesh.base + v][0], -CLIP_RANGE);
+						overlapped++;
+						break;
+					}
+				}
 			}
 			// D69: an open edge's vertex that lies off every other mesh but near another mesh's open edge (two meshes
 			// meeting edge to edge with air between: the dark lines along their seam) moves across the gap, past the
@@ -3096,9 +3166,11 @@ namespace FluidFieldSim
 		// the meshes' own sims, BuildPlunges) foams the water round it, harder plunges more, and the simulated flow
 		// carries the foam off downstream
 		a_field.assign(static_cast<std::size_t>(a_size) * a_size, 0.0f);
-		const auto reach = static_cast<int32_t>(std::ceil(PLUNGE_FOAM_RADIUS / a_cell));
 		const auto n = static_cast<int32_t>(a_size);
 		for (const auto& plunge : plungePoints) {
+			// D98: a crossing reaches further (its foam made 50% stronger)
+			const float radius = PLUNGE_FOAM_RADIUS * std::max(plunge.reach, 1.0f);
+			const auto reach = static_cast<int32_t>(std::ceil(radius / a_cell));
 			const auto cx = static_cast<int32_t>(std::lround((plunge.position[0] - a_originX) / a_cell));
 			const auto cy = static_cast<int32_t>(std::lround((plunge.position[1] - a_originY) / a_cell));
 			if (cx < -reach || cy < -reach || cx >= n + reach || cy >= n + reach)
@@ -3110,7 +3182,7 @@ namespace FluidFieldSim
 						continue;
 					const float dx = a_originX + static_cast<float>(x) * a_cell - plunge.position[0];
 					const float dy = a_originY + static_cast<float>(y) * a_cell - plunge.position[1];
-					const float falloff = std::clamp(1.0f - std::sqrt(dx * dx + dy * dy) / PLUNGE_FOAM_RADIUS, 0.0f, 1.0f);
+					const float falloff = std::clamp(1.0f - std::sqrt(dx * dx + dy * dy) / radius, 0.0f, 1.0f);
 					float& value = a_field[static_cast<std::size_t>(y) * a_size + x];
 					value = std::max(value, strength * falloff);
 				}
@@ -3376,6 +3448,7 @@ namespace FluidFieldSim
 							crossing.direction[1] = horizontal > 1e-3f ? down.y / horizontal : 0.0f;
 							crossing.speed = SIM_INFLOW;
 							crossing.strength = CROSSING_STRENGTH;
+							crossing.reach = CROSSING_REACH;
 							lips++;
 						}
 					}

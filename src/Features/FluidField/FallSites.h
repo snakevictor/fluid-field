@@ -302,6 +302,8 @@ namespace FluidFieldSim
 		void ComputeFades();
 		static constexpr float FADE_REACH = 32.0f;         ///< D67: an open edge's vertex this near another mesh's surface fades
 		static constexpr float SEAM_BIN = 48.0f;           ///< D91: world units per cell of the seams' triangle bins
+		static constexpr float INSIDE_REACH = 150.0f;      ///< D98: a vertex behind a leading mesh's outer face within this is inside its curl, cut...
+		static constexpr float INSIDE_MARGIN = 6.0f;       ///< D98: ...past this behind it (one just behind, touching, stays)
 		static constexpr int EDGE_SMOOTH_PASSES = 80;      ///< D86: rounds smoothing each mesh's open edge as a curve (D92: 80: on the dense copies' 20-unit edges, 10 smoothed only 60 units)...
 		static constexpr float EDGE_SMOOTH_MOST = 60.0f;   ///< D86: ...moving a vertex at most this far (D92: 60)
 		static constexpr float EDGE_BLEND_REACH = 120.0f;  ///< D94: world units the open edge's moves fade into the surface over...
@@ -470,7 +472,8 @@ namespace FluidFieldSim
 		static constexpr float LIP_BAND = 40.0f;            ///< D90: a crest this near its pool's surface is a lip, where the water leaves the pool (D91: 40, was 24)...
 		static constexpr float LIP_STRENGTH = 0.6f;         ///< D90: ...stirring it this much (a plunge's 0.25 to 1; D91: 0.6, was 0.35)
 		static constexpr float LIP_UPSTREAM = 40.0f;        ///< D92: world units upstream of the crest its foam is made
-		static constexpr float CROSSING_STRENGTH = 0.8f;    ///< D94: how hard the water foams where a mesh crosses a water surface
+		static constexpr float CROSSING_STRENGTH = 1.0f;    ///< D94: how hard the water foams where a mesh crosses a water surface (D98: 1)...
+		static constexpr float CROSSING_REACH = 1.5f;       ///< D98: ...and how much further than a plunge's its foam reaches
 		std::vector<FallEmitter> sprayEmitters;
 		std::vector<FallPlunge> plungePoints;
 		uint64_t emitterVersion = 0;

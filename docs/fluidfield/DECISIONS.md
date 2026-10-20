@@ -2297,3 +2297,19 @@ Entry format:
     places, so both holed the falls. The lead-in is now cut only 4 units under
     a water surface over it (the engine's planes or our pools); the overlap
     cut is off.
+
+## D98: Cut inside each other's curl; stronger drop foam
+
+-   Date: 2026-10-20
+-   Context: the user: where two C-shaped falls meshes cross, "cull the innard
+    geometry", as for the arch inside the water (big see-through parts
+    extending inside each other); the drop foam works, make it 50% stronger.
+-   Decision:
+    -   A vertex lying behind a leading mesh's outer face (outer: the side its
+        water travels toward, level, tipped up), more than 6 and less than 150
+        units behind it, with that face itself shown (not cut by rock or water),
+        is cut. Replaces D95's "on a leading mesh" cut, which holed sheets where
+        the leading mesh was itself cut.
+    -   Where a mesh crosses a water surface its foam reaches 1.5x a plunge's
+        radius, at strength 1 (was 0.8).
+-   References: D67, D92, D94, D95, D97

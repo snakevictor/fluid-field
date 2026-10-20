@@ -35,6 +35,7 @@ namespace FluidFieldSim
 		float direction[2];  ///< Horizontal way the falling water runs, unit (or zero)
 		float speed;         ///< World units per second it arrives at
 		float strength;      ///< 0 to 1
+		float reach = 1.0f;  ///< D98: how much further than a plunge's its foam reaches (where a mesh crosses a water surface: 1.5)
 	};
 
 	/**
