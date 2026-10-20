@@ -1311,10 +1311,14 @@ namespace FluidFieldSim
 			}
 			// D98: inside a leading mesh's curl (behind its outer face, within INSIDE_REACH of it, its face there not itself
 			// cut): cut. Two C-shaped sheets crossing each leave the one inside the other; see-through, both showed
+			// D99: cut by how far behind the face it lies (signed, from INSIDE_MARGIN), not a whole vertex at -CLIP_RANGE:
+			// interpolated linearly, a step put the cut line along the triangles' edges (a sawtooth); a distance puts it
+			// where the sheet passes behind the face. A vertex in front is not touched
 			for (std::size_t v = 0; v < mesh.positions.size(); v++) {
 				if (mesh.open[v])
 					continue;
 				const RE::NiPoint3& p = mesh.positions[v];
+				bool inside = false;
 				for (const auto& other : meshes) {
 					if (&other == &mesh || !leads(other, mesh) || p.x < other.lo[0] - INSIDE_REACH || p.x > other.hi[0] + INSIDE_REACH || p.y < other.lo[1] - INSIDE_REACH ||
 						p.y > other.hi[1] + INSIDE_REACH || p.z < other.lo[2] - INSIDE_REACH || p.z > other.hi[2] + INSIDE_REACH)
@@ -1342,12 +1346,17 @@ namespace FluidFieldSim
 					if (n.Dot(other.travel) < 0.0f)
 						n = -n;
 					const RE::NiPoint3 centre = (other.positions[tri[0]] + other.positions[tri[1]] + other.positions[tri[2]]) / 3.0f;
-					if ((p - centre).Dot(n) < -INSIDE_MARGIN * n.Length()) {
-						vertexClips[mesh.base + v][0] = std::min(vertexClips[mesh.base + v][0], -CLIP_RANGE);
-						overlapped++;
-						break;
-					}
+					const float area = n.Length();
+					if (area < 1e-6f)
+						continue;
+					const float behind = (p - centre).Dot(n) / area;
+					if (behind >= 0.0f)
+						continue;
+					const float clip = std::max(behind + INSIDE_MARGIN, -CLIP_RANGE);
+					vertexClips[mesh.base + v][0] = std::min(vertexClips[mesh.base + v][0], clip);
+					inside = inside || clip < 0.0f;
 				}
+				overlapped += inside ? 1 : 0;
 			}
 			// D69: an open edge's vertex that lies off every other mesh but near another mesh's open edge (two meshes
 			// meeting edge to edge with air between: the dark lines along their seam) moves across the gap, past the
@@ -2180,7 +2189,7 @@ namespace FluidFieldSim
 				}
 				flippedTotal += flipped;
 			}
-			std::vector<uint8_t> open(counts.vertexCount, 0), nearOpen(counts.vertexCount, 0);
+			std::vector<uint8_t> open(counts.vertexCount, 0);
 			// D100: its winding against its outer side, per vertex, for the shaders (a.w: 1 its foot, +2 its winding faces in)
 			for (uint32_t v = 0; v < counts.vertexCount && vertexClipBase.contains(geometry) && vertexClipBase[geometry] + v < vertexClips.size(); v++) {
 				float& flags = vertexClips[vertexClipBase[geometry] + v][3];
@@ -2190,36 +2199,59 @@ namespace FluidFieldSim
 				if (count == 1)
 					open[edge.first] = open[edge.second] = 1;
 			}
-			for (const auto& triangle : triangles) {
-				if (open[triangle[0]] || open[triangle[1]] || open[triangle[2]])
-					nearOpen[triangle[0]] = nearOpen[triangle[1]] = nearOpen[triangle[2]] = 1;
-			}
 			// D89: which vertices lie inside rock or ground (the bake's mask at their texture coordinate): neither swell nor
-			// wobble there (they lifted the sheet out through a boulder's face)
+			// wobble there (they lifted the sheet out through a boulder's face). D99: the mask bilinear, inside from half
+			// (its smooth outline): the nearest 10-unit texel made a staircase of the boulder's outline, every step a tooth
 			std::vector<uint8_t> inRock(counts.vertexCount, 0);
 			if (bake.rock.size() == static_cast<std::size_t>(bake.width) * bake.height) {
+				const auto rw = static_cast<int32_t>(bake.width), rh = static_cast<int32_t>(bake.height);
 				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					const auto gx = std::clamp(static_cast<int32_t>(std::lround((uvs[v][0] - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(bake.width) - 0.5f)), 0,
-						static_cast<int32_t>(bake.width) - 1);
-					const auto gy = std::clamp(static_cast<int32_t>(std::lround((uvs[v][1] - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(bake.height) - 0.5f)), 0,
-						static_cast<int32_t>(bake.height) - 1);
-					inRock[v] = bake.rock[static_cast<std::size_t>(gy) * bake.width + gx];
+					const float gx = std::clamp((uvs[v][0] - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(rw) - 0.5f, 0.0f, static_cast<float>(rw - 1));
+					const float gy = std::clamp((uvs[v][1] - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(rh) - 0.5f, 0.0f, static_cast<float>(rh - 1));
+					const int32_t x0 = std::min(static_cast<int32_t>(gx), rw - 1), y0 = std::min(static_cast<int32_t>(gy), rh - 1);
+					const int32_t x1 = std::min(x0 + 1, rw - 1), y1 = std::min(y0 + 1, rh - 1);
+					const float fx = gx - static_cast<float>(x0), fy = gy - static_cast<float>(y0);
+					const auto at = [&](int32_t a_x, int32_t a_y) { return bake.rock[static_cast<std::size_t>(a_y) * rw + a_x] ? 1.0f : 0.0f; };
+					inRock[v] = (at(x0, y0) * (1.0f - fx) + at(x1, y0) * fx) * (1.0f - fy) + (at(x0, y1) * (1.0f - fx) + at(x1, y1) * fx) * fy >= 0.5f;
 				}
 			}
+			// The mesh's edges with their world lengths (D88's distances, D99's slope limit)
+			std::vector<std::vector<std::pair<uint16_t, float>>> next(counts.vertexCount);
+			for (const auto& triangle : triangles) {
+				for (int k = 0; k < 3; k++) {
+					const uint16_t a = triangle[k], b = triangle[(k + 1) % 3];
+					const float length = (positions[a] - positions[b]).Length() * geometry->world.scale;
+					next[a].emplace_back(b, length);
+					next[b].emplace_back(a, length);
+				}
+			}
+			// D99: the largest function under a_value that climbs no faster than a_slope world units per unit along the
+			// mesh (each vertex at most its neighbour's value plus a_slope times their edge): no vertex is pushed far past
+			// its neighbours, so a push cannot stand up as a spike over one 20-unit triangle. Zeros (open edges, rock)
+			// stay zero and the push rises from them as a ramp
+			const auto limitSlope = [&](std::vector<float>& a_value, float a_slope) {
+				using Entry = std::pair<float, uint16_t>;
+				std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> frontier;
+				for (uint32_t v = 0; v < counts.vertexCount; v++)
+					frontier.emplace(a_value[v], static_cast<uint16_t>(v));
+				while (!frontier.empty()) {
+					const auto [value, v] = frontier.top();
+					frontier.pop();
+					if (value > a_value[v])
+						continue;
+					for (const auto& [n, length] : next[v]) {
+						if (value + a_slope * length < a_value[n]) {
+							a_value[n] = value + a_slope * length;
+							frontier.emplace(a_value[n], n);
+						}
+					}
+				}
+			};
 			// D88: how far each vertex lies from the mesh's open edges, along the mesh (shortest paths over its edges): the
 			// wobble fades out toward them, so the water stays pinned at its banks (it dipped under the ground there).
 			// D89: and from rock, likewise
 			std::vector<float> fromEdge(counts.vertexCount, FLT_MAX);
 			{
-				std::vector<std::vector<std::pair<uint16_t, float>>> next(counts.vertexCount);
-				for (const auto& triangle : triangles) {
-					for (int k = 0; k < 3; k++) {
-						const uint16_t a = triangle[k], b = triangle[(k + 1) % 3];
-						const float length = (positions[a] - positions[b]).Length() * geometry->world.scale;
-						next[a].emplace_back(b, length);
-						next[b].emplace_back(a, length);
-					}
-				}
 				using Entry = std::pair<float, uint16_t>;
 				std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> frontier;
 				for (uint32_t v = 0; v < counts.vertexCount; v++) {
@@ -2303,57 +2335,78 @@ namespace FluidFieldSim
 				}
 				std::vector<std::array<float, 5>> leadPlanes;
 				CollectWaterPlanes(lo[0], lo[1], hi[0], hi[1], leadPlanes);
-				const auto underWater = [&](const RE::NiPoint3& a_p) {
-					float level = 0.0f;
-					if (PoolLevelAt(a_p.x, a_p.y, level) && a_p.z < level - LEAD_CUT_DEPTH)
-						return true;
+				// D99: the highest water over a point (our pools, the engine's planes), or none
+				const auto waterOver = [&](const RE::NiPoint3& a_p) {
+					float level = 0.0f, highest = -FLT_MAX;
+					if (PoolLevelAt(a_p.x, a_p.y, level))
+						highest = level;
 					for (const auto& plane : leadPlanes) {
-						if (a_p.x >= plane[0] && a_p.x <= plane[2] && a_p.y >= plane[1] && a_p.y <= plane[3] && a_p.z < plane[4] - LEAD_CUT_DEPTH)
-							return true;
+						if (a_p.x >= plane[0] && a_p.x <= plane[2] && a_p.y >= plane[1] && a_p.y <= plane[3])
+							highest = std::max(highest, plane[4]);
 					}
-					return false;
+					return highest;
 				};
 				for (uint32_t v = 0; v < counts.vertexCount && base + v < vertexClips.size(); v++) {
 					const auto gx = std::clamp(static_cast<int32_t>(std::lround((uvs[v][0] - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(bake.width) - 0.5f)), 0,
 						static_cast<int32_t>(bake.width) - 1);
 					const auto gy = std::clamp(static_cast<int32_t>(std::lround((uvs[v][1] - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(bake.height) - 0.5f)), 0,
 						static_cast<int32_t>(bake.height) - 1);
-					if (leadIn[static_cast<std::size_t>(gy) * bake.width + gx] && underWater(geometry->world * positions[v])) {
-						vertexClips[base + v][0] = std::min(vertexClips[base + v][0], -CLIP_RANGE);
-						leadCut++;
-					}
+					if (!leadIn[static_cast<std::size_t>(gy) * bake.width + gx])
+						continue;
+					// D99: cut by its height over the cut's level (signed), not a whole vertex at -CLIP_RANGE: the shaders
+					// interpolate the cut linearly, so a step between neighbours put the cut line along the triangles'
+					// edges, a sawtooth at the copy's 20-unit triangles; a height puts it on the waterline itself
+					const RE::NiPoint3 world = geometry->world * positions[v];
+					const float level = waterOver(world);
+					if (level == -FLT_MAX)
+						continue;
+					const float height = std::max(world.z - (level - LEAD_CUT_DEPTH), -CLIP_RANGE);
+					vertexClips[base + v][0] = std::min(vertexClips[base + v][0], height);
+					leadCut += height < 0.0f ? 1 : 0;
 				}
 			}
+			// The wobble's size and the swell's push per vertex (world units along its normal): none on open edges, in rock
+			// or without a normal. D99: each then held to a slope (limitSlope): D89's nearest-texel rock and the swell
+			// piled highest right against the rock (D84's pillow) stood up to 20 units over a vertex in the rock beside it,
+			// and the old half push one row in from an open edge zigzagged with the copy's irregular rows: the saw teeth
+			// along boulders and the sheets' outlines
+			std::vector<float> wobbleSize(counts.vertexCount, 0.0f), swellPush(counts.vertexCount, 0.0f);
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				if (open[v] || inRock[v] || normals[v].Length() < 1e-6f)
+					continue;
+				if (linked != flowBakes.end()) {
+					const float stirred = std::clamp(stirredAt(uvs[v][0], uvs[v][1]) / WOBBLE_STIRRED, 0.0f, 1.0f);
+					const float inland = std::clamp(fromEdge[v] / WOBBLE_EDGE_REACH, 0.0f, 1.0f);
+					wobbleSize[v] = (WOBBLE_CALM + (WOBBLE_MOST - WOBBLE_CALM) * stirred * stirred * (3.0f - 2.0f * stirred)) * inland * inland * (3.0f - 2.0f * inland);
+				}
+				const float t = std::clamp((swellAt(uvs[v][0], uvs[v][1]) - PUSH_FROM) / (PUSH_FULL - PUSH_FROM), 0.0f, 1.0f);
+				swellPush[v] = PUSH_MOST * t * t * (3.0f - 2.0f * t);
+			}
+			limitSlope(wobbleSize, WOBBLE_SLOPE);
+			limitSlope(swellPush, PUSH_SLOPE);
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
 				const float length = normals[v].Length();
 				if (base + v < vertexClips.size()) {
 					auto& value = vertexClips[base + v];
 					value[7] = value[8] = value[9] = value[10] = value[11] = 0.0f;
-					if (!open[v] && !inRock[v] && length > 1e-6f && linked != flowBakes.end()) {
+					if (wobbleSize[v] > 0.0f) {
 						float across = 0.0f, along = 0.0f;
 						flowAt(uvs[v][0], uvs[v][1], across, along);
-						const float stirred = std::clamp(stirredAt(uvs[v][0], uvs[v][1]) / WOBBLE_STIRRED, 0.0f, 1.0f);
-						const float inland = std::clamp(fromEdge[v] / WOBBLE_EDGE_REACH, 0.0f, 1.0f);
-						const float size = (WOBBLE_CALM + (WOBBLE_MOST - WOBBLE_CALM) * stirred * stirred * (3.0f - 2.0f * stirred)) * inland * inland * (3.0f - 2.0f * inland);
-						const RE::NiPoint3 wobble = normals[v] * (size / (length * scale));
+						const RE::NiPoint3 wobble = normals[v] * (wobbleSize[v] / (length * scale));
 						value[7] = across;
 						wobbled++;
-						mostWobble = std::max(mostWobble, size);
+						mostWobble = std::max(mostWobble, wobbleSize[v]);
 						value[8] = wobble.x;
 						value[9] = wobble.y;
 						value[10] = wobble.z;
 						value[11] = along;
 					}
 				}
-				if (open[v] || inRock[v] || length < 1e-6f)
+				if (swellPush[v] < 0.05f)
 					continue;
-				const float t = std::clamp((swellAt(uvs[v][0], uvs[v][1]) - PUSH_FROM) / (PUSH_FULL - PUSH_FROM), 0.0f, 1.0f);
-				const float amount = PUSH_MOST * t * t * (3.0f - 2.0f * t) * (nearOpen[v] ? 0.5f : 1.0f);
-				if (amount < 0.05f)
-					continue;
-				push[v] = normals[v] * (amount / (length * scale));
+				push[v] = normals[v] * (swellPush[v] / (length * scale));
 				pushed++;
-				most = std::max(most, amount);
+				most = std::max(most, swellPush[v]);
 			}
 			meshes++;
 		}

@@ -1056,8 +1056,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	float2 uv = input.TexCoord0.xy;
 #	if defined(FLUID_FIELD)
-	// Fluid Field (D67): a seam's edge over a falls mesh leading it, dithered out as in the depth pre-pass
-	if (FallGround::Enabled && FallGround::Dithered(input.Position.xy, input.FallFade.x))
+	// Fluid Field (D67): a seam's edge over a falls mesh leading it, dithered out as in the depth pre-pass; D99: and
+	// the water fading out over the last few units before its cut, so the cut's line is no hard edge
+	if (FallGround::Enabled && FallGround::Dithered(input.Position.xy, input.FallFade.x * FallGround::CutFade(input.FallClip)))
 		discard;
 	// Fluid Field (D32): a waterfall's lit surface carried by the falls' flow, sampled through uv
 	FallGround::FlowSample fallFlow = (FallGround::FlowSample)0;

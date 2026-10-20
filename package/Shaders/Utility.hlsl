@@ -111,7 +111,7 @@ VS_OUTPUT main(VS_INPUT input)
 {
 	VS_OUTPUT vsout;
 #	if defined(FLUID_FIELD)
-	vsout.FallClip = 1.0;
+	vsout.FallClip = FallGround::CLIP_MOST;  // D99: wholly shown (CutFade) where no cut is written
 	vsout.FallFade = float2(1.0, 1.0e4);
 #	endif
 
@@ -375,8 +375,8 @@ PS_OUTPUT main(PS_INPUT input)
 	PS_OUTPUT psout;
 
 #	if defined(FLUID_FIELD)
-	// Fluid Field (D67): a falls seam's edge dithered out, the same pattern as Lighting.hlsl
-	if (FallGround::Enabled && FallGround::Dithered(input.PositionCS.xy, input.FallFade.x))
+	// Fluid Field (D67): a falls seam's edge dithered out, the same pattern as Lighting.hlsl; D99: and the fade to its cut
+	if (FallGround::Enabled && FallGround::Dithered(input.PositionCS.xy, input.FallFade.x * FallGround::CutFade(input.FallClip)))
 		discard;
 #	endif
 

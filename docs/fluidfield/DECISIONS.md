@@ -2407,3 +2407,57 @@ Entry format:
     -   Crossing foam back to strength 0.8 and a plunge's reach, set 32 units
         onto the water's side of the seam.
 -   References: D92, D94, D98
+
+## D101: Pushes held to a slope; cuts by distance, faded; soft contact under foam (on branch feature/fluid-field-smooth-edges)
+
+-   Date: 2026-10-20
+-   Context: the user keeps seeing "brutal jagging" on the falls: zigzag,
+    white-tipped spikes along a sheet's edge where it meets a boulder and along
+    its outline. Causes, ranked (an offline experiment, scratchpad exp.py: a
+    jittered 20-unit triangle grid round a boulder with a pillow swell, the
+    rock mask on 10-unit texels):
+    1.  **The swell push stepped from 20 units to 0 over one triangle** at rock
+        and open edges. D89's rock test took the nearest 10-unit texel (a
+        staircase outline), the swell is highest right against the rock (D84's
+        pillow, strikes), and nothing faded it toward the rock; D82's half push
+        one row in from an open edge followed the dense copy's irregular rows.
+        The experiment: slopes up to 1.6 (units of push per unit along the
+        mesh), 70 edges with a step over 10 units, all along the boulder.
+    2.  **The see-through pass's alpha:** `saturate(behind / 4 + foam)` made
+        foam wholly opaque right at the rock, so the faceted line where the
+        sheet's triangles enter the rock's showed as a hard white sawtooth.
+    3.  **Whole-vertex cuts** (D97's lead-in under water, D98's curl) at
+        -CLIP_RANGE: SV_ClipDistance is linear across a triangle, so the cut
+        line ran along the triangles' edges, up to 10 units off a straight line
+        (0 with signed distances), and with no fade. (D70 already dropped the
+        per-vertex rock cut, so this is not the boulder's jag.)
+    4.  The wobble's fade from rock seeded on the staircase: small (its slope
+        was at most 0.84 and the seeds within 7 units).
+    5.  Open-edge smoothing folding: D94's blend already took this.
+-   Decision:
+    -   **Pushes held to a slope** (ComputePushes): the wobble's size and the
+        swell's push are each lowered to the largest function under them that
+        climbs at most 0.5 units per unit along the mesh (WOBBLE_SLOPE,
+        PUSH_SLOPE; a min-plus Dijkstra over the mesh's edges), from 0 on open
+        edges and in rock. Replaces the half push beside open edges. In the
+        experiment: slope at most 0.5 (was 1.6), steps over 10 units only on
+        the longest edges (11, was 70). The pillow right against a boulder is
+        lower (10 units at the face there, rising over about 40 units).
+    -   **Rock read bilinear**, inside from half: a smooth outline.
+    -   **Cuts by distance:** the lead-in's by its height over the water's level
+        less LEAD_CUT_DEPTH, the curl's by how far it lies behind the leading
+        face less INSIDE_MARGIN (only vertices behind it), held to -CLIP_RANGE.
+    -   **A dithered fade to every cut** (Lighting and Utility, the same
+        pattern): the seam dither's fade times saturate(clip / 6)
+        (FallGround::CutFade); ClipDistance returns CLIP_MOST, not 1, where
+        nothing is cut, as does Utility's default. The see-through pass fades
+        its alpha the same way, and its contact fade holds under foam
+        (lerp(contact, sqrt(contact), foam): shorter, never opaque at 0).
+-   Cost: per pixel one multiply (lit, depth) or a square root (see-through);
+    on the CPU two Dijkstra passes per mesh when the pushes are composed.
+-   Untested: the C++ was not compiled (no build folder in the worktree); the
+    shaders compiled with fxc. Not seen in game.
+-   Risks: the dither's fade reads SV_ClipDistance in both passes; their world
+    positions are computed differently (as the cut always was), so a few pixels
+    at the band may disagree between the depth pre-pass and the lit pass.
+-   References: D56, D70, D82, D84, D88, D89, D93, D94, D97, D98

@@ -86,16 +86,17 @@ namespace FallGround
 	 * D38: how far a vertex of falling water stands above where it is buried (under the pools' surface,
 	 * or in the rock, D56), for SV_ClipDistance. The depth pre-pass (Utility.hlsl) and
 	 * the lit pass (Lighting.hlsl) cut the same triangles at the same line, so nothing is left behind in
-	 * depth where the water is hidden. 1 on every other draw.
+	 * depth where the water is hidden. CLIP_MOST on every other draw (D99).
 	 * @param a_position Camera-relative world position (add CameraOffset for the absolute one).
 	 * @param a_vertex The vertex's index in its mesh (SV_VertexID), for VertexClip.
 	 */
 	float ClipDistance(float3 a_position, uint a_vertex)
 	{
+		// D99: CLIP_MOST (wholly shown) where nothing is cut, not 1: the pixel shaders fade over CutFade's band
 		if (!Enabled)
-			return 1.0;
+			return CLIP_MOST;
 		if (!HideUnderwater)
-			return 1.0;
+			return CLIP_MOST;
 		const float3 position = a_position + CameraOffset;
 		// D58: held within CLIP_MOST, so a far value never drags the cut across a triangle onto its other corner
 		float distance = CLIP_MOST;
@@ -110,6 +111,19 @@ namespace FallGround
 		if (VertexBase != NO_VERTEX_CLIP)
 			distance = min(distance, VertexClip[VertexBase + a_vertex].a.x);
 		return clamp(distance, -CLIP_MOST, CLIP_MOST);
+	}
+
+	/**
+	 * D99: world units over which falling water fades out toward its cut (ClipDistance's 0): the cut's line had no
+	 * fade, a hard edge. Matches FallSites::INSIDE_MARGIN, so a vertex just in front of a leading mesh's face (the
+	 * least the curl cut writes) is wholly shown.
+	 */
+	static const float CUT_SOFT = 6.0;
+
+	/** D99: how much of a pixel of falling water shows near its cut, from its interpolated ClipDistance: 0 at the cut, 1 past CUT_SOFT. */
+	float CutFade(float a_clip)
+	{
+		return Enabled ? saturate(a_clip / CUT_SOFT) : 1.0;
 	}
 
 	/** D68: a vertex's height above the water it falls into, where there is none. */
