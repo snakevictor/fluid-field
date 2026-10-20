@@ -240,7 +240,13 @@ namespace FluidFieldSim
 				if (!root)
 					continue;
 				if (ref.cls != FxClass::Body) {
-					wanted.emplace(root, RE::NiPointer<RE::NiAVObject>(root));
+					// D81: their effect layers and particles only: some carry real rock (FXrapidsRocks01's six boulders,
+					// lit meshes), and hiding the whole model took the rock with it; particle systems are geometry too, so they go
+					RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+						if (!netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get()))
+							wanted.emplace(a_geometry, RE::NiPointer<RE::NiAVObject>(a_geometry));
+						return RE::BSVisit::BSVisitControl::kContinue;
+					});
 					continue;
 				}
 				// The falling-water models carry layers of their own (and spray particles): show only the

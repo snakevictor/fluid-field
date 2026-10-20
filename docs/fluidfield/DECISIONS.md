@@ -1880,3 +1880,17 @@ Entry format:
         where the feeder's foot meets it, came out nearly flat (links bunched
         on a few feeder texels), so the whole mesh read one texture column.
         The fitted slope is now kept within 0.5-2 (sign kept) and logged.
+
+## D81: Hidden falls effects keep their rock
+
+-   Date: 2026-10-20
+-   Decision: With the falls' effects hidden, every non-falls effect model
+    (skirts, rapids, splashes, mist) was app-culled whole. FXrapidsRocks01.nif
+    carries six real boulders (RockL02, RockL04, RockM01-M04: lit meshes with
+    the mountain slab texture), and FXCreekFlatLong01.nif carries rock too, so
+    the rock went with them (SS 838, 839, and likely 821-823 under the bridge).
+    Now only their geometry without a lit material is hidden (effect layers,
+    particle systems); lit shapes stay. Checked: FXRapids, FXRapids02,
+    FXrapidsBig01, FXWaterfallSkirtSlope, FXWaterfallMistBlastLite and the
+    splash models have no lit shapes.
+-   References: D25, D77
