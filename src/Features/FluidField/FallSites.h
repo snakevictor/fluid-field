@@ -157,6 +157,8 @@ namespace FluidFieldSim
 		 * where none is (cell water covers whole cells and is not counted). a_bounds: min x, min y, max x, max y.
 		 */
 		bool WaterObjectBounds(float a_x, float a_y, float a_level, float a_reach, float a_bounds[4]) const;
+		/** @brief D66: every engine water plane (water objects and cells' water) over a box: min x, min y, max x, max y, height. */
+		void CollectWaterPlanes(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<std::array<float, 5>>& a_planes) const;
 		/** @brief D61: how many sites' flows are solved (their pools known). */
 		uint32_t CountReadyStreams() const;
 

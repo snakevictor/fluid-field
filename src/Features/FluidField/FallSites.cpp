@@ -2768,6 +2768,19 @@ namespace FluidFieldSim
 		return found;
 	}
 
+	void FallSites::CollectWaterPlanes(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<std::array<float, 5>>& a_planes) const
+	{
+		a_planes.clear();
+		if (!waterSurfaces)
+			return;
+		std::vector<WaterSurfaces::Plane> planes;
+		waterSurfaces->CollectPlanes(a_minX, a_minY, a_maxX, a_maxY, planes);
+		for (const auto& plane : planes) {
+			if (plane.source != WaterSurfaces::Source::None)
+				a_planes.push_back({ plane.minX, plane.minY, plane.maxX, plane.maxY, plane.height });
+		}
+	}
+
 	bool FallSites::GetSiteGround(uint32_t a_siteId, SiteGround& a_ground) const
 	{
 		for (const auto& [key, stream] : streams) {

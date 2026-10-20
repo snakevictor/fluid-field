@@ -95,7 +95,7 @@ struct FluidField : OverlayFeature
 		bool HideUnderwaterFalls = true;     ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
 		bool FallWhitening = true;           ///< The falls whiten with their foam and speed (D34)
 		bool FallTestQuad = false;           ///< D62 probe: the engine-built test quad in front of the player (not saved meaningfully)
-		bool OwnFallSheets = true;
+		bool OwnFallSheets = false;
 		float FallArcSpeed = 1.0f;       ///< D63: scales the speed the generated falls leave their brink at (their arc)           ///< D61: generate our own waterfall sheets in place of vanilla's lit falls pieces
 		float FallTranslucency = 0.0f;   ///< D53: how see-through the falls' thin water is (0: opaque, drawn as vanilla's)
 		float WaterfallStrength = 1.0f;  ///< How hard waterfalls churn, push and foam the water

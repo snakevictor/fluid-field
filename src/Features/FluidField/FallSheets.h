@@ -106,8 +106,15 @@ namespace FluidFieldSim
 		static constexpr float LANDED = 80.0f;            ///< D64: a column on the ground this near the lower water's level has landed in it
 		static constexpr float STEER_BELOW = 24.0f;       ///< D64: a column is steered by the ground only once it is this far under the upper water
 		static constexpr float FILL_STEP = 0.05f;         ///< D64: world units each filled cell stands over the one it drains to
-		static constexpr float WATER_DEPTH = 6.0f;        ///< D64: world units the water lies over the ground at the top's least speed...
-		static constexpr float MOST_DEPTH = 24.0f;        ///< ...and at most, for a fast fall
+		static constexpr float WATER_DEPTH = 12.0f;       ///< D66: world units the sheet rides over the ground (its thickness) at the top's least speed...
+		static constexpr float MOST_DEPTH = 48.0f;        ///< ...and at most, for a fast fall
+		static constexpr float LEVEL_SAME = 8.0f;         ///< D66: water planes this near in height are one water
+		static constexpr float SPILL_OUT = 48.0f;         ///< D66: world units past a spill cell the ground must lie LEAST_DROP under the water (a drop, not a bank)
+		static constexpr float SPLIT_ROCK = 256.0f;       ///< D66: a stretch of the lip this long with no spill (a big rock) splits it into two falls; shorter, one sheet passes it
+		static constexpr float TRIGGER_REACH = 256.0f;    ///< D66: a spill is a fall only with a vanilla lip this near (vanilla is the trigger)
+		static constexpr float PIECE_REACH = 1500.0f;     ///< D66: world units from a fall's lip a vanilla piece may lie and still be one of its segments
+		static constexpr float BAND = 32.0f;              ///< D66: world units of height per band of vanilla's width
+		static constexpr float SPACING_PULL = 0.25f;      ///< D66: how much each column is drawn, per step, to its place across the sheet's width
 		static constexpr float ROUTE_STEP = 8.0f;         ///< D64: world units per tracing step
 		static constexpr uint32_t ROUTE_STEPS = 600;
 		static constexpr float STEER = 0.35f;          ///< D64: how much a slow column's heading turns to the downhill flow each step (less when fast)
@@ -148,9 +155,10 @@ namespace FluidFieldSim
 			float lower = 0.0f;
 			float speed = 150.0f;  ///< World units per second the water at the top moves at
 			uint32_t siteId = 0;
-			float boundMin[3]{ FLT_MAX, FLT_MAX, FLT_MAX };     ///< D64: the vanilla pieces' extent: the sheet stays within it...
-			float boundMax[3]{ -FLT_MAX, -FLT_MAX, -FLT_MAX };  ///< ...and ends at its foot
-			std::vector<float> levels;                          ///< Every water level of the site under the upper one (its tiers' and other falls' upper waters)
+			std::vector<RE::NiPoint3> lip;             ///< D66: the upper water's cells it spills from, at its surface
+			RE::NiPoint3 flow;                         ///< D66: the way it spills, level
+			std::vector<std::array<float, 5>> waters;  ///< D66: the site's water planes (min x, min y, max x, max y, height)
+			std::vector<float> bandLo, bandHi;         ///< D66: vanilla's extent across per BAND under the upper water (lo > hi: none there)
 		};
 		std::unique_ptr<Sheet> Build(const FallSites& a_sites, const Fall& a_fall);
 		/**
@@ -168,8 +176,8 @@ namespace FluidFieldSim
 		 * by the downhill flow (less when fast), thrown on an arc off drops, never lower than the ground plus the water's
 		 * depth, ending in the water below. False where the site's ground is not known.
 		 */
-		static bool Route(const FallSites& a_sites, const Fall& a_fall, const std::vector<RE::NiPoint3>& a_lips, const RE::NiPoint3& a_flow, std::vector<Column>& a_columns,
-			std::vector<RE::NiPoint3>* a_edge = nullptr, std::vector<RE::NiPoint3>* a_seeds = nullptr);
+		static bool Route(const FallSites& a_sites, const Fall& a_fall, std::vector<Column>& a_columns, std::vector<RE::NiPoint3>* a_edge = nullptr,
+			std::vector<RE::NiPoint3>* a_seeds = nullptr);
 		/** @brief The sheet draped from the brink over the rock to the water below (see the class description). */
 		static void Drape(RE::hkpWorld* a_world, const FallSites& a_sites, const std::vector<RE::NiPoint3>& a_starts, const RE::NiPoint3& a_flow, const Fall& a_fall, std::vector<Column>& a_columns);
 		static void Remove(Sheet& a_sheet);
@@ -177,6 +185,8 @@ namespace FluidFieldSim
 		std::vector<std::unique_ptr<Sheet>> sheets;
 		RE::NiPointer<RE::BSTriShape> testQuad;
 		RE::NiPointer<RE::NiNode> testQuadParent;
+		/** @brief D66: the falls of every solved site: one per stretch of a water plane's border it spills over (with a vanilla lip near), down to the next water. */
+		void FindFalls(const FallSites& a_sites);
 		std::vector<Fall> pending;  ///< Falls still to build, one a frame
 		uint64_t groundVersion = UINT64_MAX;
 		uint32_t readyStreams = UINT32_MAX;  ///< The sites' solved flows (their pools) when the sheets were last built
