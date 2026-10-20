@@ -156,7 +156,11 @@ namespace FallGround
 		float runTime;    // D59: seconds the water has run since it came onto this mesh (0 without a bake)
 	};
 
-	/** D59: this mesh's flow bake at a texture coordinate (vanilla's own, unscrolled), bilinear; 0 where there is none. D67: across, along, wake, foam. */
+	/**
+	 * D59: this mesh's flow bake at a texture coordinate (vanilla's own, unscrolled); 0 where there is none. D67: across,
+	 * along, wake, foam. D80: a cubic B-spline over 4x4 texels, so the coordinates' gradients run on smoothly (bilinear,
+	 * they stepped at every texel: the texture's scale and mip with them, a blocky pattern)
+	 */
 	float4 BakeAt(float2 a_uv)
 	{
 		if (!BakeOn)
@@ -164,13 +168,20 @@ namespace FallGround
 		uint width, height;
 		FlowBake.GetDimensions(width, height);
 		const float2 texel = (a_uv - BakeRect.xy) * BakeRect.zw * float2(width, height) - 0.5;
-		const int2 base = clamp(int2(floor(texel)), 0, int2(width, height) - 2);
-		const float2 t = saturate(texel - float2(base));
-		const float4 a = FlowBake.Load(int3(base, 0));
-		const float4 b = FlowBake.Load(int3(base + int2(1, 0), 0));
-		const float4 c = FlowBake.Load(int3(base + int2(0, 1), 0));
-		const float4 d = FlowBake.Load(int3(base + int2(1, 1), 0));
-		return lerp(lerp(a, b, t.x), lerp(c, d, t.x), t.y);
+		const float2 cell = floor(texel);
+		const float2 t = texel - cell;
+		const float2 s = 1.0 - t;
+		const float2 weights[4] = { s * s * s / 6.0, (4.0 - 6.0 * t * t + 3.0 * t * t * t) / 6.0, (4.0 - 6.0 * s * s + 3.0 * s * s * s) / 6.0, t * t * t / 6.0 };
+		const int2 last = int2(width, height) - 1;
+		float4 sum = 0.0;
+		[unroll] for (int j = 0; j < 4; j++)
+		{
+			float4 row = 0.0;
+			[unroll] for (int i = 0; i < 4; i++)
+				row += weights[i].x * FlowBake.Load(int3(clamp(int2(cell) + int2(i - 1, j - 1), 0, last), 0));
+			sum += weights[j].y * row;
+		}
+		return sum;
 	}
 
 	/**

@@ -1870,3 +1870,13 @@ Entry format:
 -   Removed: the grid sim's constants and code, the streak sweep (BAKE*WARP*\*,
     spacing and drift guards), BakeField::swept.
 -   References: D60, D67, D74, D76, D79; research/waterfalls/strand-sheet-prototype.md
+-   First look in game (SS 834-836): the best result yet. Two fixes followed:
+    -   Blocky texture (SS 836): the shader read the bake bilinearly, so the
+        coordinates' gradients stepped at every bake texel, and the texture's
+        scale and mip stepped with them. BakeAt is now a cubic B-spline over
+        4x4 texels, and the strands' sideways offset is softened (3 passes)
+        on the grid.
+    -   A fed mesh's texture ran sideways (SS 835): its streak line, fitted to
+        where the feeder's foot meets it, came out nearly flat (links bunched
+        on a few feeder texels), so the whole mesh read one texture column.
+        The fitted slope is now kept within 0.5-2 (sign kept) and logged.

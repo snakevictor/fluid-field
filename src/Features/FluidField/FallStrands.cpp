@@ -34,6 +34,7 @@ namespace FluidFieldSim::FallStrands
 		constexpr float AERATION_FADE = 3.0f;    ///< Seconds aeration from strikes and pile-ups fades over
 		constexpr float UNITS_PER_METRE = 70.0f;
 		constexpr float NOWHERE = 1e6f;
+		constexpr int SOFTEN = 3;  ///< Passes softening the streaks' bend on the texture grid
 
 		float Smoothstep(float a_from, float a_to, float a_x)
 		{
@@ -615,6 +616,33 @@ namespace FluidFieldSim::FallStrands
 				fill(a, 1.0f - f, lip[order[right - 1]]);
 				fill(b, f, lip[order[right]]);
 			}
+		}
+		// Softened (the offset from straight down): a strand's step from texel to texel stepped the texture's scale
+		// and mip there, a blocky pattern at the bake's resolution
+		{
+			std::vector<float> offset(count), scratch(count);
+			for (std::size_t i = 0; i < count; i++)
+				offset[i] = result.seed[i] - static_cast<float>(i % w);
+			for (int pass = 0; pass < SOFTEN; pass++) {
+				for (int32_t y = 0; y < h; y++) {
+					for (int32_t x = 0; x < w; x++) {
+						float total = 0.0f, weight = 0.0f;
+						for (int32_t dy = -1; dy <= 1; dy++) {
+							for (int32_t dx = -1; dx <= 1; dx++) {
+								if (!inside(x + dx, y + dy) || result.leadIn[index(x + dx, y + dy)] != result.leadIn[index(x, y)])
+									continue;
+								const float k = (dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f);
+								total += offset[index(x + dx, y + dy)] * k;
+								weight += k;
+							}
+						}
+						scratch[index(x, y)] = total / weight;
+					}
+				}
+				offset.swap(scratch);
+			}
+			for (std::size_t i = 0; i < count; i++)
+				result.seed[i] = static_cast<float>(i % w) + offset[i];
 		}
 		return result;
 	}
