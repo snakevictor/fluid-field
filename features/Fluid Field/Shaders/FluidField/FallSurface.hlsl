@@ -99,7 +99,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float3 toCamera = normalize(-input.WorldPosition);
 
 	// The flow, as in the lit pass: the texture coordinates the water reads, its run time, wake and foam
-	const FallGround::FlowSample flow = FallGround::Flow(input.TexCoord, position);
+	// D96: Flow takes the coordinates as the lit pass has them, after vanilla's scroll and zoom (it takes them back out):
+	// handed the mesh's raw ones, the texture slid with vanilla's changing scroll against the flow
+	const FallGround::FlowSample flow = FallGround::Flow(input.TexCoord / max(FallGround::InverseScale, 1e-4) + FallGround::TexOffset, position);
 	const float4 diffuse = HasDiffuse ? DiffuseTex.Sample(WrapSampler, flow.uvA) : float4(0.5, 0.5, 0.5, 1.0);
 
 	// The surface: the mesh's normal toward the viewer, with vanilla's normal map running on the flow

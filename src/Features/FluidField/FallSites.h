@@ -292,7 +292,7 @@ namespace FluidFieldSim
 		std::vector<std::array<float, 12>> vertexClips;
 		static constexpr float GAP_REACH = 40.0f;        ///< D69: an open edge this near another mesh's open edge, and not over it, closes the gap
 		static constexpr float GAP_OVERLAP = 4.0f;       ///< D69: ...each side moving past the middle by this much
-		static constexpr float WATER_KEEP = 24.0f;       ///< D68: falling water is cut this far under the water it falls into
+		static constexpr float WATER_KEEP = 6.0f;        ///< D68: falling water is cut this far under the water it falls into (D95: 6, was 24: see-through water showed the sheet under it)
 		static constexpr float WATER_CUT_BAND = 160.0f;  ///< D70: ...only this near its mesh's foot (a plane's bound reaches past its water, D63)
 		static constexpr float NO_WATER = 1.0e4f;        ///< D68: a vertex's height above the water below where there is none
 		/**
@@ -300,10 +300,12 @@ namespace FluidFieldSim
 		 * (higher, or as high and larger) fade to 0, so that mesh shows through; the rest stay 1.
 		 */
 		void ComputeFades();
-		static constexpr float FADE_REACH = 32.0f;        ///< D67: an open edge's vertex this near another mesh's surface fades
-		static constexpr float SEAM_BIN = 48.0f;          ///< D91: world units per cell of the seams' triangle bins
-		static constexpr int EDGE_SMOOTH_PASSES = 80;     ///< D86: rounds smoothing each mesh's open edge as a curve (D92: 80: on the dense copies' 20-unit edges, 10 smoothed only 60 units)...
-		static constexpr float EDGE_SMOOTH_MOST = 60.0f;  ///< D86: ...moving a vertex at most this far (D92: 60)
+		static constexpr float FADE_REACH = 32.0f;         ///< D67: an open edge's vertex this near another mesh's surface fades
+		static constexpr float SEAM_BIN = 48.0f;           ///< D91: world units per cell of the seams' triangle bins
+		static constexpr int EDGE_SMOOTH_PASSES = 80;      ///< D86: rounds smoothing each mesh's open edge as a curve (D92: 80: on the dense copies' 20-unit edges, 10 smoothed only 60 units)...
+		static constexpr float EDGE_SMOOTH_MOST = 60.0f;   ///< D86: ...moving a vertex at most this far (D92: 60)
+		static constexpr float EDGE_BLEND_REACH = 120.0f;  ///< D94: world units the open edge's moves fade into the surface over...
+		static constexpr int EDGE_BLEND_PASSES = 60;       ///< D94: ...in this many rounds
 		std::vector<RE::NiPointer<RE::BSGeometry>> clipQueue;
 		uint64_t vertexClipVersion = 0;
 		uint32_t clipTested = 0;
@@ -466,6 +468,7 @@ namespace FluidFieldSim
 		static constexpr float LIP_BAND = 40.0f;            ///< D90: a crest this near its pool's surface is a lip, where the water leaves the pool (D91: 40, was 24)...
 		static constexpr float LIP_STRENGTH = 0.6f;         ///< D90: ...stirring it this much (a plunge's 0.25 to 1; D91: 0.6, was 0.35)
 		static constexpr float LIP_UPSTREAM = 40.0f;        ///< D92: world units upstream of the crest its foam is made
+		static constexpr float CROSSING_STRENGTH = 0.8f;    ///< D94: how hard the water foams where a mesh crosses a water surface
 		std::vector<FallEmitter> sprayEmitters;
 		std::vector<FallPlunge> plungePoints;
 		uint64_t emitterVersion = 0;

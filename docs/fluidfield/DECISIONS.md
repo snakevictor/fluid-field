@@ -2261,3 +2261,28 @@ Entry format:
     -   The hidden pieces' world transforms are read while app-culled (static meshes; updated when attached).
 -   References: D53, D54, D55, D56, D67, D73, D85, D86, D90;
     research/waterfalls/realtime-integration-design.md 5.2
+
+## D94-D96: Edges blended in; foam where the falls cross water; buried parts cut; see-through flow fixed
+
+-   Date: 2026-10-20
+-   Decision:
+    -   **D94, edge moves blended into the surface:** the open edge's smoothing
+        and gap moves fade into the mesh over 120 units (harmonic, 60 rounds).
+        Moved alone, the edge row folded the dense copy's 20-unit triangles over
+        the next row: the zigzags of SS 873, 881, 882 came from D86/D92's
+        smoothing itself, worse the more it reached.
+    -   **D94, foam where a mesh crosses a water surface** (the user: "detect the
+        intersection of the waterfall mesh with the water plane and foam around
+        it"): every pair of neighbouring water texels on either side of an
+        engine plane over them, or of our pools, makes a foam and stir point
+        (strength 0.8) on the line between; it replaces D90-D92's crest lips.
+    -   **D95, buried parts cut** (the user: hide the arch inside the top and
+        bottom water and where meshes cross, "to make them look as one single
+        body of water falling"): the hidden lead-in under the upper water
+        (D79's), every vertex lying wholly on a leading mesh (not only edges),
+        and the foot 6 units under the water it falls into (was 24).
+    -   **D96, see-through flow:** FallSurface.hlsl handed Flow the mesh's raw
+        texture coordinates; Flow takes them as the lit pass has them (after
+        vanilla's scroll and zoom) and takes those back out, so the see-through
+        texture slid with vanilla's scroll against the flow (SS 884).
+-   References: D67, D69, D79, D86, D92, D93
