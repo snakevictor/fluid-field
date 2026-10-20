@@ -2175,3 +2175,21 @@ Entry format:
         the swell pushes out), not "up", which threw it into the hollow under a
         curtain (SS 872); none from the hidden lead-in.
 -   References: D70, D73, D78, D85, D90
+
+## D92: Outward from the way the water travels; lips upstream; longer edge smoothing
+
+-   Date: 2026-10-20
+-   Context: D91 deployed (checked: DLL, shader, log) but did not fix SS 873-877.
+-   Decision:
+    -   **Outward face:** each mesh's outer side is the one facing the way its
+        water travels (from its top rows, under the water above, to its foot,
+        out from the cliff), tipped up (z 0.3). D91 trusted the winding, which
+        points into the cliff on some meshes: spray from the hollow under the
+        curtain (SS 877), and the swell and wobble pushing inward. Spray, swell
+        and wobble all use it now; the log counts the normals turned.
+    -   **Lips 40 units upstream** of the crest: at the drop the sim's flow is
+        fastest and carried the lip's foam straight over the edge (SS 874-876).
+    -   **Edge smoothing 80 rounds, at most 60 units:** on the dense copies'
+        20-unit edges, 10 rounds smoothed only about 60 units, shorter than
+        vanilla's teeth (SS 873).
+-   References: D86, D90, D91

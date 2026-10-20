@@ -1877,7 +1877,7 @@ namespace FluidFieldSim
 
 	void FallSites::ComputePushes()
 	{
-		uint32_t meshes = 0, pushed = 0, wobbled = 0;
+		uint32_t meshes = 0, pushed = 0, wobbled = 0, flippedTotal = 0;
 		float most = 0.0f, mostWobble = 0.0f;
 		for (const auto& lit : litMeshList) {
 			auto* geometry = lit.geometry.get();
@@ -1915,6 +1915,43 @@ namespace FluidFieldSim
 					normals[index[k]] += face;
 					uses[{ std::min(index[k], index[(k + 1) % 3]), std::max(index[k], index[(k + 1) % 3]) }]++;
 				}
+			}
+			// D92: the outer face (as BuildPlunges'): the side its water travels toward, from its least v to its most
+			{
+				float vLo = FLT_MAX, vHi = -FLT_MAX;
+				for (const auto& uv : uvs) {
+					vLo = std::min(vLo, uv[1]);
+					vHi = std::max(vHi, uv[1]);
+				}
+				const float band = (vHi - vLo) * 0.1f;
+				RE::NiPoint3 head(0.0f, 0.0f, 0.0f), foot(0.0f, 0.0f, 0.0f);
+				float heads = 0.0f, feet = 0.0f;
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					const RE::NiPoint3 world = geometry->world * positions[v];
+					if (uvs[v][1] <= vLo + band) {
+						head += world;
+						heads += 1.0f;
+					} else if (uvs[v][1] >= vHi - band) {
+						foot += world;
+						feet += 1.0f;
+					}
+				}
+				RE::NiPoint3 travel(0.0f, 0.0f, 0.0f);
+				if (heads > 0.0f && feet > 0.0f) {
+					travel = foot / feet - head / heads;
+					travel.z = 0.0f;
+					const float length = travel.Length();
+					travel = length > 1e-3f ? travel / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
+				}
+				travel.z = 0.3f;
+				uint32_t flipped = 0;
+				for (auto& n : normals) {
+					if ((geometry->world.rotate * n).Dot(travel) < 0.0f) {
+						n = -n;
+						flipped++;
+					}
+				}
+				flippedTotal += flipped;
 			}
 			std::vector<uint8_t> open(counts.vertexCount, 0), nearOpen(counts.vertexCount, 0);
 			for (const auto& [edge, count] : uses) {
@@ -2045,8 +2082,8 @@ namespace FluidFieldSim
 			meshes++;
 		}
 		ComposeShifts();
-		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units; {} wobble, at most {:.1f} units", pushed, meshes, most, wobbled,
-			mostWobble);
+		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units; {} wobble, at most {:.1f} units; {} normals turned outward",
+			pushed, meshes, most, wobbled, mostWobble, flippedTotal);
 	}
 
 	void FallSites::ProbeScrolls()
@@ -2973,9 +3010,39 @@ namespace FluidFieldSim
 				const RE::NiPoint3& n = field->normal[a_i];
 				return n.z < 0.0f ? -n : n;
 			};
-			// D91: the face the mesh shows (its winding: the swell pushes out along it too), so spray leaves the sheet's
-			// outer face, not into the hollow under a curtain; and nothing from the hidden lead-in under the upper water
-			const auto outward = [&](std::size_t a_i) { return field->normal[a_i]; };
+			// D92: the sheet's outer face: the side its water travels toward (from its top rows, under the water above, to
+			// its foot, out from the cliff), tipped up; the winding (D91) pointed into the cliff on some meshes, and spray
+			// came out of the hollow under the curtain. And nothing from the hidden lead-in under the upper water
+			RE::NiPoint3 travel(0.0f, 0.0f, 0.0f);
+			{
+				RE::NiPoint3 head(0.0f, 0.0f, 0.0f), foot(0.0f, 0.0f, 0.0f);
+				float heads = 0.0f, feet = 0.0f;
+				const int32_t band = std::max(1, h / 10);
+				for (int32_t y = 0; y < h; y++) {
+					for (int32_t x = 0; x < w; x++) {
+						if (!field->covered[index(x, y)])
+							continue;
+						if (y < band) {
+							head += field->position[index(x, y)];
+							heads += 1.0f;
+						} else if (y >= h - band) {
+							foot += field->position[index(x, y)];
+							feet += 1.0f;
+						}
+					}
+				}
+				if (heads > 0.0f && feet > 0.0f) {
+					travel = foot / feet - head / heads;
+					travel.z = 0.0f;
+					const float length = travel.Length();
+					travel = length > 1e-3f ? travel / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
+				}
+				travel.z = 0.3f;
+			}
+			const auto outward = [&](std::size_t a_i) {
+				const RE::NiPoint3& n = field->normal[a_i];
+				return n.Dot(travel) < 0.0f ? -n : n;
+			};
 			std::vector<int32_t> crestRows;
 			std::vector<uint8_t> hiddenLead;
 			{
@@ -3091,8 +3158,9 @@ namespace FluidFieldSim
 				if (!added)
 					continue;
 				FallPlunge& lip = it->second;
-				lip.position[0] = p.x;
-				lip.position[1] = p.y;
+				// D92: upstream of the drop (at it, its foam was carried straight over the edge and never showed)
+				lip.position[0] = p.x - down.x / horizontal * LIP_UPSTREAM;
+				lip.position[1] = p.y - down.y / horizontal * LIP_UPSTREAM;
 				lip.position[2] = level;
 				lip.direction[0] = down.x / horizontal;
 				lip.direction[1] = down.y / horizontal;
