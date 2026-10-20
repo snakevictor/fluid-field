@@ -1827,3 +1827,46 @@ Entry format:
     the eddies on bake 3 are gone and the flow parts cleanly round the rocks
     below the crest.
 -   References: D74, D76; research/waterfalls/strand-sheet-prototype.md
+
+## D80: The falls' flow as a strand sheet
+
+-   Date: 2026-10-20
+-   Phase / spike: real-time falls, step 3 of research/waterfalls/overnight-2026-10-20.md (CPU, in the existing async bake)
+-   Decision: The D74 grid sim (staggered grid, pressure projection) and D67's
+    streak sweep are replaced by a sheet of strands (FallStrands::March, after
+    research/waterfalls/strand-sheet-prototype.md). In game, the D74 build showed
+    stretched texture, curves where there should be none, whorls and back flow.
+    -   Up to 128 strands per mesh start at each column's crest (D79; a crest
+        inside rock starts at the first water below it). They are marched a row
+        at a time by gravity along the mesh, bed friction and air drag. They
+        steer round rock they see coming within 5 rows, never cross, and are
+        drawn back to their own column over about 0.6 s.
+    -   Each texel takes the lip column of the strands either side of it (seed).
+        LinkBakes maps that through the feeder's streaks (across0 and along0),
+        so cascades carry on as before.
+    -   An open gap (the wake behind rock): each side keeps its own streaks at
+        their own spacing and they meet in a foamed seam. Spreading one set over
+        the gap stretched it 4x.
+    -   The texture keeps vanilla's speed down the mesh: the run is texture v
+        from the mesh's top row. The strands only bend it sideways, so it never
+        stretches along the flow and never runs backwards. With the physics'
+        speed, most of each mesh sat at the 0.5x floor (2x squeeze), and strands
+        that started lower ran backwards next to ones from higher up.
+    -   Sideways gravity is felt at 0.35 of its pull. In full it rolled the
+        strands off every dome into ropes along the rock; vanilla's UVs already
+        run the right way.
+    -   Pressed together, the streaks squeeze 2x at most (the prototype allowed 5x).
+    -   The wake slot carries the strands' aeration (fall break-up, strikes,
+        pile-ups); foam is strikes and pile-ups plus the rock rim (D60).
+-   Offline, on the 18 bake dumps (scratchpad strand/strandbake.cpp builds
+    FallStrands.cpp unchanged; plot.py): about 10 ms per mesh; every strand
+    reaches the foot. Sideways stretch is 0.8-1.0 at p5 and 1.0 at the median;
+    the high tail is along rock outlines and wake seams. Down-stretch is exactly 1.
+-   The boulder on the slope run at (31103, -27345), RockL04Wet 0x000B96E2,
+    was already rock in bake 14's mask. D74's pressure solve barely bent the
+    flow round it, and its streaks carried straight on below, so the water
+    looked like it drained under it. The strands part round it and leave a
+    wake that closes downstream.
+-   Removed: the grid sim's constants and code, the streak sweep (BAKE*WARP*\*,
+    spacing and drift guards), BakeField::swept.
+-   References: D60, D67, D74, D76, D79; research/waterfalls/strand-sheet-prototype.md

@@ -288,25 +288,10 @@ namespace FluidFieldSim
 		static constexpr uint32_t BAKE_MOST_SIDE = 192;   ///< ...and the most texels along a side
 		static constexpr float BAKE_ROCK_MARGIN = 24.0f;  ///< A texel this far inside rock is still water (vanilla's sheets dip into the rock they lie on)
 		static constexpr double BAKE_BUDGET_MS = 3.0;
-		static constexpr float BAKE_MOST_DRIFT = 64.0f;    ///< D71: texels a streak may drift across from where it came in (D74: the sim decides; only a guard)
-		static constexpr float BAKE_MOST_DOWN = 1.6f;      ///< D60: and runs at most this much of it
 		static constexpr std::size_t BAKE_LEAST_ROCK = 6;  ///< D60: rock islands of this many texels or fewer are specks, taken as water
-		static constexpr int BAKE_WARP_BLUR = 3;           ///< D60: passes softening the warp
-		static constexpr float BAKE_WARP_KEEP = 0.6f;      ///< D60: how much of the full streamline warp is kept (streaks partly run under a rock)
-		static constexpr float BAKE_LEAST_SPACING = 0.5f;  ///< D60: streaks squeezed closer than this, or spread wider than BAKE_MOST_SPACING, ease back to vanilla's
-		static constexpr float BAKE_MOST_SPACING = 2.0f;
-		static constexpr float SIM_GRAVITY = 686.0f;      ///< D74: world units per second squared (Skyrim's)
-		static constexpr float SIM_INFLOW = 250.0f;       ///< D74: world units per second the water comes onto a mesh's top at
-		static constexpr float SIM_TERMINAL = 900.0f;     ///< D74: world units per second sliding water tends to (its drag)
-		static constexpr int SIM_STEPS = 160;             ///< D74: steps to its steady state
-		static constexpr int SIM_CG = 60;                 ///< D74: conjugate-gradient iterations per step's pressure (warm started)
-		static constexpr float SIM_FRICTION = 3.0f;       ///< D74: per second, the bed's friction on the thin sheet (it damps eddies)
-		static constexpr float SIM_BAND = 0.15f;          ///< D74: share of the mesh's rows (texture v) its top and foot bands are
-		static constexpr float SIM_DEAD = 0.15f;          ///< D74: water moving less than this share of the median is a dead pocket: it keeps vanilla's way
-		static constexpr float SIM_MOST_TURN = 5.7f;      ///< D74: the streaks turn at most this across per down (80 degrees)
-		static constexpr float SIM_CREST_RISE = 48.0f;    ///< D79: a column climbing more than this to its highest row starts there (its lead-in is hidden under the upper water)
-		static constexpr int32_t SIM_LIP_ROWS = 14;       ///< D76: rows down from a mesh's top over which its streaks start to turn
-		static constexpr float BAKE_WAKE_TEXELS = 24.0f;  ///< D60: texels down the streaks a rock's wake fades over
+		static constexpr float SIM_GRAVITY = 686.0f;       ///< D74: world units per second squared (Skyrim's)
+		static constexpr float SIM_INFLOW = 250.0f;        ///< D74: world units per second the water comes onto a mesh's top at
+		static constexpr float SIM_TERMINAL = 900.0f;      ///< D74: world units per second sliding water tends to (its drag)
 		/** @brief D59: a mesh's flow bake in progress: its texture grid rasterised, its texels being tested against the rock. */
 		struct BakeJob
 		{
@@ -362,8 +347,8 @@ namespace FluidFieldSim
 			float uvMin[2]{}, uvSize[2]{};
 			std::vector<RE::NiPoint3> position;
 			std::vector<uint8_t> covered;
-			std::vector<float> turn, speed, wake, foam;  ///< Across per down (texels), speed (vanilla's 1), the rock's wake and foam
-			mutable std::vector<float> swept;            ///< D76: the turn the streak sweep used (the debug arrows show it)
+			std::vector<float> turn, speed, wake, foam;  ///< Across per down (texels), speed (vanilla's 1), aeration (D80) and foam
+			std::vector<float> seed, along;              ///< D80: the lip column each texel's strand came over (texels), and its run from the mesh's top (texture v)
 			std::vector<RE::NiPoint3> normal;
 			std::vector<uint8_t> rock;  ///< D75: texels inside rock (the debug arrows skip them)
 		};
@@ -374,9 +359,8 @@ namespace FluidFieldSim
 		 * is fed by it, and its streaks and run time carry on from that mesh's; then each mesh's bake is built.
 		 */
 		void LinkBakes();
-		static constexpr float LINK_REACH = 48.0f;       ///< D67: world units a mesh's top edge may lie from the mesh feeding it
-		static constexpr int32_t LINK_ROWS = 10;         ///< D67: texel rows up from a mesh's bottom edge that may feed the next
-		static constexpr float BAKE_LEAST_SPEED = 0.5f;  ///< D67: the flow runs at least this much of vanilla's speed (and at most BAKE_MOST_DOWN)
+		static constexpr float LINK_REACH = 48.0f;  ///< D67: world units a mesh's top edge may lie from the mesh feeding it
+		static constexpr int32_t LINK_ROWS = 10;    ///< D67: texel rows up from a mesh's bottom edge that may feed the next
 		std::unordered_map<const RE::BSGeometry*, FlowBake> flowBakes;
 		uint64_t flowBakeVersion = 0;
 		uint32_t bakedRockTexels = 0, bakedTexels = 0;
