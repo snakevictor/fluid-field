@@ -1503,3 +1503,93 @@ Entry format:
     -   @Victor also asked to switch off the shallow-water simulation where
         it lies inside rock and landscape the player cannot reach (D-next).
 -   References: D61, D62
+
+## D64-D66: Generated sheets routed over the ground, lip from the water plane, one per spill (shelved)
+
+-   Date: 2026-10-19
+-   Phase / spike: @Victor's review screenshots 738-747, 131-347 (CS)
+-   Decision: The generated sheets (D61-D63) were carried further and then
+    shelved at @Victor's call; the code stays behind Generated Falls (off).
+    -   D64: the columns are marched in lockstep over the site's captured
+        ground (filled by a priority flood, a smoothed downhill field),
+        thrown on an arc off drops, ending in the water below; one whole
+        sheet, no tears; debug views (wireframe, lip and routes, normals).
+    -   D65: the lip is the upper water plane's own end (its border), which
+        @Victor marked as the real lips between the rocks.
+    -   D66: one sheet per stretch of a water plane's border that spills
+        over a drop with a vanilla lip near (vanilla is the trigger), down
+        to the next water plane; a stretch with no spill longer than 256
+        units (a big rock) splits it. Width from vanilla's pieces at each
+        height, thickness from speed; rock taller than half the thickness
+        pokes through.
+    -   Why shelved: every round traded one artefact for another (whorls of
+        the routing, pinching, monstrosities where detection misfired), and
+        the flow did not look better than vanilla's own meshes. @Victor:
+        back to vanilla's falls as the base, with their flow synced and
+        driven by a simulation.
+-   References: D61, D62, D63
+
+## D67: Vanilla's falls as the base: cascades linked, one shared scroll, seams blended
+
+-   Date: 2026-10-19
+-   Phase / spike: @Victor's direction after D66
+-   Decision:
+    -   Each lit falls mesh's bake (D59) now stores the texture coordinates
+        its water reads, not a warp: across, the streak it is on, carried
+        down the solved flow (D60's sweep); along, the time it has run since
+        the top of its cascade, in texture coordinates at the shared scroll
+        (row length over the solved speed). The shader reads them less one
+        scroll, so the texture runs faster where the water does and bends
+        round rock, and only the scroll moves in time.
+    -   Cascades: a mesh whose top edge lies on the lowest quarter of a
+        higher mesh (within 48 units, at least 3 columns or an eighth of
+        them) is fed by it: its streaks and run time carry on from that
+        mesh's, so one mesh's water runs on into the next. Linked once all
+        bakes are solved (FallSites::LinkBakes).
+    -   One scroll for all the falls, integrated once a frame at vanilla's
+        rate averaged over the falls' materials (per-material phases could
+        not meet at a seam).
+    -   Seams: an open edge of a lit mesh that lies on a mesh leading it
+        (higher, or as high and larger) dithers out, the same pattern in the
+        depth pre-pass (Utility.hlsl) and the lit pass, which TAA blends.
+        The per-vertex buffer (t123) carries the fade beside the rock cut.
+-   References: D56, D58, D59, D60
+
+## D68: Rock from the statics' meshes; flat parts join the main flow; cut under the water below; foam desynced
+
+-   Date: 2026-10-19
+-   Phase / spike: @Victor's review screenshots 781-791
+-   Decision:
+    -   Boulders resting on the ground (RockL02 at 0001B375) did not part
+        the flow: the collision test wants rock on both sides of the sheet,
+        and the ray from under the boulder started inside the ground. Each
+        bake now also gathers the render meshes of the statics round the
+        sheet (binned from above) and calls a texel rock where an upward ray
+        crosses one mesh's faces an odd number of times and the point lies
+        more than 40 units from that mesh (sheets dip into the cliffs they
+        lie against).
+    -   Water falling onto flat ground (783-785) turns to the site's solved
+        flow (seen from above, put in the sheet's texture axes), up to 56
+        degrees, only on truly flat texels and only where the main flow
+        leaves the mesh's way down by more than 20 degrees. A first version
+        (from 0.45 up-facing, up to 72 degrees, everywhere) sheared the
+        streaks into whorls.
+    -   Falls under the water they fall into (786): each vertex is cut 24
+        units under the highest engine water plane below the mesh's top over
+        it (under a plane's height there is only water or ground, both hide
+        the falls), and whitens as it goes in (its height above that water
+        rides in the per-vertex buffer).
+    -   Seams fade only where the overlap reaches past the edge (the vertex
+        and all its neighbours on the leading mesh): where two meshes only
+        meet edge to edge, fading opened the gap between them (789).
+    -   The shallow water's foam restarts its two phases at a time of its
+        own per patch (a smooth offset over 2.5 tiles): with one clock the
+        cross-fade thinned all of it at once and it pulsed (791).
+    -   `communityshaders.feature set` replaces the whole blob (LEARNINGS):
+        partial sets during this session reset Water Enabled and others to
+        defaults; the scratchpad's ffset.py now reads, changes and writes
+        the whole blob.
+-   Open: gaps between meshes that meet edge to edge (789's dark lines) and
+    the hole beside a boulder (781) need the edges moved, not faded; flow
+    "plain incorrect at places" (782, 787) to be judged again after this.
+-   References: D57, D59, D60, D67

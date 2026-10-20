@@ -77,6 +77,7 @@ struct VS_OUTPUT
 #endif
 #if defined(FLUID_FIELD)
 	float FallClip: SV_ClipDistance0;  // Fluid Field (D38): the same cut as Lighting.hlsl, so the depth pre-pass leaves nothing where falling water is hidden
+	float2 FallFade: FALLFADE0;        // Fluid Field (D67): the same seam dither as Lighting.hlsl
 #endif
 };
 
@@ -111,6 +112,7 @@ VS_OUTPUT main(VS_INPUT input)
 	VS_OUTPUT vsout;
 #	if defined(FLUID_FIELD)
 	vsout.FallClip = 1.0;
+	vsout.FallFade = float2(1.0, 1.0e4);
 #	endif
 
 #	if (defined(RENDER_DEPTH) && defined(RENDER_SHADOWMASK_ANY)) || SHADOWFILTER == 2
@@ -156,6 +158,7 @@ VS_OUTPUT main(VS_INPUT input)
 	positionCS = mul(modelViewProj, positionMS);
 #			if defined(FLUID_FIELD)
 	vsout.FallClip = FallGround::ClipDistance(mul(World, positionMS).xyz, input.VertexID);
+	vsout.FallFade = FallGround::Fade(input.VertexID);
 #			endif
 #		endif
 
@@ -366,6 +369,12 @@ float SampleDualParaboloidShadowPCF(Texture2DArray<float4> tex, SamplerCompariso
 PS_OUTPUT main(PS_INPUT input)
 {
 	PS_OUTPUT psout;
+
+#	if defined(FLUID_FIELD)
+	// Fluid Field (D67): a falls seam's edge dithered out, the same pattern as Lighting.hlsl
+	if (FallGround::Enabled && FallGround::Dithered(input.PositionCS.xy, input.FallFade.x))
+		discard;
+#	endif
 
 #	if defined(ADDITIONAL_ALPHA_MASK)
 	uint2 alphaMask = input.PositionCS.xy;

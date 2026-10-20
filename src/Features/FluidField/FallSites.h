@@ -121,7 +121,10 @@ namespace FluidFieldSim
 		bool IsTranslucent(const RE::BSGeometry* a_geometry) const { return translucentGeometry.contains(a_geometry); }
 		/**
 		 * @brief D56: where a lit falls mesh's per-vertex rock cut starts in GetVertexClips, once tested.
-		 * Each value is how far the vertex stands out of the rock (negative inside it), for SV_ClipDistance.
+		 * Each value is how far the vertex stands out of the rock (negative inside it), for SV_ClipDistance,
+		 * and (D67) how much of it shows where it overlaps another falls mesh (1 whole, 0 gone: its edges
+		 * over a mesh that leads it are dithered out, so the two blend instead of meeting at a hard line),
+		 * and (D68) how far it stands above the water it falls into (NO_WATER where there is none).
 		 */
 		bool GetVertexClip(const RE::BSGeometry* a_geometry, uint32_t& a_base) const
 		{
@@ -131,7 +134,7 @@ namespace FluidFieldSim
 			a_base = it->second;
 			return true;
 		}
-		const std::vector<float>& GetVertexClips() const { return vertexClips; }
+		const std::vector<std::array<float, 4>>& GetVertexClips() const { return vertexClips; }
 		/** @brief D61: a grounded site's lit falls piece, and the water level its site ends in. */
 		struct LitMesh
 		{
@@ -165,10 +168,13 @@ namespace FluidFieldSim
 		/**
 		 * @brief D59: a lit falls mesh's flow, solved once on its own texture grid (u across, v down), with the
 		 * rock in it found by rays against the game's collision: so the water parts round a boulder through a
-		 * curtain as well as on a flat run, which the top-down solve cannot see. D60: per texel, as halves: the
-		 * streak warp (how far across, in texture coordinates, the texture is read: a straight scroll down +v
-		 * then runs along bent streaks), the wake of the rock above, foam (the rock's rim, water piling against
-		 * it and squeezing past it), and the seconds the water has run from where it comes in.
+		 * curtain as well as on a flat run, which the top-down solve cannot see. D67: per texel, as floats, the
+		 * texture coordinates the water there reads (a straight scroll of the second runs it along the flow):
+		 * across, the streak it is on, carried down the flow from where it came in (so streaks part round a
+		 * boulder and close behind it), and along, the time it has run since the top of its cascade, in texture
+		 * coordinates at the shared scroll (so it runs faster where the flow is faster, and one mesh's water
+		 * flows on into the next: both carry on from the mesh above, LinkBakes); then the wake of the rock
+		 * above, and foam (the rock's rim, water piling against it and squeezing past it).
 		 */
 		struct FlowBake
 		{
@@ -176,9 +182,15 @@ namespace FluidFieldSim
 			uint32_t height = 0;
 			float uvMin[2]{};
 			float uvSize[2]{};
-			std::vector<uint16_t> texels;  ///< RGBA16F, width x height
+			std::vector<float> texels;  ///< RGBA32F, width x height
 		};
 		const std::unordered_map<const RE::BSGeometry*, FlowBake>& GetFlowBakes() const { return flowBakes; }
+		/** @brief D67: the mesh at the top of the cascade a lit falls mesh is part of (itself where nothing feeds it). */
+		const RE::BSGeometry* GetChainRoot(const RE::BSGeometry* a_geometry) const
+		{
+			const auto it = chainRoot.find(a_geometry);
+			return it == chainRoot.end() ? a_geometry : it->second;
+		}
 		/** @brief Changes whenever GetFlowBakes changes. */
 		uint64_t GetFlowBakeVersion() const { return flowBakeVersion; }
 		/** @brief Changes whenever GetVertexClips grows. */
@@ -302,7 +314,15 @@ namespace FluidFieldSim
 		/** @brief D57: the nearest rock along a ray from a point, world units, or a negative value for none (the falls' own collision passed through). */
 		float RockAlong(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, int* a_crossings = nullptr, float* a_last = nullptr) const;
 		std::unordered_map<const RE::BSGeometry*, uint32_t> vertexClipBase;
-		std::vector<float> vertexClips;
+		std::vector<std::array<float, 4>> vertexClips;
+		static constexpr float WATER_KEEP = 24.0f;  ///< D68: falling water is cut this far under the water it falls into
+		static constexpr float NO_WATER = 1.0e4f;   ///< D68: a vertex's height above the water below where there is none
+		/**
+		 * @brief D67: each tested lit mesh's overlap fade: its open edges that lie on another falls mesh leading it
+		 * (higher, or as high and larger) fade to 0, so that mesh shows through; the rest stay 1.
+		 */
+		void ComputeFades();
+		static constexpr float FADE_REACH = 32.0f;  ///< D67: an open edge's vertex this near another mesh's surface fades
 		std::vector<RE::NiPointer<RE::BSGeometry>> clipQueue;
 		uint64_t vertexClipVersion = 0;
 		uint32_t clipTested = 0;
@@ -322,7 +342,7 @@ namespace FluidFieldSim
 		static constexpr std::size_t BAKE_LEAST_ROCK = 6;  ///< D60: rock islands of this many texels or fewer are specks, taken as water
 		static constexpr float BAKE_BEND_NEAR = 3.0f;      ///< D60: the streaks bend in full this many texels from rock...
 		static constexpr float BAKE_BEND_FAR = 14.0f;      ///< ...and not at all past this
-		static constexpr int BAKE_TURN_BLUR = 4;           ///< D60: passes softening the turn
+		static constexpr int BAKE_TURN_BLUR = 6;           ///< D60: passes softening the turn (D68: more, so it cannot whorl)
 		static constexpr int BAKE_WARP_BLUR = 3;           ///< D60: passes softening the warp
 		static constexpr float BAKE_WARP_KEEP = 0.75f;     ///< D60: how much of the full streamline warp is kept (streaks partly run under a rock)
 		static constexpr float BAKE_LEAST_SPACING = 0.5f;  ///< D60: streaks squeezed closer than this, or spread wider than BAKE_MOST_SPACING, ease back to vanilla's
@@ -337,17 +357,54 @@ namespace FluidFieldSim
 			std::vector<RE::NiPoint3> position, normal;
 			std::vector<uint8_t> covered, rock;
 			std::size_t next = 0;
+			// D68: the render meshes of the statics round the sheet (boulders, the walls beside it), binned from above
+			std::vector<std::array<RE::NiPoint3, 3>> solids;
+			std::vector<uint32_t> solidRef;
+			float solidOrigin[2]{};
+			int32_t solidBins[2]{};
+			std::vector<std::vector<uint32_t>> bins;
 		};
+		static constexpr float SOLID_BIN = 32.0f;      ///< D68: world units per bin of the statics' triangles
+		static constexpr float SOLID_REACH = 64.0f;    ///< D68: world units round a sheet its statics are gathered
+		static constexpr float FLAT_MOST_TURN = 1.5f;  ///< D68: on flat parts the flow may turn this much across per down (56 degrees) to join the main flow
+		static constexpr float SOLID_MARGIN = 40.0f;   ///< D68: a texel this deep inside a static's mesh is rock (vanilla's sheets dip into the cliffs they lie against)
+		/** @brief D68: gathers the statics' triangles round a bake job's sheet (main thread). */
+		void GatherSolids(BakeJob& a_job) const;
+		/** @brief D68: whether a point lies inside a static's render mesh, deeper than BAKE_ROCK_MARGIN (upward ray parity per mesh). */
+		static bool InsideSolid(const BakeJob& a_job, const RE::NiPoint3& a_point);
+		/** @brief D68: the solved site flow at a world point (direction from above), or false where there is none. */
+		bool SiteFlowAt(float a_x, float a_y, float& a_vx, float& a_vy) const;
+		uint32_t linkedStreams = UINT32_MAX;  ///< D68: the sites' solved flows when the bakes were last linked
 		std::vector<RE::NiPointer<RE::BSGeometry>> bakeQueue;
 		std::unique_ptr<BakeJob> bakeJob;
-		std::vector<std::pair<RE::NiPointer<RE::BSGeometry>, std::future<FlowBake>>> bakesPending;
+		/** @brief D67: a mesh's solved flow on its texture grid, before it is linked to the meshes above it. */
+		struct BakeField
+		{
+			uint32_t width = 0, height = 0;
+			float uvMin[2]{}, uvSize[2]{};
+			std::vector<RE::NiPoint3> position;
+			std::vector<uint8_t> covered;
+			std::vector<float> turn, speed, wake, foam;  ///< Across per down (texels), speed (vanilla's 1), the rock's wake and foam
+			std::vector<RE::NiPoint3> normal;
+		};
+		std::vector<std::pair<RE::NiPointer<RE::BSGeometry>, std::future<std::shared_ptr<BakeField>>>> bakesPending;
+		std::unordered_map<const RE::BSGeometry*, std::shared_ptr<BakeField>> bakeFields;
+		std::unordered_map<const RE::BSGeometry*, const RE::BSGeometry*> chainRoot;
+		/**
+		 * @brief D67: the solved meshes linked into cascades: a mesh whose top edge lies on the lower part of another
+		 * is fed by it, and its streaks and run time carry on from that mesh's; then each mesh's bake is built.
+		 */
+		void LinkBakes();
+		static constexpr float LINK_REACH = 48.0f;       ///< D67: world units a mesh's top edge may lie from the mesh feeding it
+		static constexpr int32_t LINK_ROWS = 10;         ///< D67: texel rows up from a mesh's bottom edge that may feed the next
+		static constexpr float BAKE_LEAST_SPEED = 0.5f;  ///< D67: the flow runs at least this much of vanilla's speed (and at most BAKE_MOST_DOWN)
 		std::unordered_map<const RE::BSGeometry*, FlowBake> flowBakes;
 		uint64_t flowBakeVersion = 0;
 		uint32_t bakedRockTexels = 0, bakedTexels = 0;
 		/** @brief D59: rasterises the next queued mesh, tests its texels against the rock, then solves it off the main thread. */
 		void BakeStep();
 		static std::unique_ptr<BakeJob> StartBake(RE::BSGeometry* a_geometry);
-		static FlowBake SolveBake(const BakeJob& a_job);
+		static std::shared_ptr<BakeField> SolveBake(const BakeJob& a_job);
 		std::unordered_set<std::string> loggedParts;  ///< Diagnostics: falling-water mesh parts already logged
 
 		/** @brief A triangle of vanilla's falling-water surface, in world space. */

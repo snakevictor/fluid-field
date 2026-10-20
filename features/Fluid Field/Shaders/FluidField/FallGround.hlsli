@@ -44,10 +44,13 @@ namespace FallGround
 	Texture2D<float2> Heights : register(t120);  // The captured rock, and the pools' surface (D36)
 	Texture2D<float> SceneDepth : register(t121);
 	Texture2D<float4> Stream : register(t122);  // Velocity (x, y; 1 free), foam plus 2 on water (0 elsewhere), head (world height, D33)
-	StructuredBuffer<float> VertexClip : register(t123);
-	// D59, D60: this mesh's flow, solved on its own texture grid (FallSites::SolveBake): the streak warp (across,
-	// texture coordinates), a rock's wake, foam (its rim, water piling against it), and seconds the water has run
-	Texture2D<float4> FlowBake : register(t124);  // D56: per vertex of the falls' lit meshes, how far it stands out of the rock (negative inside)
+	// D56: per vertex of the falls' lit meshes, how far it stands out of the rock (negative inside); D67: and how
+	// much of it shows where it overlaps a mesh leading it (its seam edge fades, dithered, in both passes)
+	StructuredBuffer<float4> VertexClip : register(t123);  // D68: and how far it stands above the water it falls into (z)
+	// D59, D67: this mesh's flow, solved on its own texture grid and linked to the mesh above it (FallSites::LinkBakes):
+	// the texture coordinates its water reads (across: its streak; along: its run time at the shared scroll), a
+	// rock's wake, and foam (its rim, water piling against it)
+	Texture2D<float4> FlowBake : register(t124);
 
 	static const uint NO_VERTEX_CLIP = 0xFFFFFFFF;
 	/** D58: the most a vertex counts as above or under the cut, world units. */
@@ -157,8 +160,37 @@ namespace FallGround
 		// D56: the rock per vertex, tested against the game's collision (FallSites::ClipStep): the top-down
 		// ground map called everything under an overhang buried, and holed the falls there
 		if (VertexBase != NO_VERTEX_CLIP)
-			distance = min(distance, VertexClip[VertexBase + a_vertex]);
+			distance = min(distance, VertexClip[VertexBase + a_vertex].x);
 		return clamp(distance, -CLIP_MOST, CLIP_MOST);
+	}
+
+	/** D68: a vertex's height above the water it falls into, where there is none. */
+	static const float NO_WATER = 1.0e4;
+
+	/**
+	 * D67: how much of a vertex of falling water shows (its seam edges over a mesh leading it fade), and (D68) how
+	 * far it stands above the water it falls into; 1 and NO_WATER on every other draw.
+	 */
+	float2 Fade(uint a_vertex)
+	{
+		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
+			return float2(1.0, NO_WATER);
+		return VertexClip[VertexBase + a_vertex].yz;
+	}
+
+	/**
+	 * D67: whether a pixel of falling water is dithered out at its fade (the mesh leading it shows there instead).
+	 * The same pattern in the depth pre-pass and the lit pass (the pixel and the frame, not the draw), which TAA
+	 * resolves into a blend. Lit falls are opaque, so this is how two of them blend.
+	 */
+	bool Dithered(float2 a_pixel, float a_fade)
+	{
+		if (a_fade >= 0.999)
+			return false;
+		const float frame = float(uint(Time * 60.0) & 63u);
+		const float2 p = a_pixel + 5.588238 * frame;
+		const float noise = frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715))));
+		return noise >= smoothstep(0.0, 1.0, a_fade);
 	}
 
 	/**
@@ -233,7 +265,7 @@ namespace FallGround
 		float runTime;    // D59: seconds the water has run since it came onto this mesh (0 without a bake)
 	};
 
-	/** D59: this mesh's flow bake at a texture coordinate (vanilla's own, unscrolled), bilinear; 0 where there is none. */
+	/** D59: this mesh's flow bake at a texture coordinate (vanilla's own, unscrolled), bilinear; 0 where there is none. D67: across, along, wake, foam. */
 	float4 BakeAt(float2 a_uv)
 	{
 		if (!BakeOn)
@@ -251,9 +283,11 @@ namespace FallGround
 	}
 
 	/**
-	 * D60: a pixel of falling water's texture coordinates. Vanilla's scroll down +v, integrated on the CPU
-	 * (rate x time jumped), read through this mesh's streak warp (FlowBake.x): the streaks bend round the
-	 * rock and close behind it, and nothing but the scroll moves in time, so it cannot pulse or run back.
+	 * D67: a pixel of falling water's texture coordinates: the bake's (its streak across, its run time along)
+	 * less the falls' one scroll, integrated on the CPU. The streaks bend round the rock and close behind it,
+	 * the texture runs faster where the water does, and runs on from one mesh into the next (both read the
+	 * same coordinates where they meet); nothing but the scroll moves in time, so it cannot pulse or run back.
+	 * Without a bake, vanilla's own coordinates under the same scroll.
 	 */
 	FlowSample Flow(float2 a_uv, float3 a_position)
 	{
@@ -261,10 +295,10 @@ namespace FallGround
 		result.stream = StreamAt(a_position.xy);
 		const float2 uvStill = (a_uv - TexOffset) * InverseScale;
 		const float4 baked = BakeAt(uvStill);
-		result.foam = baked.z;
-		result.wake = baked.y;
-		result.runTime = baked.w;
-		const float2 uvBase = uvStill + float2(baked.x, -Scroll.x);
+		result.foam = baked.w;
+		result.wake = baked.z;
+		result.runTime = BakeOn ? max(baked.y, 0.0) / max(Scroll.y, 1e-3) : 0.0;
+		const float2 uvBase = (BakeOn ? baked.xy : uvStill) - float2(0.0, Scroll.x);
 		result.uvA = uvBase;
 		result.uvB = uvBase;
 		result.blendB = 0.0;

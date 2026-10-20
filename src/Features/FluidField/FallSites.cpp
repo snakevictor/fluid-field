@@ -24,6 +24,59 @@ namespace FluidFieldSim
 {
 	namespace
 	{
+		/** @brief D67: the squared distance from a point to a triangle (Ericson, Real-Time Collision Detection 5.1.5). */
+		float TriangleDistanceSquared(const RE::NiPoint3& a_p, const RE::NiPoint3& a_a, const RE::NiPoint3& a_b, const RE::NiPoint3& a_c)
+		{
+			const RE::NiPoint3 ab = a_b - a_a, ac = a_c - a_a, ap = a_p - a_a;
+			const auto squared = [](const RE::NiPoint3& a_v) { return a_v.Dot(a_v); };
+			const float d1 = ab.Dot(ap), d2 = ac.Dot(ap);
+			if (d1 <= 0.0f && d2 <= 0.0f)
+				return squared(ap);
+			const RE::NiPoint3 bp = a_p - a_b;
+			const float d3 = ab.Dot(bp), d4 = ac.Dot(bp);
+			if (d3 >= 0.0f && d4 <= d3)
+				return squared(bp);
+			const float vc = d1 * d4 - d3 * d2;
+			if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f)
+				return squared(ap - ab * (d1 / (d1 - d3)));
+			const RE::NiPoint3 cp = a_p - a_c;
+			const float d5 = ab.Dot(cp), d6 = ac.Dot(cp);
+			if (d6 >= 0.0f && d5 <= d6)
+				return squared(cp);
+			const float vb = d5 * d2 - d1 * d6;
+			if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f)
+				return squared(ap - ac * (d2 / (d2 - d6)));
+			const float va = d3 * d6 - d5 * d4;
+			if (va <= 0.0f && d4 - d3 >= 0.0f && d5 - d6 >= 0.0f)
+				return squared(bp - (a_c - a_b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6))));
+			const float denominator = 1.0f / (va + vb + vc);
+			return squared(ap - ab * (vb * denominator) - ac * (vc * denominator));
+		}
+
+		/** @brief A grid softened in place: a_passes of a 3x3 tent. */
+		void BlurGrid(std::vector<float>& a_field, int32_t a_width, int32_t a_height, int a_passes)
+		{
+			std::vector<float> scratch(a_field.size());
+			for (int pass = 0; pass < a_passes; pass++) {
+				for (int32_t y = 0; y < a_height; y++) {
+					for (int32_t x = 0; x < a_width; x++) {
+						float total = 0.0f, weight = 0.0f;
+						for (int32_t dy = -1; dy <= 1; dy++) {
+							for (int32_t dx = -1; dx <= 1; dx++) {
+								if (x + dx < 0 || y + dy < 0 || x + dx >= a_width || y + dy >= a_height)
+									continue;
+								const float k = (dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f);
+								total += a_field[static_cast<std::size_t>(y + dy) * a_width + x + dx] * k;
+								weight += k;
+							}
+						}
+						scratch[static_cast<std::size_t>(y) * a_width + x] = total / weight;
+					}
+				}
+				a_field.swap(scratch);
+			}
+		}
+
 		std::string Lowercase(const char* a_text)
 		{
 			std::string result(a_text ? a_text : "");
@@ -244,6 +297,8 @@ namespace FluidFieldSim
 		if (!flowBakes.empty())
 			flowBakeVersion++;
 		flowBakes.clear();
+		bakeFields.clear();
+		chainRoot.clear();
 		vertexClipBase.clear();
 		groundVersion++;
 		refs.clear();
@@ -1753,7 +1808,7 @@ namespace FluidFieldSim
 						if (!vertexClipBase.contains(a_geometry) &&
 							std::none_of(clipQueue.begin(), clipQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }))
 							clipQueue.emplace_back(a_geometry);
-						if (!flowBakes.contains(a_geometry) && (!bakeJob || bakeJob->geometry.get() != a_geometry) &&
+						if (!bakeFields.contains(a_geometry) && (!bakeJob || bakeJob->geometry.get() != a_geometry) &&
 							std::none_of(bakeQueue.begin(), bakeQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }) &&
 							std::none_of(bakesPending.begin(), bakesPending.end(), [&](const auto& a_pending) { return a_pending.first.get() == a_geometry; }))
 							bakeQueue.emplace_back(a_geometry);
@@ -1827,6 +1882,8 @@ namespace FluidFieldSim
 		std::erase_if(vertexClipBase, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
 		if (std::erase_if(flowBakes, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); }))
 			flowBakeVersion++;
+		std::erase_if(bakeFields, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
+		std::erase_if(chainRoot, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first) || !litMeshes.contains(a_entry.second); });
 		groundVersion++;
 	}
 
@@ -1943,13 +2000,35 @@ namespace FluidFieldSim
 				for (int k = 0; k < 3; k++)
 					normals[index[k]] += face;
 			}
+			// D68: the water this mesh falls into: planes under its top (water objects and cells' water). A plane
+			// covers its whole bound, but under its height there is only water or ground, and both hide the falls
+			float top = -FLT_MAX, lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
+			for (const auto& position : positions) {
+				top = std::max(top, position.z);
+				lo[0] = std::min(lo[0], position.x);
+				lo[1] = std::min(lo[1], position.y);
+				hi[0] = std::max(hi[0], position.x);
+				hi[1] = std::max(hi[1], position.y);
+			}
+			std::vector<std::array<float, 5>> planes;
+			CollectWaterPlanes(lo[0], lo[1], hi[0], hi[1], planes);
+			std::erase_if(planes, [&](const auto& a_plane) { return a_plane[4] >= top - 32.0f; });
 			const auto base = static_cast<uint32_t>(vertexClips.size());
 			{
 				const RE::BSReadLockGuard lock(bhkWorld->worldLock);
 				for (uint32_t v = 0; v < counts.vertexCount; v++) {
 					const float length = normals[v].Length();
 					bool inside = false;
-					vertexClips.push_back(RockClip(world, positions[v], length > 1e-6f ? normals[v] / length : RE::NiPoint3(0.0f, 0.0f, 1.0f), inside));
+					float clip = RockClip(world, positions[v], length > 1e-6f ? normals[v] / length : RE::NiPoint3(0.0f, 0.0f, 1.0f), inside);
+					float water = -FLT_MAX;
+					for (const auto& plane : planes) {
+						if (positions[v].x >= plane[0] && positions[v].x <= plane[2] && positions[v].y >= plane[1] && positions[v].y <= plane[3])
+							water = std::max(water, plane[4]);
+					}
+					const float above = water > -FLT_MAX ? positions[v].z - water : NO_WATER;
+					if (water > -FLT_MAX)
+						clip = std::min(clip, above + WATER_KEEP);
+					vertexClips.push_back({ clip, 1.0f, above, 0.0f });
 					clipTested++;
 					clipInside += inside ? 1 : 0;
 				}
@@ -1957,8 +2036,119 @@ namespace FluidFieldSim
 			vertexClipBase[geometry.get()] = base;
 			vertexClipVersion++;
 		}
-		if (clipQueue.empty())
+		if (clipQueue.empty()) {
 			logger::info("[Fluid Field] Waterfall rock cut: {} vertices of {} lit meshes tested, {} inside rock", clipTested, vertexClipBase.size(), clipInside);
+			ComputeFades();
+		}
+	}
+
+	void FallSites::ComputeFades()
+	{
+		// Every tested lit mesh in the world: its vertices, triangles, open edges' vertices, extent, top and area
+		struct Mesh
+		{
+			uint32_t base = 0;
+			std::vector<RE::NiPoint3> positions;
+			std::vector<std::array<uint16_t, 3>> triangles;
+			std::vector<uint8_t> open;
+			float lo[3]{ FLT_MAX, FLT_MAX, FLT_MAX }, hi[3]{ -FLT_MAX, -FLT_MAX, -FLT_MAX };
+			float top = -FLT_MAX, area = 0.0f;
+		};
+		std::vector<Mesh> meshes;
+		std::unordered_set<const RE::BSGeometry*> seen;
+		for (const auto& lit : litMeshList) {
+			auto* geometry = lit.geometry.get();
+			const auto base = vertexClipBase.find(geometry);
+			if (!geometry || base == vertexClipBase.end() || !seen.insert(geometry).second)
+				continue;
+			auto* triShape = geometry->AsTriShape();
+			auto* renderer = geometry->GetGeometryRuntimeData().rendererData;
+			if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
+				continue;
+			const auto& counts = triShape->GetTrishapeRuntimeData();
+			const uint32_t stride = renderer->vertexDesc.GetSize();
+			const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+			if (base->second + counts.vertexCount > vertexClips.size())
+				continue;
+			Mesh mesh;
+			mesh.base = base->second;
+			mesh.positions.resize(counts.vertexCount);
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				float local[3];
+				std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
+				mesh.positions[v] = geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
+				const float c[3] = { mesh.positions[v].x, mesh.positions[v].y, mesh.positions[v].z };
+				for (int k = 0; k < 3; k++) {
+					mesh.lo[k] = std::min(mesh.lo[k], c[k]);
+					mesh.hi[k] = std::max(mesh.hi[k], c[k]);
+				}
+				mesh.top = std::max(mesh.top, mesh.positions[v].z);
+			}
+			std::map<std::pair<uint16_t, uint16_t>, int> uses;
+			for (uint32_t i = 0; i < counts.triangleCount; i++) {
+				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+				if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+					continue;
+				mesh.triangles.push_back({ index[0], index[1], index[2] });
+				mesh.area += 0.5f * (mesh.positions[index[1]] - mesh.positions[index[0]]).Cross(mesh.positions[index[2]] - mesh.positions[index[0]]).Length();
+				for (int k = 0; k < 3; k++)
+					uses[{ std::min(index[k], index[(k + 1) % 3]), std::max(index[k], index[(k + 1) % 3]) }]++;
+			}
+			mesh.open.assign(counts.vertexCount, 0);
+			for (const auto& [edge, count] : uses) {
+				if (count == 1)
+					mesh.open[edge.first] = mesh.open[edge.second] = 1;
+			}
+			meshes.push_back(std::move(mesh));
+		}
+		// An open edge's vertex on a mesh that leads this one (higher, or as high and larger) fades out, so that
+		// mesh shows through the seam instead of a hard line where the two meet
+		const auto leads = [&](const Mesh& a_lead, const Mesh& a_mesh) {
+			return a_lead.top > a_mesh.top + 8.0f || (std::abs(a_lead.top - a_mesh.top) <= 8.0f && a_lead.area > a_mesh.area);
+		};
+		uint32_t faded = 0, edges = 0;
+		for (const auto& mesh : meshes) {
+			// Which vertices lie on a mesh leading this one
+			std::vector<uint8_t> onLead(mesh.positions.size(), 0);
+			for (std::size_t v = 0; v < mesh.positions.size(); v++) {
+				const RE::NiPoint3& p = mesh.positions[v];
+				for (const auto& other : meshes) {
+					if (&other == &mesh || !leads(other, mesh) || p.x < other.lo[0] - FADE_REACH || p.x > other.hi[0] + FADE_REACH || p.y < other.lo[1] - FADE_REACH ||
+						p.y > other.hi[1] + FADE_REACH || p.z < other.lo[2] - FADE_REACH || p.z > other.hi[2] + FADE_REACH)
+						continue;
+					for (const auto& tri : other.triangles) {
+						if (TriangleDistanceSquared(p, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]]) < FADE_REACH * FADE_REACH) {
+							onLead[v] = 1;
+							break;
+						}
+					}
+					if (onLead[v])
+						break;
+				}
+			}
+			// D68: an open edge's vertex fades only where the overlap reaches past it (it and every neighbour on the
+			// leading mesh): where two meshes only meet edge to edge, fading opened the gap between them
+			std::vector<uint8_t> ringOn(mesh.positions.size(), 1);
+			for (const auto& tri : mesh.triangles) {
+				for (int k = 0; k < 3; k++) {
+					for (int j = 0; j < 3; j++) {
+						if (!onLead[tri[j]])
+							ringOn[tri[k]] = 0;
+					}
+				}
+			}
+			for (std::size_t v = 0; v < mesh.positions.size(); v++) {
+				float fade = 1.0f;
+				if (mesh.open[v]) {
+					edges++;
+					fade = onLead[v] && ringOn[v] ? 0.0f : 1.0f;
+					faded += fade == 0.0f ? 1 : 0;
+				}
+				vertexClips[mesh.base + v][1] = fade;
+			}
+		}
+		vertexClipVersion++;
+		logger::info("[Fluid Field] Waterfall seams: {} of {} open-edge vertices of {} lit meshes lie on a mesh leading them, and fade", faded, edges, meshes.size());
 	}
 
 	std::unique_ptr<FallSites::BakeJob> FallSites::StartBake(RE::BSGeometry* a_geometry)
@@ -2062,7 +2252,183 @@ namespace FluidFieldSim
 		return job;
 	}
 
-	FallSites::FlowBake FallSites::SolveBake(const BakeJob& a_job)
+	void FallSites::GatherSolids(BakeJob& a_job) const
+	{
+		auto* tes = RE::TES::GetSingleton();
+		if (!tes || a_job.position.empty())
+			return;
+		float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+		for (std::size_t i = 0; i < a_job.position.size(); i++) {
+			if (!a_job.covered[i])
+				continue;
+			const float c[3] = { a_job.position[i].x, a_job.position[i].y, a_job.position[i].z };
+			for (int k = 0; k < 3; k++) {
+				lo[k] = std::min(lo[k], c[k] - SOLID_REACH);
+				hi[k] = std::max(hi[k], c[k] + SOLID_REACH);
+			}
+		}
+		if (lo[0] > hi[0])
+			return;
+		uint32_t statics = 0;
+		const auto visitCell = [&](RE::TESObjectCELL* a_cell, bool a_requireAttached) {
+			if (!a_cell || (a_requireAttached && !a_cell->IsAttached()))
+				return;
+			a_cell->ForEachReference([&](RE::TESObjectREFR* a_ref) {
+				auto* base = a_ref ? a_ref->GetBaseObject() : nullptr;
+				if (!base || a_ref->IsDisabled() || a_ref->IsDeleted() || (base->GetFormType() != RE::FormType::Static && base->GetFormType() != RE::FormType::MovableStatic))
+					return RE::BSContainer::ForEachResult::kContinue;
+				auto* root = a_ref->Get3D();
+				if (!root)
+					return RE::BSContainer::ForEachResult::kContinue;
+				const auto& bound = root->worldBound;
+				if (bound.center.x + bound.radius < lo[0] || bound.center.x - bound.radius > hi[0] || bound.center.y + bound.radius < lo[1] || bound.center.y - bound.radius > hi[1] ||
+					bound.center.z + bound.radius < lo[2] || bound.center.z - bound.radius > hi[2])
+					return RE::BSContainer::ForEachResult::kContinue;
+				// Not the falls themselves (their models carry rocks of their own, which do count)
+				const std::string model = Lowercase(ModelOf(base));
+				if (model.find("fxwaterfall") != std::string::npos)
+					return RE::BSContainer::ForEachResult::kContinue;
+				const auto ref = statics++;
+				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+					auto* triShape = a_geometry->AsTriShape();
+					const auto& runtime = a_geometry->GetGeometryRuntimeData();
+					auto* renderer = runtime.rendererData;
+					if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || !netimmerse_cast<RE::BSLightingShaderProperty*>(runtime.shaderProperty.get()) ||
+						renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_SKINNED))
+						return RE::BSVisit::BSVisitControl::kContinue;
+					const auto& counts = triShape->GetTrishapeRuntimeData();
+					const uint32_t stride = renderer->vertexDesc.GetSize();
+					const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+					if (stride < positionOffset + 12)
+						return RE::BSVisit::BSVisitControl::kContinue;
+					std::vector<RE::NiPoint3> world(counts.vertexCount);
+					for (uint32_t v = 0; v < counts.vertexCount; v++) {
+						float local[3];
+						std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
+						world[v] = a_geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
+					}
+					for (uint32_t i = 0; i < counts.triangleCount; i++) {
+						const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+						if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+							continue;
+						const std::array<RE::NiPoint3, 3> tri = { world[index[0]], world[index[1]], world[index[2]] };
+						if (std::max({ tri[0].x, tri[1].x, tri[2].x }) < lo[0] || std::min({ tri[0].x, tri[1].x, tri[2].x }) > hi[0] || std::max({ tri[0].y, tri[1].y, tri[2].y }) < lo[1] ||
+							std::min({ tri[0].y, tri[1].y, tri[2].y }) > hi[1])
+							continue;
+						a_job.solids.push_back(tri);
+						a_job.solidRef.push_back(ref);
+					}
+					return RE::BSVisit::BSVisitControl::kContinue;
+				});
+				return RE::BSContainer::ForEachResult::kContinue;
+			});
+		};
+		if (tes->interiorCell) {
+			visitCell(tes->interiorCell, true);
+		} else if (auto* grid = tes->gridCells) {
+			for (uint32_t gx = 0; gx < grid->length; gx++) {
+				for (uint32_t gy = 0; gy < grid->length; gy++)
+					visitCell(GetGridCell(grid, gx, gy), true);
+			}
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (auto* worldspace = player ? player->GetWorldspace() : nullptr)
+				visitCell(worldspace->persistentCell, false);
+		}
+		// Binned from above: each triangle in every bin its extent touches
+		a_job.solidOrigin[0] = lo[0];
+		a_job.solidOrigin[1] = lo[1];
+		a_job.solidBins[0] = std::max(1, static_cast<int32_t>(std::ceil((hi[0] - lo[0]) / SOLID_BIN)));
+		a_job.solidBins[1] = std::max(1, static_cast<int32_t>(std::ceil((hi[1] - lo[1]) / SOLID_BIN)));
+		a_job.bins.assign(static_cast<std::size_t>(a_job.solidBins[0]) * a_job.solidBins[1], {});
+		for (uint32_t t = 0; t < a_job.solids.size(); t++) {
+			const auto& tri = a_job.solids[t];
+			const int32_t x0 = std::clamp(static_cast<int32_t>((std::min({ tri[0].x, tri[1].x, tri[2].x }) - lo[0]) / SOLID_BIN), 0, a_job.solidBins[0] - 1);
+			const int32_t x1 = std::clamp(static_cast<int32_t>((std::max({ tri[0].x, tri[1].x, tri[2].x }) - lo[0]) / SOLID_BIN), 0, a_job.solidBins[0] - 1);
+			const int32_t y0 = std::clamp(static_cast<int32_t>((std::min({ tri[0].y, tri[1].y, tri[2].y }) - lo[1]) / SOLID_BIN), 0, a_job.solidBins[1] - 1);
+			const int32_t y1 = std::clamp(static_cast<int32_t>((std::max({ tri[0].y, tri[1].y, tri[2].y }) - lo[1]) / SOLID_BIN), 0, a_job.solidBins[1] - 1);
+			for (int32_t y = y0; y <= y1; y++) {
+				for (int32_t x = x0; x <= x1; x++)
+					a_job.bins[static_cast<std::size_t>(y) * a_job.solidBins[0] + x].push_back(t);
+			}
+		}
+		logger::info("[Fluid Field]   bake: {} triangles of {} statics round the sheet", a_job.solids.size(), statics);
+	}
+
+	bool FallSites::InsideSolid(const BakeJob& a_job, const RE::NiPoint3& a_point)
+	{
+		if (a_job.bins.empty())
+			return false;
+		const auto bx = static_cast<int32_t>(std::floor((a_point.x - a_job.solidOrigin[0]) / SOLID_BIN));
+		const auto by = static_cast<int32_t>(std::floor((a_point.y - a_job.solidOrigin[1]) / SOLID_BIN));
+		if (bx < 0 || by < 0 || bx >= a_job.solidBins[0] || by >= a_job.solidBins[1])
+			return false;
+		// Upward from the point, per mesh: an odd number of its faces above means inside it (an open, buried
+		// underside does not matter, an overhang above counts twice)
+		std::vector<std::pair<uint32_t, uint32_t>> crossings;
+		for (const uint32_t t : a_job.bins[static_cast<std::size_t>(by) * a_job.solidBins[0] + bx]) {
+			const auto& tri = a_job.solids[t];
+			const float d = (tri[1].x - tri[0].x) * (tri[2].y - tri[0].y) - (tri[2].x - tri[0].x) * (tri[1].y - tri[0].y);
+			if (std::abs(d) < 1e-6f)
+				continue;
+			const float w1 = ((a_point.x - tri[0].x) * (tri[2].y - tri[0].y) - (tri[2].x - tri[0].x) * (a_point.y - tri[0].y)) / d;
+			const float w2 = ((tri[1].x - tri[0].x) * (a_point.y - tri[0].y) - (a_point.x - tri[0].x) * (tri[1].y - tri[0].y)) / d;
+			if (w1 < 0.0f || w2 < 0.0f || w1 + w2 > 1.0f)
+				continue;
+			const float z = tri[0].z + (tri[1].z - tri[0].z) * w1 + (tri[2].z - tri[0].z) * w2;
+			if (z <= a_point.z)
+				continue;
+			const uint32_t ref = a_job.solidRef[t];
+			auto it = std::find_if(crossings.begin(), crossings.end(), [&](const auto& a_entry) { return a_entry.first == ref; });
+			if (it == crossings.end())
+				crossings.emplace_back(ref, 1u);
+			else
+				it->second++;
+		}
+		for (const auto& [ref, count] : crossings) {
+			if (count % 2 == 0)
+				continue;
+			// Deeper inside it than a sheet lying on it dips (its nearest face further than BAKE_ROCK_MARGIN)
+			bool deep = true;
+			for (int32_t y = std::max(by - 1, 0); y <= std::min(by + 1, a_job.solidBins[1] - 1) && deep; y++) {
+				for (int32_t x = std::max(bx - 1, 0); x <= std::min(bx + 1, a_job.solidBins[0] - 1) && deep; x++) {
+					for (const uint32_t t : a_job.bins[static_cast<std::size_t>(y) * a_job.solidBins[0] + x]) {
+						if (a_job.solidRef[t] != ref)
+							continue;
+						const auto& tri = a_job.solids[t];
+						if (TriangleDistanceSquared(a_point, tri[0], tri[1], tri[2]) < SOLID_MARGIN * SOLID_MARGIN) {
+							deep = false;
+							break;
+						}
+					}
+				}
+			}
+			if (deep)
+				return true;
+		}
+		return false;
+	}
+
+	bool FallSites::SiteFlowAt(float a_x, float a_y, float& a_vx, float& a_vy) const
+	{
+		for (const auto& [key, stream] : streams) {
+			const auto& result = stream.result;
+			if (!stream.ready || result.vx.size() != static_cast<std::size_t>(result.width) * result.height || result.water.size() != result.vx.size())
+				continue;
+			const auto x = static_cast<int32_t>(std::lround((a_x - stream.originX) / FallCapture::CELL));
+			const auto y = static_cast<int32_t>(std::lround((a_y - stream.originY) / FallCapture::CELL));
+			if (x < 0 || y < 0 || x >= static_cast<int32_t>(result.width) || y >= static_cast<int32_t>(result.height))
+				continue;
+			const std::size_t i = static_cast<std::size_t>(y) * result.width + x;
+			if (!result.water[i])
+				continue;
+			a_vx = result.vx[i];
+			a_vy = result.vy[i];
+			return true;
+		}
+		return false;
+	}
+
+	std::shared_ptr<FallSites::BakeField> FallSites::SolveBake(const BakeJob& a_job)
 	{
 		const uint32_t w = a_job.width, h = a_job.height;
 		const auto iw = static_cast<int32_t>(w), ih = static_cast<int32_t>(h);
@@ -2073,6 +2439,15 @@ namespace FluidFieldSim
 		// D60: rock, without its specks: islands of BAKE_LEAST_ROCK texels or fewer are slivers of the
 		// collision the sheet grazes, not boulders; they only scattered the flow
 		std::vector<uint8_t> rock = a_job.rock;
+		// D68: and rock from the statics' render meshes: a boulder resting on the ground failed the collision test
+		// (it wants rock on both sides of the sheet, and the ray from under the boulder started in the ground)
+		uint32_t meshRock = 0;
+		for (std::size_t i = 0; i < count; i++) {
+			if (a_job.covered[i] && !rock[i] && InsideSolid(a_job, a_job.position[i])) {
+				rock[i] = 1;
+				meshRock++;
+			}
+		}
 		{
 			std::vector<uint8_t> seen(count, 0);
 			std::vector<std::size_t> island, open;
@@ -2139,7 +2514,7 @@ namespace FluidFieldSim
 
 		// The turn per texel (across over down), clamped (never back, at most BAKE_MOST_TURN), and filled
 		// into rock and off the mesh from the nearest water, so nothing jumps at a rock's edge
-		std::vector<float> turn(count, 0.0f), foam(count, 0.0f), run(count, 0.0f);
+		std::vector<float> turn(count, 0.0f), foam(count, 0.0f), run(count, 0.0f), speed(count, 1.0f);
 		std::vector<int32_t> from(count, -1);
 		std::vector<std::size_t> frontier;
 		for (std::size_t i = 0; i < count; i++) {
@@ -2148,6 +2523,8 @@ namespace FluidFieldSim
 				continue;
 			const float down = std::clamp(solved.vy[i], BAKE_LEAST_DOWN, BAKE_MOST_DOWN);
 			turn[i] = std::clamp(solved.vx[i] / down, -BAKE_MOST_TURN, BAKE_MOST_TURN);
+			// D67: and how fast it runs, against vanilla's (1)
+			speed[i] = std::clamp(std::sqrt(solved.vx[i] * solved.vx[i] + solved.vy[i] * solved.vy[i]), BAKE_LEAST_SPEED, BAKE_MOST_DOWN);
 			foam[i] = solved.rockFoam[i];
 			run[i] = std::min(solved.travel[i], 60.0f);
 			from[i] = static_cast<int32_t>(i);
@@ -2163,6 +2540,7 @@ namespace FluidFieldSim
 					continue;
 				from[index(nx, ny)] = from[i];
 				turn[index(nx, ny)] = turn[i];
+				speed[index(nx, ny)] = speed[i];
 				run[index(nx, ny)] = run[i];
 				frontier.push_back(index(nx, ny));
 			}
@@ -2213,44 +2591,13 @@ namespace FluidFieldSim
 			}
 			for (std::size_t i = 0; i < count; i++) {
 				const float closeness = std::clamp((BAKE_BEND_FAR - static_cast<float>(steps[i])) / (BAKE_BEND_FAR - BAKE_BEND_NEAR), 0.0f, 1.0f);
-				turn[i] *= closeness * closeness * (3.0f - 2.0f * closeness);
+				const float bend = closeness * closeness * (3.0f - 2.0f * closeness);
+				turn[i] *= bend;
+				speed[i] = 1.0f + (speed[i] - 1.0f) * bend;
 			}
 		}
 		blur(turn, BAKE_TURN_BLUR);
-
-		// The warp (D60): each streak's across position, carried down the sheet one row at a time by the
-		// turn (a semi-Lagrangian sweep of s = u, the streamlines' label), so a straight scroll down +v runs
-		// along bent streaks: they part round a boulder and close behind it, and nothing moves in time but
-		// the scroll. Kept as the offset from u, partly collapsed (BAKE_WARP_KEEP: the streaks that would wrap
-		// round a rock run partly under it, where it hides them) and smoothed
-		std::vector<float> offset(count, 0.0f);
-		for (int32_t y = 1; y < ih; y++) {
-			for (int32_t x = 0; x < iw; x++) {
-				const float back = static_cast<float>(x) - turn[index(x, y)];
-				const int32_t x0 = std::clamp(static_cast<int32_t>(std::floor(back)), 0, iw - 1);
-				const int32_t x1 = std::min(x0 + 1, iw - 1);
-				const float f = std::clamp(back - static_cast<float>(x0), 0.0f, 1.0f);
-				// s(x, y) = s(back, y - 1), and s = x + offset
-				const float above = (static_cast<float>(x0) + offset[index(x0, y - 1)]) * (1.0f - f) + (static_cast<float>(x1) + offset[index(x1, y - 1)]) * f;
-				offset[index(x, y)] = above - static_cast<float>(x);
-			}
-		}
-		for (float& value : offset)
-			value *= BAKE_WARP_KEEP;
-		blur(offset, BAKE_WARP_BLUR);
-		// Streaks squeezed or spread past [BAKE_LEAST_SPACING, BAKE_MOST_SPACING] ease back to vanilla's there
-		{
-			std::vector<float> trust(count, 1.0f);
-			for (int32_t y = 0; y < ih; y++) {
-				for (int32_t x = 1; x + 1 < iw; x++) {
-					const float spacing = 1.0f + 0.5f * (offset[index(x + 1, y)] - offset[index(x - 1, y)]);
-					trust[index(x, y)] = std::clamp(std::min((spacing - BAKE_LEAST_SPACING * 0.75f) / (BAKE_LEAST_SPACING * 0.25f), (BAKE_MOST_SPACING * 1.25f - spacing) / (BAKE_MOST_SPACING * 0.25f)), 0.0f, 1.0f);
-				}
-			}
-			blur(trust, 2);
-			for (std::size_t i = 0; i < count; i++)
-				offset[i] *= trust[i];
-		}
+		blur(speed, BAKE_TURN_BLUR);
 
 		// The masks (D60), where the warp would misbehave and real water turns white anyway: the rim of each
 		// rock, the water piling against it and squeezing past it (the solve's foam), and its wake, carried
@@ -2288,41 +2635,332 @@ namespace FluidFieldSim
 		blur(foam, 1);
 		blur(wake, 1);
 
-		FlowBake bake;
-		bake.width = w;
-		bake.height = h;
-		bake.uvMin[0] = a_job.uvMin[0];
-		bake.uvMin[1] = a_job.uvMin[1];
-		bake.uvSize[0] = a_job.uvSize[0];
-		bake.uvSize[1] = a_job.uvSize[1];
-		// Across offset in texture coordinates, the wake, foam, and seconds the water has run
-		const float texelU = a_job.uvSize[0] / static_cast<float>(w);
-		bake.texels.resize(count * 4);
-		for (std::size_t i = 0; i < count; i++) {
-			bake.texels[i * 4] = DirectX::PackedVector::XMConvertFloatToHalf(offset[i] * texelU);
-			bake.texels[i * 4 + 1] = DirectX::PackedVector::XMConvertFloatToHalf(std::clamp(wake[i], 0.0f, 1.0f));
-			bake.texels[i * 4 + 2] = DirectX::PackedVector::XMConvertFloatToHalf(std::clamp(foam[i], 0.0f, 1.0f));
-			bake.texels[i * 4 + 3] = DirectX::PackedVector::XMConvertFloatToHalf(run[i]);
+		auto field = std::make_shared<BakeField>();
+		field->width = w;
+		field->height = h;
+		field->uvMin[0] = a_job.uvMin[0];
+		field->uvMin[1] = a_job.uvMin[1];
+		field->uvSize[0] = a_job.uvSize[0];
+		field->uvSize[1] = a_job.uvSize[1];
+		field->position = a_job.position;
+		field->covered = a_job.covered;
+		field->turn = std::move(turn);
+		field->speed = std::move(speed);
+		field->wake = std::move(wake);
+		field->foam = std::move(foam);
+		field->normal = a_job.normal;
+		logger::info("[Fluid Field]   bake: {}x{} texels, {} more inside the statics' meshes", w, h, meshRock);
+		return field;
+	}
+
+	void FallSites::LinkBakes()
+	{
+		// Every solved mesh: per column its first and last covered row, its extent and its top edge's height
+		struct Node
+		{
+			const RE::BSGeometry* geometry = nullptr;
+			const BakeField* field = nullptr;
+			std::vector<int32_t> first, last;
+			float lo[3]{ FLT_MAX, FLT_MAX, FLT_MAX }, hi[3]{ -FLT_MAX, -FLT_MAX, -FLT_MAX };
+			float top = -FLT_MAX;
+			int32_t feeder = -1;
+			std::vector<std::array<int32_t, 3>> links;  ///< Per top column fed: the column, and the feeder's texel (x, y)
+			bool done = false;
+			std::vector<float> across, along;
+		};
+		std::vector<Node> nodes;
+		for (const auto& [geometry, field] : bakeFields) {
+			if (!field || !grounded.contains(geometry))
+				continue;
+			Node node;
+			node.geometry = geometry;
+			node.field = field.get();
+			const auto w = static_cast<int32_t>(field->width), h = static_cast<int32_t>(field->height);
+			node.first.assign(w, -1);
+			node.last.assign(w, -1);
+			for (int32_t x = 0; x < w; x++) {
+				for (int32_t y = 0; y < h; y++) {
+					const std::size_t i = static_cast<std::size_t>(y) * w + x;
+					if (!field->covered[i])
+						continue;
+					node.first[x] = node.first[x] < 0 ? y : node.first[x];
+					node.last[x] = y;
+					const float c[3] = { field->position[i].x, field->position[i].y, field->position[i].z };
+					for (int k = 0; k < 3; k++) {
+						node.lo[k] = std::min(node.lo[k], c[k]);
+						node.hi[k] = std::max(node.hi[k], c[k]);
+					}
+				}
+			}
+			float sum = 0.0f, count = 0.0f;
+			for (int32_t x = 0; x < w; x++) {
+				if (node.first[x] >= 0) {
+					sum += field->position[static_cast<std::size_t>(node.first[x]) * w + x].z;
+					count += 1.0f;
+				}
+			}
+			if (count == 0.0f)
+				continue;
+			node.top = sum / count;
+			nodes.push_back(std::move(node));
 		}
-		return bake;
+		// Each mesh's feeder: the higher mesh on whose lowest rows most of its top edge lies (a quarter of it at least)
+		for (auto& node : nodes) {
+			const BakeField& field = *node.field;
+			const auto w = static_cast<int32_t>(field.width);
+			const auto columns = static_cast<std::size_t>(std::count_if(node.first.begin(), node.first.end(), [](int32_t a_row) { return a_row >= 0; }));
+			for (std::size_t a = 0; a < nodes.size(); a++) {
+				const Node& above = nodes[a];
+				if (&above == &node || above.top <= node.top + 16.0f)
+					continue;
+				bool apart = false;
+				for (int k = 0; k < 3; k++)
+					apart = apart || node.lo[k] > above.hi[k] + LINK_REACH || node.hi[k] < above.lo[k] - LINK_REACH;
+				if (apart)
+					continue;
+				const BakeField& feeder = *above.field;
+				const auto fw = static_cast<int32_t>(feeder.width);
+				std::vector<std::array<int32_t, 3>> links;
+				for (int32_t x = 0; x < w; x++) {
+					if (node.first[x] < 0)
+						continue;
+					const RE::NiPoint3& p = field.position[static_cast<std::size_t>(node.first[x]) * w + x];
+					float best = LINK_REACH * LINK_REACH;
+					int32_t bx = -1, by = -1;
+					for (int32_t fx = 0; fx < fw; fx++) {
+						if (above.last[fx] < 0)
+							continue;
+						const int32_t rows = std::max(LINK_ROWS, (above.last[fx] - above.first[fx]) / 4);
+						for (int32_t fy = std::max(above.first[fx], above.last[fx] - rows); fy <= above.last[fx]; fy++) {
+							const std::size_t j = static_cast<std::size_t>(fy) * fw + fx;
+							if (!feeder.covered[j])
+								continue;
+							const RE::NiPoint3 d = feeder.position[j] - p;
+							const float distance = d.Dot(d);
+							if (distance < best) {
+								best = distance;
+								bx = fx;
+								by = fy;
+							}
+						}
+					}
+					if (bx >= 0)
+						links.push_back({ x, bx, by });
+				}
+				if (links.size() >= std::max<std::size_t>(3, columns / 8) && links.size() > node.links.size()) {
+					node.feeder = static_cast<int32_t>(a);
+					node.links = std::move(links);
+				}
+			}
+		}
+		// D68 diagnostics: for a mesh nothing feeds, how near its top edge comes to any higher mesh, and where on it
+		for (const auto& node : nodes) {
+			if (node.feeder >= 0)
+				continue;
+			const BakeField& field = *node.field;
+			const auto w = static_cast<int32_t>(field.width);
+			float best = FLT_MAX, row = 0.0f;
+			for (const auto& above : nodes) {
+				if (&above == &node || above.top <= node.top + 16.0f)
+					continue;
+				const BakeField& feeder = *above.field;
+				for (int32_t x = 0; x < w; x += 4) {
+					if (node.first[x] < 0)
+						continue;
+					const RE::NiPoint3& p = field.position[static_cast<std::size_t>(node.first[x]) * w + x];
+					for (std::size_t j = 0; j < feeder.position.size(); j += 3) {
+						if (!feeder.covered[j])
+							continue;
+						const RE::NiPoint3 d = feeder.position[j] - p;
+						const float distance = d.Dot(d);
+						if (distance < best) {
+							best = distance;
+							row = static_cast<float>(j / feeder.width) / static_cast<float>(feeder.height);
+						}
+					}
+				}
+			}
+			logger::info("[Fluid Field]   link: a mesh with its top at {:.0f} is fed by none: the nearest higher mesh is {:.0f} units from its top edge, {:.0f}% down it", node.top,
+				best < FLT_MAX ? std::sqrt(best) : -1.0f, row * 100.0f);
+		}
+		// Each mesh swept down from its top edge once its feeder is (meshes in a loop, if any, start as tops)
+		uint32_t linked = 0, flatTexels = 0;
+		const auto sweep = [&](Node& a_node) {
+			const BakeField& field = *a_node.field;
+			const auto w = static_cast<int32_t>(field.width), h = static_cast<int32_t>(field.height);
+			const std::size_t count = static_cast<std::size_t>(w) * h;
+			const float texelU = field.uvSize[0] / static_cast<float>(w), texelV = field.uvSize[1] / static_cast<float>(h);
+			const auto u = [&](int32_t a_x) { return field.uvMin[0] + (static_cast<float>(a_x) + 0.5f) * texelU; };
+			// The water coming in at each column's top: from the feeder where it reaches; elsewhere its streaks
+			// carried on in a straight line over u (fitted to the fed columns) and its mean run time; on a top,
+			// the mesh's own u, and no time yet
+			std::vector<float> across0(w, 0.0f), along0(w, 0.0f);
+			std::vector<uint8_t> fed(w, 0);
+			double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0, sumAlong = 0.0;
+			const Node* feeder = a_node.feeder >= 0 && nodes[a_node.feeder].done ? &nodes[a_node.feeder] : nullptr;
+			if (feeder) {
+				for (const auto& link : a_node.links) {
+					const std::size_t j = static_cast<std::size_t>(link[2]) * feeder->field->width + link[1];
+					across0[link[0]] = feeder->across[j];
+					along0[link[0]] = feeder->along[j];
+					fed[link[0]] = 1;
+					sx += u(link[0]);
+					sy += across0[link[0]];
+					sxx += static_cast<double>(u(link[0])) * u(link[0]);
+					sxy += static_cast<double>(u(link[0])) * across0[link[0]];
+					sumAlong += along0[link[0]];
+				}
+				linked++;
+			}
+			const double n = feeder ? static_cast<double>(a_node.links.size()) : 0.0;
+			double slope = 1.0, intercept = 0.0, meanAlong = 0.0;
+			if (n >= 1.0) {
+				const double denominator = n * sxx - sx * sx;
+				slope = n >= 2.0 && std::abs(denominator) > 1e-9 ? (n * sxy - sx * sy) / denominator : 1.0;
+				intercept = (sy - slope * sx) / n;
+				meanAlong = sumAlong / n;
+			}
+			for (int32_t x = 0; x < w; x++) {
+				if (fed[x])
+					continue;
+				across0[x] = static_cast<float>(slope * u(x) + intercept);
+				along0[x] = static_cast<float>(meanAlong);
+			}
+			// D68: where the sheet lies flat (water landed on the ground or a pool), the flow turns to the site's main
+			// flow there (the solved flow seen from above, put in the sheet's texture axes), as far as FLAT_MOST_TURN:
+			// water falling onto a slope runs off along it, not on down the mesh's +v
+			std::vector<float> turn = field.turn;
+			{
+				const auto at = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(std::clamp(a_y, 0, h - 1)) * w + std::clamp(a_x, 0, w - 1); };
+				for (int32_t y = 0; y < h; y++) {
+					for (int32_t x = 0; x < w; x++) {
+						const std::size_t i = at(x, y);
+						if (!field.covered[i])
+							continue;
+						const float flat = std::clamp((std::abs(field.normal[i].z) - 0.75f) / 0.15f, 0.0f, 1.0f);
+						float vx, vy;
+						if (flat <= 0.0f || !SiteFlowAt(field.position[i].x, field.position[i].y, vx, vy) || vx * vx + vy * vy < 0.0025f)
+							continue;
+						const RE::NiPoint3 tu = field.position[at(x + 1, y)] - field.position[at(x - 1, y)];
+						const RE::NiPoint3 tv = field.position[at(x, y + 1)] - field.position[at(x, y - 1)];
+						const float det = tu.x * tv.y - tv.x * tu.y;
+						if (std::abs(det) < 1e-3f)
+							continue;
+						const float a = (vx * tv.y - tv.x * vy) / det, b = (tu.x * vy - vx * tu.y) / det;
+						const float wanted = b > 1e-3f ? std::clamp(a / b, -FLAT_MOST_TURN, FLAT_MOST_TURN) : (a >= 0.0f ? FLAT_MOST_TURN : -FLAT_MOST_TURN);
+						// Only where the main flow leaves the mesh's own way down by more than 20 degrees: elsewhere the
+						// mesh already runs with it, and a small turn everywhere only sheared the streaks into whorls
+						const float apart = std::clamp((std::abs(wanted - turn[i]) - 0.36f) / 0.36f, 0.0f, 1.0f);
+						const float weight = flat * flat * (3.0f - 2.0f * flat) * apart;
+						turn[i] += (wanted - turn[i]) * weight;
+						flatTexels += weight > 0.5f ? 1 : 0;
+					}
+				}
+				BlurGrid(turn, w, h, 6);
+			}
+			// Down the sheet a row at a time (semi-Lagrangian, as D60's warp): each texel's streak and run time are
+			// those of the texel above it on its way down, its run time grown by the row's length over its speed
+			a_node.across.assign(count, 0.0f);
+			a_node.along.assign(count, 0.0f);
+			for (int32_t y = 0; y < h; y++) {
+				for (int32_t x = 0; x < w; x++) {
+					const std::size_t i = static_cast<std::size_t>(y) * w + x;
+					const int32_t first = a_node.first[x];
+					if (first < 0 || y <= first || y == 0) {
+						a_node.across[i] = across0[x];
+						a_node.along[i] = along0[x] - static_cast<float>(std::max(first - y, 0)) * texelV;
+						continue;
+					}
+					const float back = static_cast<float>(x) - turn[i];
+					const int32_t x0 = std::clamp(static_cast<int32_t>(std::floor(back)), 0, w - 1);
+					const int32_t x1 = std::min(x0 + 1, w - 1);
+					const float f = std::clamp(back - static_cast<float>(x0), 0.0f, 1.0f);
+					const std::size_t a = static_cast<std::size_t>(y - 1) * w + x0, b = static_cast<std::size_t>(y - 1) * w + x1;
+					a_node.across[i] = a_node.across[a] * (1.0f - f) + a_node.across[b] * f;
+					a_node.along[i] = a_node.along[a] * (1.0f - f) + a_node.along[b] * f + texelV / std::max(field.speed[i], BAKE_LEAST_SPEED);
+				}
+			}
+			// The streaks' bend (D60): partly collapsed (they run partly under the rock), softened, and eased back
+			// where they squeeze or spread too far
+			std::vector<float> offset(count);
+			for (std::size_t i = 0; i < count; i++)
+				offset[i] = (a_node.across[i] - across0[i % w]) * BAKE_WARP_KEEP;
+			BlurGrid(offset, w, h, BAKE_WARP_BLUR);
+			std::vector<float> trust(count, 1.0f);
+			for (int32_t y = 0; y < h; y++) {
+				for (int32_t x = 1; x + 1 < w; x++) {
+					const float straight = across0[x + 1] - across0[x - 1];
+					if (std::abs(straight) < 1e-6f)
+						continue;
+					const std::size_t i = static_cast<std::size_t>(y) * w + x;
+					const float spacing = (straight + offset[i + 1] - offset[i - 1]) / straight;
+					trust[i] = std::clamp(std::min((spacing - BAKE_LEAST_SPACING * 0.75f) / (BAKE_LEAST_SPACING * 0.25f), (BAKE_MOST_SPACING * 1.25f - spacing) / (BAKE_MOST_SPACING * 0.25f)), 0.0f, 1.0f);
+				}
+			}
+			BlurGrid(trust, w, h, 2);
+			for (std::size_t i = 0; i < count; i++)
+				a_node.across[i] = across0[i % w] + offset[i] * trust[i];
+			FlowBake bake;
+			bake.width = field.width;
+			bake.height = field.height;
+			bake.uvMin[0] = field.uvMin[0];
+			bake.uvMin[1] = field.uvMin[1];
+			bake.uvSize[0] = field.uvSize[0];
+			bake.uvSize[1] = field.uvSize[1];
+			bake.texels.resize(count * 4);
+			for (std::size_t i = 0; i < count; i++) {
+				bake.texels[i * 4] = a_node.across[i];
+				bake.texels[i * 4 + 1] = a_node.along[i];
+				bake.texels[i * 4 + 2] = std::clamp(field.wake[i], 0.0f, 1.0f);
+				bake.texels[i * 4 + 3] = std::clamp(field.foam[i], 0.0f, 1.0f);
+			}
+			flowBakes[a_node.geometry] = std::move(bake);
+			a_node.done = true;
+		};
+		for (std::size_t pass = 0; pass <= nodes.size(); pass++) {
+			bool any = false;
+			for (auto& node : nodes) {
+				if (node.done || (node.feeder >= 0 && !nodes[node.feeder].done && pass < nodes.size()))
+					continue;
+				sweep(node);
+				any = true;
+			}
+			if (!any)
+				break;
+		}
+		chainRoot.clear();
+		for (const auto& node : nodes) {
+			const Node* root = &node;
+			for (std::size_t guard = 0; root->feeder >= 0 && guard < nodes.size(); guard++)
+				root = &nodes[root->feeder];
+			chainRoot[node.geometry] = root->geometry;
+		}
+		flowBakeVersion++;
+		linkedStreams = CountReadyStreams();
+		logger::info("[Fluid Field] Waterfall flow linked: {} meshes, {} fed by the mesh above them; {} flat texels join the main flow ({} sites' flows solved)", nodes.size(), linked,
+			flatTexels, linkedStreams);
 	}
 
 	void FallSites::BakeStep()
 	{
+		// D68: the flat parts follow the sites' flows, so the bakes are linked again as more of them are solved
+		if (!bakeFields.empty() && bakesPending.empty() && bakeQueue.empty() && !bakeJob && CountReadyStreams() != linkedStreams)
+			LinkBakes();
 		// Finished solves
 		for (auto it = bakesPending.begin(); it != bakesPending.end();) {
 			if (it->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
 				++it;
 				continue;
 			}
-			FlowBake bake = it->second.get();
-			if (it->first && grounded.contains(it->first.get()) && !bake.texels.empty()) {
-				flowBakes[it->first.get()] = std::move(bake);
-				flowBakeVersion++;
-			}
+			auto field = it->second.get();
+			if (it->first && grounded.contains(it->first.get()) && field)
+				bakeFields[it->first.get()] = std::move(field);
 			it = bakesPending.erase(it);
-			if (bakesPending.empty() && bakeQueue.empty() && !bakeJob)
-				logger::info("[Fluid Field] Waterfall flow bakes: {} meshes, {} texels, {} inside rock", flowBakes.size(), bakedTexels, bakedRockTexels);
+			// D67: linked once all are solved, so each mesh carries on from the one above it
+			if (bakesPending.empty() && bakeQueue.empty() && !bakeJob) {
+				logger::info("[Fluid Field] Waterfall flow bakes: {} meshes, {} texels, {} inside rock", bakeFields.size(), bakedTexels, bakedRockTexels);
+				LinkBakes();
+			}
 		}
 		auto* tes = RE::TES::GetSingleton();
 		if (!tes)
@@ -2337,6 +2975,8 @@ namespace FluidFieldSim
 				if (!geometry || !grounded.contains(geometry.get()))
 					continue;
 				bakeJob = StartBake(geometry.get());
+				if (bakeJob)
+					GatherSolids(*bakeJob);
 				continue;
 			}
 			auto* cell = tes->interiorCell ? tes->interiorCell : tes->GetCell(bakeJob->geometry->world.translate);

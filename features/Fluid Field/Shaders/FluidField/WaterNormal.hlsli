@@ -324,7 +324,17 @@ namespace FluidField
 		const float foam = flowFoam.z;
 		if (foam <= 0.02)
 			return 0.0;
-		const float time = SharedData::Timer / FOAM_PERIOD;
+		// D68: each patch restarts at its own time (a smooth offset over a few tiles): with one clock everywhere,
+		// the two phases' cross-fade thinned the whole foam at once, twice a period, and it pulsed
+		const float2 foamPatch = a_worldPosition.xy / (FOAM_TILE * 2.5);
+		const float2 cell = floor(foamPatch);
+		const float2 f = foamPatch - cell;
+		const float2 s = f * f * (3.0 - 2.0 * f);
+		const float4 corner = frac(sin(float4(dot(cell, float2(127.1, 311.7)), dot(cell + float2(1, 0), float2(127.1, 311.7)), dot(cell + float2(0, 1), float2(127.1, 311.7)),
+									   dot(cell + float2(1, 1), float2(127.1, 311.7)))) *
+								   43758.5453);
+		const float offset = lerp(lerp(corner.x, corner.y, s.x), lerp(corner.z, corner.w, s.x), s.y);
+		const float time = SharedData::Timer / FOAM_PERIOD + offset * 2.0;
 		const float phase0 = frac(time);
 		const float phase1 = frac(time + 0.5);
 		const float2 uv = a_worldPosition.xy / FOAM_TILE;

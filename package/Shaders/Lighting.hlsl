@@ -96,6 +96,7 @@ struct VS_OUTPUT
 	float3 ModelPosition: TEXCOORD12;
 #if defined(FLUID_FIELD)
 	float FallClip: SV_ClipDistance0;  // Fluid Field (D38): falling water buried in rock, ground or the pools is cut away
+	float2 FallFade: FALLFADE0;        // Fluid Field (D67): how much of falling water shows at a seam (dithered out); D68: its height above the water below
 #endif
 };
 #ifdef VSHADER
@@ -287,6 +288,7 @@ VS_OUTPUT main(VS_INPUT input)
 
 #	if defined(FLUID_FIELD)
 	vsout.FallClip = FallGround::ClipDistance(worldPosition.xyz, input.VertexID);
+	vsout.FallFade = FallGround::Fade(input.VertexID);
 #	endif
 
 	return vsout;
@@ -1040,6 +1042,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	float2 uv = input.TexCoord0.xy;
 #	if defined(FLUID_FIELD)
+	// Fluid Field (D67): a seam's edge over a falls mesh leading it, dithered out as in the depth pre-pass
+	if (FallGround::Enabled && FallGround::Dithered(input.Position.xy, input.FallFade.x))
+		discard;
 	// Fluid Field (D32): a waterfall's lit surface carried by the falls' flow; its first phase is
 	// sampled through uv, the second and vanilla's own texture after the base samples below
 	FallGround::FlowSample fallFlow = (FallGround::FlowSample)0;
@@ -1534,6 +1539,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			const float above = input.WorldPosition.z + FrameBuffer::CameraPosAdjust.z - fallPoolHeight;
 			white = max(white, above >= 0.0 ? 1.0 - saturate(above / FallGround::PoolFoamHeight) : 1.0 - saturate(-above / FallGround::POOL_CUT));
 		}
+		// D68: and where it meets the water it falls into (the engine's own water, per vertex): white as it goes in,
+		// the little that shows under the surface foamed into it
+		[flatten] if (input.FallFade.y < FallGround::NO_WATER * 0.5 && FallGround::Whitening)
+			white = max(white, 1.0 - saturate(input.FallFade.y / FallGround::PoolFoamHeight));
 		// D42: foam as lace, filaments streaming with the water: few and thin where the water is barely
 		// white, joining up where it is white, solid where it is wholly white (the plunge, against rock)
 		const float lace = FallGround::Lace(fallFlow);
@@ -1547,12 +1556,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// D59: on a baked mesh, 1 shows the bake instead
 		[branch] if (FallGround::DebugMode == 1 && FallGround::BakeOn)
 		{
-			// D60: red how the warp spreads the streaks (half: as vanilla's; brighter spread, darker squeezed), green the wake, blue foam
+			// D67: red how the streaks spread (half: as at the top; brighter spread, darker squeezed), green the run
+			// time (a band per second, so it runs on across seams), blue foam, white the wake
 			const float2 bakeUv = (fallUvVanilla - FallGround::TexOffset) * FallGround::InverseScale;
 			const float4 baked = FallGround::BakeAt(bakeUv);
 			const float step = 0.01 / max(FallGround::BakeRect.z, 1e-4);
 			const float spread = (FallGround::BakeAt(bakeUv + float2(step, 0.0)).x - FallGround::BakeAt(bakeUv - float2(step, 0.0)).x) / (2.0 * step);
-			rawBaseColor.rgb = float3(saturate(0.5 + spread), saturate(baked.y), saturate(baked.z));
+			rawBaseColor.rgb = lerp(float3(saturate(0.5 * spread), frac(fallFlow.runTime), saturate(baked.w)), 1.0, saturate(baked.z) * 0.5);
 		}
 		else if (FallGround::DebugMode == 1)
 			rawBaseColor.rgb = float3(saturate(length(fallFlow.stream.xy) * 0.5), saturate(fallFlow.stream.z), fallFlow.stream.w);

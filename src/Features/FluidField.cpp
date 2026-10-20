@@ -864,6 +864,20 @@ void FluidField::Prepass()
 			fallSites.SetHideEffects(hideFallEffects, settings.FallLayerMask);
 			fallSites.SetTranslucent(settings.GroundWaterfalls && settings.FallTranslucency > 0.0f);
 			fallSurfaceTime += deltaTime;
+			// D67: one scroll for all the falls, integrated here once a frame at vanilla's rate (averaged over the
+			// falls' materials, against their slow zoom): every mesh of a cascade reads it, so one mesh's water runs
+			// on into the next, and integrating it never jumps when the measured rate moves (D60)
+			{
+				float total = 0.0f, count = 0.0f;
+				for (const auto& [material, scroll] : fallScrolls) {
+					total += (scroll.rate > 1e-3f ? scroll.rate : DEFAULT_FALL_SCROLL) / std::max(scroll.scale, 1e-4f);
+					count += 1.0f;
+				}
+				const float rate = count > 0.0f ? total / count : DEFAULT_FALL_SCROLL;
+				fallRate = fallRate > 0.0f ? fallRate + (rate - fallRate) * std::min(deltaTime, 1.0f) : rate;
+				fallPhase += fallRate * std::clamp(deltaTime, 0.0f, 0.25f);
+				fallPhase -= std::floor(fallPhase);
+			}
 			fallSites.Update(water);
 			fallSheets.Update(fallSites, settings.GroundWaterfalls && settings.OwnFallSheets, settings.FallArcSpeed);
 			// D62 probe: the setting (settable from tools) or the button toggles the test quad
@@ -1508,7 +1522,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	if (fallSites.GetVertexClipVersion() != fallClipVersion && !fallSites.GetVertexClips().empty()) {
 		fallClipVersion = fallSites.GetVertexClipVersion();
 		const auto& clips = fallSites.GetVertexClips();
-		D3D11_BUFFER_DESC clipDesc{ .ByteWidth = static_cast<UINT>(clips.size() * sizeof(float)), .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, .StructureByteStride = sizeof(float) };
+		D3D11_BUFFER_DESC clipDesc{ .ByteWidth = static_cast<UINT>(clips.size() * sizeof(clips[0])), .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, .StructureByteStride = sizeof(clips[0]) };
 		const D3D11_SUBRESOURCE_DATA clipData{ clips.data(), 0, 0 };
 		D3D11_SHADER_RESOURCE_VIEW_DESC clipView{ .Format = DXGI_FORMAT_UNKNOWN, .ViewDimension = D3D11_SRV_DIMENSION_BUFFER };
 		clipView.Buffer.FirstElement = 0;
@@ -1532,8 +1546,8 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		for (const auto& [geometry, bake] : bakes) {
 			if (fallBakeSRVs.contains(geometry))
 				continue;
-			D3D11_TEXTURE2D_DESC bakeDesc{ .Width = bake.width, .Height = bake.height, .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R16G16B16A16_FLOAT, .SampleDesc = { 1, 0 }, .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = 0 };
-			const D3D11_SUBRESOURCE_DATA bakeData{ bake.texels.data(), bake.width * 4 * sizeof(uint16_t), 0 };
+			D3D11_TEXTURE2D_DESC bakeDesc{ .Width = bake.width, .Height = bake.height, .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R32G32B32A32_FLOAT, .SampleDesc = { 1, 0 }, .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = 0 };
+			const D3D11_SUBRESOURCE_DATA bakeData{ bake.texels.data(), bake.width * 4 * sizeof(float), 0 };
 			winrt::com_ptr<ID3D11Texture2D> texture;
 			winrt::com_ptr<ID3D11ShaderResourceView> view;
 			if (FAILED(device->CreateTexture2D(&bakeDesc, &bakeData, texture.put())) || FAILED(device->CreateShaderResourceView(texture.get(), nullptr, view.put())))
@@ -1623,8 +1637,9 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass, bool a_depthOnly)
 				scroll.phase -= std::floor(scroll.phase);
 				scroll.phaseTime = fallSurfaceTime;
 			}
-			fallGroundData.Scroll[0] = scroll.phase;
-			fallGroundData.Scroll[1] = (scroll.rate > 1e-3f ? scroll.rate : DEFAULT_FALL_SCROLL) / scroll.scale;
+			// D67: the falls' one scroll (this material's own only measures vanilla's rate for it)
+			fallGroundData.Scroll[0] = fallPhase;
+			fallGroundData.Scroll[1] = fallRate > 0.0f ? fallRate : DEFAULT_FALL_SCROLL;
 		}
 		// D56: the per-vertex rock cut, and a blended mesh kept out of the depth pre-pass (it would hide itself)
 		uint32_t vertexBase = 0;
