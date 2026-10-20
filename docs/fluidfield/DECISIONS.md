@@ -2478,3 +2478,106 @@ Entry format:
     per vertex (D92/D100 outward), pass the depth behind per vertex to the
     shaders, and let the see-through pass take it as its "behind" depth.
 -   References: D57, D82, D92, D93, D100
+
+## D102: See-Through Falls lit as the river; a thin, mostly opaque sheet (on branch feature/fluid-field-falls-water-port)
+
+-   Date: 2026-10-20
+-   Phase / spike: See-Through Falls (D93, D99) look; on the branch
+    `feature/fluid-field-falls-water-port` only, untested in game
+-   Context: the user: the Refraction and Water Depth sliders "didn't really
+    change anything", the falls are "nowhere near what the shallow water looks
+    like", and they glow at night (bright cyan-white sheets in a dark scene);
+    then: not too glossy, keep the surface lively, too refractive (reads as
+    glass), "transmit little to no depth".
+-   How Water.hlsl builds a pixel (the refracting, depth-tested variant):
+    the normal (vanilla's three normal maps or the flowmap's, Fluid Field's
+    waves, Wetness Effects' ripples); fresnel (Schlick on FresnelRI.x, or
+    ENB's); the reflection (the engine cubemap, Dynamic Cubemaps' capture
+    near, SSR over it; or ReflectionColor x amount without reflections); the
+    refraction (the scene offset by the normal, VarAmounts.w) and the depth
+    behind measured against the ReflectPlane; the water colour lerped
+    shallow to deep by depth / fog far, then **ExtractLighting** splits it
+    into the directional light's share and the ambient's (by their
+    luminance) and the directional share takes the sun's shadow
+    (Get3DFilteredShadow: terrain, clouds, Volumetric Shadows); Skylighting
+    scales the ambient; refractionMul (the above-water fog curve) blends the
+    see-through scene to that colour; the sun's glint (SunColor x
+    1 - exp(-DeepColor.w), the specular power, in the surface's shadow);
+    Fluid Field's foam (FoamColor: the lit water colour 10% toward the
+    shadowed scene light); vanilla distance fog over the result and over the
+    refracted scene. The output is the HDR scene colour before tonemapping; no
+    exposure is applied in the shader. The colours are never multiplied by a
+    light: whatever darkens them at night is already in the constants.
+-   Why the falls glowed at night (FallSurface.hlsl, D99): every term the
+    river shadows or derives from its own lit colour was unshadowed or white
+    here. The white water was 90% white times ambient plus the full
+    directional light (the moon) with no shadow, and vanilla's streak texture
+    put some of it on the whole sheet (the river's foam is its own water
+    colour lifted 10%); the reflection without a cubemap was the reflection
+    colour unlit; the glint took no shadow; and nothing shadowed the body.
+    Falls sit against cliffs, so most of them are in shadow the river's
+    shader would have applied.
+-   Decision:
+    -   **Ported, reused from CS:** `Common/ShadowSampling.hlsli`
+        (ExtractLighting, GetLightingShadow, GetWorldShadow,
+        GetDirectionalLighting, GetAmbientLighting) and Fluid Field's
+        `FoamColor` (`WaterNormal.hlsli`, its normal texture names mapped to
+        ours). The water colour is split and shadowed as Water.hlsl does it;
+        the foam is FoamColor of that lit colour under the shadowed scene light,
+        lifted 25% further toward the light (falls are whiter than rivers) and
+        at most 60% cover (foam and particles will be laid over the base).
+        The glint uses the shadowed directional light at half weight; the
+        reflection half of the fresnel weight, read at cubemap mip 2 and
+        dulled by foam.
+    -   **Shadows:** a second pixel shader with `VOLUMETRIC_SHADOWS`, used when
+        Volumetric Shadows is loaded and its map (t18) and the cascades (t98)
+        are still bound at the draw (checked each frame; an unbound map would
+        read as fully shadowed), else the plain one (no directional shadow).
+        Terrain and cloud shadows are not compiled in (their defines are not
+        passed).
+    -   **A guard, `WithinLight`:** the water colour and the cubemap-less
+        reflection colour are held to the luminance of the light falling on
+        them. Water.hlsl takes the colours as the engine hands them;
+        `MakeFallWaterLook` rebuilds them as the water type's times the
+        weather's water multiplier (as Util::TryGetWaterData), which is not
+        checked against the engine's constants. If the engine darkens them
+        further, the guard keeps a fall from outshining its light at night;
+        if not, it changes nothing.
+    -   **A thin, mostly opaque sheet:** the water a ray crosses is the sheet's
+        8 units over the cosine (at least a quarter) plus a quarter of the gap
+        behind it, capped at 32 units (LONGEST_PATH 600 to 32), times Water
+        Depth. It absorbs exp(-0.17 per unit) (8 units square on let a quarter
+        through), aeration makes it up to 60% more opaque, and the water
+        type's fog curve still adds (muddier rivers, more opaque falls).
+        Shallow to deep reads that thickness at 8 units deep per unit against
+        the fog's far distance. The gap behind comes from one function,
+        `BehindDepth`, so a baked per-vertex distance to the rock can replace
+        the scene depth.
+    -   **Refraction:** the offset no longer scales with the gap behind (up to
+        48 units) or falls off from 256 units away (now from 1024); 2% of the
+        screen height per unit of tilt at Refraction 1, so a few pixels at the
+        default.
+    -   **Sliders:** both reached the shader (the constant buffer layout and
+        the upload match, 144 bytes), but Water Depth only scaled a depth the
+        river's fog distances (hundreds of units) barely saw on an 8-unit sheet,
+        and Refraction's offset was scaled down by the gap behind and the
+        distance, then mostly hidden under a see-through body that showed the
+        scene anyway. Water Depth now runs the sheet from mostly clear (0.25,
+        about 70% through) to opaque (8); defaults Water Depth 1 (was 2),
+        Refraction 0.5 (was 1). The streak foam is 0.4 with Foam on the Falls
+        (was 0.6), 0.25 without (was 0.4). Settings structure unchanged; saved
+        values are kept (a saved Water Depth of 2 is now twice as opaque).
+-   Not ported: SSR (no SSR texture at our draw point), Skylighting's ambient
+    occlusion, IBL's fog colour and diffuse (ShadowSampling's IBL path is not
+    compiled in), vanilla distance fog (its parameters are the engine's per
+    material constants, not in SharedData; the refracted scene keeps its own
+    fog, the water colour does not), Light Limit Fix's point light specular.
+-   Untested: the C++ was not compiled (no build folder in the worktree);
+    FallSurface.hlsl compiled with fxc (vs_5_0, ps_5_0, ps_5_0 with
+    VOLUMETRIC_SHADOWS; no warnings). Not seen in game.
+-   Risks: Volumetric Shadows' map at t18 being bound at the draw is
+    assumed from it being set once per frame for the forward passes; if
+    another pass leaves a different texture there, the sheet's shadow is
+    wrong. The constants (ABSORPTION, FOAM_LIFT, REFLECTION_WEIGHT,
+    GLINT_WEIGHT) are first guesses.
+-   References: D91, D93, D98, D99, D100, D101

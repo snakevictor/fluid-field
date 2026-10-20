@@ -23,7 +23,9 @@ namespace FluidFieldSim
 		constexpr UINT SCENE_COLOR_SLOT = 100;
 		constexpr UINT DIFFUSE_SLOT = 102;
 		constexpr UINT ENVIRONMENT_SLOT = 104;
-		constexpr UINT SAMPLER_COUNT = 2;  // s0 wrap, s1 clamp
+		constexpr UINT SAMPLER_COUNT = 2;          // s0 wrap, s1 clamp
+		constexpr UINT SHADOW_MAP_SLOT = 18;       // D102: Volumetric Shadows' map (VolumetricShadows::kSharedShadowMapShaderSlot), read, never set
+		constexpr UINT SHADOW_CASCADES_SLOT = 98;  // ...and the directional light's cascades (Deferred::CopyShadowLightData)
 
 		/** @brief Everything Draw touches, saved on construction and put back on destruction. */
 		struct SavedState
@@ -138,7 +140,9 @@ namespace FluidFieldSim
 	{
 		vertexShader = nullptr;
 		pixelShader = nullptr;
+		pixelShaderShadowed = nullptr;
 		shaderFailed = false;
+		shadowedShaderFailed = false;
 	}
 
 	void FallRefraction::Prune(const std::unordered_set<const RE::BSGeometry*>& a_keep)
@@ -162,6 +166,18 @@ namespace FluidFieldSim
 			return false;
 		}
 		return true;
+	}
+
+	ID3D11PixelShader* FallRefraction::EnsureShadowedShader()
+	{
+		if (pixelShaderShadowed || shadowedShaderFailed)
+			return pixelShaderShadowed.get();
+		pixelShaderShadowed.attach(reinterpret_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSurface.hlsl", { { "VOLUMETRIC_SHADOWS", "" } }, "ps_5_0", "PSMain")));
+		if (!pixelShaderShadowed) {
+			logger::warn("[Fluid Field] Refractive falls: the shadowed shader failed to compile; the falls are drawn without Volumetric Shadows");
+			shadowedShaderFailed = true;
+		}
+		return pixelShaderShadowed.get();
 	}
 
 	bool FallRefraction::EnsureStates(ID3D11Device* a_device)
@@ -388,7 +404,19 @@ namespace FluidFieldSim
 		a_context->IASetInputLayout(nullptr);
 		a_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		a_context->VSSetShader(vertexShader.get(), nullptr, 0);
-		a_context->PSSetShader(pixelShader.get(), nullptr, 0);
+		// D102: the sun's shadow from Volumetric Shadows' map and cascades, as the river's, while the engine's passes still
+		// have them bound (an unbound map would read as wholly shadowed); else the plain variant (terrain and clouds only)
+		ID3D11PixelShader* shader = pixelShader.get();
+		if (a_params.volumetricShadows) {
+			winrt::com_ptr<ID3D11ShaderResourceView> shadowMap, cascades;
+			a_context->PSGetShaderResources(SHADOW_MAP_SLOT, 1, shadowMap.put());
+			a_context->PSGetShaderResources(SHADOW_CASCADES_SLOT, 1, cascades.put());
+			if (shadowMap && cascades) {
+				if (auto* shadowed = EnsureShadowedShader())
+					shader = shadowed;
+			}
+		}
+		a_context->PSSetShader(shader, nullptr, 0);
 		ID3D11Buffer* buffers[3] = { a_params.shared, a_params.features, constants.get() };
 		a_context->VSSetConstantBuffers(SHARED_SLOT, 3, buffers);
 		a_context->PSSetConstantBuffers(SHARED_SLOT, 3, buffers);

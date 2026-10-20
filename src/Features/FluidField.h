@@ -96,8 +96,8 @@ struct FluidField : OverlayFeature
 		bool FallWhitening = false;          ///< The falls whiten with their foam and speed (D34); D86: off by default until the foam layer replaces it (barely visible)
 		float FallSpeed = 1.75f;             ///< D90: the falls' flow (texture and wobble) this many times vanilla's speed
 		bool RefractiveFalls = false;        ///< D91: the falls drawn as refractive, see-through water by their own pass after the world (experimental)
-		float FallDepth = 2.0f;              ///< D98: how much deeper than its path through it the falling water reads against its river's fog distances
-		float FallRefraction = 1.0f;         ///< D91: how strongly the falls' surface bends what is seen through them
+		float FallDepth = 1.0f;              ///< D102: how thick the falls' sheet reads: how opaque and how deep its colour
+		float FallRefraction = 0.5f;         ///< D91: how strongly the falls' surface bends what is seen through them (D102: faint by default)
 		bool FallBlendedCopies = false;      ///< D91 experiment: dense copies built with a blended alpha property (falls built after it is set)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		int SprayAmount = 200;               ///< Spray droplets alive per emitter at once (D31)
