@@ -278,6 +278,7 @@ namespace FluidFieldSim
 		 */
 		void ComputeFades();
 		static constexpr float FADE_REACH = 32.0f;        ///< D67: an open edge's vertex this near another mesh's surface fades
+		static constexpr float SEAM_BIN = 48.0f;          ///< D91: world units per cell of the seams' triangle bins
 		static constexpr int EDGE_SMOOTH_PASSES = 10;     ///< D86: rounds smoothing each mesh's open edge as a curve (D87: 10, was 6)...
 		static constexpr float EDGE_SMOOTH_MOST = 40.0f;  ///< D86: ...moving a vertex at most this far (D87: 40, was 24)
 		std::vector<RE::NiPointer<RE::BSGeometry>> clipQueue;

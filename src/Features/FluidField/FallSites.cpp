@@ -815,7 +815,9 @@ namespace FluidFieldSim
 		}
 		if (clipQueue.empty()) {
 			logger::info("[Fluid Field] Waterfall rock cut: {} vertices of {} lit meshes tested", clipTested, vertexClipBase.size());
+			const auto start = std::chrono::steady_clock::now();
 			ComputeFades();
+			logger::info("[Fluid Field]   seams took {:.1f} ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
 		}
 	}
 
@@ -1057,6 +1059,27 @@ namespace FluidFieldSim
 			std::vector<uint8_t> open;
 			float lo[3]{ FLT_MAX, FLT_MAX, FLT_MAX }, hi[3]{ -FLT_MAX, -FLT_MAX, -FLT_MAX };
 			float top = -FLT_MAX, area = 0.0f;
+			std::unordered_map<int64_t, std::vector<uint32_t>> bins;  ///< D91: its triangles by SEAM_BIN cell (each in every cell its bound touches)
+		};
+		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
+		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
+		// The triangles of a mesh within a_reach of a point (a superset): those in the cells round it
+		const auto nearby = [&](const auto& a_mesh, const RE::NiPoint3& a_p, float a_reach, const auto& a_visit) {
+			const int64_t x0 = cellOf(a_p.x - a_reach), x1 = cellOf(a_p.x + a_reach), y0 = cellOf(a_p.y - a_reach), y1 = cellOf(a_p.y + a_reach), z0 = cellOf(a_p.z - a_reach),
+						  z1 = cellOf(a_p.z + a_reach);
+			for (int64_t x = x0; x <= x1; x++) {
+				for (int64_t y = y0; y <= y1; y++) {
+					for (int64_t z = z0; z <= z1; z++) {
+						const auto it = a_mesh.bins.find(binKey(x, y, z));
+						if (it == a_mesh.bins.end())
+							continue;
+						for (const uint32_t t : it->second) {
+							if (a_visit(a_mesh.triangles[t]))
+								return;
+						}
+					}
+				}
+			}
 		};
 		std::vector<Mesh> meshes;
 		std::unordered_set<const RE::BSGeometry*> seen;
@@ -1099,6 +1122,16 @@ namespace FluidFieldSim
 				for (int k = 0; k < 3; k++)
 					uses[{ std::min(index[k], index[(k + 1) % 3]), std::max(index[k], index[(k + 1) % 3]) }]++;
 			}
+			for (uint32_t t = 0; t < mesh.triangles.size(); t++) {
+				const auto& tri = mesh.triangles[t];
+				const RE::NiPoint3 &a = mesh.positions[tri[0]], &b = mesh.positions[tri[1]], &cc = mesh.positions[tri[2]];
+				for (int64_t x = cellOf(std::min({ a.x, b.x, cc.x })); x <= cellOf(std::max({ a.x, b.x, cc.x })); x++) {
+					for (int64_t y = cellOf(std::min({ a.y, b.y, cc.y })); y <= cellOf(std::max({ a.y, b.y, cc.y })); y++) {
+						for (int64_t z = cellOf(std::min({ a.z, b.z, cc.z })); z <= cellOf(std::max({ a.z, b.z, cc.z })); z++)
+							mesh.bins[binKey(x, y, z)].push_back(t);
+					}
+				}
+			}
 			mesh.open.assign(counts.vertexCount, 0);
 			for (const auto& [edge, count] : uses) {
 				if (count != 1)
@@ -1130,12 +1163,11 @@ namespace FluidFieldSim
 					if (&other == &mesh || !leads(other, mesh) || p.x < other.lo[0] - FADE_REACH || p.x > other.hi[0] + FADE_REACH || p.y < other.lo[1] - FADE_REACH ||
 						p.y > other.hi[1] + FADE_REACH || p.z < other.lo[2] - FADE_REACH || p.z > other.hi[2] + FADE_REACH)
 						continue;
-					for (const auto& tri : other.triangles) {
-						if (TriangleDistanceSquared(p, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]]) < FADE_REACH * FADE_REACH) {
+					nearby(other, p, FADE_REACH, [&](const auto& tri) {
+						if (TriangleDistanceSquared(p, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]]) < FADE_REACH * FADE_REACH)
 							onLead[v] = 1;
-							break;
-						}
-					}
+						return onLead[v] != 0;
+					});
 					if (onLead[v])
 						break;
 				}
@@ -1180,12 +1212,10 @@ namespace FluidFieldSim
 						continue;
 					// Not where this vertex already lies on the other mesh (an overlap, D67's)
 					bool over = false;
-					for (const auto& tri : other.triangles) {
-						if (TriangleDistanceSquared(p, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]]) < 4.0f) {
-							over = true;
-							break;
-						}
-					}
+					nearby(other, p, 2.0f, [&](const auto& tri) {
+						over = TriangleDistanceSquared(p, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]]) < 4.0f;
+						return over;
+					});
 					if (over)
 						continue;
 					for (const auto& edge : other.openEdges) {
@@ -2283,7 +2313,9 @@ namespace FluidFieldSim
 		flowBakeVersion++;
 		logger::info("[Fluid Field] Waterfall flow linked: {} meshes, {} fed by the mesh above them", nodes.size(), linked);
 		BuildPlunges();
+		const auto start = std::chrono::steady_clock::now();
 		ComputePushes();
+		logger::info("[Fluid Field]   swell and wobble took {:.1f} ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
 	}
 
 	void FallSites::BakeStep()
