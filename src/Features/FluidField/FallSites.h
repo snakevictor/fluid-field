@@ -302,8 +302,8 @@ namespace FluidFieldSim
 		void ComputeFades();
 		static constexpr float FADE_REACH = 32.0f;     ///< D67: an open edge's vertex this near another mesh's surface fades
 		static constexpr float SEAM_BIN = 48.0f;       ///< D91: world units per cell of the seams' triangle bins
-		static constexpr float INSIDE_REACH = 150.0f;  ///< D98: a vertex behind a leading mesh's outer face within this is inside its curl, cut...
-		static constexpr float INSIDE_MARGIN = 6.0f;   ///< D98: ...past this behind it (one just behind, touching, stays)
+		static constexpr float INSIDE_REACH = 70.0f;   ///< D98: a vertex behind a leading mesh's outer face within this is inside its curl, cut (D105: 70, was 150: it cut neighbouring sheets, SS 900/901)...
+		static constexpr float INSIDE_MARGIN = 12.0f;  ///< D98: ...past this behind it (one just behind, touching, stays)
 		static constexpr float INSIDE_LATERAL = 2.0f;  ///< D103: ...less this per unit it lies off to the side of the face (beside the leading sheet, not inside it)
 		static constexpr float COVER_NEAR = 6.0f;      ///< D103: a sheet behind a vertex's inner side counts from this far (its own surface is not one)
 		/**

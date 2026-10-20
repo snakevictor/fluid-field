@@ -158,12 +158,12 @@ static const float ENVIRONMENT_MIP = 2.0;
 static const float MAX_OUTPUT = 64.0;
 
 /** D102: world units of rock-to-sheet water counted at most, and how much of it counts: the sheet is what the eye reads, not the gap behind it. */
-static const float BEHIND_MOST = 32.0;
-static const float BEHIND_WEIGHT = 0.25;
+static const float BEHIND_MOST = 600.0;  // D105: the whole depth behind counts (baked, D104), as the river's depth fog
+static const float BEHIND_WEIGHT = 1.0;
 /** D102: per world unit of thickness (at Water Depth 1), how much light the sheet absorbs: 8 units square on let a quarter through. */
-static const float ABSORPTION = 0.17;
+static const float ABSORPTION = 0.012;  // D105: per world unit: 40 units behind show 60%, 200 units 9% (was 0.17: the sheet read as fog)
 /** D102: world units deep the water reads per unit of thickness, against its water type's fog far (shallow to deep). */
-static const float DEPTH_PER_THICKNESS = 8.0;
+static const float DEPTH_PER_THICKNESS = 1.0;  // D105: the apparent depth is the path itself
 /** D102: how much more opaque aerated water is (bubbles scatter what lies behind). */
 static const float AERATION_OPACITY = 0.6;
 /** D102: pixels of refraction offset per unit of tilt at Refraction 1, as a fraction of the screen height. */
@@ -192,7 +192,7 @@ float BehindDepth(VSOutput a_input, float a_sheetDepth, float a_behindDepth)
 /** D102: the water a ray crosses: the sheet's own thickness over the cosine, and a little of the gap behind it (capped). */
 float SheetPath(float a_behind, float a_cosine)
 {
-	return SheetThickness / max(a_cosine, 0.25) + min(a_behind, min(MaxPath, BEHIND_MOST)) * BEHIND_WEIGHT;
+	return 0.5 * SheetThickness / max(a_cosine, 0.25) + min(a_behind, min(MaxPath, BEHIND_MOST)) * BEHIND_WEIGHT;
 }
 
 /**

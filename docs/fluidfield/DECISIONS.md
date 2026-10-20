@@ -2657,3 +2657,21 @@ Entry format:
     away from (nearest texel at its texture coordinate). The see-through pass's
     BehindDepth takes it, or the screen-depth difference where that is less
     (something nearer than the rock, e.g. another sheet).
+
+## D105: The falls translucent like the river; a narrower curl cut
+
+-   Date: 2026-10-20
+-   Context: SS 902: "the falls are all foggy now, instead of having the water
+    translucency quality that shallow water has"; Refraction and Water Depth
+    "seem to do nothing" (CS 793, 576); SS 900/901: culling too aggressive.
+-   Decision:
+    -   The sheet absorbs by the depth behind it (the baked clearance, D104, or
+        the screen difference where nearer), not by a capped quarter of it plus
+        its own thickness: ABSORPTION 0.012 per unit (40 units behind show 60%,
+        200 units 9%), the depth behind counted whole up to 600, half the sheet's
+        own thickness. D102's settings made it about 98% opaque at defaults,
+        which also hid what Refraction and Water Depth do: both reach the shader
+        (constant buffers checked field by field).
+    -   The curl cut reaches 70 units behind a leading face (was 150), from 12
+        (was 6): it cut neighbouring sheets meeting each other (SS 901).
+-   References: D98, D102, D103, D104
