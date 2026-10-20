@@ -472,8 +472,8 @@ namespace FluidFieldSim
 		static constexpr float LIP_BAND = 40.0f;            ///< D90: a crest this near its pool's surface is a lip, where the water leaves the pool (D91: 40, was 24)...
 		static constexpr float LIP_STRENGTH = 0.6f;         ///< D90: ...stirring it this much (a plunge's 0.25 to 1; D91: 0.6, was 0.35)
 		static constexpr float LIP_UPSTREAM = 40.0f;        ///< D92: world units upstream of the crest its foam is made
-		static constexpr float CROSSING_STRENGTH = 1.0f;    ///< D94: how hard the water foams where a mesh crosses a water surface (D98: 1)...
-		static constexpr float CROSSING_REACH = 1.5f;       ///< D98: ...and how much further than a plunge's its foam reaches
+		static constexpr float CROSSING_STRENGTH = 0.8f;    ///< D94: how hard the water foams where a mesh crosses a water surface (D100: back to 0.8)...
+		static constexpr float CROSSING_BACK = 32.0f;       ///< D100: ...set back this far onto the water's side of the seam
 		std::vector<FallEmitter> sprayEmitters;
 		std::vector<FallPlunge> plungePoints;
 		uint64_t emitterVersion = 0;

@@ -2392,3 +2392,18 @@ Entry format:
     sheets almost clear or almost opaque for some water types (Water Depth
     tunes it for all).
 -   References: D71, D91, D93
+
+## D100: Only the falls' outer side shows; drop foam set back from the seam
+
+-   Date: 2026-10-20
+-   Context: SS 890-892, sheets crossing and nested still showed through each
+    other ("ideally only the outward facing meshes would be visible"); the drop
+    foam now shows everywhere checked ("instead of strengthening it, start it a
+    few units back from the seam").
+-   Decision:
+    -   Per vertex, whether its winding faces its mesh's outer side (D92's
+        travel) rides VertexClip's a.w (+2 inward; the foot flag is its value
+        mod 2). See-Through Falls discards a sheet seen from its inner side.
+    -   Crossing foam back to strength 0.8 and a plunge's reach, set 32 units
+        onto the water's side of the seam.
+-   References: D92, D94, D98

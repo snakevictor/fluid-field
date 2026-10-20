@@ -102,7 +102,7 @@ namespace FallGround
 		// D71: the pools cut a mesh only at its foot (VertexClip's a.w): near a lip the captured pool reaches over
 		// the drop, and cut a hole in the curtain just under it where a rock stands behind
 		float pool;
-		const bool foot = VertexBase == NO_VERTEX_CLIP || VertexClip[VertexBase + a_vertex].a.w > 0.5;
+		const bool foot = VertexBase == NO_VERTEX_CLIP || fmod(VertexClip[VertexBase + a_vertex].a.w, 2.0) > 0.5;  // D100: +2 marks an inward winding
 		if (foot && Pool(position.xy, pool))
 			distance = min(distance, position.z - (pool - POOL_CUT));
 		// D56: the rock per vertex, tested against the game's collision (FallSites::ClipStep): the top-down
@@ -157,6 +157,14 @@ namespace FallGround
 		const float wobble = 0.65 * wave + 0.35 * WobbleNoise(float2(a_across, a_run), float2(3.0, 4.0));
 		// D88: mostly up from the mesh, a little down (dipped, the water sank into the ground at its banks)
 		return 0.5 * wobble + 0.35;
+	}
+
+	/** D100: 1 where the vertex's winding faces its mesh's outer side (the way its water travels), -1 where it faces in. */
+	float OutwardSign(uint a_vertex)
+	{
+		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
+			return 1.0;
+		return VertexClip[VertexBase + a_vertex].a.w >= 1.5 ? -1.0 : 1.0;
 	}
 
 	/** D69, D82, D85: a falls vertex's move: across a seam's gap, its swell, and its wobble at the scroll's phase a_phase. */

@@ -2118,6 +2118,7 @@ namespace FluidFieldSim
 			const uint32_t uvOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
 			std::vector<RE::NiPoint3> positions(counts.vertexCount), normals(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
 			std::vector<std::array<float, 2>> uvs(counts.vertexCount);
+			std::vector<uint8_t> inward;
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
 				const uint8_t* data = renderer->rawVertexData + static_cast<std::size_t>(v) * stride;
 				float local[3];
@@ -2169,15 +2170,22 @@ namespace FluidFieldSim
 				}
 				travel.z = 0.3f;
 				uint32_t flipped = 0;
-				for (auto& n : normals) {
-					if ((geometry->world.rotate * n).Dot(travel) < 0.0f) {
-						n = -n;
+				inward.assign(counts.vertexCount, 0);
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					if ((geometry->world.rotate * normals[v]).Dot(travel) < 0.0f) {
+						normals[v] = -normals[v];
+						inward[v] = 1;
 						flipped++;
 					}
 				}
 				flippedTotal += flipped;
 			}
 			std::vector<uint8_t> open(counts.vertexCount, 0), nearOpen(counts.vertexCount, 0);
+			// D100: its winding against its outer side, per vertex, for the shaders (a.w: 1 its foot, +2 its winding faces in)
+			for (uint32_t v = 0; v < counts.vertexCount && vertexClipBase.contains(geometry) && vertexClipBase[geometry] + v < vertexClips.size(); v++) {
+				float& flags = vertexClips[vertexClipBase[geometry] + v][3];
+				flags = std::fmod(flags, 2.0f) + (v < inward.size() && inward[v] ? 2.0f : 0.0f);
+			}
 			for (const auto& [edge, count] : uses) {
 				if (count == 1)
 					open[edge.first] = open[edge.second] = 1;
@@ -3429,7 +3437,16 @@ namespace FluidFieldSim
 							if ((a.z - level) * (b.z - level) > 0.0f || std::abs(a.z - b.z) < 1e-3f)
 								continue;
 							const float s = std::clamp((level - a.z) / (b.z - a.z), 0.0f, 1.0f);
-							const RE::NiPoint3 p = a + (b - a) * s;
+							RE::NiPoint3 p = a + (b - a) * s;
+							// D100: set back a little onto the water's side (toward the texel under the surface), so the foam
+							// starts before the seam instead of on it
+							{
+								RE::NiPoint3 toWater = (a.z < level ? a : b) - p;
+								toWater.z = 0.0f;
+								const float length = toWater.Length();
+								if (length > 1e-3f)
+									p += toWater * (CROSSING_BACK / length);
+							}
 							// The water's way there: down the mesh, level
 							const std::size_t below = static_cast<std::size_t>(std::min(y + 1, h - 1)) * w + x, aboveRow = static_cast<std::size_t>(std::max(y - 1, 0)) * w + x;
 							RE::NiPoint3 down = field->position[below] - field->position[aboveRow];
@@ -3448,7 +3465,6 @@ namespace FluidFieldSim
 							crossing.direction[1] = horizontal > 1e-3f ? down.y / horizontal : 0.0f;
 							crossing.speed = SIM_INFLOW;
 							crossing.strength = CROSSING_STRENGTH;
-							crossing.reach = CROSSING_REACH;
 							lips++;
 						}
 					}

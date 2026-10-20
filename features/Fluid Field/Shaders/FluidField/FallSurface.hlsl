@@ -61,6 +61,7 @@ struct VSOutput
 	float3 Normal: TEXCOORD2;
 	float3 Fade: TEXCOORD3;  // FallGround::Fade: the seam fade, and the height above the water it falls into; z: D98 its foot (VertexClip's a.w)
 	float Clip: SV_ClipDistance0;
+	float Outward: TEXCOORD6;  // D100: +1 where the winding faces the mesh's outer side, -1 where in
 };
 
 #if defined(VSHADER)
@@ -79,8 +80,9 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 	output.Normal = mul((float3x3)World, v.Normal);
 	output.Fade.xy = FallGround::Fade(vertexID);
 	// D98: as the cut (FallGround::ClipDistance, D71), the pools foam a mesh only at its foot
-	output.Fade.z = (!FallGround::Enabled || FallGround::VertexBase == FallGround::NO_VERTEX_CLIP) ? 1.0 : FallGround::VertexClip[FallGround::VertexBase + vertexID].a.w;
+	output.Fade.z = (!FallGround::Enabled || FallGround::VertexBase == FallGround::NO_VERTEX_CLIP) ? 1.0 : fmod(FallGround::VertexClip[FallGround::VertexBase + vertexID].a.w, 2.0);  // D100: +2 marks an inward winding
 	output.Clip = FallGround::ClipDistance(relative, vertexID);
+	output.Outward = FallGround::OutwardSign(vertexID);
 	return output;
 }
 #endif  // VSHADER
@@ -151,6 +153,10 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 
 	// The surface: the mesh's normal toward the viewer, with vanilla's normal map running on the flow
 	float3 geometric = SafeNormalize(input.Normal, toCamera);
+	// D100: only a sheet's outer side shows: seen from inside its curl (behind it, or another sheet's inner part showing
+	// through), it is not drawn, so crossing and nested sheets read as one body of water
+	if (dot(geometric * (input.Outward >= 0.0 ? 1.0 : -1.0), toCamera) < -0.05)
+		discard;
 	if (!frontFace)
 		geometric = -geometric;
 	if (dot(geometric, toCamera) < 0.0)
