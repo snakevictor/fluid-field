@@ -96,7 +96,7 @@ struct FluidField : OverlayFeature
 		bool FallWhitening = false;          ///< The falls whiten with their foam and speed (D34); D86: off by default until the foam layer replaces it (barely visible)
 		float FallSpeed = 1.75f;             ///< D90: the falls' flow (texture and wobble) this many times vanilla's speed
 		bool RefractiveFalls = false;        ///< D91: the falls drawn as refractive, see-through water by their own pass after the world (experimental)
-		float FallClarity = 160.0f;          ///< D91: world units of water seen through before its own colour mostly hides what lies behind
+		float FallDepth = 2.0f;              ///< D98: how much deeper than its path through it the falling water reads against its river's fog distances
 		float FallRefraction = 1.0f;         ///< D91: how strongly the falls' surface bends what is seen through them
 		bool FallBlendedCopies = false;      ///< D91 experiment: dense copies built with a blended alpha property (falls built after it is set)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
@@ -346,6 +346,10 @@ private:
 	/** @brief D91: whether the refractive pass draws the falls this frame (the lit pieces are then hidden). */
 	bool RefractiveFallsActive() const;
 	FluidFieldSim::FallRefraction fallRefraction;  ///< D91
+	/** @brief D98: the water type each refractive falls piece pours out of (null: none found), looked up again every FALL_WATER_REFRESH frames. */
+	std::unordered_map<const RE::BSGeometry*, const RE::TESWaterForm*> fallWaterTypes;
+	uint32_t fallWaterTypesAge = 0;
+	static constexpr uint32_t FALL_WATER_REFRESH = 120;
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
 	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must be FallCapture::CELL: the pools are copied texel for texel
 	static constexpr float DEFAULT_FALL_SCROLL = 0.15f;     ///< D60: vanilla's scroll before it is measured (texture coordinates per second)

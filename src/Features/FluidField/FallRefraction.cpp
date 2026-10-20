@@ -2,6 +2,7 @@
 
 #include <DirectXPackedVector.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace FluidFieldSim
@@ -406,19 +407,29 @@ namespace FluidFieldSim
 		a_context->PSSetShaderResources(ENVIRONMENT_SLOT, 1, &a_params.environment);
 
 		Constants data{};
-		std::copy_n(a_params.shallowColor, 3, data.shallowColor);
-		std::copy_n(a_params.deepColor, 3, data.deepColor);
-		data.clarity = std::max(a_params.clarity, 1.0f);
 		data.refraction = a_params.refraction;
-		data.fresnel = a_params.fresnel;
-		data.specularPower = a_params.specularPower;
-		data.specularStrength = a_params.specularStrength;
 		data.streakFoam = a_params.streakFoam;
+		data.depthScale = std::clamp(a_params.depthScale, 0.05f, 50.0f);
 		data.hasEnvironment = a_params.environment ? 1u : 0u;
 		data.maxPath = LONGEST_PATH;
 		data.sheetThickness = SHEET_THICKNESS;
 
+		// D98: each piece's water (the water type's values guarded: a broken form must not divide by zero in the shader)
+		const auto finite = [](float a_value, float a_fallback) { return std::isfinite(a_value) ? a_value : a_fallback; };
 		for (const auto& [draw, mesh] : drawable) {
+			const auto& look = draw->look;
+			for (int k = 0; k < 3; k++) {
+				data.shallowColor[k] = std::clamp(finite(look.shallowColor[k], 0.0f), 0.0f, 1.0f);
+				data.deepColor[k] = std::clamp(finite(look.deepColor[k], 0.0f), 0.0f, 1.0f);
+				data.reflectionColor[k] = std::clamp(finite(look.reflectionColor[k], 0.0f), 0.0f, 4.0f);
+			}
+			data.fogFar = std::clamp(finite(look.fogFar, 600.0f), 16.0f, 1.0e6f);
+			data.fogRange = std::max(data.fogFar - std::clamp(finite(look.fogNear, 0.0f), 0.0f, data.fogFar), 1.0f);
+			data.fogAmount = std::clamp(finite(look.fogAmount, 1.0f), 0.01f, 16.0f);
+			data.fresnel = std::clamp(finite(look.fresnel, 0.02f), 0.0f, 1.0f);
+			data.sunSpecularPower = std::clamp(finite(look.sunSpecularPower, 600.0f), 1.0f, 10000.0f);
+			data.sunSpecularStrength = 1.0f - std::exp(-std::clamp(finite(look.sunSpecularMagnitude, 1.0f), 0.0f, 50.0f));
+			data.reflectionMagnitude = std::clamp(finite(look.reflectionMagnitude, 1.0f), 0.0f, 1.0f);
 			std::copy_n(draw->world, 12, data.world);
 			data.hasDiffuse = draw->diffuse ? 1u : 0u;
 			data.hasNormal = draw->normal ? 1u : 0u;
