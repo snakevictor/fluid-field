@@ -1811,3 +1811,19 @@ Entry format:
         spray, and the Waterfall Overlay's mesh and intersection views (it now
         shows the spray emitters and plunge points).
 -   References: D28, D30, D34, D36, D40, D44, D49, D52, D53, D59, D74, D75
+
+## D79: The falls' sim starts at each column's crest
+
+-   Date: 2026-10-20
+-   Phase / spike: overnight research (strand-sheet prototype on the bake dumps)
+-   Decision: Vanilla's falls sheets start under the upper water and climb its
+    hidden upstream face to the lip: the top fall's centre column starts at
+    z -515 under its pool at -250 and reaches its crest (-226) a little over
+    half way down v. The D74 sim brought the water in at the top edge and pushed
+    it uphill: slow water, dead pockets, eddies and jelly on the hidden face. A
+    column that climbs more than 48 units to its highest row now starts there:
+    the rows before are its lead-in (not simulated; straight, at vanilla's
+    speed), and the water comes in at the crest. Offline (simbake.py, CREST=1)
+    the eddies on bake 3 are gone and the flow parts cleanly round the rocks
+    below the crest.
+-   References: D74, D76; research/waterfalls/strand-sheet-prototype.md

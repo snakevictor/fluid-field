@@ -1479,7 +1479,33 @@ namespace FluidFieldSim
 				}
 			}
 		}
-		const auto water = [&](int32_t a_x, int32_t a_y) { return inside(a_x, a_y) && a_job.covered[index(a_x, a_y)] && !rock[index(a_x, a_y)]; };
+		// D79: each column's crest: vanilla's sheets start under the upper water and climb its hidden upstream face to the
+		// lip (the top fall's from 260 units under its pool); the water only starts there. Rows before a crest the column
+		// climbs more than SIM_CREST_RISE to are its lead-in: not simulated, they carry the water straight on
+		std::vector<int32_t> crest(static_cast<std::size_t>(w), -1);
+		std::vector<uint8_t> leadIn(count, 0);
+		uint32_t leadTexels = 0;
+		for (int32_t x = 0; x < iw; x++) {
+			int32_t first = -1, top = -1;
+			for (int32_t y = 0; y < ih; y++) {
+				if (!a_job.covered[index(x, y)])
+					continue;
+				first = first < 0 ? y : first;
+				if (top < 0 || a_job.position[index(x, y)].z > a_job.position[index(x, top)].z)
+					top = y;
+			}
+			if (first < 0)
+				continue;
+			crest[static_cast<std::size_t>(x)] = first;
+			if (top > first && a_job.position[index(x, top)].z - a_job.position[index(x, first)].z > SIM_CREST_RISE) {
+				crest[static_cast<std::size_t>(x)] = top;
+				for (int32_t y = first; y < top; y++) {
+					leadIn[index(x, y)] = 1;
+					leadTexels++;
+				}
+			}
+		}
+		const auto water = [&](int32_t a_x, int32_t a_y) { return inside(a_x, a_y) && a_job.covered[index(a_x, a_y)] && !rock[index(a_x, a_y)] && !leadIn[index(a_x, a_y)]; };
 
 		// D74 diagnostics: the sim's inputs, next to the log, for the offline harness (scratchpad simbake.py)
 		if (const auto directory = logger::log_directory()) {
@@ -1553,10 +1579,10 @@ namespace FluidFieldSim
 		std::vector<uint8_t> inflow(count, 0), outflow(count, 0);
 		uint32_t inflows = 0, outflows = 0;
 		for (int32_t x = 0; x < iw; x++) {
-			int32_t first = -1;
-			for (int32_t y = 0; y < ih && first < 0; y++)
-				first = a_job.covered[index(x, y)] ? y : -1;
-			if (first >= 0 && first <= rowTop + rows && water(x, first)) {
+			// D79: in at the crest (the first covered row where the column does not climb)
+			const int32_t first = crest[static_cast<std::size_t>(x)];
+			const bool leads = first >= 0 && first > 0 && leadIn[index(x, std::max(first - 1, 0))];
+			if (first >= 0 && (leads || first <= rowTop + rows) && water(x, first)) {
 				inflow[index(x, first)] = 1;
 				inflows++;
 			}
@@ -1812,11 +1838,18 @@ namespace FluidFieldSim
 		// D76: water coming over the lip goes straight on: the turn eases in over the first SIM_LIP_ROWS rows of each
 		// column (on the lip's curl the sim's frame twists, and its flow there scattered sideways)
 		for (int32_t x = 0; x < iw; x++) {
-			int32_t first = -1;
-			for (int32_t y = 0; y < ih && first < 0; y++)
-				first = a_job.covered[index(x, y)] ? y : -1;
+			// D79: from the crest; the lead-in before it goes straight
+			const int32_t first = crest[static_cast<std::size_t>(x)];
 			if (first < 0)
 				continue;
+			for (int32_t y = 0; y < first; y++) {
+				if (leadIn[index(x, y)] && from[index(x, y)] < 0) {
+					turn[index(x, y)] = 0.0f;
+					speed[index(x, y)] = 1.0f;
+					from[index(x, y)] = static_cast<int32_t>(index(x, y));
+					frontier.push_back(index(x, y));
+				}
+			}
 			for (int32_t y = first; y < std::min(ih, first + SIM_LIP_ROWS); y++) {
 				const float ease = static_cast<float>(y - first) / static_cast<float>(SIM_LIP_ROWS);
 				turn[index(x, y)] *= ease * ease * (3.0f - 2.0f * ease);
@@ -1858,7 +1891,8 @@ namespace FluidFieldSim
 		};
 		blur(turn, 2);
 		blur(speed, 2);
-		logger::info("[Fluid Field]   sim: {}x{} texels, {} in and {} out, fastest {:.0f} units/s, {} texels in dead pockets", w, h, inflows, outflows, fastestWorld, dead);
+		logger::info("[Fluid Field]   sim: {}x{} texels, {} in and {} out, fastest {:.0f} units/s, {} texels in dead pockets, {} in hidden lead-ins", w, h, inflows, outflows, fastestWorld, dead,
+			leadTexels);
 
 		// The masks (D60), where the warp would misbehave and real water turns white anyway: the rim of each
 		// rock, the water piling against it and squeezing past it (the solve's foam), and its wake, carried

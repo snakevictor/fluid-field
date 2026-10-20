@@ -304,6 +304,7 @@ namespace FluidFieldSim
 		static constexpr float SIM_BAND = 0.15f;          ///< D74: share of the mesh's rows (texture v) its top and foot bands are
 		static constexpr float SIM_DEAD = 0.15f;          ///< D74: water moving less than this share of the median is a dead pocket: it keeps vanilla's way
 		static constexpr float SIM_MOST_TURN = 5.7f;      ///< D74: the streaks turn at most this across per down (80 degrees)
+		static constexpr float SIM_CREST_RISE = 48.0f;    ///< D79: a column climbing more than this to its highest row starts there (its lead-in is hidden under the upper water)
 		static constexpr int32_t SIM_LIP_ROWS = 14;       ///< D76: rows down from a mesh's top over which its streaks start to turn
 		static constexpr float BAKE_WAKE_TEXELS = 24.0f;  ///< D60: texels down the streaks a rock's wake fades over
 		/** @brief D59: a mesh's flow bake in progress: its texture grid rasterised, its texels being tested against the rock. */
