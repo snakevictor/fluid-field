@@ -389,6 +389,7 @@ private:
 	bool showFallSites = false;  ///< Debug: draws the waterfall sites (D25) in the world; not saved
 	bool fallTestQuadRequested = false;
 	bool fallTestQuadShown = false;
+	int fallMeshDebug = 0;                                   ///< D75: the falls' meshes debug overlay (FallSites::DrawMeshDebug: 1 wireframe, 2 flow, 3 both); not saved
 	int fallSheetDebug = 0;                                  ///< D64: the generated falls' debug view (FallSheets::DebugView); not saved                          ///< D62 probe: toggle the engine-built test quad next update
 	bool hideFallEffects = true;                             ///< Debug: hides vanilla's mist, skirt, splash and rapids meshes; not saved
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls

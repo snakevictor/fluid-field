@@ -261,6 +261,12 @@ namespace FluidFieldSim
 		 * the water levels, and the spray emitters by kind (D36).
 		 */
 		void DrawDebug(ImDrawList* a_drawList, float a_range, bool a_sites, int a_view) const;
+		/**
+		 * @brief D75 debug: the falls' lit meshes as drawn (their dense copies) over everything: 1 their triangles'
+		 * wireframe, 2 their sim's flow as arrows in the world (length and colour by speed: blue slow, red fast;
+		 * white where it strikes rock), 3 both. Meshes within a_range of the camera.
+		 */
+		void DrawMeshDebug(ImDrawList* a_drawList, float a_range, int a_mode) const;
 
 		/**
 		 * @brief D36: the pools' surface over a ground map's lattice: per texel the highest water plane

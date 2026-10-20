@@ -275,6 +275,11 @@ void FluidField::DrawSettings()
 			tooltip(T(TKEY("show_waterfall_sites_tooltip"), "Draws the waterfall sites found in vanilla's layout: effect meshes by class, each site's water levels (green top, blue bottom, teal tiers) and a label. Also prints each cell's summary to the console."));
 			const char* sheetViews[] = { T(TKEY("fall_sheet_debug_off"), "Off"), T(TKEY("fall_sheet_debug_wireframe"), "Wireframe"), T(TKEY("fall_sheet_debug_lip"), "Lip and Routes"),
 				T(TKEY("fall_sheet_debug_normals"), "Normals"), T(TKEY("fall_sheet_debug_all"), "All") };
+			const char* meshViews[] = { T(TKEY("fall_mesh_debug_off"), "Off"), T(TKEY("fall_mesh_debug_wireframe"), "Wireframe"), T(TKEY("fall_mesh_debug_flow"), "Flow"),
+				T(TKEY("fall_mesh_debug_both"), "Wireframe and Flow") };
+			ImGui::Combo(T(TKEY("fall_mesh_debug"), "Falls Mesh Debug"), &fallMeshDebug, meshViews, IM_ARRAYSIZE(meshViews));
+			tooltip(T(TKEY("fall_mesh_debug_tooltip"),
+				"Drawn over everything, through the ground. Wireframe: the falls' meshes as drawn (yellow: our dense copies). Flow: the simulated water on each mesh as arrows, longer and redder when faster, bluer when slower, white where it strikes rock. Not saved."));
 			ImGui::Combo(T(TKEY("fall_sheet_debug"), "Generated Falls Debug"), &fallSheetDebug, sheetViews, IM_ARRAYSIZE(sheetViews));
 			tooltip(T(TKEY("fall_sheet_debug_tooltip"),
 				"Drawn over everything, through the ground. Wireframe: the generated sheets' grid, red where it lies under the ground. Lip and Routes: the detected edge of the upper water (magenta), where the columns start (green), vanilla's lips (cyan), and each column's route (orange in the air, blue on the ground). Normals: the sheets' faces coloured by their normal (x red, y green, z blue). Not saved."));
@@ -347,6 +352,9 @@ void FluidField::DrawOverlay()
 {
 	if ((showFallSites || fallDebugView > 0) && loaded && settings.Enabled)
 		fallSites.DrawDebug(ImGui::GetBackgroundDrawList(), FALL_SITES_DEBUG_RANGE, showFallSites, fallDebugView);
+	// D75: the falls' meshes and their sim
+	if (fallMeshDebug != 0 && loaded && settings.Enabled)
+		fallSites.DrawMeshDebug(ImGui::GetBackgroundDrawList(), FALL_SITES_DEBUG_RANGE, fallMeshDebug);
 	// D61: the sheets' marched columns
 	if (fallSheetDebug != 0 && loaded && settings.Enabled)
 		fallSheets.DrawDebug(ImGui::GetBackgroundDrawList(), static_cast<FluidFieldSim::FallSheets::DebugView>(fallSheetDebug));
@@ -468,7 +476,7 @@ void FluidField::DrawOverlay()
 
 bool FluidField::IsOverlayVisible() const
 {
-	return (showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews) || ((showFallSites || fallDebugView > 0) && settings.Enabled);
+	return (showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews) || ((showFallSites || fallDebugView > 0 || fallMeshDebug > 0 || fallSheetDebug > 0) && settings.Enabled);
 }
 
 #undef I18N_KEY_PREFIX

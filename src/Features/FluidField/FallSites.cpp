@@ -4238,6 +4238,96 @@ namespace FluidFieldSim
 		}
 	}
 
+	void FallSites::DrawMeshDebug(ImDrawList* a_drawList, float a_range, int a_mode) const
+	{
+		auto* camera = PlayerCamera();
+		if (!camera || !a_drawList || a_mode <= 0)
+			return;
+		const ImVec2 display = ImGui::GetIO().DisplaySize;
+		const RE::NiPoint3 eye = camera->world.translate;
+		const auto project = [&](const RE::NiPoint3& a_p, ImVec2& a_screen) {
+			float sx, sy, sz;
+			if (!camera->WorldPtToScreenPt3(a_p, sx, sy, sz, 1e-5f) || sz <= 0.0f)
+				return false;
+			a_screen = ImVec2(sx * display.x, (1.0f - sy) * display.y);
+			return true;
+		};
+		const auto nearCamera = [&](const RE::NiBound& a_bound) { return (a_bound.center - eye).Length() < a_range + a_bound.radius; };
+		// Wireframe: every grounded lit mesh's triangles, from its CPU copy
+		if (a_mode & 1) {
+			for (const auto& lit : litMeshList) {
+				auto* geometry = lit.geometry.get();
+				auto* triShape = geometry ? geometry->AsTriShape() : nullptr;
+				auto* renderer = geometry ? geometry->GetGeometryRuntimeData().rendererData : nullptr;
+				if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || !nearCamera(geometry->worldBound))
+					continue;
+				const auto& counts = triShape->GetTrishapeRuntimeData();
+				const uint32_t stride = renderer->vertexDesc.GetSize();
+				const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+				std::vector<ImVec2> screen(counts.vertexCount);
+				std::vector<uint8_t> shown(counts.vertexCount, 0);
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					float local[3];
+					std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
+					shown[v] = project(geometry->world * RE::NiPoint3(local[0], local[1], local[2]), screen[v]) ? 1 : 0;
+				}
+				const ImU32 color = denseShapes.contains(geometry) ? IM_COL32(255, 220, 60, 150) : IM_COL32(255, 120, 40, 170);
+				for (uint32_t i = 0; i < counts.triangleCount; i++) {
+					const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+					if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+						continue;
+					for (int k = 0; k < 3; k++) {
+						const uint16_t a = index[k], b = index[(k + 1) % 3];
+						if (a < b && shown[a] && shown[b])
+							a_drawList->AddLine(screen[a], screen[b], color, 1.0f);
+					}
+				}
+			}
+		}
+		// Flow: the sim's way and speed on each mesh, an arrow every few texels
+		if (a_mode & 2) {
+			static constexpr int32_t STRIDE = 5;
+			for (const auto& [geometry, field] : bakeFields) {
+				if (!field || !geometry || !nearCamera(geometry->worldBound))
+					continue;
+				const auto w = static_cast<int32_t>(field->width), h = static_cast<int32_t>(field->height);
+				const auto at = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(std::clamp(a_y, 0, h - 1)) * w + std::clamp(a_x, 0, w - 1); };
+				for (int32_t y = STRIDE / 2; y < h; y += STRIDE) {
+					for (int32_t x = STRIDE / 2; x < w; x += STRIDE) {
+						const std::size_t i = at(x, y);
+						if (!field->covered[i])
+							continue;
+						const RE::NiPoint3 tu = field->position[at(x + 1, y)] - field->position[at(x - 1, y)];
+						const RE::NiPoint3 tv = field->position[at(x, y + 1)] - field->position[at(x, y - 1)];
+						RE::NiPoint3 direction = tv + tu * field->turn[i];
+						const float length = direction.Length();
+						if (length < 1e-3f)
+							continue;
+						direction = direction / length;
+						const float speed = std::clamp(field->speed[i], 0.0f, 4.0f);
+						const float fast = std::clamp((speed - 0.5f) / 2.5f, 0.0f, 1.0f);
+						const ImU32 color = field->foam[i] > 0.4f ? IM_COL32(255, 255, 255, 230) :
+						                                            IM_COL32(static_cast<int>(40 + 215 * fast), static_cast<int>(120 * (1.0f - std::abs(fast - 0.5f) * 2.0f) + 60), static_cast<int>(255 * (1.0f - fast)), 230);
+						const RE::NiPoint3 from = field->position[i] + field->normal[i] * 4.0f;
+						const RE::NiPoint3 to = from + direction * (12.0f + 14.0f * speed);
+						ImVec2 a, b;
+						if (!project(from, a) || !project(to, b))
+							continue;
+						a_drawList->AddLine(a, b, color, 1.6f);
+						const ImVec2 d(b.x - a.x, b.y - a.y);
+						const float l = std::sqrt(d.x * d.x + d.y * d.y);
+						if (l > 4.0f) {
+							const ImVec2 u(d.x / l, d.y / l);
+							const float head = std::min(5.0f, l * 0.4f);
+							a_drawList->AddTriangleFilled(b, ImVec2(b.x - u.x * head - u.y * head * 0.5f, b.y - u.y * head + u.x * head * 0.5f),
+								ImVec2(b.x - u.x * head + u.y * head * 0.5f, b.y - u.y * head - u.x * head * 0.5f), color);
+						}
+					}
+				}
+			}
+		}
+	}
+
 	void FallSites::DrawDebug(ImDrawList* a_drawList, float a_range, bool a_sites, int a_view) const
 	{
 		auto* camera = PlayerCamera();
