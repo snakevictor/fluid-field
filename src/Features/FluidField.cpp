@@ -5,7 +5,9 @@
 #include "Profiler.h"
 #include "State.h"
 #include "Utils/D3D.h"
+#include "Utils/Game.h"
 
+#include "DynamicCubemaps.h"
 #include "UnifiedWater.h"
 #include "UnifiedWater/Flowmap.h"
 
@@ -62,6 +64,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	HideUnderwaterFalls,
 	FallWhitening,
 	FallSpeed,
+	RefractiveFalls,
+	FallClarity,
+	FallRefraction,
+	FallBlendedCopies,
 	FallLayerMask,
 	SprayAmount,
 	SpraySize,
@@ -138,6 +144,14 @@ void FluidField::DrawSettings()
 		tooltip(T(TKEY("fall_whitening_tooltip"), "White water on the falls where they strike rock, below rock, into the water below and as they run and fall."));
 		ImGui::SliderFloat(T(TKEY("fall_speed"), "Falls Speed"), &settings.FallSpeed, 0.5f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("fall_speed_tooltip"), "How fast the falls' water runs, against vanilla's own speed. The whole flow speeds up alike, so the texture never stretches."));
+		ImGui::Checkbox(T(TKEY("refractive_falls"), "See-Through Falls"), &settings.RefractiveFalls);
+		tooltip(T(TKEY("refractive_falls_tooltip"), "Experimental. Draws the falls as clear, refractive water, like the river below them: the rock behind shows through, bent by the surface and tinted by the water, with reflections and white water. Off draws vanilla's opaque falls."));
+		if (settings.RefractiveFalls) {
+			ImGui::SliderFloat(T(TKEY("fall_clarity"), "Clarity"), &settings.FallClarity, 10.0f, 1000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+			tooltip(T(TKEY("fall_clarity_tooltip"), "How far you see into the falling water before its own colour hides what lies behind, in game units."));
+			ImGui::SliderFloat(T(TKEY("fall_refraction"), "Refraction"), &settings.FallRefraction, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			tooltip(T(TKEY("fall_refraction_tooltip"), "How strongly the falls' surface bends what is seen through it."));
+		}
 		ImGui::Checkbox(T(TKEY("hide_underwater_falls"), "Hide Buried Falls"), &settings.HideUnderwaterFalls);
 		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes under the water above or below them, or deep in the rock."));
 		ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Plunge Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -161,6 +175,8 @@ void FluidField::DrawSettings()
 					settings.FallLayerMask = on ? settings.FallLayerMask | (1u << bit) : settings.FallLayerMask & ~(1u << bit);
 			}
 			tooltip(T(TKEY("fall_layers_tooltip"), "Which parts of vanilla's waterfall models show. The sheet and streak layers smear when the flow moves them."));
+			ImGui::Checkbox(T(TKEY("fall_blended_copies"), "Blended Falls Test"), &settings.FallBlendedCopies);
+			tooltip(T(TKEY("fall_blended_copies_tooltip"), "Test: builds the falls' meshes with alpha blending, so the engine itself may draw them see-through. Applies to falls built after it is set: leave the area and come back. Off for See-Through Falls."));
 			ImGui::TreePop();
 		}
 		ImGui::PopID();
@@ -534,6 +550,7 @@ void FluidField::ClearShaderCache()
 	nearWater.solver.ReleaseShaders();
 	waterShaderFailed = false;
 	fallSurface.ReleaseShaders();
+	fallRefraction.ReleaseShaders();
 }
 
 bool FluidField::EnsureSolver()
@@ -847,6 +864,10 @@ void FluidField::Prepass()
 			// Waterfall sites reconstructed from vanilla's layout (D25)
 			fallSites.SetConsoleSummary(showFallSites);
 			fallSites.SetHideEffects(hideFallEffects, settings.FallLayerMask);
+			// D91: the refractive pass draws the lit pieces itself, so the engine's are hidden while it runs; the blended
+			// copies test only applies to copies built from now on (and not with the refractive pass, which hides them)
+			fallSites.SetBlendedCopies(settings.FallBlendedCopies && !settings.RefractiveFalls);
+			fallSites.SetLitHidden(RefractiveFallsActive());
 			fallSurfaceTime += deltaTime;
 			// D67: one scroll for all the falls, integrated here once a frame at vanilla's rate (averaged over the
 			// falls' materials, against their slow zoom): every mesh of a cascade reads it, so one mesh's water runs
@@ -942,6 +963,7 @@ void FluidField::ReleaseWater()
 	fallSites.Clear();
 	ReleaseFallGround();
 	fallSurface.Release();
+	fallRefraction.Release();
 	waterShaderData = {};
 }
 
@@ -1086,6 +1108,19 @@ void FluidField::DrawGroundFogAfterWorld()
 	auto* renderer = globals::game::renderer;
 	if (!renderer)
 		return;
+
+	// D91: the refractive falls, over the finished world (water included) and under their spray
+	if (RefractiveFallsActive() && cameraSnapshot) {
+		const auto& shadow = globals::game::shadowState->GetRuntimeData();
+		const auto colorIndex = static_cast<uint32_t>(shadow.renderTargets[0]);
+		const auto depthIndex = shadow.depthStencil;
+		if (colorIndex < RE::RENDER_TARGET::kTOTAL && depthIndex < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
+			auto& target = renderer->GetRuntimeData().renderTargets[colorIndex];
+			auto& depth = renderer->GetDepthStencilData().depthStencils[depthIndex];
+			// The live depth (water surfaces included), read while it is bound read-only
+			DrawRefractiveFalls(target.RTV, target.texture, depth.readOnlyViews[0], depth.depthSRV);
+		}
+	}
 
 	// The falls' spray (D31), before the ground fog lies over their base
 	if (settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && cameraSnapshot) {
@@ -1559,82 +1594,12 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
 	auto* context = globals::d3d::context;
 	const bool grounded = fallGroundSRV && settings.Enabled && settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && a_pass && a_pass->geometry && fallSites.IsGrounded(a_pass->geometry);
 	if (grounded) {
-		// D32: the flowmap moves each mesh's texture itself, so vanilla's scroll is taken back out of its coordinates
-		auto* property = a_pass->shaderProperty;
-		auto* material = property ? property->material : nullptr;
-		const uint32_t buffer = globals::game::smState ? globals::game::smState->textureTransformCurrentBuffer : 0;
-		fallGroundData.TexOffset[0] = material ? material->texCoordOffset[buffer].x : 0.0f;
-		fallGroundData.TexOffset[1] = material ? material->texCoordOffset[buffer].y : 0.0f;
-		// D56: vanilla's own scroll, the falls' forward: the texture moves toward +v as its v offset falls.
-		// Measured over a quarter second at least (the offset loops back by whole repeats)
-		// D85: one phase per rendered frame, latched at its first falls draw: the depth pre-pass runs before Prepass moves
-		// the phase on, the lit pass after, and with the wobble riding the phase a frame's step between them failed the
-		// lit pass's depth test almost everywhere (flat white sheets, the falls showing only in cracks)
-		if (const uint32_t frame = globals::state->frameCount; frame != fallPhaseFrame) {
-			fallPhaseFrame = frame;
-			fallDrawPhasePrevious = fallDrawPhase;
-			fallDrawPhase = fallPhase;
-		}
-		fallGroundData.Scroll[0] = fallDrawPhase;
-		fallGroundData.Scroll[1] = fallRate > 0.0f ? fallRate : DEFAULT_FALL_SCROLL;
-		fallGroundData.PreviousPhase = fallDrawPhasePrevious;
-		if (material) {
-			auto& scroll = fallScrolls[material];
-			const float offset = material->texCoordOffset[buffer].y;
-			const float elapsed = fallSurfaceTime - scroll.time;
-			const float scaleNow = std::max(material->texCoordScale[buffer].y, 1e-4f);
-			if (!scroll.known || elapsed < 0.0f || elapsed > 5.0f) {
-				const bool first = !scroll.known;
-				scroll.offset = offset;
-				scroll.time = fallSurfaceTime;
-				scroll.known = true;
-				if (first) {
-					scroll.scaleTime = fallSurfaceTime;
-					scroll.scale = scaleNow;
-				}
-			} else if (elapsed >= 0.25f) {
-				float delta = offset - scroll.offset;
-				delta -= std::round(delta);
-				const float rate = -delta / elapsed;
-				scroll.rate = scroll.rate == 0.0f ? rate : scroll.rate + (rate - scroll.rate) * 0.3f;
-				scroll.offset = offset;
-				scroll.time = fallSurfaceTime;
-			}
-			// D60: vanilla's texture scale averaged once a frame, so its slow zoom stays out of the falls' rate (D67)
-			if (scroll.scaleTime != fallSurfaceTime) {
-				const float step = std::clamp(fallSurfaceTime - scroll.scaleTime, 0.0f, 0.25f);
-				scroll.scale += (scaleNow - scroll.scale) * std::min(step * 0.1f, 1.0f);
-				scroll.scaleTime = fallSurfaceTime;
-			}
-			// D67: the falls' one scroll (this material's own only measures vanilla's rate for it)
-		}
-		// D56: the per-vertex cut
-		uint32_t vertexBase = 0;
-		fallGroundData.VertexBase = fallClipSRV && fallSites.GetVertexClip(a_pass->geometry, vertexBase) && vertexBase < fallSites.GetVertexClips().size() ? vertexBase : UINT32_MAX;
-		// D57: vanilla's slow zoom of the texture taken out too, with its scroll
-		fallGroundData.InverseScale[0] = material && material->texCoordScale[buffer].x > 1e-4f ? 1.0f / material->texCoordScale[buffer].x : 1.0f;
-		fallGroundData.InverseScale[1] = material && material->texCoordScale[buffer].y > 1e-4f ? 1.0f / material->texCoordScale[buffer].y : 1.0f;
-		// D59: this mesh's flow bake, where it is solved
 		ID3D11ShaderResourceView* bakeView = nullptr;
-		fallGroundData.BakeOn = 0;
-		if (const auto it = fallBakeSRVs.find(a_pass->geometry); it != fallBakeSRVs.end()) {
-			const auto& bakes = fallSites.GetFlowBakes();
-			if (const auto bake = bakes.find(a_pass->geometry); bake != bakes.end()) {
-				bakeView = it->second.get();
-				fallGroundData.BakeOn = 1;
-				fallGroundData.BakeRect[0] = bake->second.uvMin[0];
-				fallGroundData.BakeRect[1] = bake->second.uvMin[1];
-				fallGroundData.BakeRect[2] = 1.0f / std::max(bake->second.uvSize[0], 1e-4f);
-				fallGroundData.BakeRect[3] = 1.0f / std::max(bake->second.uvSize[1], 1e-4f);
-			}
-		}
+		PrepareFallGroundData(a_pass->geometry, a_pass->shaderProperty, bakeView);
+		// D91 experiment: a dense copy built blended lets its clear water through
+		const auto* alpha = a_pass->geometry->GetGeometryRuntimeData().alphaProperty.get();
+		fallGroundData.BlendAlpha = settings.FallBlendedCopies && alpha && alpha->alphaFlags == FluidFieldSim::FallSites::BLENDED_ALPHA_FLAGS ? FALL_BLEND_TEST_ALPHA : 0.0f;
 		context->PSSetShaderResources(124, 1, &bakeView);
-		// D38: the vertex shaders' camera offset (Lighting's has none of its own), the same in every pass
-		// D44: this pass's own (reflections render from a mirrored camera; the main camera's offset cut them wrong)
-		const auto eye = globals::game::shadowState->GetRuntimeData().posAdjust.getEye();
-		fallGroundData.CameraOffset[0] = eye.x;
-		fallGroundData.CameraOffset[1] = eye.y;
-		fallGroundData.CameraOffset[2] = eye.z;
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (SUCCEEDED(context->Map(fallGroundOn.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
 			std::memcpy(mapped.pData, &fallGroundData, sizeof(fallGroundData));
@@ -1655,4 +1620,195 @@ void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
 		context->PSSetConstantBuffers(13, 1, &constants);
 		fallGroundBound = false;
 	}
+}
+
+void FluidField::PrepareFallGroundData(const RE::BSGeometry* a_geometry, RE::BSShaderProperty* a_property, ID3D11ShaderResourceView*& o_bake)
+{
+	// D32: the flowmap moves each mesh's texture itself, so vanilla's scroll is taken back out of its coordinates
+	auto* property = a_property;
+	auto* material = property ? property->material : nullptr;
+	const uint32_t buffer = globals::game::smState ? globals::game::smState->textureTransformCurrentBuffer : 0;
+	fallGroundData.TexOffset[0] = material ? material->texCoordOffset[buffer].x : 0.0f;
+	fallGroundData.TexOffset[1] = material ? material->texCoordOffset[buffer].y : 0.0f;
+	// D56: vanilla's own scroll, the falls' forward: the texture moves toward +v as its v offset falls.
+	// Measured over a quarter second at least (the offset loops back by whole repeats)
+	// D85: one phase per rendered frame, latched at its first falls draw: the depth pre-pass runs before Prepass moves
+	// the phase on, the lit pass after, and with the wobble riding the phase a frame's step between them failed the
+	// lit pass's depth test almost everywhere (flat white sheets, the falls showing only in cracks)
+	if (const uint32_t frame = globals::state->frameCount; frame != fallPhaseFrame) {
+		fallPhaseFrame = frame;
+		fallDrawPhasePrevious = fallDrawPhase;
+		fallDrawPhase = fallPhase;
+	}
+	fallGroundData.Scroll[0] = fallDrawPhase;
+	fallGroundData.Scroll[1] = fallRate > 0.0f ? fallRate : DEFAULT_FALL_SCROLL;
+	fallGroundData.PreviousPhase = fallDrawPhasePrevious;
+	if (material) {
+		auto& scroll = fallScrolls[material];
+		const float offset = material->texCoordOffset[buffer].y;
+		const float elapsed = fallSurfaceTime - scroll.time;
+		const float scaleNow = std::max(material->texCoordScale[buffer].y, 1e-4f);
+		if (!scroll.known || elapsed < 0.0f || elapsed > 5.0f) {
+			const bool first = !scroll.known;
+			scroll.offset = offset;
+			scroll.time = fallSurfaceTime;
+			scroll.known = true;
+			if (first) {
+				scroll.scaleTime = fallSurfaceTime;
+				scroll.scale = scaleNow;
+			}
+		} else if (elapsed >= 0.25f) {
+			float delta = offset - scroll.offset;
+			delta -= std::round(delta);
+			const float rate = -delta / elapsed;
+			scroll.rate = scroll.rate == 0.0f ? rate : scroll.rate + (rate - scroll.rate) * 0.3f;
+			scroll.offset = offset;
+			scroll.time = fallSurfaceTime;
+		}
+		// D60: vanilla's texture scale averaged once a frame, so its slow zoom stays out of the falls' rate (D67)
+		if (scroll.scaleTime != fallSurfaceTime) {
+			const float step = std::clamp(fallSurfaceTime - scroll.scaleTime, 0.0f, 0.25f);
+			scroll.scale += (scaleNow - scroll.scale) * std::min(step * 0.1f, 1.0f);
+			scroll.scaleTime = fallSurfaceTime;
+		}
+		// D67: the falls' one scroll (this material's own only measures vanilla's rate for it)
+	}
+	// D56: the per-vertex cut
+	uint32_t vertexBase = 0;
+	fallGroundData.VertexBase = fallClipSRV && fallSites.GetVertexClip(a_geometry, vertexBase) && vertexBase < fallSites.GetVertexClips().size() ? vertexBase : UINT32_MAX;
+	// D57: vanilla's slow zoom of the texture taken out too, with its scroll
+	fallGroundData.InverseScale[0] = material && material->texCoordScale[buffer].x > 1e-4f ? 1.0f / material->texCoordScale[buffer].x : 1.0f;
+	fallGroundData.InverseScale[1] = material && material->texCoordScale[buffer].y > 1e-4f ? 1.0f / material->texCoordScale[buffer].y : 1.0f;
+	// D59: this mesh's flow bake, where it is solved
+	o_bake = nullptr;
+	fallGroundData.BakeOn = 0;
+	if (const auto it = fallBakeSRVs.find(a_geometry); it != fallBakeSRVs.end()) {
+		const auto& bakes = fallSites.GetFlowBakes();
+		if (const auto bake = bakes.find(a_geometry); bake != bakes.end()) {
+			o_bake = it->second.get();
+			fallGroundData.BakeOn = 1;
+			fallGroundData.BakeRect[0] = bake->second.uvMin[0];
+			fallGroundData.BakeRect[1] = bake->second.uvMin[1];
+			fallGroundData.BakeRect[2] = 1.0f / std::max(bake->second.uvSize[0], 1e-4f);
+			fallGroundData.BakeRect[3] = 1.0f / std::max(bake->second.uvSize[1], 1e-4f);
+		}
+	}
+	// D38: the vertex shaders' camera offset (Lighting's has none of its own), the same in every pass
+	// D44: this pass's own (reflections render from a mirrored camera; the main camera's offset cut them wrong)
+	const auto eye = globals::game::shadowState->GetRuntimeData().posAdjust.getEye();
+	fallGroundData.CameraOffset[0] = eye.x;
+	fallGroundData.CameraOffset[1] = eye.y;
+	fallGroundData.CameraOffset[2] = eye.z;
+	fallGroundData.BlendAlpha = 0.0f;
+}
+
+bool FluidField::RefractiveFallsActive() const
+{
+	// The debug views (D40) are drawn by the lit pass, so the lit pieces stay while one is on
+	return loaded && settings.Enabled && settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && settings.RefractiveFalls &&
+	       settings.WaterfallDebug == 0 && fallGroundSRV && fallGroundOn && fallRefraction.IsUsable();
+}
+
+namespace
+{
+	/** @brief D91: the water type around the camera (its cell's, else its worldspace's), as Util::TryGetWaterData finds it. */
+	const RE::TESWaterForm* FallWaterType()
+	{
+		auto* tes = RE::TES::GetSingleton();
+		if (!tes)
+			return nullptr;
+		const auto eye = Util::GetEyePosition();
+		if (auto* cell = tes->GetCell(eye)) {
+			if (auto* extra = cell->extraList.GetByType<RE::ExtraCellWaterType>(); extra && extra->water)
+				return extra->water;
+		}
+		auto* worldSpace = tes->GetRuntimeData2().worldSpace;
+		return worldSpace ? worldSpace->worldWater : nullptr;
+	}
+}
+
+void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Texture2D* a_targetTexture, ID3D11DepthStencilView* a_depth, ID3D11ShaderResourceView* a_sceneDepth)
+{
+	if (!RefractiveFallsActive() || !cameraSnapshot)
+		return;
+	// Every lit piece's constants first (each MeshDraw points into this), then its draw
+	const auto& lit = fallSites.GetLitMeshes();
+	std::vector<FallGroundData> grounds;
+	grounds.reserve(lit.size());
+	std::vector<FluidFieldSim::FallRefraction::MeshDraw> draws;
+	draws.reserve(lit.size());
+	std::unordered_set<const RE::BSGeometry*> keep;
+	for (const auto& piece : lit) {
+		auto* geometry = piece.geometry.get();
+		auto* property = geometry ? geometry->GetGeometryRuntimeData().shaderProperty.get() : nullptr;
+		if (!geometry || !property || !fallSites.IsGrounded(geometry))
+			continue;
+		keep.insert(geometry);
+		FluidFieldSim::FallRefraction::MeshDraw draw;
+		draw.geometry = geometry;
+		PrepareFallGroundData(geometry, property, draw.bake);
+		grounds.push_back(fallGroundData);
+		const auto& world = geometry->world;
+		for (int row = 0; row < 3; row++) {
+			for (int column = 0; column < 3; column++)
+				draw.world[row * 4 + column] = world.rotate.entry[row][column] * world.scale;
+		}
+		draw.world[3] = world.translate.x;
+		draw.world[7] = world.translate.y;
+		draw.world[11] = world.translate.z;
+		if (auto* lighting = netimmerse_cast<RE::BSLightingShaderProperty*>(property)) {
+			auto* material = static_cast<RE::BSLightingShaderMaterialBase*>(lighting->GetBaseMaterial());
+			const auto view = [](const RE::NiPointer<RE::NiSourceTexture>& a_texture) -> ID3D11ShaderResourceView* {
+				return a_texture && a_texture->rendererTexture ? a_texture->rendererTexture->resourceView : nullptr;
+			};
+			draw.diffuse = material ? view(material->diffuseTexture) : nullptr;
+			draw.normal = material ? view(material->normalTexture) : nullptr;
+		}
+		draws.push_back(draw);
+	}
+	for (std::size_t i = 0; i < draws.size(); i++) {
+		draws[i].ground = &grounds[i];
+		draws[i].groundSize = sizeof(FallGroundData);
+	}
+	fallRefraction.Prune(keep);
+	if (draws.empty())
+		return;
+
+	FluidFieldSim::FallRefraction::DrawParams params;
+	params.target = a_target;
+	params.targetTexture = a_targetTexture;
+	params.depth = a_depth;
+	params.sceneDepth = a_sceneDepth;
+	params.camera = cameraSnapshot.get();
+	params.shared = globals::state->sharedDataCB->CB();
+	params.features = globals::state->featureDataCB->CB();
+	params.vertexClip = fallClipSRV.get();
+	params.poolHeights = fallGroundSRV.get();
+	auto& dynamicCubemaps = globals::features::dynamicCubemaps;
+	params.environment = dynamicCubemaps.loaded && dynamicCubemaps.envReflectionsTexture ? dynamicCubemaps.envReflectionsTexture->srv.get() : nullptr;
+	if (const auto* waterType = FallWaterType()) {
+		// The river's own colours (Water.hlsl's ShallowColor and DeepColor), under the weather's water multiplier
+		float multiplier[3] = { 1.0f, 1.0f, 1.0f };
+		if (auto* sky = globals::game::sky) {
+			const auto& color = sky->skyColor[RE::TESWeather::ColorTypes::kWaterMultiplier];
+			multiplier[0] = color.red;
+			multiplier[1] = color.green;
+			multiplier[2] = color.blue;
+		}
+		const auto& data = waterType->data;
+		const float shallow[3] = { data.shallowWaterColor.red / 255.0f, data.shallowWaterColor.green / 255.0f, data.shallowWaterColor.blue / 255.0f };
+		const float deep[3] = { data.deepWaterColor.red / 255.0f, data.deepWaterColor.green / 255.0f, data.deepWaterColor.blue / 255.0f };
+		for (int k = 0; k < 3; k++) {
+			params.shallowColor[k] = std::clamp(shallow[k] * multiplier[k], 0.0f, 1.0f);
+			params.deepColor[k] = std::clamp(deep[k] * multiplier[k], 0.0f, 1.0f);
+		}
+		if (data.fresnelAmount > 0.0f && data.fresnelAmount < 1.0f)
+			params.fresnel = data.fresnelAmount;
+	}
+	params.clarity = std::clamp(settings.FallClarity, 10.0f, 2000.0f);
+	params.refraction = std::clamp(settings.FallRefraction, 0.0f, 3.0f);
+	params.streakFoam = settings.FallWhitening ? 0.6f : 0.4f;
+	globals::profiler->BeginPass("FluidField::RefractiveFalls");
+	fallRefraction.Draw(globals::d3d::device, globals::d3d::context, params, draws);
+	globals::profiler->EndPass();
 }

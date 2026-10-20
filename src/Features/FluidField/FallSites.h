@@ -133,6 +133,22 @@ namespace FluidFieldSim
 		{
 			RE::NiPointer<RE::BSGeometry> geometry;
 		};
+		/** @brief D61: the grounded sites' lit falls pieces (their dense copies where built, D73). */
+		const std::vector<LitMesh>& GetLitMeshes() const { return litMeshList; }
+		/**
+		 * @brief D91 (refractive falls): hides the lit falls pieces from the engine's passes (app-culled), because the
+		 * refractive forward pass draws them instead and must see what lies behind them; false shows them again. Only
+		 * the pieces hidden here are shown again (an original drawn by its dense copy stays hidden).
+		 */
+		void SetLitHidden(bool a_hidden);
+		/**
+		 * @brief D91 experiment: dense copies built from now on carry a blended NiAlphaProperty (0x10ED, borrowed from
+		 * the model's effect layers) attached before the engine sets the copy up, so it may register with the blended
+		 * pass (realtime-integration-design.md 5.2, cause 1). Copies already built keep what they had.
+		 */
+		void SetBlendedCopies(bool a_on) { blendedCopies = a_on; }
+		/** @brief D91: the alpha flags the falls' effect layers carry: blended, SrcAlpha / InvSrcAlpha. */
+		static constexpr uint16_t BLENDED_ALPHA_FLAGS = 0x10ED;
 		/** @brief D61: the surface of the pool over a world point (a site's pools, D78: ComputePools), or false where there is none (yet). */
 		bool PoolLevelAt(float a_x, float a_y, float& a_level) const;
 		/** @brief D66: every engine water plane (water objects and cells' water) over a box: min x, min y, max x, max y, height. */
@@ -261,6 +277,13 @@ namespace FluidFieldSim
 		std::unordered_map<uint64_t, FallCapture> captures;       ///< By Site::captureKey
 		std::unordered_set<const RE::BSGeometry*> grounded;
 		std::vector<LitMesh> litMeshList;
+		std::vector<RE::NiPointer<RE::BSGeometry>> litHidden;  ///< D91: the lit pieces SetLitHidden app-culled
+		bool litHiddenWanted = false;
+		bool blendedCopies = false;  ///< D91 experiment (SetBlendedCopies)
+		/** @brief D91: app-culls the current lit pieces (or shows the ones it culled again) as SetLitHidden asked. */
+		void ApplyLitHidden();
+		/** @brief D91 experiment: a blended alpha property for a dense copy of a_geometry (a clone of its model's effect layers'), or null. */
+		RE::NiAlphaProperty* MakeBlendedAlpha(RE::BSGeometry* a_geometry) const;
 		/** @brief D56: tests the queued lit meshes' vertices against the rock, a few milliseconds a frame. */
 		void ClipStep();
 		/** @brief D57: the nearest rock along a ray from a point, world units, or a negative value for none (the falls' own collision passed through). */

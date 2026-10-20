@@ -27,7 +27,8 @@ namespace FallGround
 		float2 InverseScale;   // D57: undoes vanilla's animated texture scale (its slow zoom), with TexOffset its scroll
 		uint BakeOn;           // D59: this mesh has a flow bake (FlowBake)
 		float PreviousPhase;   // D85: last frame's Scroll.x (the wobble's motion vectors)
-		float2 GroundPad;
+		float BlendAlpha;      // D91 experiment: how see-through a blended dense copy's clear water is (0: opaque, every other draw)
+		float GroundPad;
 		float4 BakeRect;  // D59: the bake's texture coordinates: its least u and v, and one over its extent
 	};
 

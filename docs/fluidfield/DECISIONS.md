@@ -2193,3 +2193,71 @@ Entry format:
         20-unit edges, 10 rounds smoothed only about 60 units, shorter than
         vanilla's teeth (SS 873).
 -   References: D86, D90, D91
+
+## D93: Refractive falls, drawn by a pass of our own (branch feature/fluid-field-refractive-falls)
+
+-   Date: 2026-10-20
+-   Phase / spike: real-time falls, translucency (research/waterfalls/realtime-integration-design.md 5.2); on
+    the branch `feature/fluid-field-refractive-falls` only, untested in game
+-   Decision: the falls should look like the river under them (Water.hlsl with the Fluid Field hooks), not an
+    opaque scrolling texture. Two things are built, both off by default:
+    -   **The cheap experiment ("Blended Falls Test", Advanced).** D53-D56 switched a blended NiAlphaProperty on
+        live lit geometry and it drew nothing; the design note ranks "routing is chosen at setup" first. D73's
+        dense copies are ours, so `FallSites::Densify` now gives a copy a clone of its model's effect layers'
+        alpha property (flags 0x10ED: blended, SrcAlpha / InvSrcAlpha; the original's own if no layer has one)
+        **before** SetupGeometry / FinishSetupGeometry, and the lit shader lowers its alpha (to 0.4 on clear
+        water, 1 on white water; `FallGround::BlendAlpha`, FALL_BLEND_TEST_ALPHA). Only copies built after
+        it is set (leave the area and come back). Expected: if cause 1 was the whole story, the copies now draw
+        in the blended pass, forward lit, out of the depth pre-pass. Even then the result is not the river's
+        look (cause 2: Lighting.hlsl's alpha also goes to the G-buffer targets that CS blends, and the
+        composite relights them; no refraction, no thickness), so this only answers the D53 question.
+    -   **The refractive pass ("See-Through Falls", Waterfalls > Water; Clarity, Refraction).**
+        `FallRefraction` draws every grounded lit piece (`FallSites::GetLitMeshes`: the dense copies on AE,
+        the originals where there are none) after the world, water and blended geometry included, just before
+        the spray (`DrawGroundFogAfterWorld`), with `FluidField/FallSurface.hlsl`:
+        -   Our own immutable buffers per piece, built once from its CPU copy (rawVertexData / rawIndexData:
+            position, texture coordinate, normal) and read by SV_VertexID (t125), so SV_VertexID indexes the
+            per-vertex buffer (t123) exactly as in the lit passes. The engine's own GPU buffers were not used:
+            their packed layout would need an input layout per vertex format.
+        -   The vertex shader is the lit passes' move: `FallGround::Shift` (seams, swell, wobble) at the frame's
+            latched phase (D86), the cut (`ClipDistance`) and the seam fade (`Fade`). The constants come from
+            the same code as the lit passes (`PrepareFallGroundData`, split out of `SetupFallGeometry`), so the
+            phase, scroll, bake (t124) and cut are the same.
+        -   The pixel shader ports Water.hlsl's look: the scene is copied before the pass (what lies behind),
+            sampled offset by the normal map's tilt as seen from the camera (less where little water is behind;
+            a sample landing in front of the sheet falls back to the straight one); absorbed along the view ray
+            by the water between the surface and the scene depth behind it (at most 600 units, a curtain in front
+            of a cave is not that thick) plus the sheet's own 8 units over the cosine, with the water type's
+            shallow and deep colours (the cell's water, else the worldspace's, times the weather's water
+            multiplier, as Util::TryGetWaterData); fresnel (the water type's fresnel amount) over Dynamic
+            Cubemaps' reflection cubemap, or the sky's ambient without it; the sun's glint; white water from the
+            bake as in the lit pass (foam, aeration, wake, pools; "Foam on the Falls") plus vanilla's streak
+            texture read as aeration. Premultiplied, depth tested against the live depth (read-only), no depth
+            write. Seams fade by alpha (no dither) and the sheet fades in over its first 4 units of water.
+        -   **The lit pieces are hidden while it runs** (app-culled through `FallSites::SetLitHidden`, shown
+            again when it is off, on Clear and with the debug views, which the lit pass draws). Refraction needs
+            the scene behind the sheet without the sheet in it, in colour and in depth; keeping them for depth
+            or shadows would put the opaque sheet in exactly what we refract. Lost with them: their shadows,
+            their place in the depth pre-pass (SSR, AO, fog, the spray's soft contact see through them) and in
+            water reflections.
+        -   Every resource is named; every piece of state touched is saved and restored. A shader failure or a
+            scene target that cannot be copied (multisampled) leaves the lit falls on (`IsUsable`).
+    -   Settings: RefractiveFalls (off), FallClarity 160, FallRefraction 1, FallBlendedCopies (off);
+        FluidField.ini 0-35-0.
+-   Untested: none of it has run in game; the C++ was not compiled on the branch (no build folder in the
+    worktree); FallSurface.hlsl and Lighting.hlsl were compiled with fxc.
+-   Risks:
+    -   **TAA and motion vectors.** The pass writes no motion vectors: the pixels keep the rock's behind (a
+        static scene's camera motion), so the sheet's own parallax and the wobble ghost under TAA, and the
+        refracted scene smears with it. Vanilla water has the same exposure; it may need a motion vector write
+        (a second target) or a reactive mask for the upscalers.
+    -   **Sorting.** No depth write: overlapping sheets (curtain front and back, cascades) blend in draw
+        order; the spray behind a sheet draws over it (the scene depth has no falls); the ground fog lies over
+        the falls by the rock's depth. The vanilla effect layers (FallLayerMask) are still drawn earlier,
+        behind or in front by their own depth, and are refracted with the scene.
+    -   **Thin-sheet absorption.** The scene depth behind a sheet is not the water's thickness; Clarity,
+        MAX_PATH and SHEET_THICKNESS are first guesses. Distance fog is not applied to what the pass adds
+        (only the refracted scene carries its own fog), so far falls may look too bright.
+    -   The hidden pieces' world transforms are read while app-culled (static meshes; updated when attached).
+-   References: D53, D54, D55, D56, D67, D73, D85, D86, D90;
+    research/waterfalls/realtime-integration-design.md 5.2

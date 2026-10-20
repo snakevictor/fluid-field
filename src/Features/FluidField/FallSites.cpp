@@ -264,7 +264,9 @@ namespace FluidFieldSim
 			}
 		}
 		for (auto& [object, pointer] : hiddenEffects) {
-			if (!wanted.contains(object) && pointer)
+			// D91: a lit piece the refractive pass draws stays hidden
+			const bool lit = std::any_of(litHidden.begin(), litHidden.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_hidden) { return a_hidden.get() == object; });
+			if (!wanted.contains(object) && pointer && !lit)
 				pointer->SetAppCulled(false);
 		}
 		for (auto& [object, pointer] : wanted)
@@ -276,6 +278,13 @@ namespace FluidFieldSim
 	{
 		hideEffects = false;
 		RefreshHiddenEffects();
+		// D91: the pieces the refractive pass drew show again (the wish is kept for the next sites)
+		// D91: the pieces the refractive pass drew show again (the wish is kept for the next sites)
+		for (const auto& geometry : litHidden) {
+			if (geometry && !denseOf.contains(geometry.get()))
+				geometry->SetAppCulled(false);
+		}
+		litHidden.clear();
 		RemoveDense();
 		grounded.clear();
 		clipQueue.clear();
@@ -708,6 +717,45 @@ namespace FluidFieldSim
 		if (std::erase_if(bakeFields, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); }))
 			BuildPlunges();
 		groundVersion++;
+		ApplyLitHidden();
+	}
+
+	void FallSites::SetLitHidden(bool a_hidden)
+	{
+		if (a_hidden == litHiddenWanted)
+			return;
+		litHiddenWanted = a_hidden;
+		ApplyLitHidden();
+	}
+
+	void FallSites::ApplyLitHidden()
+	{
+		// Show again what was hidden and is no longer wanted hidden (or no longer a lit piece); an original drawn by its
+		// dense copy now (D73) stays hidden
+		std::unordered_set<const RE::BSGeometry*> current;
+		if (litHiddenWanted) {
+			for (const auto& lit : litMeshList)
+				current.insert(lit.geometry.get());
+		}
+		std::erase_if(litHidden, [&](const RE::NiPointer<RE::BSGeometry>& a_geometry) {
+			if (!a_geometry)
+				return true;
+			if (current.contains(a_geometry.get()))
+				return false;
+			// Not an original drawn by its copy, nor a layer the debug hides (RefreshHiddenEffects)
+			if (!denseOf.contains(a_geometry.get()) && !hiddenEffects.contains(a_geometry.get()))
+				a_geometry->SetAppCulled(false);
+			return true;
+		});
+		if (!litHiddenWanted)
+			return;
+		for (const auto& lit : litMeshList) {
+			auto* geometry = lit.geometry.get();
+			if (!geometry || std::any_of(litHidden.begin(), litHidden.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_hidden) { return a_hidden.get() == geometry; }))
+				continue;
+			geometry->SetAppCulled(true);
+			litHidden.emplace_back(geometry);
+		}
 	}
 
 	float FallSites::RockAlong(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, int* a_crossings, float* a_last) const
@@ -1021,6 +1069,16 @@ namespace FluidFieldSim
 			return false;
 		shape->GetGeometryRuntimeData().shaderProperty.reset(copy);
 		shape->GetGeometryRuntimeData().alphaProperty = a_geometry->GetGeometryRuntimeData().alphaProperty;
+		// D91 experiment: a blended alpha property before the engine sets the copy up, so it is routed to the blended
+		// pass from the start (D53-D56 switched it on live geometry, which stayed registered as opaque and drew nothing)
+		if (blendedCopies) {
+			if (auto* blended = MakeBlendedAlpha(a_geometry)) {
+				shape->GetGeometryRuntimeData().alphaProperty.reset(blended);
+				logger::info("[Fluid Field]   dense copy of '{}' blended (alpha flags {:04X})", a_geometry->name.c_str(), blended->alphaFlags);
+			} else {
+				logger::info("[Fluid Field]   dense copy of '{}': no alpha property to borrow, stays opaque", a_geometry->name.c_str());
+			}
+		}
 		copy->SetupGeometry(shape);
 		copy->FinishSetupGeometry(shape);
 		parent->AttachChild(shape, true);
@@ -1032,6 +1090,36 @@ namespace FluidFieldSim
 		logger::info("[Fluid Field]   dense copy of '{}': {} to {} vertices, {} to {} triangles", a_geometry->name.c_str(), counts.vertexCount, positions.size(), counts.triangleCount,
 			triangles.size());
 		return true;
+	}
+
+	RE::NiAlphaProperty* FallSites::MakeBlendedAlpha(RE::BSGeometry* a_geometry) const
+	{
+		// The lit surface has no alpha property of its own (D53); its model's effect layers carry 0x10ED. Searched from
+		// its parent up toward the model's root
+		RE::NiAlphaProperty* source = nullptr;
+		RE::NiNode* node = a_geometry->parent;
+		for (int up = 0; up < 3 && node && !source; up++, node = node->parent) {
+			RE::BSVisit::TraverseScenegraphGeometries(node, [&](RE::BSGeometry* a_other) {
+				auto* alpha = a_other != a_geometry ? a_other->GetGeometryRuntimeData().alphaProperty.get() : nullptr;
+				if (alpha && alpha->GetAlphaBlending()) {
+					source = alpha;
+					return RE::BSVisit::BSVisitControl::kStop;
+				}
+				return RE::BSVisit::BSVisitControl::kContinue;
+			});
+		}
+		if (!source)
+			source = a_geometry->GetGeometryRuntimeData().alphaProperty.get();
+		if (!source)
+			return nullptr;
+		// A clone, so the effect layers' own property is never changed
+		RE::NiCloningProcess cloning;
+		auto* clone = static_cast<RE::NiAlphaProperty*>(source->CreateClone(cloning));
+		if (!clone)
+			return nullptr;
+		clone->alphaFlags = BLENDED_ALPHA_FLAGS;
+		clone->alphaThreshold = 0;
+		return clone;
 	}
 
 	void FallSites::RemoveDense()
