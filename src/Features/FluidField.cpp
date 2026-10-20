@@ -65,7 +65,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	FallWhitening,
 	FallSpeed,
 	RefractiveFalls,
-	FallClarity,
+	FallDepth,
 	FallRefraction,
 	FallBlendedCopies,
 	FallLayerMask,
@@ -147,8 +147,8 @@ void FluidField::DrawSettings()
 		ImGui::Checkbox(T(TKEY("refractive_falls"), "See-Through Falls"), &settings.RefractiveFalls);
 		tooltip(T(TKEY("refractive_falls_tooltip"), "Experimental. Draws the falls as clear, refractive water, like the river below them: the rock behind shows through, bent by the surface and tinted by the water, with reflections and white water. Off draws vanilla's opaque falls."));
 		if (settings.RefractiveFalls) {
-			ImGui::SliderFloat(T(TKEY("fall_clarity"), "Clarity"), &settings.FallClarity, 10.0f, 1000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-			tooltip(T(TKEY("fall_clarity_tooltip"), "How far you see into the falling water before its own colour hides what lies behind, in game units."));
+			ImGui::SliderFloat(T(TKEY("fall_depth"), "Water Depth"), &settings.FallDepth, 0.25f, 8.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+			tooltip(T(TKEY("fall_depth_tooltip"), "How deep the falling water looks next to the river it pours out of, which gives its colours and clarity. Higher shows more of the water's own colour and less of what lies behind."));
 			ImGui::SliderFloat(T(TKEY("fall_refraction"), "Refraction"), &settings.FallRefraction, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 			tooltip(T(TKEY("fall_refraction_tooltip"), "How strongly the falls' surface bends what is seen through it."));
 		}
@@ -964,6 +964,7 @@ void FluidField::ReleaseWater()
 	ReleaseFallGround();
 	fallSurface.Release();
 	fallRefraction.Release();
+	fallWaterTypes.clear();
 	waterShaderData = {};
 }
 
@@ -1711,19 +1712,87 @@ bool FluidField::RefractiveFallsActive() const
 
 namespace
 {
-	/** @brief D91: the water type around the camera (its cell's, else its worldspace's), as Util::TryGetWaterData finds it. */
-	const RE::TESWaterForm* FallWaterType()
+	/** @brief D98: how far over a falls piece's bound a water surface may lie and still be the one it pours out of. */
+	constexpr float FALL_WATER_ABOVE_TOP = 64.0f;
+
+	/**
+	 * @brief D98: the water type a falls piece pours out of. The highest of the engine's water objects (TESWaterSystem, read
+	 * under its lock as WaterSurfaces does) whose bound overlaps the piece's footprint and lies no higher than its top: the
+	 * river at its crest wins over the pool it falls into. Else the water of the cell at its top, else the worldspace's.
+	 */
+	const RE::TESWaterForm* FindFallWaterType(const RE::BSGeometry* a_geometry)
 	{
+		const auto& bound = a_geometry->worldBound;
+		const bool hasBound = std::isfinite(bound.radius) && bound.radius > 1.0f;
+		const RE::NiPoint3 centre = hasBound ? bound.center : a_geometry->world.translate;
+		const float radius = hasBound ? bound.radius : 256.0f;
+		const float top = centre.z + radius;
+		const RE::TESWaterForm* best = nullptr;
+		float bestHeight = -FLT_MAX;
+		if (auto* waterSystem = RE::TESWaterSystem::GetSingleton()) {
+			RE::BSSpinLockGuard guard(waterSystem->lock);
+			for (const auto& object : waterSystem->waterObjects) {
+				if (!object || !object->waterType)
+					continue;
+				for (const auto& box : object->multiBounds) {
+					if (!box)
+						continue;
+					if (box->center.x + box->size.x < centre.x - radius || box->center.x - box->size.x > centre.x + radius ||
+						box->center.y + box->size.y < centre.y - radius || box->center.y - box->size.y > centre.y + radius)
+						continue;
+					// A sloped bound (rapids running into the falls) counts from its lower end; one wholly over the top is another river
+					if (box->center.z - box->size.z > top + FALL_WATER_ABOVE_TOP)
+						continue;
+					const float height = std::min(box->center.z + box->size.z, top + FALL_WATER_ABOVE_TOP);
+					if (height > bestHeight) {
+						bestHeight = height;
+						best = object->waterType;
+					}
+				}
+			}
+		}
+		if (best)
+			return best;
 		auto* tes = RE::TES::GetSingleton();
 		if (!tes)
 			return nullptr;
-		const auto eye = Util::GetEyePosition();
-		if (auto* cell = tes->GetCell(eye)) {
+		if (auto* cell = tes->GetCell(RE::NiPoint3(centre.x, centre.y, top))) {
 			if (auto* extra = cell->extraList.GetByType<RE::ExtraCellWaterType>(); extra && extra->water)
 				return extra->water;
 		}
 		auto* worldSpace = tes->GetRuntimeData2().worldSpace;
 		return worldSpace ? worldSpace->worldWater : nullptr;
+	}
+
+	/**
+	 * @brief D98: a water type's look as Water.hlsl reads it (BSWaterShader's constants from TESWaterForm::data): its colours
+	 * under the weather's water multiplier (as Util::TryGetWaterData), its above-water fog, fresnel, reflection and glint.
+	 * The defaults where there is no water type.
+	 */
+	FluidFieldSim::FallRefraction::WaterLook MakeFallWaterLook(const RE::TESWaterForm* a_water, const float (&a_multiplier)[3])
+	{
+		FluidFieldSim::FallRefraction::WaterLook look;
+		if (!a_water)
+			return look;
+		const auto& data = a_water->data;
+		const auto channel = [](const RE::Color& a_color, int a_k) {
+			return (a_k == 0 ? a_color.red : a_k == 1 ? a_color.green :
+														a_color.blue) /
+			       255.0f;
+		};
+		for (int k = 0; k < 3; k++) {
+			look.shallowColor[k] = channel(data.shallowWaterColor, k) * a_multiplier[k];
+			look.deepColor[k] = channel(data.deepWaterColor, k) * a_multiplier[k];
+			look.reflectionColor[k] = channel(data.reflectionWaterColor, k) * a_multiplier[k] * data.reflectionAmount;
+		}
+		look.fogNear = data.aboveWaterFogDistNear;
+		look.fogFar = data.aboveWaterFogDistFar;
+		look.fogAmount = data.aboveWaterFogAmount;
+		look.fresnel = data.fresnelAmount;
+		look.sunSpecularPower = data.sunSpecularPower;
+		look.sunSpecularMagnitude = data.sunSpecularMagnitude;
+		look.reflectionMagnitude = data.reflectionMagnitude;
+		return look;
 	}
 }
 
@@ -1738,6 +1807,19 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 	std::vector<FluidFieldSim::FallRefraction::MeshDraw> draws;
 	draws.reserve(lit.size());
 	std::unordered_set<const RE::BSGeometry*> keep;
+	// D98: each piece takes the look of the water it pours out of (looked up once per piece, again every few seconds)
+	if (++fallWaterTypesAge >= FALL_WATER_REFRESH) {
+		fallWaterTypesAge = 0;
+		fallWaterTypes.clear();
+	}
+	float multiplier[3] = { 1.0f, 1.0f, 1.0f };
+	if (auto* sky = globals::game::sky) {
+		const auto& color = sky->skyColor[RE::TESWeather::ColorTypes::kWaterMultiplier];
+		multiplier[0] = color.red;
+		multiplier[1] = color.green;
+		multiplier[2] = color.blue;
+	}
+	std::unordered_map<const RE::TESWaterForm*, FluidFieldSim::FallRefraction::WaterLook> looks;
 	for (const auto& piece : lit) {
 		auto* geometry = piece.geometry.get();
 		auto* property = geometry ? geometry->GetGeometryRuntimeData().shaderProperty.get() : nullptr;
@@ -1764,6 +1846,13 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 			draw.diffuse = material ? view(material->diffuseTexture) : nullptr;
 			draw.normal = material ? view(material->normalTexture) : nullptr;
 		}
+		auto waterType = fallWaterTypes.find(geometry);
+		if (waterType == fallWaterTypes.end())
+			waterType = fallWaterTypes.emplace(geometry, FindFallWaterType(geometry)).first;
+		auto look = looks.find(waterType->second);
+		if (look == looks.end())
+			look = looks.emplace(waterType->second, MakeFallWaterLook(waterType->second, multiplier)).first;
+		draw.look = look->second;
 		draws.push_back(draw);
 	}
 	for (std::size_t i = 0; i < draws.size(); i++) {
@@ -1771,6 +1860,7 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 		draws[i].groundSize = sizeof(FallGroundData);
 	}
 	fallRefraction.Prune(keep);
+	std::erase_if(fallWaterTypes, [&](const auto& a_entry) { return !keep.contains(a_entry.first); });
 	if (draws.empty())
 		return;
 
@@ -1784,28 +1874,18 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 	params.features = globals::state->featureDataCB->CB();
 	params.vertexClip = fallClipSRV.get();
 	params.poolHeights = fallGroundSRV.get();
+	// D98: the cubemap the engine's shaders are given (DynamicCubemaps::PostDeferred): the reflections capture only while it
+	// is the active one and holds a capture, else the plain one once it does. The reflections texture was bound always: before
+	// (or without) a capture its texels are undefined, magnified into bright squares where the fresnel shows them (SS 889)
 	auto& dynamicCubemaps = globals::features::dynamicCubemaps;
-	params.environment = dynamicCubemaps.loaded && dynamicCubemaps.envReflectionsTexture ? dynamicCubemaps.envReflectionsTexture->srv.get() : nullptr;
-	if (const auto* waterType = FallWaterType()) {
-		// The river's own colours (Water.hlsl's ShallowColor and DeepColor), under the weather's water multiplier
-		float multiplier[3] = { 1.0f, 1.0f, 1.0f };
-		if (auto* sky = globals::game::sky) {
-			const auto& color = sky->skyColor[RE::TESWeather::ColorTypes::kWaterMultiplier];
-			multiplier[0] = color.red;
-			multiplier[1] = color.green;
-			multiplier[2] = color.blue;
-		}
-		const auto& data = waterType->data;
-		const float shallow[3] = { data.shallowWaterColor.red / 255.0f, data.shallowWaterColor.green / 255.0f, data.shallowWaterColor.blue / 255.0f };
-		const float deep[3] = { data.deepWaterColor.red / 255.0f, data.deepWaterColor.green / 255.0f, data.deepWaterColor.blue / 255.0f };
-		for (int k = 0; k < 3; k++) {
-			params.shallowColor[k] = std::clamp(shallow[k] * multiplier[k], 0.0f, 1.0f);
-			params.deepColor[k] = std::clamp(deep[k] * multiplier[k], 0.0f, 1.0f);
-		}
-		if (data.fresnelAmount > 0.0f && data.fresnelAmount < 1.0f)
-			params.fresnel = data.fresnelAmount;
+	params.environment = nullptr;
+	if (dynamicCubemaps.loaded) {
+		if (dynamicCubemaps.activeReflections && dynamicCubemaps.cubemapValid[1] && dynamicCubemaps.envReflectionsTexture)
+			params.environment = dynamicCubemaps.envReflectionsTexture->srv.get();
+		else if (dynamicCubemaps.cubemapValid[0] && dynamicCubemaps.envTexture)
+			params.environment = dynamicCubemaps.envTexture->srv.get();
 	}
-	params.clarity = std::clamp(settings.FallClarity, 10.0f, 2000.0f);
+	params.depthScale = std::clamp(settings.FallDepth, 0.25f, 8.0f);
 	params.refraction = std::clamp(settings.FallRefraction, 0.0f, 3.0f);
 	params.streakFoam = settings.FallWhitening ? 0.6f : 0.4f;
 	globals::profiler->BeginPass("FluidField::RefractiveFalls");

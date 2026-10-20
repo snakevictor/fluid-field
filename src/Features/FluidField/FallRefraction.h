@@ -22,9 +22,29 @@ namespace FluidFieldSim
 	class FallRefraction
 	{
 	public:
+		/**
+		 * @brief D98: the look of the water a piece pours out of, from its water type (TESWaterForm::data) as Water.hlsl
+		 * reads it: colours under the weather's water multiplier, the above-water fog that hides what lies behind, the
+		 * fresnel, the reflection and the sun's glint.
+		 */
+		struct WaterLook
+		{
+			float shallowColor[3]{ 0.25f, 0.33f, 0.3f };    ///< ShallowColor, 0 to 1, times the weather's water multiplier
+			float deepColor[3]{ 0.05f, 0.09f, 0.1f };       ///< DeepColor, the same
+			float reflectionColor[3]{ 0.3f, 0.35f, 0.4f };  ///< ReflectionColor times the reflection amount (VarAmounts.y): the reflection without a cubemap
+			float fogNear = 0.0f;                           ///< Above-water fog distance near (FogParam.z less FogParam.w)
+			float fogFar = 600.0f;                          ///< ...and far (FogParam.z): water this deep is wholly its own colour
+			float fogAmount = 1.0f;                         ///< ...and amount (FogNearColor.w): the curve from seen-through to coloured
+			float fresnel = 0.02f;                          ///< Fresnel amount (FresnelRI.x): reflectance looking straight at the water
+			float sunSpecularPower = 600.0f;                ///< Sun specular power (VarAmounts.x)
+			float sunSpecularMagnitude = 1.0f;              ///< Sun specular magnitude (taken as DeepColor.w: the glint is 1 - exp(-magnitude))
+			float reflectionMagnitude = 1.0f;               ///< Reflection magnitude (WaterParams.y): how much the normal map tilts the reflection
+		};
+
 		/** @brief One falls piece to draw. */
 		struct MeshDraw
 		{
+			WaterLook look;                               ///< D98: the water it pours out of
 			RE::BSGeometry* geometry = nullptr;           ///< Its buffers are built from this geometry's CPU copy, once
 			float world[12]{};                            ///< Its model to world transform, rows of a 3x4 (rotation times scale, translation)
 			const void* ground = nullptr;                 ///< FallGroundCB's contents for it (b13)
@@ -46,14 +66,9 @@ namespace FluidFieldSim
 			ID3D11Buffer* features = nullptr;                 ///< FeatureData (b6)
 			ID3D11ShaderResourceView* vertexClip = nullptr;   ///< FallGround's VertexClip (t123)
 			ID3D11ShaderResourceView* poolHeights = nullptr;  ///< FallGround's Heights (t120)
-			ID3D11ShaderResourceView* environment = nullptr;  ///< A cubemap of the surroundings (Dynamic Cubemaps), or null for the sky's ambient
-			float shallowColor[3]{ 0.25f, 0.33f, 0.3f };      ///< The water type's shallow colour, 0 to 1
-			float deepColor[3]{ 0.05f, 0.09f, 0.1f };         ///< ...and deep colour
-			float clarity = 160.0f;                           ///< World units of water seen through before its colour mostly hides what is behind
+			ID3D11ShaderResourceView* environment = nullptr;  ///< A cubemap of the surroundings (Dynamic Cubemaps, once it holds a capture), or null for each water's reflection colour
+			float depthScale = 2.0f;                          ///< D98: how much deeper than its path through it the falling water reads against its water's fog distances
 			float refraction = 1.0f;                          ///< How strongly the surface bends what is seen through it
-			float fresnel = 0.02f;                            ///< Reflectance looking straight at the water
-			float specularPower = 600.0f;                     ///< The sun's glint, tightness
-			float specularStrength = 1.0f;                    ///< ...and brightness
 			float streakFoam = 0.6f;                          ///< How much of vanilla's streak texture reads as white water
 		};
 
@@ -102,21 +117,25 @@ namespace FluidFieldSim
 		{
 			float world[12];
 			float shallowColor[3];
-			float clarity;
+			float fogFar;
 			float deepColor[3];
-			float refraction;
+			float fogRange;
+			float reflectionColor[3];
+			float fogAmount;
 			float fresnel;
-			float specularPower;
-			float specularStrength;
+			float sunSpecularPower;
+			float sunSpecularStrength;
+			float reflectionMagnitude;
+			float refraction;
 			float streakFoam;
+			float depthScale;
+			float maxPath;
+			float sheetThickness;
 			uint32_t hasEnvironment;
 			uint32_t hasDiffuse;
 			uint32_t hasNormal;
-			float maxPath;
-			float sheetThickness;
-			float pad[3];
 		};
-		static_assert(sizeof(Constants) == 128);
+		static_assert(sizeof(Constants) == 144);
 
 		std::unordered_map<const RE::BSGeometry*, MeshBuffers> meshes;
 		std::unordered_set<const RE::BSGeometry*> failedMeshes;  ///< No CPU copy: not tried again

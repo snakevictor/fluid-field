@@ -2313,3 +2313,82 @@ Entry format:
     -   Where a mesh crosses a water surface its foam reaches 1.5x a plunge's
         radius, at strength 1 (was 0.8).
 -   References: D67, D92, D94, D95, D97
+
+## D99: Falls in their river's water; the square patches (branch feature/fluid-field-falls-look)
+
+-   Date: 2026-10-20
+-   Phase / spike: See-Through Falls (D93) look; on the branch
+    `feature/fluid-field-falls-look` only, untested in game
+-   Context: the user, of the see-through falls: "it looks stunning but it's
+    still much different from the shallow water color/look"; and SS 889,
+    "weird checkerboarding on some viewing angles": bright white squares tens
+    of pixels across on the sheets.
+-   Decision:
+    -   **Each piece's own water.** `FallWaterType` took one water type, the
+        cell's at the camera. Now each lit piece looks up the water it pours
+        out of (`FindFallWaterType`, cached per piece, again every 120
+        frames): the highest engine water object (TESWaterSystem, under its
+        lock) whose bound overlaps the piece's footprint (its world bound)
+        and lies no more than 64 units over its top, so the river at the
+        crest wins over the pool below; else the cell's water at its top, else
+        the worldspace's. The pass takes a `WaterLook` per draw.
+    -   **Water.hlsl's composition** (FallSurface.hlsl), with every value from
+        the water type (TESWaterForm::data, as BSWaterShader's constants):
+        shallow to deep over the above-water fog's far distance
+        (FogParam.z), and what lies behind hidden by the fog's curve
+        (refractionMul = 1 - ((far - depth) / (far - near)) ^ amount), over
+        the water along the view ray (behind the sheet, at most 600 units,
+        plus the sheet's 8 over the cosine) read **Water Depth** times deeper
+        (new setting FallDepth, 2x, 0.25 to 8; it replaces Clarity, D93). The
+        colours are the water type's times the weather's water multiplier
+        and are **no longer multiplied by our ambient and sun**: Water.hlsl
+        takes them unlit (ExtractLighting only splits them for the shadow),
+        which was most of the mismatch. Fresnel as GetFresnelValue (the
+        fresnel amount; ENB's water settings when on); the reflection tilted
+        by the reflection magnitude about the sheet's own normal (Water.hlsl's
+        flat up); without a cubemap, the reflection colour times the
+        reflection amount (vanilla's water without reflections), instead of
+        the sky's ambient; the sun's glint with the sun specular power and
+        1 - exp(-sun specular magnitude) (Water.hlsl's DeepColor.w; that
+        DeepColor.w is that magnitude is our reading, not checked), the
+        directional light through Color::DirectionalLight as GetSunColor;
+        ENB's sun scatter in the body. The foam overlay is unchanged.
+    -   **The squares (SS 889).** Not the scene copies: SceneColor is a copy
+        of the bound target (its own size) and SceneDepth the bound depth,
+        both read at SV_Position inside the dynamic-resolution region, so no
+        scale mismatch makes blocks. Two causes found, both fixed:
+        1.  **The cubemap (most likely, medium confidence).** The pass bound
+            Dynamic Cubemaps' _reflections_ cubemap always. The engine's
+            shaders are given it only while reflections are the active
+            capture and it holds one (`DynamicCubemaps::PostDeferred`): in
+            interiors without reflections it is never written, and after a
+            cache clear or a load it holds nothing yet. Its texels are then
+            undefined, and at grazing angles the fresnel shows them, a few
+            texels magnified over the flat sheet: bright squares that depend
+            on the view angle. Now the same choice as the engine (the
+            reflections one when active and valid, else the plain one when
+            valid, else none: the water type's reflection colour), read at
+            mip 1 (falling water is broken; prefiltered, so smoother), and
+            clamped (a NaN or runaway texel becomes 0 or 64, never a square
+            after bloom or the upscaler; D3D's min and max drop a NaN).
+        2.  **The pools' foam (likely where it shows at the foot or lip).**
+            FallGround::Pool answers yes or no at 0.2 of its bilinear
+            footprint, so its foam switched along the pool map's 16-unit
+            texels; on the see-through sheet the foam also makes it opaque, so
+            each texel showed as a white square. The pass reads the pool
+            weight itself and fades the foam in (0.2 to 0.7), and only at a
+            mesh's foot, as the cut (D71: near a lip the captured pool
+            reaches over the drop). The lit pass (Lighting.hlsl) keeps the
+            old test.
+        -   Also: every normalise guarded (a zero normal, normal map texel or
+            derivative gave NaN), the final colour clamped to 0..64.
+    -   FluidField.ini 0-36-0 (FallClarity replaced by FallDepth).
+-   Untested: not run in game; the C++ was not compiled (no build folder in
+    the worktree); FallSurface.hlsl compiled with fxc (vs_5_0, ps_5_0, no
+    warnings), its constant buffer checked against the C++ (144 bytes).
+-   Risks: the water bound over a piece's footprint may be a neighbouring
+    river (the footprint is the bound sphere's square); the fall's water is
+    not fogged by distance (as D93); the river's fog distances may make thin
+    sheets almost clear or almost opaque for some water types (Water Depth
+    tunes it for all).
+-   References: D71, D91, D93
