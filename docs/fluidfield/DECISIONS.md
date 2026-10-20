@@ -2096,3 +2096,15 @@ Entry format:
     scroll reads the same latched phase. This confirms the frame-order concern
     of research/waterfalls/realtime-integration-design.md (phase 0); the seam
     dither's Time has the same exposure, smaller.
+
+## D87: A visible wobble; edges over other meshes smoothed too
+
+-   Date: 2026-10-20
+-   Decision:
+    -   **Wobble size:** 4 units on calm water, up to 20 where most stirred (was
+        1 and 6: the user saw it only in a few spots). 12618 vertices of the 18
+        meshes wobble. The user: "wobbliness much better already".
+    -   **Edge smoothing** now takes the open edges that lie over a leading mesh
+        too (they fade into it, but their teeth showed: SS 860), 10 rounds, at
+        most 40 units.
+-   References: D85, D86

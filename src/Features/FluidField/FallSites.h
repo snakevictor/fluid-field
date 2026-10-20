@@ -278,8 +278,8 @@ namespace FluidFieldSim
 		 */
 		void ComputeFades();
 		static constexpr float FADE_REACH = 32.0f;        ///< D67: an open edge's vertex this near another mesh's surface fades
-		static constexpr int EDGE_SMOOTH_PASSES = 6;      ///< D86: rounds smoothing each mesh's open edge as a curve...
-		static constexpr float EDGE_SMOOTH_MOST = 24.0f;  ///< D86: ...moving a vertex at most this far
+		static constexpr int EDGE_SMOOTH_PASSES = 10;     ///< D86: rounds smoothing each mesh's open edge as a curve (D87: 10, was 6)...
+		static constexpr float EDGE_SMOOTH_MOST = 40.0f;  ///< D86: ...moving a vertex at most this far (D87: 40, was 24)
 		std::vector<RE::NiPointer<RE::BSGeometry>> clipQueue;
 		uint64_t vertexClipVersion = 0;
 		uint32_t clipTested = 0;
@@ -376,8 +376,8 @@ namespace FluidFieldSim
 		static constexpr float PUSH_FULL = 3.0f;        ///< D82: ...and is whole at (piling against rock, squeezing between rocks: 5 to 20; D83: 3, was 4)
 		static constexpr int32_t LEAD_TEST_REACH = 12;  ///< D83: hidden lead-in texels this far across from running water still get the rock test
 		static constexpr int PUSH_BLUR = 2;             ///< D82: passes softening the swell to broad shapes (D84: 2, was 4: steeper, rounder mounds)
-		static constexpr float WOBBLE_MOST = 6.0f;      ///< D85: world units the water wobbles at most, where it is most stirred...
-		static constexpr float WOBBLE_CALM = 1.0f;      ///< D85: ...and everywhere else (its breathing)
+		static constexpr float WOBBLE_MOST = 20.0f;     ///< D85: world units the water wobbles at most, where it is most stirred (D87: 20, was 6: unseen)...
+		static constexpr float WOBBLE_CALM = 4.0f;      ///< D85: ...and everywhere else (its breathing; D87: 4, was 1)
 		static constexpr float WOBBLE_STIRRED = 1.5f;   ///< D85: disturbance at which the wobble is whole
 		/** @brief D82: the vertex shifts the shaders read (vertexClips 4-6): the seams' gap shift (D69) and the push together. */
 		void ComposeShifts();

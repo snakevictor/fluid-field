@@ -1169,7 +1169,8 @@ namespace FluidFieldSim
 			}
 			// D86: the open edge's ragged outline (vanilla's teeth, its effect layers no longer covering them) smoothed as a
 			// curve: each edge vertex drawn toward the middle of its two neighbours along the edge, a few rounds, at most
-			// EDGE_SMOOTH_MOST from where it was; not a vertex already closing a gap (D69)
+			// EDGE_SMOOTH_MOST from where it was; not a vertex already closing a gap (D69). D87: edges over a leading mesh too (they fade
+			// into it, but their teeth showed: SS 860)
 			std::vector<std::array<int32_t, 2>> along(mesh.positions.size(), { -1, -1 });
 			std::vector<uint8_t> ends(mesh.positions.size(), 0);
 			for (const auto& edge : mesh.openEdges) {
@@ -1202,7 +1203,7 @@ namespace FluidFieldSim
 				curve.swap(next);
 			}
 			for (std::size_t v = 0; v < mesh.positions.size(); v++) {
-				if (!mesh.open[v] || onLead[v] || shifts[v].Length() > 0.0f || (curve[v] - mesh.positions[v]).Length() < 0.01f)
+				if (!mesh.open[v] || shifts[v].Length() > 0.0f || (curve[v] - mesh.positions[v]).Length() < 0.01f)
 					continue;
 				shifts[v] = inverse * curve[v] - inverse * mesh.positions[v];
 				smoothed++;
@@ -1802,8 +1803,8 @@ namespace FluidFieldSim
 
 	void FallSites::ComputePushes()
 	{
-		uint32_t meshes = 0, pushed = 0;
-		float most = 0.0f;
+		uint32_t meshes = 0, pushed = 0, wobbled = 0;
+		float most = 0.0f, mostWobble = 0.0f;
 		for (const auto& lit : litMeshList) {
 			auto* geometry = lit.geometry.get();
 			const auto field = bakeFields.find(geometry);
@@ -1901,6 +1902,8 @@ namespace FluidFieldSim
 						const float size = (WOBBLE_CALM + (WOBBLE_MOST - WOBBLE_CALM) * stirred * stirred * (3.0f - 2.0f * stirred)) * (nearOpen[v] ? 0.5f : 1.0f);
 						const RE::NiPoint3 wobble = normals[v] * (size / (length * scale));
 						value[7] = across;
+						wobbled++;
+						mostWobble = std::max(mostWobble, size);
 						value[8] = wobble.x;
 						value[9] = wobble.y;
 						value[10] = wobble.z;
@@ -1920,7 +1923,8 @@ namespace FluidFieldSim
 			meshes++;
 		}
 		ComposeShifts();
-		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units", pushed, meshes, most);
+		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units; {} wobble, at most {:.1f} units", pushed, meshes, most, wobbled,
+			mostWobble);
 	}
 
 	void FallSites::ProbeScrolls()
