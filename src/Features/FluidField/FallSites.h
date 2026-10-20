@@ -333,8 +333,8 @@ namespace FluidFieldSim
 		std::unordered_set<const RE::BSGeometry*> denseShapes;
 		bool refreshing = false;
 		static constexpr bool DENSE = true;
-		static constexpr float DENSE_EDGE = 40.0f;  ///< D73: world units the dense copy's edges are at most (when the vertex budget allows)
-		static constexpr int DENSE_LEVELS = 1;      ///< D73: halvings at most (D74: one: three stuttered the game)
+		static constexpr float DENSE_EDGE = 20.0f;  ///< D73: world units the dense copy's edges are at most (when the vertex budget allows; D91: 20, was 40, split only where longer)
+		static constexpr int DENSE_LEVELS = 6;      ///< D73: splitting passes at most (D91: adaptive, so passes only refine what is still long)
 		/** @brief D73: builds and attaches a dense copy of a lit mesh; false where it cannot (no CPU data, or no engine builder). */
 		bool Densify(RE::BSGeometry* a_geometry);
 		/** @brief D73: removes every dense copy and shows the originals again. */
@@ -360,7 +360,7 @@ namespace FluidFieldSim
 			std::vector<float> swell;        ///< D82: how much the water piles up there, softened (the vertex push)
 			std::vector<float> disturbance;  ///< D85: how stirred the water is there (the wobble's size), softened
 		};
-		static constexpr uint32_t BAKE_CACHE_VERSION = 2;  ///< D82: bump whenever a bake would come out different (D85: 2, the disturbance)
+		static constexpr uint32_t BAKE_CACHE_VERSION = 3;  ///< D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies)
 		/** @brief D82: where a bake job's finished bake is kept on disk: by its reference, model part, placement, the rock and ground round it, and the version. */
 		static std::filesystem::path BakeCachePath(const BakeJob& a_job);
 		static bool SaveBake(const std::filesystem::path& a_path, const BakeField& a_field);
@@ -439,8 +439,8 @@ namespace FluidFieldSim
 		static constexpr float PLUNGE_PUSH_OFFSET = 32.0f;  ///< D56: world units downstream of the falls' line the plunge pushes the water
 		static constexpr float PLUNGE_MARK = 0.001f;        ///< D56: radial speed marking a fall's emitter (its own foam rate) without spreading the water
 		static constexpr float PLUNGE_PULL = 0.2f;          ///< Fraction of the falling water's speed the water below is pulled along at
-		static constexpr float LIP_BAND = 24.0f;            ///< D90: a crest this near its pool's surface is a lip, where the water leaves the pool...
-		static constexpr float LIP_STRENGTH = 0.35f;        ///< D90: ...stirring it this much (a plunge's 0.25 to 1)
+		static constexpr float LIP_BAND = 40.0f;            ///< D90: a crest this near its pool's surface is a lip, where the water leaves the pool (D91: 40, was 24)...
+		static constexpr float LIP_STRENGTH = 0.6f;         ///< D90: ...stirring it this much (a plunge's 0.25 to 1; D91: 0.6, was 0.35)
 		std::vector<FallEmitter> sprayEmitters;
 		std::vector<FallPlunge> plungePoints;
 		uint64_t emitterVersion = 0;

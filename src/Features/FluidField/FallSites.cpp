@@ -20,6 +20,7 @@
 #include <map>
 #include <numeric>
 #include <queue>
+#include <set>
 #include <tuple>
 #include <unordered_set>
 
@@ -894,14 +895,19 @@ namespace FluidFieldSim
 		const float scale = std::max(a_geometry->world.scale, 1e-3f);
 		// Split until the edges are short (or the budget is spent): each edge's midpoint on the PN triangle's curved
 		// edge, its normal, texture coordinate and colour averaged; split vertices (seams in the texture) share the
-		// position's mean normal, so the curved edges meet
+		// position's mean normal, so the curved edges meet. D91: only the edges longer than DENSE_EDGE, each pass
+		// (red-green: a triangle with one, two or three of its edges split becomes two, three or four), so the copy's
+		// triangles come out evenly sized wherever the original's were long, thin or uneven
+		const auto edgeKey = [](uint32_t a_a, uint32_t a_b) { return std::make_pair(std::min(a_a, a_b), std::max(a_a, a_b)); };
 		for (int level = 0; level < DENSE_LEVELS; level++) {
-			float longest = 0.0f;
+			std::set<std::pair<uint32_t, uint32_t>> marked;
 			for (const auto& tri : triangles) {
-				for (int k = 0; k < 3; k++)
-					longest = std::max(longest, (positions[tri[k]] - positions[tri[(k + 1) % 3]]).Length() * scale);
+				for (int k = 0; k < 3; k++) {
+					if ((positions[tri[k]] - positions[tri[(k + 1) % 3]]).Length() * scale > DENSE_EDGE)
+						marked.insert(edgeKey(tri[k], tri[(k + 1) % 3]));
+				}
 			}
-			if (longest <= DENSE_EDGE || positions.size() + triangles.size() * 3 / 2 > 60000)
+			if (marked.empty() || positions.size() + marked.size() > 60000)
 				break;
 			std::map<std::tuple<int64_t, int64_t, int64_t>, RE::NiPoint3> welded;
 			const auto weldKey = [](const RE::NiPoint3& a_p) { return std::make_tuple(std::llround(a_p.x * 20.0), std::llround(a_p.y * 20.0), std::llround(a_p.z * 20.0)); };
@@ -927,13 +933,43 @@ namespace FluidFieldSim
 				return index;
 			};
 			std::vector<std::array<uint32_t, 3>> finer;
-			finer.reserve(triangles.size() * 4);
+			finer.reserve(triangles.size() * 2);
 			for (const auto& tri : triangles) {
-				const uint32_t ab = middle(tri[0], tri[1]), bc = middle(tri[1], tri[2]), ca = middle(tri[2], tri[0]);
-				finer.push_back({ tri[0], ab, ca });
-				finer.push_back({ ab, tri[1], bc });
-				finer.push_back({ ca, bc, tri[2] });
-				finer.push_back({ ab, bc, ca });
+				bool split[3];
+				int splits = 0;
+				for (int k = 0; k < 3; k++) {
+					split[k] = marked.contains(edgeKey(tri[k], tri[(k + 1) % 3]));
+					splits += split[k] ? 1 : 0;
+				}
+				if (splits == 0) {
+					finer.push_back(tri);
+				} else if (splits == 3) {
+					const uint32_t ab = middle(tri[0], tri[1]), bc = middle(tri[1], tri[2]), ca = middle(tri[2], tri[0]);
+					finer.push_back({ tri[0], ab, ca });
+					finer.push_back({ ab, tri[1], bc });
+					finer.push_back({ ca, bc, tri[2] });
+					finer.push_back({ ab, bc, ca });
+				} else if (splits == 1) {
+					// Turned so the split edge is (a, b): two triangles, winding kept
+					const int k = split[0] ? 0 : (split[1] ? 1 : 2);
+					const uint32_t a = tri[k], b = tri[(k + 1) % 3], cc = tri[(k + 2) % 3];
+					const uint32_t m = middle(a, b);
+					finer.push_back({ a, m, cc });
+					finer.push_back({ m, b, cc });
+				} else {
+					// Turned so the edge left whole is (c, a): the corner at b, and the quad split by its shorter diagonal
+					const int k = !split[2] ? 0 : (!split[0] ? 1 : 2);
+					const uint32_t a = tri[k], b = tri[(k + 1) % 3], cc = tri[(k + 2) % 3];
+					const uint32_t mab = middle(a, b), mbc = middle(b, cc);
+					finer.push_back({ mab, b, mbc });
+					if ((positions[a] - positions[mbc]).Length() <= (positions[mab] - positions[cc]).Length()) {
+						finer.push_back({ a, mab, mbc });
+						finer.push_back({ a, mbc, cc });
+					} else {
+						finer.push_back({ a, mab, cc });
+						finer.push_back({ mab, mbc, cc });
+					}
+				}
 			}
 			triangles.swap(finer);
 		}
@@ -1079,9 +1115,16 @@ namespace FluidFieldSim
 		};
 		uint32_t faded = 0, edges = 0, gaps = 0, smoothed = 0;
 		for (const auto& mesh : meshes) {
-			// Which vertices lie on a mesh leading this one
-			std::vector<uint8_t> onLead(mesh.positions.size(), 0);
+			// Which vertices lie on a mesh leading this one. D91: only those on or next to an open edge are asked (the rest
+			// are never read; asking all of a dense copy's vertices against every triangle near it took seconds)
+			std::vector<uint8_t> onLead(mesh.positions.size(), 0), asked(mesh.positions.size(), 0);
+			for (const auto& tri : mesh.triangles) {
+				if (mesh.open[tri[0]] || mesh.open[tri[1]] || mesh.open[tri[2]])
+					asked[tri[0]] = asked[tri[1]] = asked[tri[2]] = 1;
+			}
 			for (std::size_t v = 0; v < mesh.positions.size(); v++) {
+				if (!asked[v])
+					continue;
 				const RE::NiPoint3& p = mesh.positions[v];
 				for (const auto& other : meshes) {
 					if (&other == &mesh || !leads(other, mesh) || p.x < other.lo[0] - FADE_REACH || p.x > other.hi[0] + FADE_REACH || p.y < other.lo[1] - FADE_REACH ||
@@ -2898,6 +2941,19 @@ namespace FluidFieldSim
 				const RE::NiPoint3& n = field->normal[a_i];
 				return n.z < 0.0f ? -n : n;
 			};
+			// D91: the face the mesh shows (its winding: the swell pushes out along it too), so spray leaves the sheet's
+			// outer face, not into the hollow under a curtain; and nothing from the hidden lead-in under the upper water
+			const auto outward = [&](std::size_t a_i) { return field->normal[a_i]; };
+			std::vector<int32_t> crestRows;
+			std::vector<uint8_t> hiddenLead;
+			{
+				FallStrands::Input input;
+				input.width = field->width;
+				input.height = field->height;
+				input.position = reinterpret_cast<const float*>(field->position.data());
+				input.covered = field->covered.data();
+				FallStrands::FindCrests(input, crestRows, hiddenLead);
+			}
 			for (int32_t y = 0; y < h; y++) {
 				for (int32_t x = 0; x < w; x++) {
 					const std::size_t i = index(x, y);
@@ -2911,10 +2967,10 @@ namespace FluidFieldSim
 					float ownPool = -FLT_MAX;
 					const bool water = (foot && waterAt(here, level)) || (PoolLevelAt(here.x, here.y, ownPool) && ownPool < top - 32.0f && (level = ownPool, true));
 					// Where the water strikes rock (the bake's foam), above the water below
-					if (field->foam[i] >= OBSTACLE_FOAM && !(water && here.z < level - POOL_COVER)) {
+					if (field->foam[i] >= OBSTACLE_FOAM && !hiddenLead[i] && !(water && here.z < level - POOL_COVER)) {
 						float pool;
 						if (!PoolLevelAt(here.x, here.y, pool) || here.z >= pool - POOL_COVER)
-							offer(here, upward(i), flowAt(x, y), speedAt(here.z), 0.4f + 0.6f * field->foam[i], FallEmitterKind::Strike, OBSTACLE_SPACING);
+							offer(here, outward(i), flowAt(x, y), speedAt(here.z), 0.4f + 0.6f * field->foam[i], FallEmitterKind::Strike, OBSTACLE_SPACING);
 					}
 					// Where it goes into the water below: at or under it, coming from above it (texture v runs downstream)
 					if (!water || here.z > level + PLUNGE_BAND || !covered(x, y - 1))
@@ -2976,8 +3032,22 @@ namespace FluidFieldSim
 				if (!field->rock.empty() && field->rock[i])
 					continue;
 				const RE::NiPoint3& p = field->position[i];
+				// D91: the pool it comes from, ours or the engine's (a river's plane: the lip lies at its surface, so a plane's
+				// bound reaching over the fall, D70, is no risk here)
 				float level = 0.0f;
-				if (!PoolLevelAt(p.x, p.y, level) || std::abs(p.z - level) > LIP_BAND)
+				bool upper = PoolLevelAt(p.x, p.y, level) && std::abs(p.z - level) <= LIP_BAND;
+				if (!upper) {
+					std::vector<std::array<float, 5>> lipPlanes;
+					CollectWaterPlanes(p.x - 1.0f, p.y - 1.0f, p.x + 1.0f, p.y + 1.0f, lipPlanes);
+					for (const auto& plane : lipPlanes) {
+						if (p.x >= plane[0] && p.x <= plane[2] && p.y >= plane[1] && p.y <= plane[3] && std::abs(p.z - plane[4]) <= LIP_BAND) {
+							level = plane[4];
+							upper = true;
+							break;
+						}
+					}
+				}
+				if (!upper)
 					continue;
 				const RE::NiPoint3 down = field->position[i + 2 * static_cast<std::size_t>(w)] - p;
 				const float horizontal = std::sqrt(down.x * down.x + down.y * down.y);

@@ -2150,3 +2150,28 @@ Entry format:
         comes from, a plunge point (strength 0.35, the water drawn on toward the
         crest) stirs and foams the shallow water there.
 -   References: D46, D70, D78, D85, D88, D89
+
+## D91: Seamless wobble; lips on any water; even, denser copies; spray out of the face
+
+-   Date: 2026-10-20
+-   Decision:
+    -   **The wobble loops seamlessly:** a whole number of crests per texture
+        repeat (2; D90's 2.5 jumped each time the scroll's phase wrapped, the
+        "loop error" the user saw).
+    -   **Lips on the engine's water too** (a river's plane; SS 869-871: no foam
+        where the falls begin): within 40 units of the crest, strength 0.6.
+    -   **Evenly split copies (red-green):** each pass splits only the edges
+        longer than DENSE_EDGE (now 20 units); a triangle with one, two or
+        three split edges becomes two, three or four (the quad by its shorter
+        diagonal), up to 6 passes and 60000 vertices. The swell and wobble
+        creased the old copies' 40-50-unit triangles (SS 870), and uniform
+        splitting left vanilla's long thin triangles long and thin. Timing logs
+        on the copies, seams and swell. BAKE_CACHE_VERSION 3.
+    -   **Seams only near open edges:** the overlap test now asks only vertices
+        on or next to an open edge (the rest are never read); asking every
+        vertex of a dense copy against every nearby triangle was the likely
+        stutter of D74's three levels.
+    -   **Spray out of the face the mesh shows** (its winding normal, along which
+        the swell pushes out), not "up", which threw it into the hollow under a
+        curtain (SS 872); none from the hidden lead-in.
+-   References: D70, D73, D78, D85, D90
