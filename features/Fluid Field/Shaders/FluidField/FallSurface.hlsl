@@ -182,8 +182,11 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	color = lerp(color, foamColor, foam);
 
 	// Faded at seams over a mesh leading it (D67, blended here instead of dithered) and where it meets what lies
-	// behind (no hard line where it enters the rock)
-	const float alpha = saturate(input.Fade.x) * saturate(straightBehind / 4.0 + foam);
+	// behind (no hard line where it enters the rock). D99: foam keeps the contact soft too, only shorter: added to it,
+	// foam made the line where the sheet enters a boulder wholly opaque and white, tracing the faceted intersection of
+	// the sheet's triangles with the rock's as a white sawtooth; and the water fades out toward its cut
+	const float contact = saturate(straightBehind / 4.0);
+	const float alpha = saturate(input.Fade.x) * lerp(contact, sqrt(contact), foam) * FallGround::CutFade(input.Clip);
 	if (alpha <= 0.002)
 		discard;
 	return float4(color * alpha, alpha);  // Premultiplied
