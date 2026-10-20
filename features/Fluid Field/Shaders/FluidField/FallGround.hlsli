@@ -103,7 +103,7 @@ namespace FallGround
 		// D71: the pools cut a mesh only at its foot (VertexClip's a.w): near a lip the captured pool reaches over
 		// the drop, and cut a hole in the curtain just under it where a rock stands behind
 		float pool;
-		const bool foot = VertexBase == NO_VERTEX_CLIP || fmod(VertexClip[VertexBase + a_vertex].a.w, 2.0) > 0.5;  // D100: +2 marks an inward winding
+		const bool foot = VertexBase == NO_VERTEX_CLIP || fmod(VertexClip[VertexBase + a_vertex].a.w, 2.0) > 0.5;  // D100: +2 marks an inward normal, D103: +4 a covered inner side
 		if (foot && Pool(position.xy, pool))
 			distance = min(distance, position.z - (pool - POOL_CUT));
 		// D56: the rock per vertex, tested against the game's collision (FallSites::ClipStep): the top-down
@@ -173,12 +173,23 @@ namespace FallGround
 		return 0.5 * wobble + 0.35;
 	}
 
-	/** D100: 1 where the vertex's winding faces its mesh's outer side (the way its water travels), -1 where it faces in. */
+	/**
+	 * D100: 1 where the vertex's normal faces its mesh's outer side, -1 where it faces in. D103: the outer side carried
+	 * over the sheet (FallSites::ComputeSides), not the travel's per vertex (it turned a C-shaped sheet's lead-in in).
+	 */
 	float OutwardSign(uint a_vertex)
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
 			return 1.0;
-		return VertexClip[VertexBase + a_vertex].a.w >= 1.5 ? -1.0 : 1.0;
+		return fmod(VertexClip[VertexBase + a_vertex].a.w, 4.0) >= 1.5 ? -1.0 : 1.0;
+	}
+
+	/** D103: 1 where another shown sheet's outer face lies behind the vertex's inner side (only there is that side hidden), else 0. */
+	float InnerCovered(uint a_vertex)
+	{
+		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
+			return 0.0;
+		return VertexClip[VertexBase + a_vertex].a.w >= 3.5 ? 1.0 : 0.0;
 	}
 
 	/** D69, D82, D85: a falls vertex's move: across a seam's gap, its swell, and its wobble at the scroll's phase a_phase. */

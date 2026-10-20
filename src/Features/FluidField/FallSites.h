@@ -300,16 +300,25 @@ namespace FluidFieldSim
 		 * (higher, or as high and larger) fade to 0, so that mesh shows through; the rest stay 1.
 		 */
 		void ComputeFades();
-		static constexpr float FADE_REACH = 32.0f;         ///< D67: an open edge's vertex this near another mesh's surface fades
-		static constexpr float SEAM_BIN = 48.0f;           ///< D91: world units per cell of the seams' triangle bins
-		static constexpr float INSIDE_REACH = 150.0f;      ///< D98: a vertex behind a leading mesh's outer face within this is inside its curl, cut...
-		static constexpr float INSIDE_MARGIN = 6.0f;       ///< D98: ...past this behind it (one just behind, touching, stays)
-		static constexpr int EDGE_SMOOTH_PASSES = 80;      ///< D86: rounds smoothing each mesh's open edge as a curve (D92: 80: on the dense copies' 20-unit edges, 10 smoothed only 60 units)...
-		static constexpr float EDGE_SMOOTH_MOST = 60.0f;   ///< D86: ...moving a vertex at most this far (D92: 60)
-		static constexpr float EDGE_BLEND_REACH = 120.0f;  ///< D94: world units the open edge's moves fade into the surface over...
-		static constexpr int EDGE_BLEND_PASSES = 60;       ///< D94: ...in this many rounds
-		static constexpr float MOST_SHIFT = 120.0f;        ///< D96: a vertex's composed move past this (model units) is a bug: it is left still
-		static constexpr float LEAD_CUT_DEPTH = 4.0f;      ///< D97: a hidden lead-in vertex this far under the water over it is cut
+		static constexpr float FADE_REACH = 32.0f;     ///< D67: an open edge's vertex this near another mesh's surface fades
+		static constexpr float SEAM_BIN = 48.0f;       ///< D91: world units per cell of the seams' triangle bins
+		static constexpr float INSIDE_REACH = 150.0f;  ///< D98: a vertex behind a leading mesh's outer face within this is inside its curl, cut...
+		static constexpr float INSIDE_MARGIN = 6.0f;   ///< D98: ...past this behind it (one just behind, touching, stays)
+		static constexpr float INSIDE_LATERAL = 2.0f;  ///< D103: ...less this per unit it lies off to the side of the face (beside the leading sheet, not inside it)
+		static constexpr float COVER_NEAR = 6.0f;      ///< D103: a sheet behind a vertex's inner side counts from this far (its own surface is not one)
+		/**
+		 * @brief D103: each tested lit mesh's sides for the see-through pass (VertexClip a.w): whether the normal it reads
+		 * faces into its sheet (+2, its outer side carried over the sheet, OrientSheet), and whether another shown sheet's
+		 * outer face lies behind its inner side within INSIDE_REACH (+4): only there is its inner side hidden (D100).
+		 */
+		void ComputeSides();
+		static constexpr int EDGE_SMOOTH_PASSES = 80;          ///< D86: rounds smoothing each mesh's open edge as a curve (D92: 80: on the dense copies' 20-unit edges, 10 smoothed only 60 units)...
+		static constexpr float EDGE_SMOOTH_MOST = 60.0f;       ///< D86: ...moving a vertex at most this far (D92: 60)
+		static constexpr float EDGE_BLEND_REACH = 120.0f;      ///< D94: world units the open edge's moves fade into the surface over...
+		static constexpr int EDGE_BLEND_PASSES = 60;           ///< D94: ...in this many rounds
+		static constexpr float MOST_SHIFT = 120.0f;            ///< D96: a vertex's composed move past this (model units) is a bug: it is left still
+		static constexpr float LEAD_CUT_DEPTH = 4.0f;          ///< D97: a hidden lead-in vertex this far under the water over it is cut
+		static constexpr float LEAD_WATER_OVER_CREST = 48.0f;  ///< D103: ...by water no higher than this over its column's crest (a plane's bound reaches past its water)
 		std::vector<RE::NiPointer<RE::BSGeometry>> clipQueue;
 		uint64_t vertexClipVersion = 0;
 		uint32_t clipTested = 0;

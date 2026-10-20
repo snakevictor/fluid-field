@@ -57,6 +57,140 @@ namespace FluidFieldSim
 			return squared(ap - ab * (vb * denominator) - ac * (vc * denominator));
 		}
 
+		/**
+		 * @brief D103: the way a falls mesh's water travels, from its highest tenth to its lowest, level, tipped up (z 0.3):
+		 * which of a sheet's two sides is its outer one, picked at its foot (OrientSheet). a_positions in world space.
+		 */
+		RE::NiPoint3 SheetTravel(const std::vector<RE::NiPoint3>& a_positions)
+		{
+			RE::NiPoint3 travel(0.0f, 0.0f, 0.0f);
+			if (a_positions.empty())
+				return RE::NiPoint3(0.0f, 0.0f, 0.3f);
+			std::vector<float> sorted;
+			sorted.reserve(a_positions.size());
+			for (const auto& p : a_positions)
+				sorted.push_back(p.z);
+			std::sort(sorted.begin(), sorted.end());
+			const float high = sorted[sorted.size() * 9 / 10], low = sorted[sorted.size() / 10];
+			RE::NiPoint3 head(0.0f, 0.0f, 0.0f), foot(0.0f, 0.0f, 0.0f);
+			float heads = 0.0f, feet = 0.0f;
+			for (const auto& p : a_positions) {
+				if (p.z >= high) {
+					head += p;
+					heads += 1.0f;
+				} else if (p.z <= low) {
+					foot += p;
+					feet += 1.0f;
+				}
+			}
+			if (heads > 0.0f && feet > 0.0f) {
+				travel = foot / feet - head / heads;
+				travel.z = 0.0f;
+				const float length = travel.Length();
+				travel = length > 1e-3f ? travel / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
+			}
+			travel.z = 0.3f;
+			return travel;
+		}
+
+		/**
+		 * @brief D103: each triangle's outer side as +1 (its winding) or -1, the same side over each connected sheet.
+		 * D92 asked each vertex alone which way it faced against the travel: on a C-shaped sheet the lead-in climbing to
+		 * the crest faces up and upstream on its outer side, against the travel, so half of every mesh (the bake dumps:
+		 * 51% of texels, mostly its upper half) was called inward, its outer side turned into the curl (discarded from
+		 * above, the curl cut reading the river side as inside). Here the side is carried over the mesh from triangle to
+		 * triangle across shared edges (vertices welded by position, so texture seams join), and each connected sheet
+		 * takes the side its lowest third faces the travel with (the curtain over its foot, never the lead-in).
+		 */
+		std::vector<int8_t> OrientSheet(const std::vector<RE::NiPoint3>& a_positions, const std::vector<std::array<uint16_t, 3>>& a_triangles, const RE::NiPoint3& a_travel)
+		{
+			std::vector<int8_t> side(a_triangles.size(), 0);
+			std::map<std::tuple<int64_t, int64_t, int64_t>, uint32_t> welds;
+			std::vector<uint32_t> weld(a_positions.size());
+			for (std::size_t v = 0; v < a_positions.size(); v++) {
+				const auto key = std::make_tuple(std::llround(a_positions[v].x * 8.0), std::llround(a_positions[v].y * 8.0), std::llround(a_positions[v].z * 8.0));
+				weld[v] = welds.emplace(key, static_cast<uint32_t>(welds.size())).first->second;
+			}
+			// Each welded edge's triangles, with the way each runs along it (+1 from its lower welded end)
+			std::unordered_map<uint64_t, std::vector<std::pair<uint32_t, int8_t>>> edges;
+			std::vector<RE::NiPoint3> face(a_triangles.size());
+			float lowest = FLT_MAX, highest = -FLT_MAX;
+			for (uint32_t t = 0; t < a_triangles.size(); t++) {
+				const auto& tri = a_triangles[t];
+				face[t] = (a_positions[tri[1]] - a_positions[tri[0]]).Cross(a_positions[tri[2]] - a_positions[tri[0]]);
+				for (int k = 0; k < 3; k++) {
+					lowest = std::min(lowest, a_positions[tri[k]].z);
+					highest = std::max(highest, a_positions[tri[k]].z);
+					const uint32_t a = weld[tri[k]], b = weld[tri[(k + 1) % 3]];
+					if (a == b)
+						continue;
+					edges[static_cast<uint64_t>(std::min(a, b)) << 32 | std::max(a, b)].emplace_back(t, static_cast<int8_t>(a < b ? 1 : -1));
+				}
+			}
+			std::vector<std::vector<std::pair<uint32_t, bool>>> next(a_triangles.size());  // neighbour, and whether it keeps the side
+			for (const auto& [key, uses] : edges) {
+				if (uses.size() != 2 || uses[0].first == uses[1].first)
+					continue;                                         // An open edge, or where more than two sheets meet (a fold of layers): not carried across
+				const bool keeps = uses[0].second != uses[1].second;  // Consistent windings run a shared edge opposite ways
+				next[uses[0].first].emplace_back(uses[1].first, keeps);
+				next[uses[1].first].emplace_back(uses[0].first, keeps);
+			}
+			const float footLine = lowest + (highest - lowest) / 3.0f;
+			std::vector<uint32_t> component, queue;
+			for (uint32_t seed = 0; seed < a_triangles.size(); seed++) {
+				if (side[seed] != 0)
+					continue;
+				component.clear();
+				queue.assign(1, seed);
+				side[seed] = 1;
+				while (!queue.empty()) {
+					const uint32_t t = queue.back();
+					queue.pop_back();
+					component.push_back(t);
+					for (const auto& [n, keeps] : next[t]) {
+						if (side[n] == 0) {
+							side[n] = static_cast<int8_t>(keeps ? side[t] : -side[t]);
+							queue.push_back(n);
+						}
+					}
+				}
+				float atFoot = 0.0f, all = 0.0f;
+				for (const uint32_t t : component) {
+					const float facing = face[t].Dot(a_travel) * side[t];
+					all += facing;
+					const auto& tri = a_triangles[t];
+					if ((a_positions[tri[0]].z + a_positions[tri[1]].z + a_positions[tri[2]].z) / 3.0f <= footLine)
+						atFoot += facing;
+				}
+				if ((atFoot != 0.0f ? atFoot : all) < 0.0f) {
+					for (const uint32_t t : component)
+						side[t] = static_cast<int8_t>(-side[t]);
+				}
+			}
+			return side;
+		}
+
+		/** @brief D103: where a ray from a_from along a_direction (unit) crosses a triangle, at most a_reach along it, or a negative value (Moller-Trumbore). */
+		float RayTriangle(const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, const RE::NiPoint3& a_a, const RE::NiPoint3& a_b, const RE::NiPoint3& a_c, float a_reach)
+		{
+			const RE::NiPoint3 e1 = a_b - a_a, e2 = a_c - a_a;
+			const RE::NiPoint3 p = a_direction.Cross(e2);
+			const float det = e1.Dot(p);
+			if (std::abs(det) < 1e-8f)
+				return -1.0f;
+			const float inverse = 1.0f / det;
+			const RE::NiPoint3 s = a_from - a_a;
+			const float u = s.Dot(p) * inverse;
+			if (u < 0.0f || u > 1.0f)
+				return -1.0f;
+			const RE::NiPoint3 q = s.Cross(e1);
+			const float v = a_direction.Dot(q) * inverse;
+			if (v < 0.0f || u + v > 1.0f)
+				return -1.0f;
+			const float t = e2.Dot(q) * inverse;
+			return t >= 0.0f && t <= a_reach ? t : -1.0f;
+		}
+
 		/** @brief A grid softened in place: a_passes of a 3x3 tent. */
 		void BlurGrid(std::vector<float>& a_field, int32_t a_width, int32_t a_height, int a_passes)
 		{
@@ -1149,6 +1283,7 @@ namespace FluidFieldSim
 			float top = -FLT_MAX, area = 0.0f;
 			std::unordered_map<int64_t, std::vector<uint32_t>> bins;  ///< D91: its triangles by SEAM_BIN cell (each in every cell its bound touches)
 			RE::NiPoint3 travel;                                      ///< D98: the way its water travels, level, tipped up: its outer side
+			std::vector<int8_t> side;                                 ///< D103: each triangle's outer side (+1 its winding), the same over the sheet
 		};
 		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
 		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
@@ -1221,36 +1356,10 @@ namespace FluidFieldSim
 					}
 				}
 			}
-			// D98: its outer side: from its highest tenth to its lowest, level, tipped up (the pushes' D92 by height)
-			{
-				std::vector<float> heights;
-				heights.reserve(mesh.positions.size());
-				for (const auto& p : mesh.positions)
-					heights.push_back(p.z);
-				std::vector<float> sorted = heights;
-				std::sort(sorted.begin(), sorted.end());
-				const float high = sorted[sorted.size() * 9 / 10], low = sorted[sorted.size() / 10];
-				RE::NiPoint3 head(0.0f, 0.0f, 0.0f), foot(0.0f, 0.0f, 0.0f);
-				float heads = 0.0f, feet = 0.0f;
-				for (const auto& p : mesh.positions) {
-					if (p.z >= high) {
-						head += p;
-						heads += 1.0f;
-					} else if (p.z <= low) {
-						foot += p;
-						feet += 1.0f;
-					}
-				}
-				RE::NiPoint3 travel(0.0f, 0.0f, 0.0f);
-				if (heads > 0.0f && feet > 0.0f) {
-					travel = foot / feet - head / heads;
-					travel.z = 0.0f;
-					const float length = travel.Length();
-					travel = length > 1e-3f ? travel / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
-				}
-				travel.z = 0.3f;
-				mesh.travel = travel;
-			}
+			// D98: its outer side: from its highest tenth to its lowest, level, tipped up. D103: carried over the sheet
+			// (OrientSheet), not asked of each triangle alone: the lead-in's outer side faces against the travel
+			mesh.travel = SheetTravel(mesh.positions);
+			mesh.side = OrientSheet(mesh.positions, mesh.triangles, mesh.travel);
 			mesh.open.assign(counts.vertexCount, 0);
 			for (const auto& [edge, count] : uses) {
 				if (count != 1)
@@ -1342,8 +1451,11 @@ namespace FluidFieldSim
 						faceShown = faceShown && vertexClips[other.base + tri[k]][0] > 0.0f;
 					if (!faceShown)
 						continue;
+					// D103: its outer side as carried over its sheet (OrientSheet), not the travel's per triangle: on the lead-in
+					// climbing to the crest that turned the face round, and the river side of it (a neighbour's lip) was cut
+					const auto t = static_cast<std::size_t>(nearest - other.triangles.data());
 					RE::NiPoint3 n = (other.positions[tri[1]] - other.positions[tri[0]]).Cross(other.positions[tri[2]] - other.positions[tri[0]]);
-					if (n.Dot(other.travel) < 0.0f)
+					if (t < other.side.size() && other.side[t] < 0)
 						n = -n;
 					const RE::NiPoint3 centre = (other.positions[tri[0]] + other.positions[tri[1]] + other.positions[tri[2]]) / 3.0f;
 					const float area = n.Length();
@@ -1352,7 +1464,14 @@ namespace FluidFieldSim
 					const float behind = (p - centre).Dot(n) / area;
 					if (behind >= 0.0f)
 						continue;
-					const float clip = std::max(behind + INSIDE_MARGIN, -CLIP_RANGE);
+					// D103: only where the face covers it: a vertex beside the leading sheet (its nearest point on an open edge
+					// or a fold, off to the side) is not inside its curl. A neighbour sheet running on past the leading one's
+					// edge, a little behind its plane, was cut up to INSIDE_REACH from it (the gaps between sheets). The cut
+					// grows with how far to the side it lies (INSIDE_LATERAL per unit), so it fades out smoothly there
+					const float lateral = std::sqrt(std::max(best - behind * behind, 0.0f));
+					const float clip = std::max(behind + INSIDE_MARGIN + INSIDE_LATERAL * lateral, -CLIP_RANGE);
+					if (clip >= CLIP_MARGIN + CLIP_RANGE)
+						continue;
 					vertexClips[mesh.base + v][0] = std::min(vertexClips[mesh.base + v][0], clip);
 					inside = inside || clip < 0.0f;
 				}
@@ -1504,6 +1623,155 @@ namespace FluidFieldSim
 		ComposeShifts();
 		logger::info("[Fluid Field] Waterfall seams: {} of {} open-edge vertices of {} lit meshes lie on a mesh leading them, and fade; {} move across a gap to the mesh beside them; {} edge vertices smoothed; {} inside another, cut", faded,
 			edges, meshes.size(), gaps, smoothed, overlapped);
+		ComputeSides();
+	}
+
+	void FallSites::ComputeSides()
+	{
+		// Every tested lit mesh: its vertices and outer normals (world), its triangles' outer sides, and its bins
+		struct Sheet
+		{
+			uint32_t base = 0;
+			std::vector<RE::NiPoint3> positions, outward, shown;  ///< shown: the normal the see-through pass reads (vanilla's, or the winding's)
+			std::vector<std::array<uint16_t, 3>> triangles;
+			std::vector<int8_t> side;
+			float lo[3]{ FLT_MAX, FLT_MAX, FLT_MAX }, hi[3]{ -FLT_MAX, -FLT_MAX, -FLT_MAX };
+			std::unordered_map<int64_t, std::vector<uint32_t>> bins;
+		};
+		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
+		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
+		const auto start = std::chrono::steady_clock::now();
+		std::vector<Sheet> sheets;
+		std::unordered_set<const RE::BSGeometry*> seen;
+		for (const auto& lit : litMeshList) {
+			auto* geometry = lit.geometry.get();
+			const auto base = vertexClipBase.find(geometry);
+			if (!geometry || base == vertexClipBase.end() || !seen.insert(geometry).second)
+				continue;
+			auto* triShape = geometry->AsTriShape();
+			auto* renderer = geometry->GetGeometryRuntimeData().rendererData;
+			if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
+				continue;
+			const auto& counts = triShape->GetTrishapeRuntimeData();
+			if (base->second + counts.vertexCount > vertexClips.size())
+				continue;
+			auto& desc = renderer->vertexDesc;  // CommonLib's getters are not const
+			const uint32_t stride = desc.GetSize();
+			const uint32_t positionOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+			const bool haveNormals = desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_NORMAL);
+			const uint32_t normalOffset = haveNormals ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_NORMAL) : 0;
+			Sheet sheet;
+			sheet.base = base->second;
+			sheet.positions.resize(counts.vertexCount);
+			sheet.outward.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+			sheet.shown.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				const uint8_t* data = renderer->rawVertexData + static_cast<std::size_t>(v) * stride;
+				float local[3];
+				std::memcpy(local, data + positionOffset, sizeof(local));
+				sheet.positions[v] = geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
+				for (int k = 0; k < 3; k++) {
+					const float c = k == 0 ? sheet.positions[v].x : (k == 1 ? sheet.positions[v].y : sheet.positions[v].z);
+					sheet.lo[k] = std::min(sheet.lo[k], c);
+					sheet.hi[k] = std::max(sheet.hi[k], c);
+				}
+				// As FallRefraction::BuildMesh reads it: the see-through pass turns this normal by the flag
+				if (haveNormals) {
+					const uint8_t* n = data + normalOffset;
+					sheet.shown[v] = geometry->world.rotate * RE::NiPoint3(n[0] / 255.0f * 2.0f - 1.0f, n[1] / 255.0f * 2.0f - 1.0f, n[2] / 255.0f * 2.0f - 1.0f);
+				}
+			}
+			for (uint32_t i = 0; i < counts.triangleCount; i++) {
+				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+				if (index[0] < counts.vertexCount && index[1] < counts.vertexCount && index[2] < counts.vertexCount)
+					sheet.triangles.push_back({ index[0], index[1], index[2] });
+			}
+			sheet.side = OrientSheet(sheet.positions, sheet.triangles, SheetTravel(sheet.positions));
+			for (uint32_t t = 0; t < sheet.triangles.size(); t++) {
+				const auto& tri = sheet.triangles[t];
+				const RE::NiPoint3 &a = sheet.positions[tri[0]], &b = sheet.positions[tri[1]], &c = sheet.positions[tri[2]];
+				const RE::NiPoint3 face = (b - a).Cross(c - a);
+				for (const uint16_t k : tri) {
+					sheet.outward[k] += face * static_cast<float>(sheet.side[t]);
+					if (!haveNormals)
+						sheet.shown[k] += face;
+				}
+				for (int64_t x = cellOf(std::min({ a.x, b.x, c.x })); x <= cellOf(std::max({ a.x, b.x, c.x })); x++) {
+					for (int64_t y = cellOf(std::min({ a.y, b.y, c.y })); y <= cellOf(std::max({ a.y, b.y, c.y })); y++) {
+						for (int64_t z = cellOf(std::min({ a.z, b.z, c.z })); z <= cellOf(std::max({ a.z, b.z, c.z })); z++)
+							sheet.bins[binKey(x, y, z)].push_back(t);
+					}
+				}
+			}
+			for (auto& n : sheet.outward) {
+				const float length = n.Length();
+				n = length > 1e-6f ? n / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
+			}
+			sheets.push_back(std::move(sheet));
+		}
+		// D103: a vertex's inner side is hidden (D100's discard) only where another shown sheet lies behind it, its outer side
+		// turned away from the vertex: looking at the vertex's inner side, that sheet's outer face is in front. A sheet with
+		// open air or rock behind it (a free curtain seen from behind or above, the lip seen from upstream) still shows
+		// from inside: D100 hid it everywhere and the cliff showed through
+		uint32_t inward = 0, covered = 0, tested = 0;
+		std::vector<int64_t> cells;
+		for (auto& sheet : sheets) {
+			for (uint32_t v = 0; v < sheet.positions.size(); v++) {
+				const RE::NiPoint3& p = sheet.positions[v];
+				const RE::NiPoint3 back = -sheet.outward[v];
+				bool hidden = false;
+				if (back.Length() > 0.5f) {
+					tested++;
+					const RE::NiPoint3 from = p + back * COVER_NEAR;
+					const RE::NiPoint3 to = p + back * INSIDE_REACH;
+					// The bins the ray passes, sampled at a quarter bin (a bin's triangles include every one whose bound touches it)
+					cells.clear();
+					const int steps = static_cast<int>(std::ceil((INSIDE_REACH - COVER_NEAR) / (SEAM_BIN * 0.25f)));
+					for (int i = 0; i <= steps; i++) {
+						const RE::NiPoint3 q = from + (to - from) * (static_cast<float>(i) / static_cast<float>(steps));
+						const int64_t key = binKey(cellOf(q.x), cellOf(q.y), cellOf(q.z));
+						if (cells.empty() || cells.back() != key)
+							cells.push_back(key);
+					}
+					const float lo[3] = { std::min(from.x, to.x), std::min(from.y, to.y), std::min(from.z, to.z) };
+					const float hi[3] = { std::max(from.x, to.x), std::max(from.y, to.y), std::max(from.z, to.z) };
+					float nearest = INSIDE_REACH - COVER_NEAR;
+					bool hitShown = false;
+					for (const auto& other : sheets) {
+						if (lo[0] > other.hi[0] || hi[0] < other.lo[0] || lo[1] > other.hi[1] || hi[1] < other.lo[1] || lo[2] > other.hi[2] || hi[2] < other.lo[2])
+							continue;
+						for (const int64_t key : cells) {
+							const auto it = other.bins.find(key);
+							if (it == other.bins.end())
+								continue;
+							for (const uint32_t t : it->second) {
+								const auto& tri = other.triangles[t];
+								const float along = RayTriangle(from, back, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]], nearest);
+								if (along < 0.0f)
+									continue;
+								nearest = along;
+								// The first sheet behind decides: shown (not cut) with its outer side away from this vertex
+								const RE::NiPoint3 face = (other.positions[tri[1]] - other.positions[tri[0]]).Cross(other.positions[tri[2]] - other.positions[tri[0]]) * static_cast<float>(other.side[t]);
+								bool shown = face.Dot(back) > 0.0f;
+								for (const uint16_t k : tri)
+									shown = shown && vertexClips[other.base + k][0] > 0.0f;
+								hitShown = shown;
+							}
+						}
+					}
+					hidden = hitShown;
+				}
+				const bool turned = sheet.shown[v].Dot(sheet.outward[v]) < 0.0f;
+				inward += turned ? 1 : 0;
+				covered += hidden ? 1 : 0;
+				// a.w: 1 its foot (D71), +2 its normal faces in (D100), +4 its inner side is covered (D103)
+				float& flags = vertexClips[sheet.base + v][3];
+				flags = std::fmod(flags, 2.0f) + (turned ? 2.0f : 0.0f) + (hidden ? 4.0f : 0.0f);
+			}
+		}
+		vertexClipVersion++;
+		logger::info("[Fluid Field] Waterfall sides: {} of {} vertices of {} lit meshes turned to face out; {} of {} tested have a sheet in front of their inner side ({:.1f} ms)", inward,
+			vertexClips.size(), sheets.size(), covered, tested, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
 	}
 
 	std::unique_ptr<FallSites::BakeJob> FallSites::StartBake(RE::BSGeometry* a_geometry)
@@ -2134,7 +2402,6 @@ namespace FluidFieldSim
 			const uint32_t uvOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
 			std::vector<RE::NiPoint3> positions(counts.vertexCount), normals(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
 			std::vector<std::array<float, 2>> uvs(counts.vertexCount);
-			std::vector<uint8_t> inward;
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
 				const uint8_t* data = renderer->rawVertexData + static_cast<std::size_t>(v) * stride;
 				float local[3];
@@ -2157,51 +2424,27 @@ namespace FluidFieldSim
 					uses[{ std::min(index[k], index[(k + 1) % 3]), std::max(index[k], index[(k + 1) % 3]) }]++;
 				}
 			}
-			// D92: the outer face (as BuildPlunges'): the side its water travels toward, from its least v to its most
+			// D92: the outer face: the side its water travels toward. D103: carried over the sheet from its foot (OrientSheet,
+			// as the curl cut's), not asked of each vertex alone: a C-shaped sheet's lead-in faces up and upstream on its
+			// outer side, and D92 turned its normals into the curl (the swell and wobble pushed it inward, and D100 hid it
+			// from above). The shaders' outer-side flags are ComputeSides'
 			{
-				float vLo = FLT_MAX, vHi = -FLT_MAX;
-				for (const auto& uv : uvs) {
-					vLo = std::min(vLo, uv[1]);
-					vHi = std::max(vHi, uv[1]);
+				std::vector<RE::NiPoint3> world(counts.vertexCount);
+				for (uint32_t v = 0; v < counts.vertexCount; v++)
+					world[v] = geometry->world * positions[v];
+				const auto side = OrientSheet(world, triangles, SheetTravel(world));
+				std::vector<RE::NiPoint3> winding = normals;
+				std::fill(normals.begin(), normals.end(), RE::NiPoint3(0.0f, 0.0f, 0.0f));
+				for (std::size_t t = 0; t < triangles.size(); t++) {
+					const auto& tri = triangles[t];
+					const RE::NiPoint3 face = (positions[tri[1]] - positions[tri[0]]).Cross(positions[tri[2]] - positions[tri[0]]) * static_cast<float>(side[t]);
+					for (int k = 0; k < 3; k++)
+						normals[tri[k]] += face;
 				}
-				const float band = (vHi - vLo) * 0.1f;
-				RE::NiPoint3 head(0.0f, 0.0f, 0.0f), foot(0.0f, 0.0f, 0.0f);
-				float heads = 0.0f, feet = 0.0f;
-				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					const RE::NiPoint3 world = geometry->world * positions[v];
-					if (uvs[v][1] <= vLo + band) {
-						head += world;
-						heads += 1.0f;
-					} else if (uvs[v][1] >= vHi - band) {
-						foot += world;
-						feet += 1.0f;
-					}
-				}
-				RE::NiPoint3 travel(0.0f, 0.0f, 0.0f);
-				if (heads > 0.0f && feet > 0.0f) {
-					travel = foot / feet - head / heads;
-					travel.z = 0.0f;
-					const float length = travel.Length();
-					travel = length > 1e-3f ? travel / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
-				}
-				travel.z = 0.3f;
-				uint32_t flipped = 0;
-				inward.assign(counts.vertexCount, 0);
-				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					if ((geometry->world.rotate * normals[v]).Dot(travel) < 0.0f) {
-						normals[v] = -normals[v];
-						inward[v] = 1;
-						flipped++;
-					}
-				}
-				flippedTotal += flipped;
+				for (uint32_t v = 0; v < counts.vertexCount; v++)
+					flippedTotal += normals[v].Dot(winding[v]) < 0.0f ? 1 : 0;
 			}
 			std::vector<uint8_t> open(counts.vertexCount, 0);
-			// D100: its winding against its outer side, per vertex, for the shaders (a.w: 1 its foot, +2 its winding faces in)
-			for (uint32_t v = 0; v < counts.vertexCount && vertexClipBase.contains(geometry) && vertexClipBase[geometry] + v < vertexClips.size(); v++) {
-				float& flags = vertexClips[vertexClipBase[geometry] + v][3];
-				flags = std::fmod(flags, 2.0f) + (v < inward.size() && inward[v] ? 2.0f : 0.0f);
-			}
 			for (const auto& [edge, count] : uses) {
 				if (count == 1)
 					open[edge.first] = open[edge.second] = 1;
@@ -2342,13 +2585,15 @@ namespace FluidFieldSim
 				}
 				std::vector<std::array<float, 5>> leadPlanes;
 				CollectWaterPlanes(lo[0], lo[1], hi[0], hi[1], leadPlanes);
-				// D99: the highest water over a point (our pools, the engine's planes), or none
-				const auto waterOver = [&](const RE::NiPoint3& a_p) {
+				// D99: the highest water over a point (our pools, the engine's planes), or none. D103: none higher than a_ceiling:
+				// an engine plane covers its whole bound (a cell, a lake's rectangle), so a river's or lake's plane higher up
+				// the cliff reached over a lead-in standing in the open, and cut the visible top of the sheet
+				const auto waterOver = [&](const RE::NiPoint3& a_p, float a_ceiling) {
 					float level = 0.0f, highest = -FLT_MAX;
-					if (PoolLevelAt(a_p.x, a_p.y, level))
+					if (PoolLevelAt(a_p.x, a_p.y, level) && level <= a_ceiling)
 						highest = level;
 					for (const auto& plane : leadPlanes) {
-						if (a_p.x >= plane[0] && a_p.x <= plane[2] && a_p.y >= plane[1] && a_p.y <= plane[3])
+						if (a_p.x >= plane[0] && a_p.x <= plane[2] && a_p.y >= plane[1] && a_p.y <= plane[3] && plane[4] <= a_ceiling)
 							highest = std::max(highest, plane[4]);
 					}
 					return highest;
@@ -2364,7 +2609,12 @@ namespace FluidFieldSim
 					// interpolate the cut linearly, so a step between neighbours put the cut line along the triangles'
 					// edges, a sawtooth at the copy's 20-unit triangles; a height puts it on the waterline itself
 					const RE::NiPoint3 world = geometry->world * positions[v];
-					const float level = waterOver(world);
+					// D103: the water a lead-in hides under is the river feeding its crest, at about the crest's height
+					const int32_t crestRow = crest[gx];
+					const float crestHeight = crestRow >= 0 && bake.position.size() == static_cast<std::size_t>(bake.width) * bake.height ?
+					                              bake.position[static_cast<std::size_t>(crestRow) * bake.width + gx].z :
+					                              FLT_MAX;
+					const float level = waterOver(world, crestHeight == FLT_MAX ? FLT_MAX : crestHeight + LEAD_WATER_OVER_CREST);
 					if (level == -FLT_MAX)
 						continue;
 					const float height = std::max(world.z - (level - LEAD_CUT_DEPTH), -CLIP_RANGE);
@@ -2418,6 +2668,7 @@ namespace FluidFieldSim
 			meshes++;
 		}
 		ComposeShifts();
+		ComputeSides();  // D103: after the lead-in cuts, which the covering sheets' test reads
 		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units; {} wobble, at most {:.1f} units; {} normals turned outward; {} hidden lead-in vertices cut",
 			pushed, meshes, most, wobbled, mostWobble, flippedTotal, leadCut);
 	}

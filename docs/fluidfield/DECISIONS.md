@@ -2581,3 +2581,74 @@ Entry format:
     wrong. The constants (ABSORPTION, FOAM_LIFT, REFLECTION_WEIGHT,
     GLINT_WEIGHT) are first guesses.
 -   References: D91, D93, D98, D99, D100, D101
+
+## D103: One outer side per sheet; inner sides hidden only behind another sheet; the curl cut only where covered (on branch feature/fluid-field-falls-culling)
+
+-   Date: 2026-10-20
+-   Context: after D98-D101 the C-shaped sheets' crossings look mostly right,
+    but "holes still appear in places where they shouldn't": large chunks of
+    sheet missing, the top and lip of a fall showing the cliff through it,
+    parts vanishing seen from above or behind, gaps between neighbouring
+    sheets.
+-   Causes, ranked (offline: scratchpad culling/analyse.py and
+    orient_test.cpp on the 18 latest bake dumps, texel grids, not the dense
+    meshes):
+    1.  **D92's outer side asked per vertex against the travel** (high
+        confidence). A sheet's lead-in climbs to its crest facing up and
+        upstream on its outer side, against the travel: 51% of all texels
+        (on every dump 43-61%, three quarters of them in the mesh's upper
+        half) were called inward and their normal turned into the curl.
+        D100 then discarded the lead-in and crest seen from above (their real
+        outer side), and the sign changed across the crest, where the
+        interpolated flag crossed zero.
+    2.  **D98's curl cut oriented each leading triangle the same way**
+        (high): behind the lead-in turned round was the river side, so the
+        lip region of a neighbour lying there was cut.
+    3.  **D98's curl cut ignored how far to the side a vertex lies**
+        (medium-high): "behind" was the signed distance to the nearest
+        triangle's plane, so a neighbouring sheet running on past the leading
+        sheet's open edge, slightly behind its plane, was cut up to 150 units
+        from it (the gaps between sheets).
+    4.  **D100 hid every inner side** (medium-high): a free curtain seen from
+        behind or the lip seen from upstream has no other water in front of
+        it; hiding its inner side left a hole.
+    5.  **D97's lead-in cut read any water plane over it** (medium-low): a
+        plane covers its whole bound, so a river or lake higher up the cliff
+        could cut a lead-in standing in the open.
+-   Decision:
+    -   **One outer side per sheet** (OrientSheet): each triangle's side is
+        carried to its neighbours across shared edges (vertices welded by
+        position, so texture seams join; non-manifold edges not crossed),
+        and each connected sheet takes the side its lowest third faces the
+        travel with (the curtain over its foot). The curl cut (ComputeFades),
+        the swell and wobble normals (ComputePushes) and the see-through
+        pass's flags (ComputeSides) all use it. Checked offline: with a third
+        of the windings scrambled and a seam split, every dump orients as one
+        sheet, its foot facing the travel.
+    -   **Inner sides hidden only where covered** (ComputeSides, VertexClip
+        a.w +4): a ray from each vertex into its inner side, 6 to 150 units,
+        must first hit a shown sheet (not cut) whose outer side faces away
+        from it; only there does FallSurface.hlsl discard the inner side. The
+        +2 flag now compares the normal the see-through pass reads (vanilla's)
+        with the sheet's outer side, and the pass interpolates the turned
+        normal itself (no sign crossing zero mid-triangle).
+    -   **The curl cut only where the face covers the vertex**: the cut's
+        distance is its depth behind the face less INSIDE_LATERAL (2) per unit
+        it lies off to the side, so beside a sheet's edge it fades out.
+    -   **The lead-in cut only by water at most 48 units over its column's
+        crest** (the river feeding it).
+-   Cost: on the CPU, once per load: one orientation pass per mesh (twice:
+    seams and pushes) and one ray per vertex through the seam bins. Per pixel
+    of the see-through pass one normalise more.
+-   Untested: the plugin was not built (no build folder in the worktree);
+    the helpers compiled and ran standalone (MSVC), FallSurface.hlsl
+    compiled with fxc. Not seen in game.
+-   Risks: the inner-side discard now leaves both layers of two parallel
+    sheets facing the same way (neither covers the other), and shows an
+    inner side whose covering sheet is cut (its lead-in under water): seen
+    from upstream that is the curtain's back, as in reality. ComputeSides
+    runs after ComputeFades and after ComputePushes, so it reads whichever
+    cuts exist then. The cover ray follows the vertex's normal: seen at a
+    glancing angle the covering sheet may not lie in front of a hidden
+    inner side, a small gap near the covering sheet's edge.
+-   References: D79, D92, D95, D97, D98, D100, D101
