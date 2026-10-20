@@ -343,11 +343,11 @@ namespace FluidFieldSim
 		static constexpr double BAKE_BUDGET_MS = 3.0;
 		static constexpr float BAKE_LEAST_DOWN = 0.3f;     ///< The flow keeps at least this much of vanilla's forward...
 		static constexpr float BAKE_MOST_TURN = 0.5f;      ///< ...and turns aside at most this across per down (D70: 27 degrees: vanilla's way down drives harder)
-		static constexpr float BAKE_NEAR_TURN = 1.0f;      ///< D71: ...but right beside rock up to 45 degrees
+		static constexpr float BAKE_NEAR_TURN = 3.7f;      ///< D74: ...but right beside rock up to 75 degrees
 		static constexpr float MEET_CELL = 32.0f;          ///< D72: world units per cell of the grid meshes find each other's water in
-		static constexpr float MEET_REACH = 40.0f;         ///< D72: another mesh's water this near draws this mesh's flow...
-		static constexpr float MEET_PULL = 0.7f;           ///< D72: ...this much at its nearest
-		static constexpr float BAKE_MOST_DRIFT = 8.0f;     ///< D71: texels a streak may drift across from where it came in
+		static constexpr float MEET_REACH = 120.0f;        ///< D72: another mesh's water this near draws this mesh's flow... (D74: 120)
+		static constexpr float MEET_PULL = 0.9f;           ///< D72: ...this much at its nearest
+		static constexpr float BAKE_MOST_DRIFT = 64.0f;    ///< D71: texels a streak may drift across from where it came in (D74: the sim decides; only a guard)
 		static constexpr float BAKE_MOST_DOWN = 1.6f;      ///< D60: and runs at most this much of it
 		static constexpr std::size_t BAKE_LEAST_ROCK = 6;  ///< D60: rock islands of this many texels or fewer are specks, taken as water
 		static constexpr float BAKE_BEND_NEAR = 3.0f;      ///< D60: the streaks bend in full this many texels from rock...
@@ -357,6 +357,16 @@ namespace FluidFieldSim
 		static constexpr float BAKE_WARP_KEEP = 0.6f;      ///< D60: how much of the full streamline warp is kept (streaks partly run under a rock)
 		static constexpr float BAKE_LEAST_SPACING = 0.5f;  ///< D60: streaks squeezed closer than this, or spread wider than BAKE_MOST_SPACING, ease back to vanilla's
 		static constexpr float BAKE_MOST_SPACING = 2.0f;
+		static constexpr float SIM_GRAVITY = 686.0f;      ///< D74: world units per second squared (Skyrim's)
+		static constexpr float SIM_INFLOW = 250.0f;       ///< D74: world units per second the water comes onto a mesh's top at
+		static constexpr float SIM_TERMINAL = 900.0f;     ///< D74: world units per second sliding water tends to (its drag)
+		static constexpr int SIM_STEPS = 160;             ///< D74: steps to its steady state
+		static constexpr int SIM_CG = 60;                 ///< D74: conjugate-gradient iterations per step's pressure (warm started)
+		static constexpr float SIM_FRICTION = 3.0f;       ///< D74: per second, the bed's friction on the thin sheet (it damps eddies)
+		static constexpr float SIM_BAND = 0.15f;          ///< D74: share of the mesh's rows (texture v) its top and foot bands are
+		static constexpr float SIM_DEAD = 0.15f;          ///< D74: water moving less than this share of the median is a dead pocket: it keeps vanilla's way
+		static constexpr float SIM_MOST_TURN = 5.7f;      ///< D74: the streaks turn at most this across per down (80 degrees)
+		static constexpr bool FLAT_JOIN = false;          ///< D68's flat parts joining the site's flow: the sim spreads the water itself (D74)
 		static constexpr float BAKE_WAKE_TEXELS = 24.0f;  ///< D60: texels down the streaks a rock's wake fades over
 		/** @brief D59: a mesh's flow bake in progress: its texture grid rasterised, its texels being tested against the rock. */
 		struct BakeJob
@@ -395,7 +405,7 @@ namespace FluidFieldSim
 		bool refreshing = false;
 		static constexpr bool DENSE = true;
 		static constexpr float DENSE_EDGE = 40.0f;  ///< D73: world units the dense copy's edges are at most (when the vertex budget allows)
-		static constexpr int DENSE_LEVELS = 3;      ///< D73: halvings at most
+		static constexpr int DENSE_LEVELS = 1;      ///< D73: halvings at most (D74: one: three stuttered the game)
 		/** @brief D73: builds and attaches a dense copy of a lit mesh; false where it cannot (no CPU data, or no engine builder). */
 		bool Densify(RE::BSGeometry* a_geometry);
 		/** @brief D73: removes every dense copy and shows the originals again. */

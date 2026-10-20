@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -2772,90 +2773,343 @@ namespace FluidFieldSim
 		}
 		const auto water = [&](int32_t a_x, int32_t a_y) { return inside(a_x, a_y) && a_job.covered[index(a_x, a_y)] && !rock[index(a_x, a_y)]; };
 
-		// The grid as a sheet tilted down +v, solved (D28) round the rock: in at each column's first covered
-		// texel, out at its last (the jagged sides are neither: D59 made sources and sinks of them)
-		FallStream::Input input;
-		input.width = w;
-		input.height = h;
-		input.cell = BAKE_TEXEL;
-		input.surface.resize(count);
-		input.bed.resize(count);
-		input.kind.assign(count, FallStream::Wall);
+		// D74 diagnostics: the sim's inputs, next to the log, for the offline harness (scratchpad simbake.py)
+		if (const auto directory = logger::log_directory()) {
+			static std::atomic<int> dumps{ 0 };
+			std::ofstream file(*directory / std::format("FluidField_bake{}.bin", dumps++), std::ios::binary);
+			const uint32_t header[2] = { w, h };
+			const float uv[4] = { a_job.uvMin[0], a_job.uvMin[1], a_job.uvSize[0], a_job.uvSize[1] };
+			file.write(reinterpret_cast<const char*>(header), sizeof(header));
+			file.write(reinterpret_cast<const char*>(uv), sizeof(uv));
+			file.write(reinterpret_cast<const char*>(a_job.covered.data()), static_cast<std::streamsize>(count));
+			file.write(reinterpret_cast<const char*>(rock.data()), static_cast<std::streamsize>(count));
+			file.write(reinterpret_cast<const char*>(a_job.position.data()), static_cast<std::streamsize>(count * sizeof(RE::NiPoint3)));
+		}
+		// D74: the water on this mesh simulated on its texture grid with the mesh's real shape: per texel the world
+		// across and down one texel (the grid's frame), gravity's pull along the surface there (fast down a cliff,
+		// none on a pool's face), the water carried by its own speed (it keeps it over a crest, slams into a boulder
+		// and is thrown round it), drag toward a sliding speed, and kept from piling up or vanishing (a pressure
+		// projection), so it spreads where the way narrows or flattens. In at the mesh's top, out at its foot; rock
+		// and the mesh's sides are walls. Run to its steady state; velocities in texels per second
+		const auto at = [&](int32_t a_x, int32_t a_y) { return index(std::clamp(a_x, 0, iw - 1), std::clamp(a_y, 0, ih - 1)); };
+		std::vector<RE::NiPoint3> tu(count), tv(count);
+		std::vector<float> gu(count, 0.0f), gv(count, 0.0f), inv(count * 3, 0.0f);
 		for (int32_t y = 0; y < ih; y++) {
 			for (int32_t x = 0; x < iw; x++) {
-				input.surface[index(x, y)] = -static_cast<float>(y) * BAKE_TEXEL;
-				input.bed[index(x, y)] = input.surface[index(x, y)] - 100.0f;
+				const std::size_t i = index(x, y);
+				if (!a_job.covered[i])
+					continue;
+				const auto side = [&](int32_t a_dx, int32_t a_dy) {
+					const std::size_t forward = at(x + a_dx, y + a_dy), back = at(x - a_dx, y - a_dy);
+					const bool f = a_job.covered[forward] && forward != i, b = a_job.covered[back] && back != i;
+					if (f && b)
+						return (a_job.position[forward] - a_job.position[back]) * 0.5f;
+					if (f)
+						return a_job.position[forward] - a_job.position[i];
+					if (b)
+						return a_job.position[i] - a_job.position[back];
+					return RE::NiPoint3(0.0f, 0.0f, 0.0f);
+				};
+				tu[i] = side(1, 0);
+				tv[i] = side(0, 1);
+				const float uu = tu[i].Dot(tu[i]), uv = tu[i].Dot(tv[i]), vv = tv[i].Dot(tv[i]);
+				const float det = uu * vv - uv * uv;
+				if (det < 1e-6f)
+					continue;
+				inv[i * 3] = vv / det;
+				inv[i * 3 + 1] = -uv / det;
+				inv[i * 3 + 2] = uu / det;
+				const RE::NiPoint3 gravity(0.0f, 0.0f, -SIM_GRAVITY);
+				const float du = gravity.Dot(tu[i]), dv = gravity.Dot(tv[i]);
+				gu[i] = inv[i * 3] * du + inv[i * 3 + 1] * dv;
+				gv[i] = inv[i * 3 + 1] * du + inv[i * 3 + 2] * dv;
 			}
 		}
-		// D71: water leaves only near the mesh's foot: a column ending higher up ends against rock (vanilla cut its
-		// sheet round a boulder or the bank), where it drained away and never turned; there it is a wall, and the
-		// solve turns the water round it toward the foot
+		// In along the mesh's top band, out along its foot (any water at the edge of the low band, by texture v or by
+		// height: the foot is often buried in rock or a pool); texture v runs downstream on every vanilla falls mesh
 		float footZ = FLT_MAX, topZ = -FLT_MAX;
-		for (std::size_t i = 0; i < count; i++) {
-			if (a_job.covered[i]) {
+		int32_t rowTop = ih, rowBottom = -1;
+		for (int32_t y = 0; y < ih; y++) {
+			for (int32_t x = 0; x < iw; x++) {
+				const std::size_t i = index(x, y);
+				if (!a_job.covered[i])
+					continue;
 				footZ = std::min(footZ, a_job.position[i].z);
 				topZ = std::max(topZ, a_job.position[i].z);
+				rowTop = std::min(rowTop, y);
+				rowBottom = std::max(rowBottom, y);
 			}
 		}
-		const float footBand = std::max(64.0f, (topZ - footZ) * 0.2f);
-		bool anyOut = false;
-		for (int32_t x = 0; x < iw && !anyOut; x++) {
-			for (int32_t y = ih - 1; y >= 0; y--) {
-				if (a_job.covered[index(x, y)]) {
-					anyOut = a_job.position[index(x, y)].z < footZ + footBand;
-					break;
+		const float band = std::max(64.0f, (topZ - footZ) * 0.2f);
+		const int32_t rows = std::max(3, static_cast<int32_t>(static_cast<float>(rowBottom - rowTop) * SIM_BAND));
+		std::vector<uint8_t> inflow(count, 0), outflow(count, 0);
+		uint32_t inflows = 0, outflows = 0;
+		for (int32_t x = 0; x < iw; x++) {
+			int32_t first = -1;
+			for (int32_t y = 0; y < ih && first < 0; y++)
+				first = a_job.covered[index(x, y)] ? y : -1;
+			if (first >= 0 && first <= rowTop + rows && water(x, first)) {
+				inflow[index(x, first)] = 1;
+				inflows++;
+			}
+		}
+		for (int32_t y = 0; y < ih; y++) {
+			for (int32_t x = 0; x < iw; x++) {
+				const std::size_t i = index(x, y);
+				if (!water(x, y) || inflow[i])
+					continue;
+				const bool low = y >= rowBottom - rows || a_job.position[i].z < footZ + band;
+				const bool edge = !water(x + 1, y) || !water(x - 1, y) || !water(x, y + 1) || !water(x, y - 1);
+				if (low && edge) {
+					outflow[i] = 1;
+					outflows++;
 				}
 			}
 		}
-		for (int32_t x = 0; x < iw; x++) {
-			int32_t first = -1, last = -1;
-			for (int32_t y = 0; y < ih; y++) {
-				if (!a_job.covered[index(x, y)])
-					continue;
-				first = first < 0 ? y : first;
-				last = y;
-			}
-			const bool outHere = !anyOut || (last >= 0 && a_job.position[index(x, last)].z < footZ + footBand);
-			for (int32_t y = std::max(first, 0); first >= 0 && y <= last; y++) {
-				if (!water(x, y))
-					continue;
-				input.kind[index(x, y)] = y == first ? FallStream::Inflow : (y == last && outHere) ? FallStream::Outflow :
-				                                                                                     FallStream::Water;
+		// The sim on a staggered grid: U across between columns (h x (w+1)), V down between rows ((h+1) x w), texels
+		// per second; walls (rock, off the mesh) let nothing through; the faces over the inflow cells bring the water in
+		const std::size_t uw = static_cast<std::size_t>(w) + 1;
+		std::vector<float> U(static_cast<std::size_t>(h) * uw, 0.0f), V((static_cast<std::size_t>(h) + 1) * w, 0.0f);
+		std::vector<uint8_t> uOpen(U.size(), 0), vOpen(V.size(), 0), vIn(V.size(), 0);
+		std::vector<float> guF(U.size(), 0.0f), gvF(V.size(), 0.0f), luF(U.size(), 1.0f), lvF(V.size(), 1.0f), vInSpeed(V.size(), 0.0f);
+		for (int32_t y = 0; y < ih; y++) {
+			for (int32_t x = 1; x < iw; x++) {
+				const std::size_t f = static_cast<std::size_t>(y) * uw + x;
+				if (water(x - 1, y) && water(x, y)) {
+					uOpen[f] = 1;
+					guF[f] = 0.5f * (gu[index(x - 1, y)] + gu[index(x, y)]);
+					luF[f] = 0.5f * (tu[index(x - 1, y)].Length() + tu[index(x, y)].Length());
+				}
 			}
 		}
-		const FallStream::Result solved = FallStream::Solve(input);
-		const bool have = solved.vx.size() == count;
-
-		// The turn per texel (across over down), clamped (never back, at most BAKE_MOST_TURN), and filled
-		// into rock and off the mesh from the nearest water, so nothing jumps at a rock's edge
+		for (int32_t y = 1; y < ih; y++) {
+			for (int32_t x = 0; x < iw; x++) {
+				const std::size_t f = static_cast<std::size_t>(y) * w + x;
+				if (water(x, y - 1) && water(x, y)) {
+					vOpen[f] = 1;
+					gvF[f] = 0.5f * (gv[index(x, y - 1)] + gv[index(x, y)]);
+					lvF[f] = 0.5f * (tv[index(x, y - 1)].Length() + tv[index(x, y)].Length());
+				}
+			}
+		}
+		for (int32_t y = 0; y < ih; y++) {
+			for (int32_t x = 0; x < iw; x++) {
+				if (!inflow[index(x, y)])
+					continue;
+				const std::size_t f = static_cast<std::size_t>(y) * w + x;
+				vIn[f] = 1;
+				lvF[f] = std::max(tv[index(x, y)].Length(), 1e-3f);
+				vInSpeed[f] = SIM_INFLOW / lvF[f];
+				V[f] = vInSpeed[f];
+			}
+		}
+		for (std::size_t f = 0; f < V.size(); f++) {
+			if (vOpen[f])
+				V[f] = SIM_INFLOW / std::max(lvF[f], 1e-3f);
+		}
+		const auto sampleGrid = [](const std::vector<float>& a_grid, int32_t a_w, int32_t a_h, float a_x, float a_y) {
+			const float cx = std::clamp(a_x, 0.0f, static_cast<float>(a_w - 1)), cy = std::clamp(a_y, 0.0f, static_cast<float>(a_h - 1));
+			const auto x0 = std::min(static_cast<int32_t>(cx), a_w - 1), y0 = std::min(static_cast<int32_t>(cy), a_h - 1);
+			const int32_t x1 = std::min(x0 + 1, a_w - 1), y1 = std::min(y0 + 1, a_h - 1);
+			const float fx = cx - static_cast<float>(x0), fy = cy - static_cast<float>(y0);
+			const auto at = [&](int32_t a_px, int32_t a_py) { return a_grid[static_cast<std::size_t>(a_py) * a_w + a_px]; };
+			return (at(x0, y0) * (1.0f - fx) + at(x1, y0) * fx) * (1.0f - fy) + (at(x0, y1) * (1.0f - fx) + at(x1, y1) * fx) * fy;
+		};
+		const auto uw32 = static_cast<int32_t>(uw);
+		// U at cell coordinates (px, py): U's face x sits at px = x - 0.5; V's face y at py = y - 0.5
+		const auto sampleU = [&](float a_x, float a_y) { return sampleGrid(U, uw32, ih, a_x + 0.5f, a_y); };
+		const auto sampleV = [&](float a_x, float a_y) { return sampleGrid(V, iw, ih + 1, a_x, a_y + 0.5f); };
+		// The pressure's cells: water that is not an outflow (those hold 0)
+		std::vector<int32_t> cell(count, -1);
+		std::vector<std::size_t> cells;
+		for (std::size_t i = 0; i < count; i++) {
+			const auto x = static_cast<int32_t>(i % w), y = static_cast<int32_t>(i / w);
+			if (water(x, y) && !outflow[i]) {
+				cell[i] = static_cast<int32_t>(cells.size());
+				cells.push_back(i);
+			}
+		}
+		const std::size_t n = cells.size();
+		std::vector<float> pressure(n, 0.0f), rhs(n), residual(n), direction(n), product(n), diagonal(n);
+		static constexpr int32_t NX[4] = { 1, -1, 0, 0 }, NY[4] = { 0, 0, 1, -1 };
+		for (std::size_t k = 0; k < n; k++) {
+			const auto x = static_cast<int32_t>(cells[k] % w), y = static_cast<int32_t>(cells[k] / w);
+			float d = 1e-4f;
+			for (int j = 0; j < 4; j++)
+				d += water(x + NX[j], y + NY[j]) ? 1.0f : 0.0f;
+			diagonal[k] = d;
+		}
+		const auto apply = [&](const std::vector<float>& a_in, std::vector<float>& a_out) {
+			for (std::size_t k = 0; k < n; k++) {
+				const auto x = static_cast<int32_t>(cells[k] % w), y = static_cast<int32_t>(cells[k] / w);
+				float sum = diagonal[k] * a_in[k];
+				for (int j = 0; j < 4; j++) {
+					const int32_t nx = x + NX[j], ny = y + NY[j];
+					if (inside(nx, ny) && cell[index(nx, ny)] >= 0)
+						sum -= a_in[static_cast<std::size_t>(cell[index(nx, ny)])];
+				}
+				a_out[k] = sum;
+			}
+		};
+		const float drag = SIM_GRAVITY / (SIM_TERMINAL * SIM_TERMINAL);
+		std::vector<float> nU(U.size()), nV(V.size());
+		for (int step = 0; step < SIM_STEPS && n > 0; step++) {
+			float fastest = 1.0f;
+			for (const float value : U)
+				fastest = std::max(fastest, std::abs(value));
+			for (const float value : V)
+				fastest = std::max(fastest, std::abs(value));
+			const float dt = std::min(0.8f / fastest, 0.05f);
+			// Carried by itself, pulled along the surface, slowed by the bed and the air
+			for (int32_t y = 0; y < ih; y++) {
+				for (int32_t x = 0; x <= iw; x++) {
+					const std::size_t f = static_cast<std::size_t>(y) * uw + x;
+					if (!uOpen[f]) {
+						nU[f] = 0.0f;
+						continue;
+					}
+					const float px = static_cast<float>(x) - 0.5f, py = static_cast<float>(y);
+					const float a = U[f], b = sampleV(px, py);
+					float value = sampleU(px - a * dt, py - b * dt) + guF[f] * dt;
+					const float worldSpeed = std::sqrt(value * luF[f] * value * luF[f] + b * b * sampleGrid(lvF, iw, ih + 1, px, py + 0.5f) * sampleGrid(lvF, iw, ih + 1, px, py + 0.5f));
+					nU[f] = value / (1.0f + (SIM_FRICTION + drag * worldSpeed) * dt);
+				}
+			}
+			for (int32_t y = 0; y <= ih; y++) {
+				for (int32_t x = 0; x < iw; x++) {
+					const std::size_t f = static_cast<std::size_t>(y) * w + x;
+					if (vIn[f]) {
+						nV[f] = vInSpeed[f];
+						continue;
+					}
+					if (!vOpen[f]) {
+						nV[f] = 0.0f;
+						continue;
+					}
+					const float px = static_cast<float>(x), py = static_cast<float>(y) - 0.5f;
+					const float a = sampleU(px, py), b = V[f];
+					float value = sampleV(px - a * dt, py - b * dt) + gvF[f] * dt;
+					const float lu = sampleGrid(luF, uw32, ih, px + 0.5f, py);
+					const float worldSpeed = std::sqrt(value * lvF[f] * value * lvF[f] + a * a * lu * lu);
+					nV[f] = value / (1.0f + (SIM_FRICTION + drag * worldSpeed) * dt);
+				}
+			}
+			U.swap(nU);
+			V.swap(nV);
+			// Kept from piling up or vanishing: solve for the pressure (conjugate gradients, from the last step's)
+			for (std::size_t k = 0; k < n; k++) {
+				const auto x = static_cast<std::size_t>(cells[k] % w), y = static_cast<std::size_t>(cells[k] / w);
+				const float divergence = U[y * uw + x + 1] - U[y * uw + x] + V[(y + 1) * w + x] - V[y * w + x];
+				rhs[k] = -divergence;
+			}
+			apply(pressure, product);
+			float rr = 0.0f;
+			for (std::size_t k = 0; k < n; k++) {
+				residual[k] = rhs[k] - product[k];
+				direction[k] = residual[k] / diagonal[k];
+				rr += residual[k] * direction[k];
+			}
+			for (int iteration = 0; iteration < SIM_CG && rr > 1e-8f; iteration++) {
+				apply(direction, product);
+				float pAp = 0.0f;
+				for (std::size_t k = 0; k < n; k++)
+					pAp += direction[k] * product[k];
+				if (std::abs(pAp) < 1e-12f)
+					break;
+				const float alpha = rr / pAp;
+				float next = 0.0f;
+				for (std::size_t k = 0; k < n; k++) {
+					pressure[k] += alpha * direction[k];
+					residual[k] -= alpha * product[k];
+					next += residual[k] * residual[k] / diagonal[k];
+				}
+				const float beta = next / rr;
+				for (std::size_t k = 0; k < n; k++)
+					direction[k] = residual[k] / diagonal[k] + beta * direction[k];
+				rr = next;
+			}
+			const auto pAt = [&](int32_t a_x, int32_t a_y) {
+				const int32_t c = cell[index(a_x, a_y)];
+				return c >= 0 ? pressure[static_cast<std::size_t>(c)] : 0.0f;
+			};
+			for (int32_t y = 0; y < ih; y++) {
+				for (int32_t x = 1; x < iw; x++) {
+					const std::size_t f = static_cast<std::size_t>(y) * uw + x;
+					if (uOpen[f])
+						U[f] -= pAt(x, y) - pAt(x - 1, y);
+				}
+			}
+			for (int32_t y = 1; y < ih; y++) {
+				for (int32_t x = 0; x < iw; x++) {
+					const std::size_t f = static_cast<std::size_t>(y) * w + x;
+					if (vOpen[f])
+						V[f] -= pAt(x, y) - pAt(x, y - 1);
+				}
+			}
+		}
+		// The streaks' turn from the sim's direction (across per down; across or back up, as far round as the sweep
+		// can take, SIM_MOST_TURN); dead pockets (barely moving, closed in by rock) keep vanilla's way down. The speed
+		// from how far the water has fallen, to its sliding speed (a sheet thickens where it narrows, it does not race),
+		// against vanilla's scroll (D67); foam where it strikes rock
+		const float texelV = a_job.uvSize[1] / static_cast<float>(h);
+		static constexpr float VANILLA_SCROLL = 0.15f;  // Texture coordinates per second (D56)
+		std::vector<float> uc(count, 0.0f), vc(count, 0.0f), flowSpeed(count, 0.0f);
+		std::vector<float> moving;
+		for (int32_t y = 0; y < ih; y++) {
+			for (int32_t x = 0; x < iw; x++) {
+				const std::size_t i = index(x, y);
+				if (!water(x, y))
+					continue;
+				uc[i] = 0.5f * (U[static_cast<std::size_t>(y) * uw + x] + U[static_cast<std::size_t>(y) * uw + x + 1]);
+				vc[i] = 0.5f * (V[static_cast<std::size_t>(y) * w + x] + V[(static_cast<std::size_t>(y) + 1) * w + x]);
+				flowSpeed[i] = (tu[i] * uc[i] + tv[i] * vc[i]).Length();
+				moving.push_back(flowSpeed[i]);
+			}
+		}
+		float median = 1.0f;
+		if (!moving.empty()) {
+			std::nth_element(moving.begin(), moving.begin() + static_cast<std::ptrdiff_t>(moving.size() / 2), moving.end());
+			median = std::max(moving[moving.size() / 2], 1.0f);
+		}
 		std::vector<float> turn(count, 0.0f), foam(count, 0.0f), run(count, 0.0f), speed(count, 1.0f);
 		std::vector<int32_t> from(count, -1);
 		std::vector<std::size_t> frontier;
+		float fastestWorld = 0.0f;
+		uint32_t dead = 0;
 		for (std::size_t i = 0; i < count; i++) {
 			const auto x = static_cast<int32_t>(i % w), y = static_cast<int32_t>(i / w);
-			if (!have || !water(x, y) || !solved.water[i])
+			if (!water(x, y))
 				continue;
-			const float down = std::clamp(solved.vy[i], BAKE_LEAST_DOWN, BAKE_MOST_DOWN);
-			turn[i] = std::clamp(solved.vx[i] / down, -BAKE_NEAR_TURN, BAKE_NEAR_TURN);
-			// D67: and how fast it runs, against vanilla's (1)
-			speed[i] = std::clamp(std::sqrt(solved.vx[i] * solved.vx[i] + solved.vy[i] * solved.vy[i]), BAKE_LEAST_SPEED, BAKE_MOST_DOWN);
-			foam[i] = solved.rockFoam[i];
-			run[i] = std::min(solved.travel[i], 60.0f);
+			const float a = uc[i], b = vc[i];
+			const float length = std::sqrt(a * a + b * b);
+			float bend = b > 0.18f * length ? std::clamp(a / b, -SIM_MOST_TURN, SIM_MOST_TURN) : (a >= 0.0f ? SIM_MOST_TURN : -SIM_MOST_TURN);
+			const float alive = std::clamp(flowSpeed[i] / (median * SIM_DEAD), 0.0f, 1.0f);
+			dead += alive < 0.5f ? 1 : 0;
+			turn[i] = bend * alive;
+			const float world = std::min(SIM_TERMINAL, std::sqrt(SIM_INFLOW * SIM_INFLOW + SIM_GRAVITY * std::max(topZ - a_job.position[i].z, 0.0f)));
+			fastestWorld = std::max(fastestWorld, world);
+			const float vanilla = VANILLA_SCROLL * std::max(tv[i].Length(), 1e-3f) / std::max(texelV, 1e-6f);
+			speed[i] = std::clamp(world / std::max(vanilla, 1.0f), 0.25f, 4.0f);
+			float strike = 0.0f;
+			for (int k = 0; k < 4; k++) {
+				const int32_t nx = x + NX[k], ny = y + NY[k];
+				if (inside(nx, ny) && a_job.covered[index(nx, ny)] && rock[index(nx, ny)] && a * NX[k] + b * NY[k] > 0.0f)
+					strike = std::max(strike, (tu[i] * (a * static_cast<float>(NX[k])) + tv[i] * (b * static_cast<float>(NY[k]))).Length());
+			}
+			foam[i] = std::clamp(strike / 300.0f, 0.0f, 1.0f);
 			from[i] = static_cast<int32_t>(i);
 			frontier.push_back(i);
 		}
 		for (std::size_t head = 0; head < frontier.size(); head++) {
 			const std::size_t i = frontier[head];
 			const auto x = static_cast<int32_t>(i % w), y = static_cast<int32_t>(i / w);
-			static constexpr int32_t DX[4] = { 1, -1, 0, 0 }, DY[4] = { 0, 0, 1, -1 };
 			for (int k = 0; k < 4; k++) {
-				const int32_t nx = x + DX[k], ny = y + DY[k];
+				const int32_t nx = x + NX[k], ny = y + NY[k];
 				if (!inside(nx, ny) || from[index(nx, ny)] >= 0)
 					continue;
 				from[index(nx, ny)] = from[i];
 				turn[index(nx, ny)] = turn[i];
 				speed[index(nx, ny)] = speed[i];
-				run[index(nx, ny)] = run[i];
 				frontier.push_back(index(nx, ny));
 			}
 		}
@@ -2880,40 +3134,9 @@ namespace FluidFieldSim
 				a_field.swap(scratch);
 			}
 		};
-		// Only round the rock: away from it the solve's sideways drift is the grid's ragged sides, not the
-		// water's, and bent the whole sheet (D60's first run); full within BAKE_BEND_NEAR texels of rock, none past BAKE_BEND_FAR
-		{
-			std::vector<int32_t> steps(count, INT32_MAX);
-			std::vector<std::size_t> open;
-			for (std::size_t i = 0; i < count; i++) {
-				if (rock[i] && a_job.covered[i]) {
-					steps[i] = 0;
-					open.push_back(i);
-				}
-			}
-			for (std::size_t head = 0; head < open.size(); head++) {
-				const std::size_t i = open[head];
-				const auto x = static_cast<int32_t>(i % w), y = static_cast<int32_t>(i / w);
-				static constexpr int32_t DX[4] = { 1, -1, 0, 0 }, DY[4] = { 0, 0, 1, -1 };
-				for (int k = 0; k < 4; k++) {
-					const int32_t nx = x + DX[k], ny = y + DY[k];
-					if (!inside(nx, ny) || steps[index(nx, ny)] <= steps[i] + 1)
-						continue;
-					steps[index(nx, ny)] = steps[i] + 1;
-					open.push_back(index(nx, ny));
-				}
-			}
-			for (std::size_t i = 0; i < count; i++) {
-				const float closeness = std::clamp((BAKE_BEND_FAR - static_cast<float>(steps[i])) / (BAKE_BEND_FAR - BAKE_BEND_NEAR), 0.0f, 1.0f);
-				const float bend = closeness * closeness * (3.0f - 2.0f * closeness);
-				// D71: up to 45 degrees right beside rock, easing to BAKE_MOST_TURN away from it
-				const float most = BAKE_MOST_TURN + (BAKE_NEAR_TURN - BAKE_MOST_TURN) * bend;
-				turn[i] = std::clamp(turn[i], -most, most) * bend;
-				speed[i] = 1.0f + (speed[i] - 1.0f) * bend;
-			}
-		}
-		blur(turn, BAKE_TURN_BLUR);
-		blur(speed, BAKE_TURN_BLUR);
+		blur(turn, 2);
+		blur(speed, 2);
+		logger::info("[Fluid Field]   sim: {}x{} texels, {} in and {} out, fastest {:.0f} units/s, {} texels in dead pockets", w, h, inflows, outflows, fastestWorld, dead);
 
 		// The masks (D60), where the warp would misbehave and real water turns white anyway: the rim of each
 		// rock, the water piling against it and squeezing past it (the solve's foam), and its wake, carried
@@ -3197,7 +3420,7 @@ namespace FluidFieldSim
 						float vx, vy;
 						// D70: only near the mesh's foot, where the water lands (on a crest it swirled the arch)
 						const float foot = std::clamp((a_node.lo[2] + 2.0f * WATER_CUT_BAND - field.position[i].z) / WATER_CUT_BAND, 0.0f, 1.0f);
-						if (flat * foot <= 0.0f || !SiteFlowAt(field.position[i].x, field.position[i].y, vx, vy) || vx * vx + vy * vy < 0.0025f)
+						if (!FLAT_JOIN || flat * foot <= 0.0f || !SiteFlowAt(field.position[i].x, field.position[i].y, vx, vy) || vx * vx + vy * vy < 0.0025f)
 							continue;
 						const RE::NiPoint3 tu = field.position[at(x + 1, y)] - field.position[at(x - 1, y)];
 						const RE::NiPoint3 tv = field.position[at(x, y + 1)] - field.position[at(x, y - 1)];

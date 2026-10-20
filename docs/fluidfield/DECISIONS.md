@@ -1691,3 +1691,35 @@ Entry format:
     default rate (the shared scroll, D67).
 -   Next: the foam layer (idea 1), then light displacement (2b).
 -   References: D62, D67
+
+## D74: A real sim on each falls mesh; dense copies at one subdivision
+
+-   Date: 2026-10-20
+-   Phase / spike: @Victor's review screenshots 821-824 ("we want a good
+    goddamn sim"); offline harness scratchpad simbake.py on dumped inputs
+    (FluidField_bakeN.bin beside the log)
+-   Decision: The per-mesh solve (D59) treated every mesh as one evenly
+    tilted sheet: no real slope, no momentum, so flat parts went to jelly
+    and boulders barely deflected. It is replaced by a sim on the mesh's
+    texture grid with the mesh's real shape:
+    -   per texel, the world across and down one texel; gravity's pull along
+        the real surface in those axes;
+    -   a staggered (MAC) grid, semi-Lagrangian advection (momentum), bed
+        friction 3/s plus drag toward 900 units/s, and a pressure projection
+        (Jacobi-preconditioned conjugate gradients, warm started) so water
+        neither piles up nor vanishes;
+    -   in along the mesh's top band (texture v), out at any water on the
+        edge of its low band (v or height: feet are often buried); rock and
+        the mesh's sides are walls;
+    -   the streaks turn with its direction (to 80 degrees); its speed comes
+        from the height fallen (a thin sheet thickens where it narrows rather
+        than racing; the 2D sim alone reached 6000-30000 units/s there);
+        pockets closed in by rock where it barely moves keep vanilla's way.
+    -   Offline first: the first port (collocated grid, 20 Jacobi sweeps,
+        no bed friction) ran to 57000 units/s and kinked the streaks; the
+        harness showed one inflow cell on sloped meshes (height-based top),
+        eddies without bed friction, and racing where few cells let water
+        out. All three are fixed above.
+    -   The flat-parts join (D68) is off; the sim spreads the water.
+-   Dense copies: one subdivision (4x triangles); three stuttered the game.
+-   References: D59, D60, D67, D68, D71, D73
