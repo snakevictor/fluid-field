@@ -286,6 +286,33 @@ namespace FluidFieldSim
 		RE::NiAlphaProperty* MakeBlendedAlpha(RE::BSGeometry* a_geometry) const;
 		/** @brief D56: tests the queued lit meshes' vertices against the rock, a few milliseconds a frame. */
 		void ClipStep();
+		/**
+		 * @brief D106: each lit mesh's depth behind it, per vertex: Havok rays from a vertex in every DEPTH_CELL cell, from
+		 * DEPTH_START off one face through the vertex along its normal, the first rock or ground beyond it; both ways
+		 * (the shaders take the inner side's), spread smoothly to the vertices between. A few milliseconds a frame.
+		 */
+		void DepthStep();
+		struct DepthJob
+		{
+			RE::NiPointer<RE::BSGeometry> geometry;
+			uint32_t base = 0;
+			std::vector<RE::NiPoint3> positions, normals;  ///< World; normals by winding, unit
+			std::vector<std::vector<uint32_t>> ring;
+			std::vector<uint32_t> samples;
+			std::size_t next = 0;
+			std::vector<float> plus, minus;  ///< Clearance along and against the winding normal
+			std::vector<uint8_t> known;
+			// TEMPORARY D106 diagnostics
+			std::vector<float> hitDistances, missDown;
+			uint32_t hits = 0, misses = 0, missDownHits = 0, downward = 0;
+			double tiltSum = 0.0;
+		};
+		std::vector<RE::NiPointer<RE::BSGeometry>> depthQueue;
+		std::unique_ptr<DepthJob> depthJob;
+		uint32_t depthRays = 0, depthHits = 0;
+		static constexpr float DEPTH_CELL = 30.0f;    ///< D106: world units: one sampled vertex per cell this size
+		static constexpr float DEPTH_START = 40.0f;   ///< D106: the ray starts this far off the other face
+		static constexpr int DEPTH_FILL_PASSES = 60;  ///< D106: rounds spreading the samples to the vertices between
 		/** @brief D57: the nearest rock along a ray from a point, world units, or a negative value for none (the falls' own collision passed through). */
 		float RockAlong(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, int* a_crossings = nullptr, float* a_last = nullptr) const;
 		std::unordered_map<const RE::BSGeometry*, uint32_t> vertexClipBase;
@@ -302,8 +329,8 @@ namespace FluidFieldSim
 		void ComputeFades();
 		static constexpr float FADE_REACH = 32.0f;     ///< D67: an open edge's vertex this near another mesh's surface fades
 		static constexpr float SEAM_BIN = 48.0f;       ///< D91: world units per cell of the seams' triangle bins
-		static constexpr float INSIDE_REACH = 70.0f;   ///< D98: a vertex behind a leading mesh's outer face within this is inside its curl, cut (D105: 70, was 150: it cut neighbouring sheets, SS 900/901)...
-		static constexpr float INSIDE_MARGIN = 12.0f;  ///< D98: ...past this behind it (one just behind, touching, stays)
+		static constexpr float INSIDE_REACH = 45.0f;   ///< D98 (D107: 45, was 70: still eating neighbours, SS 913): a vertex behind a leading mesh's outer face within this is inside its curl, cut (D105: 70, was 150: it cut neighbouring sheets, SS 900/901)...
+		static constexpr float INSIDE_MARGIN = 20.0f;  ///< D98 (D107: 20, was 12): ...past this behind it (one just behind, touching, stays)
 		static constexpr float INSIDE_LATERAL = 2.0f;  ///< D103: ...less this per unit it lies off to the side of the face (beside the leading sheet, not inside it)
 		static constexpr float COVER_NEAR = 6.0f;      ///< D103: a sheet behind a vertex's inner side counts from this far (its own surface is not one)
 		/**
@@ -317,7 +344,7 @@ namespace FluidFieldSim
 		static constexpr float EDGE_BLEND_REACH = 120.0f;      ///< D94: world units the open edge's moves fade into the surface over...
 		static constexpr int EDGE_BLEND_PASSES = 60;           ///< D94: ...in this many rounds
 		static constexpr float MOST_SHIFT = 120.0f;            ///< D96: a vertex's composed move past this (model units) is a bug: it is left still
-		static constexpr float LEAD_CUT_DEPTH = 4.0f;          ///< D97: a hidden lead-in vertex this far under the water over it is cut
+		static constexpr float LEAD_CUT_DEPTH = 16.0f;         ///< D97: a hidden lead-in vertex this far under the water over it is cut
 		static constexpr float LEAD_WATER_OVER_CREST = 48.0f;  ///< D103: ...by water no higher than this over its column's crest (a plane's bound reaches past its water)
 		std::vector<RE::NiPointer<RE::BSGeometry>> clipQueue;
 		uint64_t vertexClipVersion = 0;
@@ -401,8 +428,9 @@ namespace FluidFieldSim
 			std::vector<float> disturbance;            ///< D85: how stirred the water is there (the wobble's size), softened
 			std::vector<float> clearFront, clearBack;  ///< D104: as BakeJob's: the open water or air on each side of the sheet (its depth behind, once its outer side is known)
 		};
-		static constexpr uint32_t BAKE_CACHE_VERSION = 4;  ///< D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances)
+		static constexpr uint32_t BAKE_CACHE_VERSION = 6;  ///< D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances)
 		static constexpr float CLEAR_REACH = 600.0f;       ///< D104: world units the clearance rays look for rock
+		static constexpr float CLEAR_START = 40.0f;        ///< D105: the clearance rays start this far off the other side of the sheet
 		/** @brief D82: where a bake job's finished bake is kept on disk: by its reference, model part, placement, the rock and ground round it, and the version. */
 		static std::filesystem::path BakeCachePath(const BakeJob& a_job);
 		static bool SaveBake(const std::filesystem::path& a_path, const BakeField& a_field);

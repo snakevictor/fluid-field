@@ -41,7 +41,7 @@ namespace FallGround
 		float4 a;
 		float4 b;  // D69: its move across a seam's gap, D82: and its swell, in its mesh's space; D85: w its streak
 		float4 c;  // D85: its wobble's direction and size (its normal), and its run down the flow
-		float4 d;  // D104: x the open water or air behind its outer side (world units, to the first rock); yzw spare
+		float4 d;  // D106: y the open water or air behind its visible face (against its authored normal) to the first rock or ground, world units; xzw spare
 	};
 	StructuredBuffer<FallVertex> VertexClip : register(t123);  // D68: and how far it stands above the water it falls into (z)
 	// D59, D67: this mesh's flow, solved on its own texture grid and linked to the mesh above it (FallSites::LinkBakes):
@@ -179,7 +179,8 @@ namespace FallGround
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
 			return 600.0;
-		return VertexClip[VertexBase + a_vertex].d.x;
+		// D106: d.y, behind its visible face (against its authored normal)
+		return VertexClip[VertexBase + a_vertex].d.y;
 	}
 
 	/**

@@ -185,8 +185,8 @@ float BehindDepth(VSOutput a_input, float a_sheetDepth, float a_behindDepth)
 	// D104: the baked depth behind (the bake's rays off the sheet's inner side to the first rock): steady, whatever the
 	// view; the screen-depth difference only where it is less (something nearer than the rock, e.g. another sheet)
 	const float rayScale = length(a_input.WorldPosition) / max(a_sheetDepth, 1e-3);
-	const float screen = max(a_behindDepth - a_sheetDepth, 0.0) * rayScale;
-	return min(max(a_input.Behind, 0.0), screen);
+	// D106: the baked depth alone (the screen depth's conversion is not valid in this pass: it read as noise)
+	return max(a_input.Behind, 0.0);
 }
 
 /** D102: the water a ray crosses: the sheet's own thickness over the cosine, and a little of the gap behind it (capped). */
@@ -349,6 +349,13 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float alpha = saturate(input.Fade.x) * lerp(contact, sqrt(contact), foam) * FallGround::CutFade(input.Clip);
 	if (alpha <= 0.002)
 		discard;
+	// TEMPORARY D105 diagnostic (Refraction at its 3.0 maximum): r opacity, g foam, b fresnel x reflection weight; and
+	// the left third of the screen the water's colour, the middle what lies behind, unblended
+	if (RefractionStrength > 2.95) {
+		const float third = input.Position.x / max(region.x, 1.0);
+		const float rayScale = length(input.WorldPosition) / max(sheetDepth, 1e-3);
+		return float4(saturate(input.Behind / 600.0).xxx, 1.0);  // Baked depth behind: black at the rock, white 600+
+	}
 	return float4(color * alpha, alpha);  // Premultiplied
 }
 #endif  // PSHADER

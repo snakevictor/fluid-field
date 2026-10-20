@@ -2675,3 +2675,27 @@ Entry format:
     -   The curl cut reaches 70 units behind a leading face (was 150), from 12
         (was 6): it cut neighbouring sheets meeting each other (SS 901).
 -   References: D98, D102, D103, D104
+
+## D106: The depth behind, from rays at the vertices; D107: gentler cuts; a leaner menu
+
+-   Date: 2026-10-20
+-   Decision:
+    -   **D106, depth by vertex rays** (the user's idea): one vertex per 30-unit
+        cell of each dense copy casts a Havok ray along its authored normal,
+        from 40 units off its face, through it; the first rock or ground past it
+        (up to 600) is its depth behind, spread over the mesh between samples
+        (60 rounds), in VertexClip d.y; See-Through Falls reads it alone. A few
+        milliseconds a frame (DepthStep), about 60k rays for 18 meshes.
+    -   Found on the way: the bake's clearance rays (D104) started inside the
+        rock the sheet dips into (Havok sees no face from inside: everything
+        read open); triangle winding is not consistent on these meshes; and
+        their authored normals point into the bed, away from the visible face
+        (logged: against them, two thirds of the rays went up into the air).
+        The screen-depth conversion reads as noise in our pass and is unused.
+    -   **D107:** the curl cut 45 units behind a leading face, from 20 (was
+        70, 12); the lead-in cut 16 units under the water (was 4): both still
+        ate visible sheet (SS 913).
+    -   **Menu:** removed the vanilla layer toggles, the Blended Falls Test, the
+        Waterfall Overlay and Sites views, Hide Vanilla Waterfall Effects, the
+        fog debug modes and the verify/log checks.
+-   References: D97, D98, D102, D104, D105

@@ -168,16 +168,6 @@ void FluidField::DrawSettings()
 			ImGui::SliderInt(T(TKEY("mist_amount"), "Mist Cards"), &settings.MistAmount, 0, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
 			tooltip(T(TKEY("mist_amount_tooltip"), "Soft camera-facing mist puffs per emitter (0: none)."));
 			ImGui::SliderFloat(T(TKEY("mist_opacity"), "Mist Card Opacity"), &settings.MistOpacity, 0.0f, 0.4f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-			const char* layerNames[] = { T(TKEY("fall_layer_surface"), "Vanilla Water Surface"), T(TKEY("fall_layer_sheet"), "Vanilla White-Water Sheet"), T(TKEY("fall_layer_streaks"), "Vanilla Streak Layers"),
-				T(TKEY("fall_layer_particles"), "Vanilla Spray Particles") };
-			for (uint32_t bit = 0; bit < 4; bit++) {
-				bool on = (settings.FallLayerMask & (1u << bit)) != 0;
-				if (ImGui::Checkbox(layerNames[bit], &on))
-					settings.FallLayerMask = on ? settings.FallLayerMask | (1u << bit) : settings.FallLayerMask & ~(1u << bit);
-			}
-			tooltip(T(TKEY("fall_layers_tooltip"), "Which parts of vanilla's waterfall models show. The sheet and streak layers smear when the flow moves them."));
-			ImGui::Checkbox(T(TKEY("fall_blended_copies"), "Blended Falls Test"), &settings.FallBlendedCopies);
-			tooltip(T(TKEY("fall_blended_copies_tooltip"), "Test: builds the falls' meshes with alpha blending, so the engine itself may draw them see-through. Applies to falls built after it is set: leave the area and come back. Off for See-Through Falls."));
 			ImGui::TreePop();
 		}
 		ImGui::PopID();
@@ -271,20 +261,11 @@ void FluidField::DrawSettings()
 			settings.WaterfallDebug = std::clamp(settings.WaterfallDebug, 0, 3);
 			ImGui::Combo(T(TKEY("waterfall_debug"), "Waterfall Shading"), &settings.WaterfallDebug, fallDebugModes, IM_ARRAYSIZE(fallDebugModes));
 			tooltip(T(TKEY("waterfall_debug_tooltip"), "Paints the falling water with its flow. Mesh Flow Bake: red how the streaks spread, green the run time (a band per second), blue foam, white the wake of rock; dark magenta where a mesh has no bake. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster. Vanilla Texture: the falls without the flow."));
-			fallDebugView = std::clamp(fallDebugView, 0, 1);
-			const char* fallViews[] = { T(TKEY("fall_view_off"), "Off"), T(TKEY("fall_view_emitters"), "Spray and Plunges") };
-			ImGui::Combo(T(TKEY("fall_view"), "Waterfall Overlay"), &fallDebugView, fallViews, IM_ARRAYSIZE(fallViews));
-			tooltip(T(TKEY("fall_view_tooltip"),
-				"The spray emitters (blue: where the falls go into the water below, orange: where they strike rock) and the plunges' pushes on the water below (green, the way they pull it). Drawn through everything. Not saved."));
-			ImGui::Checkbox(T(TKEY("show_waterfall_sites"), "Show Waterfall Sites"), &showFallSites);
-			tooltip(T(TKEY("show_waterfall_sites_tooltip"), "Draws the waterfall sites found in vanilla's layout: effect meshes by class, each site's water levels (green top, blue bottom, teal tiers) and a label. Also prints each cell's summary to the console."));
 			const char* meshViews[] = { T(TKEY("fall_mesh_debug_off"), "Off"), T(TKEY("fall_mesh_debug_wireframe"), "Wireframe"), T(TKEY("fall_mesh_debug_flow"), "Flow"),
 				T(TKEY("fall_mesh_debug_both"), "Wireframe and Flow") };
 			ImGui::Combo(T(TKEY("fall_mesh_debug"), "Falls Mesh Debug"), &fallMeshDebug, meshViews, IM_ARRAYSIZE(meshViews));
 			tooltip(T(TKEY("fall_mesh_debug_tooltip"),
 				"Drawn over everything, through the ground. Wireframe: the falls' meshes as drawn (yellow: our dense copies). Flow: the simulated water on each mesh as arrows, longer and redder when faster, bluer when slower, white where it strikes rock. Not saved."));
-			ImGui::Checkbox(T(TKEY("hide_waterfall_effects"), "Hide Vanilla Waterfall Effects"), &hideFallEffects);
-			tooltip(T(TKEY("hide_waterfall_effects_tooltip"), "Hides vanilla's mist, skirt, splash and rapids meshes around waterfalls. Not saved."));
 			uint32_t captured, captures;
 			fallSites.CountCaptures(captured, captures);
 			ImGui::Text(T(TKEY("waterfall_sites"), "Sites: %u falls, %u cascades, %u rapids, %u no bottom, %u failed; ground captured for %u of %u"),
@@ -301,22 +282,7 @@ void FluidField::DrawSettings()
 		ImGui::SliderFloat(T(TKEY("overlay_pressure_range"), "Pressure Range"), &debugPressureRange, 1.0f, 50000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
 		tooltip(T(TKEY("overlay_range_tooltip"), "The value drawn at full colour in the overlay."));
 
-		ImGui::SeparatorText(T(TKEY("debug_fog"), "Ground Fog"));
-		{
-			const char* fogDebugModes[] = { T(TKEY("fog_debug_normal"), "Normal"), T(TKEY("fog_debug_static"), "Static shape (no wind)"), T(TKEY("fog_debug_resting"), "Resting fog only"),
-				T(TKEY("fog_debug_fixed"), "Fixed sample offsets"), T(TKEY("fog_debug_bare"), "All of the above"), T(TKEY("fog_debug_prewater"), "Pre-water depth"),
-				T(TKEY("fog_debug_before_water"), "Draw before water"), T(TKEY("fog_debug_heights"), "Show world height"), T(TKEY("fog_debug_live_camera"), "Live camera (no snapshot)") };
-			ImGui::Combo(T(TKEY("fog_debug"), "Fog Debug"), &fogDebugMode, fogDebugModes, IM_ARRAYSIZE(fogDebugModes));
-			tooltip(T(TKEY("fog_debug_tooltip"), "Isolates parts of the ground fog to find visual problems. Not saved."));
-		}
-
-		ImGui::SeparatorText(T(TKEY("debug_checks"), "Checks and Counts"));
-		ImGui::Checkbox(T(TKEY("verify_landscape"), "Verify Landscape Heights"), &settings.VerifyLandscape);
-		tooltip(T(TKEY("verify_landscape_tooltip"), "Compares each newly copied cell with the game's own height query and logs the difference."));
-		ImGui::Checkbox(T(TKEY("verify_water"), "Verify Water Heights"), &settings.VerifyWater);
-		tooltip(T(TKEY("verify_water_tooltip"), "Compares the water surface heights with the game's own water query whenever they change, and logs the difference."));
-		ImGui::Checkbox(T(TKEY("log_depth_map"), "Log Depth Map Details"), &settings.LogDepthMap);
-		tooltip(T(TKEY("log_depth_map_tooltip"), "Logs what bed rays hit (object, form ID, collision layer) and a summary every few seconds."));
+		ImGui::SeparatorText(T(TKEY("debug_checks"), "Counts"));
 		ImGui::Text(T(TKEY("landscape_cells"), "Cached cells: %u"), static_cast<uint>(landscape.GetCellCount()));
 		ImGui::Text(T(TKEY("water_surfaces"), "Water surfaces: %u flat, %u sloped (not used), %u cells with water"), static_cast<uint>(water.GetSurfaceCount()), water.GetSlopedCount(),
 			static_cast<uint>(water.GetCellWaterCount()));
@@ -1119,8 +1085,10 @@ void FluidField::DrawGroundFogAfterWorld()
 		if (colorIndex < RE::RENDER_TARGET::kTOTAL && depthIndex < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
 			auto& target = renderer->GetRuntimeData().renderTargets[colorIndex];
 			auto& depth = renderer->GetDepthStencilData().depthStencils[depthIndex];
-			// The live depth (water surfaces included), read while it is bound read-only
-			DrawRefractiveFalls(target.RTV, target.texture, depth.readOnlyViews[0], depth.depthSRV);
+			// D105: what lies behind read from the depth copied after the opaque pre-pass (rock, ground): the live depth's
+			// view read as far everywhere (every sheet saw 600+ units behind it and went opaque)
+			auto* behind = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
+			DrawRefractiveFalls(target.RTV, target.texture, depth.readOnlyViews[0], behind ? behind : depth.depthSRV);
 		}
 	}
 

@@ -929,6 +929,164 @@ namespace FluidFieldSim
 		return first;
 	}
 
+	void FallSites::DepthStep()
+	{
+		auto* tes = RE::TES::GetSingleton();
+		if (!tes)
+			return;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double, std::milli>(CLIP_BUDGET_MS);
+		while (std::chrono::steady_clock::now() < deadline) {
+			if (!depthJob) {
+				if (depthQueue.empty())
+					return;
+				RE::NiPointer<RE::BSGeometry> geometry = depthQueue.back();
+				depthQueue.pop_back();
+				const auto base = geometry ? vertexClipBase.find(geometry.get()) : vertexClipBase.end();
+				auto* triShape = geometry ? geometry->AsTriShape() : nullptr;
+				auto* renderer = geometry ? geometry->GetGeometryRuntimeData().rendererData : nullptr;
+				if (base == vertexClipBase.end() || !triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
+					continue;
+				const auto& counts = triShape->GetTrishapeRuntimeData();
+				if (base->second + counts.vertexCount > vertexClips.size())
+					continue;
+				auto& desc = renderer->vertexDesc;  // CommonLib's getters are not const
+				const uint32_t stride = desc.GetSize();
+				const uint32_t positionOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+				auto job = std::make_unique<DepthJob>();
+				job->geometry = geometry;
+				job->base = base->second;
+				job->positions.resize(counts.vertexCount);
+				job->normals.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+				job->ring.resize(counts.vertexCount);
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					float local[3];
+					std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
+					job->positions[v] = geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
+				}
+				// D106: the mesh's own authored normals (what the game lights it by: out of its visible face); the winding is
+				// not consistent on these meshes. Winding only where a vertex carries none
+				const bool authored = desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_NORMAL);
+				const uint32_t normalOffset = authored ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_NORMAL) : 0;
+				for (uint32_t i = 0; i < counts.triangleCount; i++) {
+					const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+					if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+						continue;
+					const RE::NiPoint3 face = (job->positions[index[1]] - job->positions[index[0]]).Cross(job->positions[index[2]] - job->positions[index[0]]);
+					for (int k = 0; k < 3; k++) {
+						if (!authored)
+							job->normals[index[k]] += face;
+						job->ring[index[k]].push_back(index[(k + 1) % 3]);
+						job->ring[index[k]].push_back(index[(k + 2) % 3]);
+					}
+				}
+				if (authored) {
+					for (uint32_t v = 0; v < counts.vertexCount; v++) {
+						const uint8_t* n = renderer->rawVertexData + static_cast<std::size_t>(v) * stride + normalOffset;
+						job->normals[v] = geometry->world.rotate * RE::NiPoint3(n[0] / 255.0f * 2.0f - 1.0f, n[1] / 255.0f * 2.0f - 1.0f, n[2] / 255.0f * 2.0f - 1.0f);
+					}
+				}
+				for (auto& n : job->normals) {
+					const float length = n.Length();
+					n = length > 1e-6f ? n / length : RE::NiPoint3(0.0f, 0.0f, 1.0f);
+				}
+				// One vertex per DEPTH_CELL cell
+				std::unordered_set<int64_t> cells;
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					const RE::NiPoint3& p = job->positions[v];
+					const int64_t key = (static_cast<int64_t>(std::floor(p.x / DEPTH_CELL)) & 0x1FFFFF) << 42 | (static_cast<int64_t>(std::floor(p.y / DEPTH_CELL)) & 0x1FFFFF) << 21 |
+					                    (static_cast<int64_t>(std::floor(p.z / DEPTH_CELL)) & 0x1FFFFF);
+					if (cells.insert(key).second)
+						job->samples.push_back(v);
+				}
+				job->plus.assign(counts.vertexCount, CLEAR_REACH);
+				job->minus.assign(counts.vertexCount, CLEAR_REACH);
+				job->known.assign(counts.vertexCount, 0);
+				depthJob = std::move(job);
+				continue;
+			}
+			auto* cell = tes->interiorCell ? tes->interiorCell : tes->GetCell(depthJob->geometry->world.translate);
+			auto* bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
+			auto* world = bhkWorld ? bhkWorld->GetWorld1() : nullptr;
+			if (!world)
+				return;
+			{
+				const RE::BSReadLockGuard lock(bhkWorld->worldLock);
+				for (int rays = 0; depthJob->next < depthJob->samples.size() && rays < 32; depthJob->next++, rays++) {
+					const uint32_t v = depthJob->samples[depthJob->next];
+					const RE::NiPoint3& p = depthJob->positions[v];
+					const RE::NiPoint3& n = depthJob->normals[v];
+					// From DEPTH_START out of its visible face (along its normal), through the vertex, into what lies behind
+					// it: the first rock or ground
+					// D106: along its authored normal (logged: these meshes' normals point into the bed, away from the face we
+					// see; against them, two thirds of the rays went up into the air)
+					const float hit = RockAlong(world, p - n * DEPTH_START, n, CLEAR_REACH + DEPTH_START);
+					depthJob->minus[v] = hit >= 0.0f ? std::clamp(hit - DEPTH_START, 0.0f, CLEAR_REACH) : CLEAR_REACH;
+					depthRays++;
+					depthHits += hit >= 0.0f ? 1 : 0;
+					// TEMPORARY D106 diagnostics: the ray's tilt (-n.z: 1 straight down), and for a miss, straight down
+					depthJob->tiltSum += n.z;
+					depthJob->downward += n.z < 0.0f ? 1 : 0;
+					if (hit >= 0.0f) {
+						depthJob->hits++;
+						depthJob->hitDistances.push_back(hit - DEPTH_START);
+					} else {
+						depthJob->misses++;
+						const float down = RockAlong(world, p + RE::NiPoint3(0.0f, 0.0f, DEPTH_START), RE::NiPoint3(0.0f, 0.0f, -1.0f), CLEAR_REACH + DEPTH_START);
+						if (down >= 0.0f) {
+							depthJob->missDownHits++;
+							depthJob->missDown.push_back(down - DEPTH_START);
+						}
+					}
+					depthJob->known[v] = 1;
+				}
+			}
+			if (depthJob->next < depthJob->samples.size())
+				continue;
+			// Spread to the vertices between (each the mean of its neighbours, the samples held), then a light softening
+			DepthJob& job = *depthJob;
+			const std::size_t count = job.positions.size();
+			for (auto* field : { &job.plus, &job.minus }) {
+				std::vector<float> next = *field;
+				for (int pass = 0; pass < DEPTH_FILL_PASSES; pass++) {
+					for (std::size_t v = 0; v < count; v++) {
+						if (job.known[v] || job.ring[v].empty())
+							continue;
+						float sum = 0.0f;
+						for (const uint32_t n : job.ring[v])
+							sum += (*field)[n];
+						next[v] = sum / static_cast<float>(job.ring[v].size());
+					}
+					field->swap(next);
+					next = *field;
+				}
+			}
+			const auto base = vertexClipBase.find(job.geometry.get());
+			if (base != vertexClipBase.end() && base->second == job.base && job.base + count <= vertexClips.size()) {
+				uint32_t shallow = 0;
+				for (std::size_t v = 0; v < count; v++) {
+					vertexClips[job.base + v][12] = job.plus[v];
+					vertexClips[job.base + v][13] = job.minus[v];
+					shallow += job.minus[v] < CLEAR_REACH * 0.5f ? 1 : 0;
+				}
+				vertexClipVersion++;
+				logger::info("[Fluid Field]   depth behind '{}': {} vertices sampled of {}, {} of {} rays hit rock or ground so far; {} vertices within {:.0f} units of it",
+					job.geometry->name.c_str(), job.samples.size(), count, depthHits, depthRays, shallow, CLEAR_REACH * 0.5f);
+				// TEMPORARY D106 diagnostics
+				const auto median = [](std::vector<float> a_values) {
+					if (a_values.empty())
+						return -1.0f;
+					std::nth_element(a_values.begin(), a_values.begin() + static_cast<std::ptrdiff_t>(a_values.size() / 2), a_values.end());
+					return a_values[a_values.size() / 2];
+				};
+				const auto samples = std::max<std::size_t>(job.samples.size(), 1);
+				logger::info("[Fluid Field]   depth rays '{}' at ({:.0f}, {:.0f}, {:.0f}): {} hit (median {:.0f} units), {} missed; rays point down on {} of {} (mean -n.z {:.2f}); of the misses, {} find ground straight down (median {:.0f} units)",
+					job.geometry->name.c_str(), job.geometry->world.translate.x, job.geometry->world.translate.y, job.geometry->world.translate.z, job.hits, median(job.hitDistances), job.misses,
+					job.downward, samples, job.tiltSum / static_cast<double>(samples), job.missDownHits, median(job.missDown));
+			}
+			depthJob.reset();
+		}
+	}
+
 	void FallSites::ClipStep()
 	{
 		if (clipQueue.empty())
@@ -993,6 +1151,7 @@ namespace FluidFieldSim
 				clipTested++;
 			}
 			vertexClipBase[geometry.get()] = base;
+			depthQueue.emplace_back(geometry);  // D106
 			vertexClipVersion++;
 		}
 		if (clipQueue.empty()) {
@@ -2385,7 +2544,7 @@ namespace FluidFieldSim
 
 	void FallSites::ComputePushes()
 	{
-		uint32_t meshes = 0, pushed = 0, wobbled = 0, flippedTotal = 0, leadCut = 0, baked = 0;
+		uint32_t meshes = 0, pushed = 0, wobbled = 0, flippedTotal = 0, leadCut = 0;
 		float most = 0.0f, mostWobble = 0.0f;
 		for (const auto& lit : litMeshList) {
 			auto* geometry = lit.geometry.get();
@@ -2646,19 +2805,7 @@ namespace FluidFieldSim
 				if (base + v < vertexClips.size()) {
 					auto& value = vertexClips[base + v];
 					value[7] = value[8] = value[9] = value[10] = value[11] = 0.0f;
-					// D104: the open water or air behind its outer side (the bake's clearance on the side its outer normal
-					// points away from), for the see-through pass's depth behind
-					value[12] = CLEAR_REACH;
-					if (bake.clearFront.size() == bake.covered.size() && bake.normal.size() == bake.covered.size() && length > 1e-6f) {
-						const auto gx = std::clamp(static_cast<int32_t>(std::lround((uvs[v][0] - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(bake.width) - 0.5f)), 0,
-							static_cast<int32_t>(bake.width) - 1);
-						const auto gy = std::clamp(static_cast<int32_t>(std::lround((uvs[v][1] - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(bake.height) - 0.5f)), 0,
-							static_cast<int32_t>(bake.height) - 1);
-						const std::size_t texel = static_cast<std::size_t>(gy) * bake.width + gx;
-						const RE::NiPoint3 outer = geometry->world.rotate * normals[v];
-						value[12] = outer.Dot(bake.normal[texel]) >= 0.0f ? bake.clearBack[texel] : bake.clearFront[texel];
-						baked++;
-					}
+					// D106: the depth behind (value[12], [13]) comes from DepthStep's rays from the vertices themselves
 					if (wobbleSize[v] > 0.0f) {
 						float across = 0.0f, along = 0.0f;
 						flowAt(uvs[v][0], uvs[v][1], across, along);
@@ -2682,8 +2829,8 @@ namespace FluidFieldSim
 		}
 		ComposeShifts();
 		ComputeSides();  // D103: after the lead-in cuts, which the covering sheets' test reads
-		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units; {} wobble, at most {:.1f} units; {} normals turned outward; {} hidden lead-in vertices cut; {} with a baked depth behind",
-			pushed, meshes, most, wobbled, mostWobble, flippedTotal, leadCut, baked);
+		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units; {} wobble, at most {:.1f} units; {} normals turned outward; {} hidden lead-in vertices cut",
+			pushed, meshes, most, wobbled, mostWobble, flippedTotal, leadCut);
 	}
 
 	void FallSites::ProbeScrolls()
@@ -3081,9 +3228,14 @@ namespace FluidFieldSim
 					}
 					if (!inside) {
 						for (const float side : { 1.0f, -1.0f }) {
+							// D105: from far off the sheet back toward it, the last rock crossed is the face nearest it (cast
+							// outward from just off the surface, the ray started inside the rock the sheet dips into and Havok
+							// sees no face from inside: every clearance read as open)
+							// D105: from the far side of the sheet (CLEAR_START out on the other side, in its water or air), through it,
+							// the first rock: rays from inside the rock the sheet lies on (either end) saw no face
 							const RE::NiPoint3 out = bakeJob->normal[i] * side;
-							const float hit = RockAlong(world, bakeJob->position[i] + out * 2.0f, out, CLEAR_REACH);
-							(side > 0.0f ? bakeJob->clearFront : bakeJob->clearBack)[i] = hit >= 0.0f ? hit + 2.0f : CLEAR_REACH;
+							const float hit = RockAlong(world, bakeJob->position[i] - out * CLEAR_START, out, CLEAR_REACH + CLEAR_START);
+							(side > 0.0f ? bakeJob->clearFront : bakeJob->clearBack)[i] = hit >= 0.0f ? std::clamp(hit - CLEAR_START, 0.0f, CLEAR_REACH) : CLEAR_REACH;
 						}
 					} else {
 						bakeJob->clearFront[i] = bakeJob->clearBack[i] = 0.0f;
@@ -3141,6 +3293,7 @@ namespace FluidFieldSim
 		waterSurfaces = &a_water;
 		CaptureStep();
 		ClipStep();
+		DepthStep();
 		BakeStep();
 		PollPools();
 		ProbeScrolls();
