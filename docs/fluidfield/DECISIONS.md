@@ -2291,3 +2291,9 @@ Entry format:
     missed its copy-back line, which then read the edge smoothing's `next`
     (world positions) as moves. Fixed; ComposeShifts now leaves any move that
     is not finite or past 120 units still and logs the count by source.
+-   **D97: holes at the falls' backs (SS 887, 888).** D95 cut the whole hidden
+    lead-in and every vertex lying on a leading mesh. Where no river lies over
+    the lead-in it is the visible sheet, and the leading mesh is itself cut in
+    places, so both holed the falls. The lead-in is now cut only 4 units under
+    a water surface over it (the engine's planes or our pools); the overlap
+    cut is off.

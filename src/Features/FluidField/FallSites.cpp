@@ -1277,11 +1277,7 @@ namespace FluidFieldSim
 					faded += fade == 0.0f ? 1 : 0;
 				}
 				vertexClips[mesh.base + v][1] = fade;
-				// D95: inside a leading mesh (it and every neighbour on it, not an edge): cut
-				if (!mesh.open[v] && onLead[v] && ringOn[v]) {
-					vertexClips[mesh.base + v][0] = std::min(vertexClips[mesh.base + v][0], -CLIP_RANGE);
-					overlapped++;
-				}
+				// D95 (off since D97): inside a leading mesh, cut; it holed the sheets wherever the leading mesh was itself cut
 			}
 			// D69: an open edge's vertex that lies off every other mesh but near another mesh's open edge (two meshes
 			// meeting edge to edge with air between: the dark lines along their seam) moves across the gap, past the
@@ -2217,12 +2213,34 @@ namespace FluidFieldSim
 				std::vector<int32_t> crest;
 				std::vector<uint8_t> leadIn;
 				FallStrands::FindCrests(input, crest, leadIn);
+				// D97: only where it is under water (the engine's planes over the mesh, or our pools): a lead-in in the open
+				// (no river above it) is the sheet itself, and cutting it holed the falls (SS 887)
+				float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					const RE::NiPoint3 world = geometry->world * positions[v];
+					lo[0] = std::min(lo[0], world.x);
+					lo[1] = std::min(lo[1], world.y);
+					hi[0] = std::max(hi[0], world.x);
+					hi[1] = std::max(hi[1], world.y);
+				}
+				std::vector<std::array<float, 5>> leadPlanes;
+				CollectWaterPlanes(lo[0], lo[1], hi[0], hi[1], leadPlanes);
+				const auto underWater = [&](const RE::NiPoint3& a_p) {
+					float level = 0.0f;
+					if (PoolLevelAt(a_p.x, a_p.y, level) && a_p.z < level - LEAD_CUT_DEPTH)
+						return true;
+					for (const auto& plane : leadPlanes) {
+						if (a_p.x >= plane[0] && a_p.x <= plane[2] && a_p.y >= plane[1] && a_p.y <= plane[3] && a_p.z < plane[4] - LEAD_CUT_DEPTH)
+							return true;
+					}
+					return false;
+				};
 				for (uint32_t v = 0; v < counts.vertexCount && base + v < vertexClips.size(); v++) {
 					const auto gx = std::clamp(static_cast<int32_t>(std::lround((uvs[v][0] - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(bake.width) - 0.5f)), 0,
 						static_cast<int32_t>(bake.width) - 1);
 					const auto gy = std::clamp(static_cast<int32_t>(std::lround((uvs[v][1] - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(bake.height) - 0.5f)), 0,
 						static_cast<int32_t>(bake.height) - 1);
-					if (leadIn[static_cast<std::size_t>(gy) * bake.width + gx]) {
+					if (leadIn[static_cast<std::size_t>(gy) * bake.width + gx] && underWater(geometry->world * positions[v])) {
 						vertexClips[base + v][0] = std::min(vertexClips[base + v][0], -CLIP_RANGE);
 						leadCut++;
 					}

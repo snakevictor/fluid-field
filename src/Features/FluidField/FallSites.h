@@ -307,6 +307,7 @@ namespace FluidFieldSim
 		static constexpr float EDGE_BLEND_REACH = 120.0f;  ///< D94: world units the open edge's moves fade into the surface over...
 		static constexpr int EDGE_BLEND_PASSES = 60;       ///< D94: ...in this many rounds
 		static constexpr float MOST_SHIFT = 120.0f;        ///< D96: a vertex's composed move past this (model units) is a bug: it is left still
+		static constexpr float LEAD_CUT_DEPTH = 4.0f;      ///< D97: a hidden lead-in vertex this far under the water over it is cut
 		std::vector<RE::NiPointer<RE::BSGeometry>> clipQueue;
 		uint64_t vertexClipVersion = 0;
 		uint32_t clipTested = 0;
