@@ -378,7 +378,10 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// the crest foam none of D138-D143 touched). Back with the bake's own aeration
 	float white = 0.0;
 	float poolHeight;
-	const float pool = FallGround::Whitening ? PoolWeight(position.xy, poolHeight) * saturate(input.Fade.z) : 0.0;
+	// D146: the drop's bands (pool, foot, share of the drop) are off: on a cascade the top river counts as every drop's
+	// source, so the lower crests read as mid-drop and foamed (the user: "we want the GREEN foaming to be gone"). Foam on
+	// the falls is to come from the bake's own aeration
+	const float pool = 0.0;
 	if (pool > 0.0) {
 		const float above = position.z - poolHeight;
 		white = max(white, pool * (above >= 0.0 ? 1.0 - saturate(above / FallGround::PoolFoamHeight) : 1.0 - saturate(-above / FallGround::POOL_CUT)));
@@ -389,8 +392,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// D142: the foot band only where the drop's height is not known (below)
 	const bool hasSource = input.BelowSource < 500.0;
 	const bool hasFoot = input.Fade.y < 500.0;
-	if (FallGround::Whitening && !(hasSource && hasFoot))
-		white = max(white, (1.0 - Square(saturate(input.Fade.y / FOOT_FOAM_REACH))) * FOOT_FOAM);
+
 	// D141: as real falls (the user's references): clear and glassy over the lip, foam growing with the drop, thin threads
 	// below the lip to white columns near the foot, on the steep parts only (an incline foams by its rock strikes and
 	// wakes, the bake's). The drop from the water it pours out of; where it has none (a sheet starting mid-fall), its run
@@ -402,8 +404,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float share = hasSource && hasFoot ? input.BelowSource / max(input.BelowSource + input.Fade.y, 1.0) : 0.0;
 	const float fallen = hasSource && hasFoot ? smoothstep(FALL_FOAM_START, FALL_FOAM_FULL, share) : hasSource ? smoothstep(60.0, 300.0, input.BelowSource) :
 	                                                                                                             0.0;
-	if (FallGround::Whitening)
-		white = max(white, fallen * steep * FALL_FOAM);
+
 	// D143's "fed by a drop" foam (no source found above: white from the top) is off: whole inclined runs far from any
 	// plane read as fed and went white (SS 1039). The turbulence under a drop is to come from the bake's own aeration
 	// D141: near the lip nothing else foams either (the lead-in's cut line there is under the river). D143: over
@@ -411,14 +412,17 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// D145: and near any sheet's own top by its flow's run time: a lower drop's crest meets the sheet above it (no calm
 	// water over it, so the source's quiet did not apply) and its seam and meet lines foamed across it
 	const float lip = (hasSource ? saturate((input.BelowSource - LIP_BLEND) / LIP_QUIET) : 1.0) * saturate((flow.runTime - CREST_QUIET_SECONDS) / CREST_QUIET_SECONDS);
+	// D146: the seam, meet and cut lines only where the water already falls (steep): where a run ends at the next drop's
+	// crest, the run's end meets that drop's sheet and still foamed across every crest (a source diagnostic: those lines)
+	const float lineQuiet = lip * steep;
 	// D121: where the water breaks: along its cut lines (the lead-in leaving the river above, the foot under the pool or
 	// river below, a sheet cut into another's curl, rock), where it overlaps another sheet at a seam (laid on after the
 	// screen depth below: where it meets rock or any mesh, as the river foams at its shore)
 	if (FallGround::Whitening) {
-		white = max(white, (1.0 - saturate(input.Clip / CUT_FOAM_REACH)) * lip);
-		white = max(white, (1.0 - saturate(input.Fade.x)) * SEAM_FOAM * lip);
+		white = max(white, (1.0 - saturate(input.Clip / CUT_FOAM_REACH)) * lineQuiet);
+		white = max(white, (1.0 - saturate(input.Fade.x)) * SEAM_FOAM * lineQuiet);
 		// D128: where it meets another sheet (SS 992: the join of two sheets had none, the one behind hidden by the front)
-		white = max(white, (1.0 - saturate(input.ToOtherSheet / MEET_FOAM_REACH)) * MEET_FOAM * lip);
+		white = max(white, (1.0 - saturate(input.ToOtherSheet / MEET_FOAM_REACH)) * MEET_FOAM * lineQuiet);
 	}
 	const float lace = FallGround::Lace(flow);
 

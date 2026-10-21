@@ -3465,3 +3465,19 @@ Entry format:
 -   Lesson: when a look keeps coming back, colour every input separately
     in the user's view before changing any.
 -   References: D138, D141, D143
+
+## D146: No hand-made foam bands on the falls; line foam only where water falls
+
+-   Date: 2026-10-21
+-   Decision (source diagnostic in the user's view, SS 1040):
+    -   The drop's bands are off: the pool band, the foot band and the
+        share-of-the-drop foam (D124, D139, D142). On a cascade the top
+        river is every lower drop's "source", so the lower crests read as
+        mid-drop and foamed; the user: the green (these bands) gone. Foam
+        where the falls enter the water below comes from the river's own
+        simulation; foam on the falls is to come from the bake's aeration.
+    -   Seam, meet and cut lines foam only where the water already falls
+        (steep): a run's end meeting the next drop's sheet foamed across
+        every crest.
+    -   Left: thin contact foam where sheets touch rock at their sides.
+-   References: D124, D139, D142, D143, D145
