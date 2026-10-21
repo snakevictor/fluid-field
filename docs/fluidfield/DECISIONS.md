@@ -3588,3 +3588,17 @@ Entry format:
 -   Lesson (LEARNINGS, D145): measure each input on both shaders before
     tuning any.
 -   References: D127, D147-D153
+
+## D155: Screen-space reflections on the falls
+
+-   Date: 2026-10-21
+-   Decision: the falls march their reflected ray through the scene's
+    depth (24 growing steps from 8 units, 48 units thick) and reflect the
+    scene's colour where it meets something, over the cubemap, weighted as
+    the river's SSR (more where the reflection points along the view),
+    faded at the screen's edge and with the march's length. The engine's
+    SSR is made for a level water plane, and the falls lean every way; the
+    river's darkness comes partly from its SSR reflecting the banks (D154).
+-   Open: from above the reflected rays go up to the sky and miss, so the
+    cubemap still carries those views.
+-   References: D154

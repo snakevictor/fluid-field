@@ -130,6 +130,42 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 #	define Normals01Sampler WrapSampler
 #	include "FluidField/WaterNormal.hlsli"
 
+/** D155: screen-space reflection march: steps, the first step and its growth (world units), and how thick a surface is. */
+static const int SSR_STEPS = 24;
+static const float SSR_FIRST_STEP = 8.0;
+static const float SSR_GROWTH = 1.18;
+static const float SSR_THICKNESS = 48.0;
+
+/**
+ * D155: the scene's colour where a reflected ray from a_position (camera-relative) along a_direction first passes behind
+ * the scene's depth, and how sure that is (a: 0 where it leaves the screen, goes too far or meets nothing).
+ */
+float4 ScreenReflection(float3 a_position, float3 a_direction, float2 a_dimensions, float2 a_region)
+{
+	float3 p = a_position;
+	float step = SSR_FIRST_STEP;
+	[loop] for (int i = 0; i < SSR_STEPS; i++)
+	{
+		p += a_direction * step;
+		step *= SSR_GROWTH;
+		const float4 clip = mul(FrameBuffer::CameraViewProj, float4(p, 1.0));
+		if (clip.w <= 1.0)
+			break;
+		const float2 uv = clip.xy / clip.w * float2(0.5, -0.5) + 0.5;
+		if (any(uv <= 0.0) || any(uv >= 1.0))
+			break;
+		const float2 pixel = uv * a_region;
+		const float sceneDepth = SharedData::GetScreenDepth(SceneDepth.Load(int3(pixel, 0)));
+		const float behind = clip.w - sceneDepth;
+		if (behind > 0.0 && behind < SSR_THICKNESS + step) {
+			const float2 edge = min(uv, 1.0 - uv);
+			const float fade = saturate(min(edge.x, edge.y) * 10.0) * (1.0 - float(i) / float(SSR_STEPS));
+			return float4(SceneColor.SampleLevel(ClampSampler, pixel / a_dimensions, 0).rgb, fade);
+		}
+	}
+	return 0.0;
+}
+
 float Square(float a_value)
 {
 	return a_value * a_value;
@@ -562,6 +598,15 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float3 reflected = reflect(-toCamera, reflectionNormal);
 	float3 environment = HasEnvironment ? EnvironmentTex.SampleLevel(ClampSampler, reflected, ENVIRONMENT_MIP * aerated).rgb : WithinLight(ReflectionColor, sceneLight);
 	environment = clamp(environment, 0.0, MAX_OUTPUT);  // NaN or a runaway texel becomes 0 or the cap, never a square
+	// D155: screen-space reflections over the cubemap, as the river's (Water.hlsl's SSR): the reflected ray marched through
+	// the scene's depth, the scene's colour where it meets something. The engine's SSR is made for a level water plane;
+	// the falls' sheets lean every way, so they march their own. Without it they mirrored only the sky (grey-blue)
+	{
+		const float4 hit = ScreenReflection(input.WorldPosition, reflected, dimensions, region);
+		// The river's weight: more where the reflection points along the view (Water.hlsl's ssrAmount)
+		const float pointing = saturate(dot(-toCamera, reflected) * 0.5 + 0.5);
+		environment = lerp(environment, hit.rgb, hit.a * sqrt(pointing));
+	}
 	const float viewAngle = 1.0 - facing;
 	float fresnel = (1.0 - FresnelF0) * pow(viewAngle, 5.0) + FresnelF0;
 	if (SharedData::enbSettings.EnableWater) {
