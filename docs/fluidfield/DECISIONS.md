@@ -3136,3 +3136,29 @@ Entry format:
 -   Lesson (LEARNINGS): any texture laid on flow.uvA must have an integer
     scale along v.
 -   References: D85, D127, D129
+
+## D131: Ripples and the foam's pattern in world space; D132: each patch on its own clock
+
+-   Date: 2026-10-21
+-   Decision:
+    -   **D131:** the water type's ripple maps and the foam's bubble pattern
+        are laid on the sheet in world space (tri-planar by the sheet's
+        normal, `Drifted`), drifting along the flow in two crossfading
+        phases as the river's foam, not on the falls' texture coordinates:
+        there the ripples stretched along the flow (the glint streaked) and
+        the falls' normal map, as the pattern, carried horizontal bands. The
+        foam's pattern is now the water type's first normal map (the river's
+        Normals01) at 160 units per repeat. The top and foot bands ease out
+        (1 - x^2; sqrt ended on a hard straight line, SS 998); the meet foam
+        reaches 64 units (the user: larger).
+    -   **D132:** each patch drifts on its own clock, a smooth offset over a
+        few repeats, as the river's foam (D68): one clock crossfaded the
+        whole sheet at once and it pulsed (the user: "looping is back").
+        Drift capped at the river's 120 units a second (200 jumped).
+-   Found: the zebra bands and solid foam (SS 997, 999, 1000-1002) are the
+    bake's foam and wake fields since the culling started cutting texels
+    out of the bake (D126): wake high over most sheets, foam in horizontal
+    bands. Sent to the culling work (D133+).
+-   Queued (the user): low-frequency world noise varying flow speed, foam and
+    ripples to break repetition.
+-   References: D68, D127, D129, D130

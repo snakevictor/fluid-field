@@ -120,6 +120,11 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 #	define Normals01Sampler WrapSampler
 #	include "FluidField/WaterNormal.hlsli"
 
+float Square(float a_value)
+{
+	return a_value * a_value;
+}
+
 /** a_vector normalised, or a_fallback where it has no length (a zero vector normalises to NaN, which bloom spreads into squares). */
 float3 SafeNormalize(float3 a_vector, float3 a_fallback)
 {
@@ -195,6 +200,50 @@ float2 FlowScale(float a_worldScale)
 	const float repeats = FALLS_UV_WORLD / max(a_worldScale, 1.0);
 	return float2(repeats, max(round(repeats), 1.0));
 }
+
+/** D131: world units per repeat of the foam's bubble pattern, and the drift's period and fastest speed (the river's foam, FluidField::GetFoamCover: 160, 0.6, 120). */
+static const float FOAM_TILE = 160.0;
+static const float DRIFT_PERIOD = 0.6;
+static const float MAX_DRIFT = 120.0;  // D132: the river's (200 jumped visibly between phases)
+
+/**
+ * D131: a_texture's xy (-1 to 1) laid on the sheet in world space, a_scale units per repeat: tri-planar (weighted by
+ * a_normal), drifted along a_drift (world units per second) in two phases crossfading, as the river's foam and flow
+ * detail. Laid on the falls' own texture coordinates, the maps stretched along the flow (the glint streaked) and the
+ * falls' normal map, as the foam's pattern, had horizontal bands that the foam thresholded into zebra stripes (SS 997,
+ * 999). Returns the tilt in world space (xyz) and the pattern, the xy's length (w).
+ */
+float4 Drifted(Texture2D<float4> a_texture, float3 a_position, float3 a_normal, float3 a_drift, float a_scale, float a_offset)
+{
+	// D132: each patch on its own clock (a smooth offset over a few repeats), as the river's foam (D68): one clock
+	// everywhere crossfaded the whole sheet at once, twice a period, and it pulsed (the user: "looping is back")
+	const float2 patch = (a_position.xy + a_position.z * 0.7) / (a_scale * 2.5);
+	const float2 cell = floor(patch);
+	const float2 f = patch - cell;
+	const float2 s = f * f * (3.0 - 2.0 * f);
+	const float4 corner = frac(sin(float4(dot(cell, float2(127.1, 311.7)), dot(cell + float2(1, 0), float2(127.1, 311.7)), dot(cell + float2(0, 1), float2(127.1, 311.7)),
+								   dot(cell + float2(1, 1), float2(127.1, 311.7)))) *
+							   43758.5453);
+	const float time = NoiseTime / DRIFT_PERIOD + lerp(lerp(corner.x, corner.y, s.x), lerp(corner.z, corner.w, s.x), s.y) * 2.0;
+	const float phase0 = frac(time);
+	const float phase1 = frac(time + 0.5);
+	const float blend = abs(phase0 * 2.0 - 1.0);  // Each phase weighs nothing as it restarts
+	float3 weights = pow(abs(a_normal), 4.0);
+	weights /= max(weights.x + weights.y + weights.z, 1e-5);
+	float4 result = 0.0;
+	[unroll] for (int k = 0; k < 2; k++)
+	{
+		const float phase = k == 0 ? phase0 : phase1;
+		const float3 p = (a_position - a_drift * phase * DRIFT_PERIOD) / a_scale + a_offset + 0.37 * k;
+		const float2 sx = a_texture.Sample(WrapSampler, p.yz).xy * 2.0 - 1.0;
+		const float2 sy = a_texture.Sample(WrapSampler, p.xz).xy * 2.0 - 1.0;
+		const float2 sz = a_texture.Sample(WrapSampler, p.xy).xy * 2.0 - 1.0;
+		const float4 sample = float4(weights.x * float3(0.0, sx.x, sx.y) + weights.y * float3(sy.x, 0.0, sy.y) + weights.z * float3(sz.x, sz.y, 0.0),
+			weights.x * length(sx) + weights.y * length(sy) + weights.z * length(sz));
+		result += sample * (k == 0 ? 1.0 - blend : blend);
+	}
+	return result;
+}
 /** D127: how much of the white water reaches the foam cover: below 1, even the densest bands stay patchy where the pattern is high, as the river's foam (solid bands read as paint). */
 static const float FOAM_DENSITY = 0.7;
 /** D102: pixels of refraction offset per unit of tilt at Refraction 1, as a fraction of the screen height. */
@@ -209,8 +258,8 @@ static const float CONTACT_FOAM_REACH = 20.0;
 static const float SEAM_FOAM = 0.7;
 static const float CONTACT_FOAM = 0.9;
 /** D128: world units from another sheet over which the water foams where two meet, and how white at most. */
-static const float MEET_FOAM_REACH = 40.0;
-static const float MEET_FOAM = 0.9;
+static const float MEET_FOAM_REACH = 64.0;  // D131: 64 (was 40): the user, larger
+static const float MEET_FOAM = 1.0;
 
 /**
  * D102: world units of water between the sheet and what lies behind it, along the view ray: the one input the
@@ -292,16 +341,17 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 		tangentNormal.xy *= NORMAL_STRENGTH;  // D127: 0.3 (was 0.6): nearer the river's gentle ripples
 		normal = PerturbNormal(geometric, input.WorldPosition, flow.uvA, SafeNormalize(tangentNormal, float3(0.0, 0.0, 1.0)));
 	}
-	// D129: the river's fine ripples: its water type's three normal maps blended as Water.hlsl does (up plus each map
-	// times its amplitude), at their own world scale on the sheet's texture (FALLS_UV_WORLD units per repeat), carried
-	// along the flow with it
+	// D129: the river's fine ripples: its water type's three normal maps blended as Water.hlsl does (each map times its
+	// amplitude). D131: in world space at their own scale, drifting along the flow (Drifted), not on the falls' texture
+	// coordinates (stretched along the flow)
+	const float3 drift = flow.velocity * min(1.0, MAX_DRIFT / max(length(flow.velocity), 1e-3));
 	[branch] if (HasNoise)
 	{
-		const float3 n1 = Noise1Tex.Sample(WrapSampler, flow.uvA * FlowScale(NoiseScale.x)).xyz * 2.0 - 1.0;
-		const float3 n2 = Noise2Tex.Sample(WrapSampler, flow.uvA * FlowScale(NoiseScale.y) + 0.31).xyz * 2.0 - 1.0;
-		const float3 n3 = Noise3Tex.Sample(WrapSampler, flow.uvA * FlowScale(NoiseScale.z) + 0.67).xyz * 2.0 - 1.0;
-		const float2 ripple = (n1.xy * NoiseAmplitude.x + n2.xy * NoiseAmplitude.y + n3.xy * NoiseAmplitude.z) * RIPPLE_STRENGTH;
-		normal = PerturbNormal(normal, input.WorldPosition, flow.uvA, SafeNormalize(float3(ripple, 1.0), float3(0.0, 0.0, 1.0)));
+		const float3 tilt = (Drifted(Noise1Tex, position, geometric, drift, NoiseScale.x, 0.0).xyz * NoiseAmplitude.x +
+								Drifted(Noise2Tex, position, geometric, drift, NoiseScale.y, 0.31).xyz * NoiseAmplitude.y +
+								Drifted(Noise3Tex, position, geometric, drift, NoiseScale.z, 0.67).xyz * NoiseAmplitude.z) *
+		                    RIPPLE_STRENGTH;
+		normal = SafeNormalize(normal + tilt - normal * dot(normal, tilt), normal);
 	}
 	const float facing = saturate(dot(normal, toCamera));
 	const float cosine = abs(dot(geometric, toCamera));
@@ -318,11 +368,12 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 		white = max(white, pool * (above >= 0.0 ? 1.0 - saturate(above / FallGround::PoolFoamHeight) : 1.0 - saturate(-above / FallGround::POOL_CUT)));
 	}
 	// D124: the whole drop's top and foot foam long and dense (the user): down from the water it pours out of, and up from
-	// the water it falls into, sqrt so the bands stay near solid most of their length
+	// the water it falls into. D131: 1 - x^2, dense most of the way and easing out (sqrt fell to nothing at once at its
+	// end: a hard straight line across the sheet, SS 998)
 	if (FallGround::Whitening && input.Fade.y < FallGround::NO_WATER * 0.5)
-		white = max(white, sqrt(1.0 - saturate(input.Fade.y / FOOT_FOAM_REACH)));
+		white = max(white, 1.0 - Square(saturate(input.Fade.y / FOOT_FOAM_REACH)));
 	if (FallGround::Whitening && input.BelowSource < FallGround::NO_WATER * 0.5)
-		white = max(white, sqrt(1.0 - saturate(input.BelowSource / TOP_FOAM_REACH)));
+		white = max(white, 1.0 - Square(saturate(input.BelowSource / TOP_FOAM_REACH)));
 	// D121: where the water breaks: along its cut lines (the lead-in leaving the river above, the foot under the pool or
 	// river below, a sheet cut into another's curl, rock), where it overlaps another sheet at a seam (laid on after the
 	// screen depth below: where it meets rock or any mesh, as the river foams at its shore)
@@ -358,13 +409,10 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// streaks of a pattern, here vanilla's normal map running on the baked flow (the river's runs on its simulated flow)
 	// D127: fuzzier, as the river's: two blurred samples of the pattern at different scales blended (the river blends two
 	// phases), and a wider soft band; one sharp sample broke the foam into crisp shapes
+	// D131: the river's own pattern: its water type's first normal map in world space, drifting along the flow (Drifted)
 	float pattern = lace;
-	[branch] if (HasNormal)
-	{
-		const float p0 = length(NormalTex.SampleBias(WrapSampler, flow.uvA, 1.5).xy * 2.0 - 1.0);
-		const float p1 = length(NormalTex.SampleBias(WrapSampler, flow.uvA * float2(0.6, 2.0) + 0.37, 1.5).xy * 2.0 - 1.0);  // D130: v a whole number (FlowScale)
-		pattern = saturate((p0 + p1) * 0.5 * 1.4);
-	}
+	[branch] if (HasNoise)
+		pattern = saturate(Drifted(Noise1Tex, position, geometric, drift, FOAM_TILE, 0.0).w * 1.4);
 	const float threshold = pattern * 0.5;
 	const float foam = FallGround::Whitening && white > 0.02 ? smoothstep(threshold, threshold + 0.35, white * FOAM_DENSITY) * 0.95 : 0.0;
 	const float3 viewNormal = mul((float3x3)FrameBuffer::CameraView, normal - geometric);
