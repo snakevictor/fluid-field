@@ -648,7 +648,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// foam made the line where the sheet enters a boulder wholly opaque and white, tracing the faceted intersection of
 	// the sheet's triangles with the rock's as a white sawtooth; and the water fades out toward its cut
 	const float contact = saturate(straightBehind / 4.0);
-	const float alpha = saturate(input.Fade.x) * lerp(contact, sqrt(contact), foam) * FallGround::CutFade(input.Clip) * (hasSource ? smoothstep(0.0, LIP_BLEND, input.BelowSource) : 1.0);  // D141: faded in under the lip
+	const float alpha = saturate(input.Fade.x) * lerp(contact, sqrt(contact), foam) * FallGround::CutFade(input.Clip);  // D158: no lip fade (D141): the front-surface pre-pass (PSDepth) still claimed those pixels, so the fade punched holes along the crests showing the rock behind (SS 1086); the lead-in cut handles the part under the river
 	if (alpha <= 0.002)
 		discard;
 	// D108: Waterfall Shading debug "Depth Behind": the open water or air behind the sheet. D110: in bands of colour (a grey

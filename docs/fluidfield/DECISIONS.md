@@ -3617,4 +3617,9 @@ Entry format:
         rays put most sheets 47-218 units off their rock, so the falls went
         clear as soon as the depth job finished: the user saw the murk
         right after a restore, before the job, then lose it.
+    -   **D158, also:** no fade-in under the lip (D141): the front-surface
+        pre-pass (PSDepth, D125) still claimed those pixels and hid what lay
+        behind, so the fade punched holes along the crests showing the rock
+        behind, only with See-Through Falls on (SS 1085 lit, 1086
+        see-through). The lead-in cut handles the part under the river.
 -   References: D120, D126, D148, D154
