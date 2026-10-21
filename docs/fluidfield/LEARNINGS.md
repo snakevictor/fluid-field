@@ -189,3 +189,10 @@ its own colour in the user's own view found the two real sources in one
 capture. When a look keeps returning, do that first. The diagnostic edits the
 deployed copy only; re-copy the repo's shader afterwards (a broken diagnostic
 compile drops the falls back to the lit look).
+
+## Shaders and draw state
+
+-   **The engine's water constant buffers are shared per size** (2026-10-21, D159). `ShaderCache::CreatePixelShader` (`src/ShaderCache.cpp`, around line 1900) binds `perTechniqueBuffersArray[size]` and its siblings: every shader whose PerMaterial is the same size writes the same buffer, draw after draw. To reuse a draw's constants later in the frame, copy their contents (`CopyResource` into a DEFAULT buffer of the same size) at the draw; a kept pointer reads whatever the last draw wrote.
+-   **`State::Draw` sees every draw fully bound** (2026-10-21, D159). It runs from `Hooks::BSGraphics_SetDirtyStates` after the engine has applied its dirty state, so the draw's shaders, views, samplers and constant buffers are bound, and the permutation buffer (b4) was just updated there. Capture a draw's state there, not in a SetupGeometry hook (views are applied later, by the dirty flags).
+-   **A new `.cpp` needs CMake configured again** (2026-10-21). `src/` is globbed at configure time: a build after adding a file fails to link (LNK2001 on its symbols) until `cmake --preset ALL` runs again.
+-   **Git fails in a worktree whose submodules are junctions** (2026-10-21). With `extern/*` linked to the main checkout's (`mklink /J`), every git command fails ("not a git repository: extern/CommonLibSSE-NG/../../.git/modules/..."): the submodules' `.git` files point relative to the wrong root. Remove the links before any git command; put them back to build.

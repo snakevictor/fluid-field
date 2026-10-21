@@ -1,5 +1,7 @@
 #pragma once
 
+#include "RiverCapture.h"
+
 #include <d3d11.h>
 #include <winrt/base.h>
 
@@ -82,6 +84,13 @@ namespace FluidFieldSim
 			float refraction = 0.5f;         ///< How strongly the surface bends what is seen through it
 			float streakFoam = 0.4f;         ///< How much of vanilla's streak texture reads as white water
 			bool volumetricShadows = false;  ///< D102: Volumetric Shadows is loaded: its shadow map (t18) and cascades (t98) shadow the sheet while bound
+			/**
+			 * D159: the river's draw state captured this frame and the falls variant of its shaders (Water.hlsl with
+			 * FLUID_FIELD_FALLS): when all three are set, the falls are shaded by the river's own shader; else FallSurface.hlsl
+			 */
+			const RiverCapture* river = nullptr;
+			ID3D11VertexShader* riverVertexShader = nullptr;
+			ID3D11PixelShader* riverPixelShader = nullptr;
 		};
 
 		/** @brief Draws a_meshes; nothing when the shaders failed or nothing is bound. */
@@ -201,6 +210,7 @@ namespace FluidFieldSim
 		winrt::com_ptr<ID3D11ShaderResourceView> frontDepthSRV;
 		winrt::com_ptr<ID3D11DepthStencilState> frontDepthState;
 		bool frontDepthFailed = false;
+		bool lastRiverShader = false;                     ///< D159: which shader drew the falls last (logged when it changes)
 		const ID3D11Texture2D* preWaterSource = nullptr;  ///< D123: what the pre-water copy was taken from, and in which frame
 		uint32_t preWaterFrame = UINT32_MAX;
 	};

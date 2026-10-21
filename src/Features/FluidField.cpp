@@ -3,6 +3,7 @@
 #include "../I18n/I18n.h"
 #include "Menu.h"
 #include "Profiler.h"
+#include "ShaderCache.h"
 #include "State.h"
 #include "Utils/D3D.h"
 #include "Utils/Game.h"
@@ -149,6 +150,8 @@ void FluidField::DrawSettings()
 		ImGui::Checkbox(T(TKEY("refractive_falls"), "See-Through Falls"), &settings.RefractiveFalls);
 		tooltip(T(TKEY("refractive_falls_tooltip"), "Experimental. Draws the falls in the water of the river they pour out of, lit and shadowed as it is: a thin sheet of mostly opaque water through which the rock behind shows faintly, with modest reflections and white water. Off draws vanilla's opaque falls."));
 		if (settings.RefractiveFalls) {
+			ImGui::Checkbox(T(TKEY("falls_river_shader"), "Falls Use River Shader"), &settings.FallsRiverShader);
+			tooltip(T(TKEY("falls_river_shader_tooltip"), "Shades the see-through falls with the river's own water shader, so they match the river exactly. Off uses Fluid Field's own copy of it. Water Depth and Refraction only apply when off."));
 			ImGui::SliderFloat(T(TKEY("fall_depth"), "Water Depth"), &settings.FallDepth, 0.25f, 8.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
 			tooltip(T(TKEY("fall_depth_tooltip"), "How thick the falling water looks. Higher is more opaque and deeper in its river's colour; lower lets more of the rock behind show through."));
 			ImGui::SliderFloat(T(TKEY("fall_refraction"), "Refraction"), &settings.FallRefraction, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -1925,6 +1928,22 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 	params.refraction = std::clamp(settings.FallRefraction, 0.0f, 3.0f);
 	params.streakFoam = settings.FallWhitening ? 0.4f : 0.25f;  // D102: the base look's white water kept modest
 	params.volumetricShadows = globals::features::volumetricShadows.loaded;
+	// D159: the falls shaded by the river's own water shader: the variant of the captured draw's shaders for the falls (no
+	// per-vertex, flowmap or wading variants: a sheet has none of them), from the shader cache, which compiles it in the
+	// background on first asking (null until then: FallSurface.hlsl draws the falls meanwhile)
+	if (RiverShaderFallsWanted() && riverCapture.IsCaptured(globals::state->frameCount) && riverCapture.GetShader()) {
+		using Flags = SIE::ShaderCache::WaterShaderFlags;
+		constexpr auto notOnSheets = static_cast<uint32_t>(Flags::Vc) | static_cast<uint32_t>(Flags::NormalTexCoord) | static_cast<uint32_t>(Flags::Wading) |
+		                             static_cast<uint32_t>(Flags::VertexAlphaDepth) | static_cast<uint32_t>(Flags::Flowmap) | static_cast<uint32_t>(Flags::BlendNormals);
+		constexpr auto falls = static_cast<uint32_t>(Flags::FluidFieldFalls);
+		auto* vertexShader = globals::shaderCache->GetVertexShader(*riverCapture.GetShader(), (riverCapture.GetVertexDescriptor() & ~notOnSheets) | falls);
+		auto* pixelShader = globals::shaderCache->GetPixelShader(*riverCapture.GetShader(), (riverCapture.GetPixelDescriptor() & ~notOnSheets) | falls);
+		if (vertexShader && pixelShader && vertexShader->shader && pixelShader->shader) {
+			params.river = &riverCapture;
+			params.riverVertexShader = reinterpret_cast<ID3D11VertexShader*>(vertexShader->shader);
+			params.riverPixelShader = reinterpret_cast<ID3D11PixelShader*>(pixelShader->shader);
+		}
+	}
 	globals::profiler->BeginPass("FluidField::RefractiveFalls");
 	fallRefraction.Draw(globals::d3d::device, globals::d3d::context, params, draws);
 	globals::profiler->EndPass();

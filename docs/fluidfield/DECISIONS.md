@@ -3618,3 +3618,109 @@ Entry format:
         clear as soon as the depth job finished: the user saw the murk
         right after a restore, before the job, then lose it.
 -   References: D120, D126, D148, D154
+
+## D159: The see-through falls shaded by the river's own water shader (branch feature/fluid-field-falls-water)
+
+-   Date: 2026-10-21
+-   Context: D127-D158 matched FallSurface.hlsl's port of Water.hlsl to the
+    river term by term and still found differences (the reflection's
+    source, D154; the river's sparkle, D152). The port can only follow the
+    river; the river's own shader is the river.
+-   Decision: the falls are drawn by Water.hlsl itself, its
+    `FLUID_FIELD_FALLS` variant, with the river's state:
+    -   **Shader:** a water descriptor bit (15, `FluidFieldFalls`) emits
+        `FLUID_FIELD_FALLS`; the shader cache compiles the variant like any
+        water permutation (in the background on first asking).
+    -   **The river's state:** State::Draw hands every draw to Fluid Field,
+        which captures the first draw of a frame with the water shader's
+        refracting surface (technique 0, Refractions): the contents of its
+        constant buffers (PS b0-b4: PerTechnique, PerMaterial, PerGeometry,
+        Light Limit Fix's, the permutation; VS b0-b1) copied into our own
+        buffers (the engine's are shared per size and rewritten by the next
+        draw), and references to its 128 pixel shader views and 16 samplers
+        (the water type's maps, the cubemaps, shadow maps, Skylighting,
+        Light Limit Fix's lights). They are released before the next
+        frame's water and after the falls: no engine texture is held across
+        frames (LEARNINGS).
+    -   **Vertex shader:** reads the sheets as FallSurface.hlsl does (t125,
+        FallGround's moves and cut, b7's world transform) and hands the
+        river's pixel shader what its own vertex shader hands it:
+        camera-relative positions, the normal maps' scroll, vanilla's fog;
+        the sheet's normal, flow coordinates and FallGround's per-vertex
+        data besides.
+    -   **Pixel shader:** the river's, with: its normal maps on the sheet's
+        flow coordinates (a whole number of repeats along the scroll, D130)
+        and the normal turned from the river's frame into the sheet's (the
+        screen-derivative frame of FallSurface's PerturbNormal), the piece's
+        own normal map (0.8) laid over it; the sheet's normal where the
+        river uses up (the reflection's tilt, Skylighting) and the plane
+        through the pixel where it uses ReflectPlane (the depth behind);
+        refraction offset across the sheet, projected by the camera; the
+        falls' own screen-space march (D155) for SSR (the engine's is made
+        for a level plane, on water-mask pixels only); the falls' aeration,
+        foam and matte in place of the river simulation's (read at world xy,
+        meaningless on a sheet); the water tint by the view ray's path
+        (D148); no flowmap, Water Effects parallax or rain ripples;
+        FallSurface's discards (front surface, inner side) and fades;
+        premultiplied output for FallRefraction's blend. The river's own
+        output is unchanged (the define off).
+    -   **Shared:** the falls' visibility and white water (FallShading.hlsli)
+        is one code for both shaders. D141's lip fade-in is not in it
+        (a0e81760d: PSDepth still claimed those pixels, holes along the
+        crests); what fades a pixel there must also be discarded in PSDepth.
+    -   **Draw:** FallRefraction keeps its front-surface pre-pass (D125)
+        with FallSurface.hlsl's PSDepth, then binds the captured state, ours
+        over the slots the variant reads (t1 the pre-water scene, t7 the
+        opaque depth, as FallSurface reads them; t105 the front surface;
+        t120-t125 FallGround and the sheet; b7, b12, b13), and draws with
+        the variant. Everything it touches is restored, all 128 views
+        included. FallSurface's diffuse and normal maps move to t121-t122,
+        off Light Limit Fix's local shadows (t102-t103).
+    -   **Fallback:** FallSurface.hlsl draws the falls whenever no river
+        draw was captured this frame (no refracting water on screen), the
+        variant is still compiling, or anything is missing; the log says
+        which shader draws them each time that changes ("See-through falls
+        shaded by ...").
+    -   **Setting:** "Falls Use River Shader" under See-Through Falls, on
+        by default; Water Depth and Refraction only apply when it is off.
+        FluidField.ini 0-37-0.
+-   Untested: none of it has run in game. The plugin builds (Release);
+    Water.hlsl compiles with fxc (vs_5_0, ps_5_0) with the river's defines
+    and the feature defines, with and without FLUID_FIELD_FALLS, FLOWMAP,
+    BLEND_NORMALS, NORMAL_TEXCOORD, VC, WADING and UNIFIED_WATER.
+-   References: D93, D100, D103, D123, D125, D126, D127, D130, D148, D154,
+    D155
+
+## D160: The river's state from one draw a frame; what the falls variant leaves out
+
+-   Date: 2026-10-21
+-   Decision (where D159 departs from its plan):
+    -   **One capture a frame, not one per water type.** A draw's
+        BSWaterShaderMaterial is not tied to the TESWaterForm a falls piece
+        pours out of (FindFallWaterType) without another hook on
+        BSWaterShader::SetupGeometry (already hooked by Unified Water and
+        Light Limit Fix) and a match from material to form. The first
+        refracting water draw of a frame serves every piece: on screen
+        beside falls it is usually their river. Where the frame's first
+        water is another water body, the falls take its look.
+    -   **Our scene and depth over the river's.** t1 (RefractionTex) and t7
+        (DepthTex) are FallRefraction's pre-water copy (D123) and the opaque
+        pass's depth (D105), what FallSurface reads, not the river's: known
+        to hold the scene without the falls at their draw.
+    -   **The normal maps' sheet coordinates per pixel**, from the flow
+        FallGround::Flow reads there anyway (planned per vertex).
+    -   **The tangent frame from screen derivatives** in the pixel shader,
+        not per vertex (the sheets carry no tangents).
+    -   **Flowmap and per-vertex variants dropped** in C++ and in the shader
+        (FLOWMAP, BLEND_NORMALS, NORMAL_TEXCOORD, VC, WADING,
+        VERTEX_ALPHA_DEPTH): their coordinates are the river cell's.
+    -   **No aeration opacity floor** (FallSurface's 0.3): the river's
+        composite divides its colour by its opacity, so changing the opacity
+        afterwards breaks it. Aeration only lifts the colour (D127's 0.06).
+-   Risks: TAA has no motion vectors for the falls (as D93) and
+    ISWaterBlend does not apply to them. The river's PerGeometry (b2) is
+    its own: ProjData is the camera's; TextureProj and ReflectPlane are not
+    read by the variant. D131 found the water type's maps on the falls'
+    texture coordinates stretched along the flow; they are on them again
+    here, at 512 units per repeat.
+-   References: D98, D105, D123, D131, D159
