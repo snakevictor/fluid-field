@@ -159,29 +159,21 @@ float PoolWeight(float2 a_position, out float a_height)
 /** D125: world units behind the falls' front surface that still count as the front itself. */
 static const float FRONT_EPSILON = 2.0;
 
-/** The cubemap's mip the sheet reads: falling water is broken and foamy, so rougher than the river's mirror (mip 0). */
-static const float ENVIRONMENT_MIP = 2.0;
+/** D127: the cubemap's mip the sheet reads where wholly aerated; mip 0 (the river's mirror) where it runs clear. */
+static const float ENVIRONMENT_MIP = 1.0;
 /** The brightest the pass adds: the scene is HDR, but one runaway value is a square after bloom and the upscalers. */
 static const float MAX_OUTPUT = 64.0;
 
-/** D102: per world unit of thickness (at Water Depth 1), how much light the sheet absorbs: 8 units square on let a quarter through. */
-static const float ABSORPTION = 0.08;  // D120: per world unit of the layer (D105 0.012 against the whole gap). D121: 0.08 (was 0.03, too clear beside the river): a curtain's 8 units let 53% through, 32 on rock 8%
-/** D102: world units deep the water reads per unit of thickness, against its water type's fog far (shallow to deep). */
-static const float DEPTH_PER_THICKNESS = 1.0;  // D105: the apparent depth is the path itself
-/** D102: how much more opaque aerated water is (bubbles scatter what lies behind). */
-static const float AERATION_OPACITY = 0.6;  // D105: 0.3; D120: 0.6 again, the air in falling water is its body (a curtain's 8 units: 70% opaque)
+/** D102: how opaque aerated water is at least (bubbles scatter what lies behind). D127: a floor under the river's own opacity (the fog curve), which leaves a thin sheet nearly clear. */
+static const float AERATION_OPACITY = 0.3;
+/** D127: how far aerated water's colour goes toward the river's foam colour (the river's aeration, FluidField::ApplyAeration, goes 0.15 of the way at most). */
+static const float AERATION_LIFT = 0.06;
+/** D127: how much of the falls' normal map tilts the surface (it is drawn for an opaque, diffuse sheet: high contrast). */
+static const float NORMAL_STRENGTH = 0.8;
+/** D127: how much of the white water reaches the foam cover: below 1, even the densest bands stay patchy where the pattern is high, as the river's foam (solid bands read as paint). */
+static const float FOAM_DENSITY = 0.7;
 /** D102: pixels of refraction offset per unit of tilt at Refraction 1, as a fraction of the screen height. */
 static const float REFRACTION_SCREEN = 0.06;  // D120: 0.06, was 0.02: at its default a pixel or two, Refraction read as doing nothing
-/** D102: the reflection's share of the fresnel weight, and the glint's strength: modest, the falls are not glossy. */
-static const float REFLECTION_WEIGHT = 0.5;
-static const float GLINT_WEIGHT = 0.5;
-/**
- * D120: how much brighter aerated water reads than the river's own lit colour, in its water type's hue: falling water
- * shows the light its bubbles scatter, and the river's (dim, pre-lit) colour barely tinted the sheet. Scaled from that
- * lit colour (the weather's water multiplier: dark at night, where vanilla's colours unlit glowed, D102); the scene's
- * light itself is on another scale (at 0.3 of it the sheets blew out)
- */
-static const float SCATTER_BRIGHTNESS = 1.5;
 /** D121: world units from a cut line (FallGround::ClipDistance) over which the water foams, and from a mesh behind it (the screen's depth). */
 static const float CUT_FOAM_REACH = 24.0;
 /** D124: world units the foam reaches down from the water a fall pours out of, and up from the water it falls into (was FallGround::PoolFoamHeight, 26). */
@@ -269,7 +261,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	[branch] if (HasNormal)
 	{
 		float3 tangentNormal = NormalTex.Sample(WrapSampler, flow.uvA).xyz * 2.0 - 1.0;
-		tangentNormal.xy *= 0.6;  // Vanilla's map is drawn for an opaque, diffuse sheet; softer reads as water
+		tangentNormal.xy *= NORMAL_STRENGTH;  // D127: 0.3 (was 0.6): nearer the river's gentle ripples
 		normal = PerturbNormal(geometric, input.WorldPosition, flow.uvA, SafeNormalize(tangentNormal, float3(0.0, 0.0, 1.0)));
 	}
 	const float facing = saturate(dot(normal, toCamera));
@@ -322,9 +314,17 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// colour, so even 15% of it laid a pale veil over every sheet (SS 971)
 	// D122: covered as the river's foam (FluidField::GetFoamCover): dense foam solidly, thin foam only in the bubbles and
 	// streaks of a pattern, here vanilla's normal map running on the baked flow (the river's runs on its simulated flow)
-	const float pattern = HasNormal ? saturate(length(NormalTex.Sample(WrapSampler, flow.uvA).xy * 2.0 - 1.0) * 1.4) : lace;
+	// D127: fuzzier, as the river's: two blurred samples of the pattern at different scales blended (the river blends two
+	// phases), and a wider soft band; one sharp sample broke the foam into crisp shapes
+	float pattern = lace;
+	[branch] if (HasNormal)
+	{
+		const float p0 = length(NormalTex.SampleBias(WrapSampler, flow.uvA, 1.5).xy * 2.0 - 1.0);
+		const float p1 = length(NormalTex.SampleBias(WrapSampler, flow.uvA * 0.6 + 0.37, 1.5).xy * 2.0 - 1.0);
+		pattern = saturate((p0 + p1) * 0.5 * 1.4);
+	}
 	const float threshold = pattern * 0.5;
-	const float foam = FallGround::Whitening && white > 0.02 ? smoothstep(threshold, threshold + 0.25, white) * 0.95 : 0.0;
+	const float foam = FallGround::Whitening && white > 0.02 ? smoothstep(threshold, threshold + 0.35, white * FOAM_DENSITY) * 0.95 : 0.0;
 	const float3 viewNormal = mul((float3x3)FrameBuffer::CameraView, normal - geometric);
 	const float2 offset = viewNormal.xy * float2(1.0, -1.0) * RefractionStrength * REFRACTION_SCREEN * region.y * saturate(straightBehind / 8.0) / max(sheetDepth / 4096.0, 1.0);  // D120: shrinks from 4096 units, was 1024
 	float2 pixel = clamp(input.Position.xy + offset, 0.5, region - 0.5);
@@ -335,45 +335,41 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	}
 	const float3 behind = SceneColor.SampleLevel(ClampSampler, pixel / dimensions, 0).rgb;
 
-	// D102: the sheet's water. Its thickness (its own, over the cosine, and a little of the gap behind) read Water Depth
-	// times thicker absorbs what lies behind (more where aerated) and, with the water type's fog curve (Water.hlsl's
-	// refractionMul), makes the sheet mostly the water's own colour; shallow to deep over the fog's far distance
+	// D127: the sheet's water composed as the river's (Water.hlsl): its opacity the water type's fog curve over the water
+	// the ray crosses (refractionMul) with Fluid Field's water tint (TintedRefractionWeight), its colour shallow to deep
+	// linearly over the fog's far distance; aerated water at least AERATION_OPACITY opaque. D105-D121's separate
+	// absorption made the falls solid tinted sheets where the river beside them reads clear
 	const float path = SheetPath(BehindDepth(input, sheetDepth, behindDepth), cosine) * DepthScale;
-	const float apparentDepth = path * DEPTH_PER_THICKNESS;
-	const float fogMul = 1.0 - pow(saturate((FogFar - apparentDepth) / FogRange), FogAmount);
-	const float transmitted = exp(-path * ABSORPTION) * (1.0 - AERATION_OPACITY * aerated);
-	// D105: the fog curve shades the water's colour (shallow to deep) but not its opacity: at the river's fog distances it
-	// saturated at once and made every sheet solid water colour
-	const float opacity = 1.0 - transmitted;
+	const float refractionMul = 1.0 - pow(saturate((FogFar - path) / FogRange), FogAmount);
+	const float opacity = max(FluidField::TintedRefractionWeight(refractionMul, path), AERATION_OPACITY * aerated);
 
 	// The water's colour lit as Water.hlsl lights it: the colours as the engine hands them (the weather's water multiplier
 	// in them), split by ExtractLighting into the sun's share and the ambient's, the sun's share shadowed
 	const float3 shallow = Color::Water(ShallowColor);
 	const float3 deep = Color::Water(DeepColor);
 	float3 dirColor, ambientColor;
-	ShadowSampling::ExtractLighting(lerp(shallow, deep, saturate(fogMul)), dirColor, ambientColor);
+	ShadowSampling::ExtractLighting(lerp(shallow, deep, saturate(path / FogFar)), dirColor, ambientColor);
 	const float3 lightDirection = SafeNormalize(SharedData::DirLightDirection.xyz, float3(0.0, 0.0, 1.0));
 	const float3 sun = SharedData::InInterior ? 0.0 : ShadowSampling::GetDirectionalLighting();
 	const float3 sceneLight = sun * shadow + ShadowSampling::GetAmbientLighting();
 	const float3 waterLit = WithinLight(dirColor * shadow + ambientColor, sceneLight);
-	// D120: aerated, the water's hue (the shallow colour, its luminance taken out) under the scene's light
-	const float3 hue = shallow / max(Color::RGBToLuminance(shallow), 1e-3);
-	const float3 scattered = hue * Color::RGBToLuminance(waterLit) * SCATTER_BRIGHTNESS;
-	float3 waterColor = lerp(waterLit, scattered, aerated);
+	// D127: aerated as the river's water (FluidField::ApplyAeration): toward its foam colour, a little (D120's re-saturated
+	// 1.5x colour was the largest mismatch beside the river)
+	const float3 foamColor = FluidField::FoamColor(waterLit, sceneLight);
+	float3 waterColor = lerp(waterLit, foamColor, aerated * AERATION_LIFT);
 	if (SharedData::enbSettings.EnableWater) {
 		// Water.hlsl's sun scattered in the water body
 		const float scatter = saturate(dot(normal, lightDirection) * 0.5 + 0.5) * saturate(dot(-toCamera, lightDirection) * 0.5 + 0.5);
 		waterColor += DeepColor * scatter * SharedData::DirLightColor.xyz * shadow * SharedData::enbSettings.WaterSunLightingMultiplier;
 	}
-	const float3 body = lerp(behind, waterColor, opacity);
 
 	// Reflection (Water.hlsl's GetWaterSpecularColor and GetFresnelValue): the surroundings, the surface's detail tilting
 	// the reflection by the reflection magnitude (Water.hlsl leans toward the flat water's up; here, the sheet's own
 	// normal); the water type's reflection colour without Dynamic Cubemaps (vanilla's water without reflections).
-	// D102: half the river's weight and a rougher mip, dulled by foam: falling water is not a mirror
+	// D127: the river's weight (fresnel, scaled with the water's opacity below), mip 0 where clear, dulled by foam
 	const float3 reflectionNormal = SafeNormalize(lerp(geometric, normal, ReflectionMagnitude), geometric);
 	const float3 reflected = reflect(-toCamera, reflectionNormal);
-	float3 environment = HasEnvironment ? EnvironmentTex.SampleLevel(ClampSampler, reflected, ENVIRONMENT_MIP).rgb : WithinLight(ReflectionColor, sceneLight);
+	float3 environment = HasEnvironment ? EnvironmentTex.SampleLevel(ClampSampler, reflected, ENVIRONMENT_MIP * aerated).rgb : WithinLight(ReflectionColor, sceneLight);
 	environment = clamp(environment, 0.0, MAX_OUTPUT);  // NaN or a runaway texel becomes 0 or the cap, never a square
 	const float viewAngle = 1.0 - facing;
 	float fresnel = (1.0 - FresnelF0) * pow(viewAngle, 5.0) + FresnelF0;
@@ -382,21 +378,21 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 		const float fresnelRI = exponent != 0.0 ? pow(abs(FresnelF0), exponent) : 1.0;
 		fresnel = lerp(SharedData::enbSettings.WaterFresnelMin, SharedData::enbSettings.WaterFresnelMax, (1.0 - fresnelRI) * pow(viewAngle, 5.0) + fresnelRI) * SharedData::enbSettings.WaterReflectionAmount;
 	}
-	float3 color = lerp(body, environment, saturate(fresnel) * REFLECTION_WEIGHT * (1.0 - 0.5 * foam));
+	float3 color = lerp(waterColor, environment, saturate(fresnel) * (1.0 - 0.5 * foam));
 
 	// The sun's glint (Water.hlsl's GetSunColor): the directional light as ShadowSampling gives it (the moon at night),
-	// the water type's sun specular power and magnitude, in the surface's shadow; matte on foam
+	// the water type's sun specular power and magnitude, in the surface's shadow; matte on foam. D127: the river's
+	// (FluidField::SunGlint: widened and energy kept where the water is rough, here aerated), at its full strength
 	const float3 sunReflected = reflect(-toCamera, normal);
-	float3 glint = sun * pow(saturate(dot(sunReflected, lightDirection)), SunSpecularPower) * SunSpecularStrength * shadow * GLINT_WEIGHT;
+	FluidField::PixelRoughness = aerated * 1.5;
+	float3 glint = sun * FluidField::SunGlint(saturate(dot(sunReflected, lightDirection)), SunSpecularPower) * SunSpecularStrength * shadow;
 	if (SharedData::enbSettings.EnableWater)
 		glint *= SharedData::enbSettings.WaterSunSpecularMultiplier;
 	color += glint * (1.0 - 0.9 * foam);
+	// D127: over what lies behind by the water's opacity, reflection and glint with it (Water.hlsl's final lerp)
+	color = lerp(behind, color, opacity);
 
-	// White water: the river's foam colour (FluidField::FoamColor: the lit water colour toward the scene light, the
-	// sun's share shadowed), lifted a little further toward the light; never brighter than the scene's light
-	// D122: the river's foam colour, from the same inputs (Water.hlsl: the lit water colour lifted a little toward the
-	// light on the surface): the falls' foam the same white as the river's beside it
-	const float3 foamColor = FluidField::FoamColor(waterLit, sceneLight);
+	// White water: D122, the river's foam colour from the same inputs, opaque over the rest (as ApplyFoamBlended)
 	color = lerp(color, foamColor, foam);
 	color = clamp(color, 0.0, MAX_OUTPUT);  // D3D's min and max return the other value for NaN
 

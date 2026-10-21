@@ -3005,3 +3005,32 @@ Entry format:
     front only, "FUCK yes its gone" (the user). A separate curtain behind a
     front one is hidden too; with the sheets this opaque it does not read.
 -   References: D125
+
+## D127: The falls composed as the river's water
+
+-   Date: 2026-10-20
+-   Decision (from a term-by-term comparison of Water.hlsl and
+    FallSurface.hlsl; SS 988-990: the river near-black, rippled and
+    sparkling, the falls flat grey-brown with solid white foam bands):
+    -   Opacity: the water type's fog curve over the water crossed
+        (refractionMul) with Fluid Field's water tint, as the river; at
+        least 0.3 where aerated. The separate absorption (D105-D121) is gone.
+    -   Colour: shallow to deep linearly over the fog's far distance;
+        aeration as the river's, 0.06 of the way to its foam colour (D120's
+        1.5x re-saturated colour, then 0.25 toward the foam colour, laid a
+        grey-brown veil over every falling sheet).
+    -   Reflection at the river's weight (fresnel), scaled with opacity in
+        the final lerp over what lies behind; the cubemap's mip 0 where
+        clear, 1 where aerated. The river's glint (FluidField::SunGlint,
+        roughness from aeration), at full strength, also under opacity.
+    -   Normals 0.8 of the falls' map (0.3 left the sheets smooth, without
+        the river's sparkle).
+    -   Foam fuzzier: two blurred pattern samples at different scales, a
+        0.35 soft band, the white water times 0.7 so dense bands stay
+        patchy rather than solid paint.
+    -   The user: "it's getting a lot better".
+-   Open: the river's fine sparkle comes from the water type's own normal
+    maps (to bind to the falls pass, C++); distance and height fog, SSR and
+    the vanilla cubemap, skylighting, terrain and cloud shadows; foam where
+    two sheets meet (SS 992, VertexClip d.w from the culling job).
+-   References: D120-D122, D125
