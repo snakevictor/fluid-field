@@ -1863,10 +1863,8 @@ namespace FluidFieldSim
 		const VertexCut& cut = vertexCuts[a_index];
 		// D165: an outward vertex (open to the outside, OutwardGuard) is never cut by the burial, the inside or the river cuts:
 		// only by the water below, the lead-in, the pools (the shaders') and the orphan cleanup
-		// D166: not the inside cut: inside a big C a vertex 64+ units off the far side reads as open water, and the guard undid
-		// the sheet-inside-sheet cut the user likes (D113)
-		const float guarded = cut.outward ? NO_CUT : std::min(cut.submerged, cut.rock);
-		vertexClips[a_index][0] = std::min({ cut.water, cut.lead, cut.island, cut.inside, guarded });
+		const float guarded = cut.outward ? NO_CUT : std::min({ cut.inside, cut.submerged, cut.rock });
+		vertexClips[a_index][0] = std::min({ cut.water, cut.lead, cut.island, guarded });
 	}
 
 	bool FallSites::VertexInShell(std::size_t a_index) const
@@ -1874,7 +1872,7 @@ namespace FluidFieldSim
 		if (a_index >= vertexCuts.size())
 			return true;
 		const VertexCut& cut = vertexCuts[a_index];
-		return (cut.outward || (!cut.buried && cut.submerged > 0.0f)) && cut.inside > 0.0f && cut.lead > 0.0f && cut.island > 0.0f;  // D166: the inside cut not guarded
+		return (cut.outward || (!cut.buried && cut.inside > 0.0f && cut.submerged > 0.0f)) && cut.lead > 0.0f && cut.island > 0.0f;
 	}
 
 	float FallSites::LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above, LandProbe* a_probe) const
