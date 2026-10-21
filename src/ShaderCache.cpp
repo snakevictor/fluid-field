@@ -486,6 +486,9 @@ namespace SIE
 			if (descriptor & static_cast<uint32_t>(ShaderCache::WaterShaderFlags::BlendNormals)) {
 				defines[lastIndex++] = { "BLEND_NORMALS", nullptr };
 			}
+			if (descriptor & static_cast<uint32_t>(ShaderCache::WaterShaderFlags::FluidFieldFalls)) {
+				defines[lastIndex++] = { "FLUID_FIELD_FALLS", nullptr };
+			}
 
 			const auto technique = (descriptor >> 11) & 0xF;
 			if (technique == static_cast<uint32_t>(ShaderCache::WaterShaderTechniques::Underwater)) {

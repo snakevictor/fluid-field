@@ -68,6 +68,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	RefractiveFalls,
 	FallDepth,
 	FallRefraction,
+	FallsRiverShader,
 	FallBlendedCopies,
 	FallLayerMask,
 	SprayAmount,
@@ -932,6 +933,7 @@ void FluidField::ReleaseWater()
 	ReleaseFallGround();
 	fallSurface.Release();
 	fallRefraction.Release();
+	riverCapture.Release();
 	fallWaterTypes.clear();
 	waterShaderData = {};
 }
@@ -1170,6 +1172,8 @@ void FluidField::DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main)
 		if (cameraSnapshot)
 			globals::d3d::context->CopyResource(cameraSnapshot.get(), perFrame);
 	}
+	// D159: last frame's river capture lets go of the engine's textures before this frame's water is captured
+	riverCapture.ReleaseViews();
 	if (fogDebugMode == FOG_DEBUG_BEFORE_WATER && settings.InteractiveFog && fogReady)
 		DrawGroundFog(a_main, Util::GetCurrentSceneDepthSRV(false));
 	// D123: the scene before the water, for the see-through falls to refract
@@ -1678,6 +1682,20 @@ void FluidField::PrepareFallGroundData(const RE::BSGeometry* a_geometry, RE::BSS
 	fallGroundData.BlendAlpha = 0.0f;
 }
 
+bool FluidField::RiverShaderFallsWanted() const
+{
+	return settings.FallsRiverShader && RefractiveFallsActive();
+}
+
+void FluidField::CaptureRiverDraw(RE::BSShader* a_shader, uint32_t a_vertexDescriptor, uint32_t a_pixelDescriptor)
+{
+	// D159: cheap tests first: this runs before every draw call of the frame
+	const uint32_t frame = globals::state->frameCount;
+	if (riverCapture.WasTried(frame) || !FluidFieldSim::RiverCapture::IsRiverDraw(a_shader, a_pixelDescriptor) || !RiverShaderFallsWanted())
+		return;
+	riverCapture.Capture(globals::d3d::device, globals::d3d::context, a_shader, a_vertexDescriptor, a_pixelDescriptor, frame);
+}
+
 bool FluidField::RefractiveFallsActive() const
 {
 	// The debug views (D40) are drawn by the lit pass, so the lit pieces stay while one is on
@@ -1910,4 +1928,5 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 	globals::profiler->BeginPass("FluidField::RefractiveFalls");
 	fallRefraction.Draw(globals::d3d::device, globals::d3d::context, params, draws);
 	globals::profiler->EndPass();
+	riverCapture.ReleaseViews();  // D159: the engine's textures are not held past the falls
 }

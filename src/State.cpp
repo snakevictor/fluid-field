@@ -13,6 +13,7 @@
 #include "Features/CloudShadows.h"
 #include "Features/Effects11.h"
 #include "Features/ExponentialHeightFog.h"
+#include "Features/FluidField.h"
 #include "Features/HDRDisplay.h"
 #include "Features/InteriorSun.h"
 #include "Features/PerformanceOverlay.h"
@@ -172,6 +173,11 @@ void State::Draw()
 			permutationCB->Update(permutationData);
 			permutationDataPrevious = permutationData;
 		}
+
+		// D159: Fluid Field captures the river's draw state (everything is bound by now, the permutation buffer included)
+		// for the see-through falls to be shaded by the river's own shader
+		if (currentShader && globals::features::fluidField.loaded)
+			globals::features::fluidField.CaptureRiverDraw(currentShader, modifiedVertexDescriptor, modifiedPixelDescriptor);
 
 		if (currentShader && updateShader) {
 			if (currentShader->shaderType.get() == RE::BSShader::Type::Utility) {
