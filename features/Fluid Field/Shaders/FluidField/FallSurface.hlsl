@@ -138,7 +138,9 @@ float Square(float a_value)
 /** D151: the sky's distance fog at a_distance world units (Water.hlsl: min(clamp, ((d - near) / (far - near))^power)), 0 to 1. */
 float SkyFogAmount(float a_distance)
 {
-	if (SkyFogFar <= SkyFogNear)
+	// D152: none where Exponential Height Fog replaces the vanilla fog, as the river's water shader (Water.hlsl): there the
+	// sky's raw fog tinted the falls slate blue beside the unfogged river (SS 1058)
+	if (SkyFogFar <= SkyFogNear || (SharedData::exponentialHeightFogSettings.enabled && SharedData::exponentialHeightFogSettings.disableVanillaFog != 0))
 		return 0.0;
 	return min(SkyFogClamp, pow(saturate((a_distance - SkyFogNear) / (SkyFogFar - SkyFogNear)), SkyFogPower));
 }
@@ -581,8 +583,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// (Water.hlsl's ApplyAeration on the refraction) and dimmed toward the water's colour with depth, past the first few
 	// tens of units clear (the user: clear for the first 30 cm, then dark, milky and murky; the falls showed their bed)
 	const float murk = saturate((path - MURK_CLEAR) / MURK_RANGE);
-	// D151: and under the sky's fog at its own distance, as the river fogs its refraction (Water.hlsl's refractionColor)
-	const float3 behindSeen = Fogged(lerp(lerp(behind, foamColor, MURK_MILK * murk), waterColor, MURK_DARK * murk), behindDepth * rayScale);
+	// D152: not fogged again: the scene behind was drawn with the sky's fog already (fogged twice it went slate blue,
+	// SS 1058); only the water's own colour takes it, below
+	const float3 behindSeen = lerp(lerp(behind, foamColor, MURK_MILK * murk), waterColor, MURK_DARK * murk);
 	color = lerp(behindSeen, Fogged(color, length(input.WorldPosition)), opacity);
 
 	// White water: D122, the river's foam colour from the same inputs, opaque over the rest (as ApplyFoamBlended)

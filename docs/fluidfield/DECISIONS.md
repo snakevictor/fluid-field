@@ -3556,3 +3556,17 @@ Entry format:
         scene's light, and from above at noon the bed read as flat beige
         (SS 1057).
 -   References: D150
+
+## D152: The sky's fog only as the river takes it
+
+-   Date: 2026-10-21
+-   Decision (SS 1058: the falls slate blue beside the olive river; a fog
+    diagnostic put 20-50% fog on them, an A/B with fog off matched the
+    river's colour):
+    -   No vanilla fog where Exponential Height Fog replaces it (its
+        enabled and disableVanillaFog settings), as Water.hlsl does: the
+        river was unfogged and the falls took the sky's raw fog colour.
+    -   What lies behind is not fogged again: the scene behind was drawn
+        with its fog already.
+-   Open: the river's dense sun sparkle; the falls read a little flatter.
+-   References: D151
