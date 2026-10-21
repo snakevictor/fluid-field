@@ -262,6 +262,8 @@ static const float FALL_FOAM = 0.9;
 static const float LIP_BLEND = 24.0;
 /** D143: world units below the lip's blend over which the other foam (seams, sheets meeting, rock contact) comes in. */
 static const float LIP_QUIET = 48.0;
+/** D145: seconds of flow on a sheet before its seams, meets, cuts and contacts may foam (twice this to full). */
+static const float CREST_QUIET_SECONDS = 0.3;
 static const float FOOT_FOAM_REACH = 100.0;
 /** D139: the same for the foot band (at 1, short curtains were solid white top to bottom, SS 1031-1032). */
 static const float FOOT_FOAM = 0.8;
@@ -372,7 +374,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// the water below; with "Foam on the Falls" off, the streaks of vanilla's own texture still whiten it
 	const float aerated = 1.0 - exp(-flow.runTime / FallGround::AERATION_SECONDS);
 	// D121: not by aeration (the aerated colour, D120, is the falling water's body; as foam it speckled every sheet)
-	float white = FallGround::Whitening ? saturate(max(flow.foam, flow.wake * 0.6)) : 0.0;
+	// D145: not the bake's foam and wake: they mark every sheet's rims and crests as rock (a source diagnostic, SS 1040:
+	// the crest foam none of D138-D143 touched). Back with the bake's own aeration
+	float white = 0.0;
 	float poolHeight;
 	const float pool = FallGround::Whitening ? PoolWeight(position.xy, poolHeight) * saturate(input.Fade.z) : 0.0;
 	if (pool > 0.0) {
@@ -404,7 +408,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// plane read as fed and went white (SS 1039). The turbulence under a drop is to come from the bake's own aeration
 	// D141: near the lip nothing else foams either (the lead-in's cut line there is under the river). D143: over
 	// LIP_QUIET, and for the seams, the sheets meeting and the rock under the river too (SS 1037 "1", SS 1038)
-	const float lip = hasSource ? saturate((input.BelowSource - LIP_BLEND) / LIP_QUIET) : 1.0;
+	// D145: and near any sheet's own top by its flow's run time: a lower drop's crest meets the sheet above it (no calm
+	// water over it, so the source's quiet did not apply) and its seam and meet lines foamed across it
+	const float lip = (hasSource ? saturate((input.BelowSource - LIP_BLEND) / LIP_QUIET) : 1.0) * saturate((flow.runTime - CREST_QUIET_SECONDS) / CREST_QUIET_SECONDS);
 	// D121: where the water breaks: along its cut lines (the lead-in leaving the river above, the foot under the pool or
 	// river below, a sheet cut into another's curl, rock), where it overlaps another sheet at a seam (laid on after the
 	// screen depth below: where it meets rock or any mesh, as the river foams at its shore)

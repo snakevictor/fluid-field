@@ -180,3 +180,12 @@ Scale u freely; round v to a whole number of repeats (FallSurface's FlowScale).
 -   **Never cut a sheet sim's domain to save work** (2026-10-21, D132). Leaving culled texels out of the falls bake (covered 0) turned every cull edge into a sheet edge: rims, crests and strand starts there, foam and wake in bands across the flow. Bake whole; mask only the outputs.
 -   **The depth test does not hide what is inside the landscape from below** (2026-10-21, D131). The landscape is one-sided: from under it, buried falls parts show. Anything known to be buried must be cut (SV_ClipDistance), not left to depth.
 -   **Parity out to a far point fails where the far point is in rock** (2026-10-21, D138). Havok misses a shape's faces from inside it, so an axis ending inside the cliff opposite counts one face and reads "inside". Decide each axis by the face nearest the point (which side met it first), not by counting every face out to the end.
+
+## Find a recurring artefact by colouring every input, not by guessing (D145)
+
+The crest foam came back after four fixes (D138, D141, D142, D143), each aimed
+at a source assumed from the picture. A single diagnostic giving each foam input
+its own colour in the user's own view found the two real sources in one
+capture. When a look keeps returning, do that first. The diagnostic edits the
+deployed copy only; re-copy the repo's shader afterwards (a broken diagnostic
+compile drops the falls back to the lit look).

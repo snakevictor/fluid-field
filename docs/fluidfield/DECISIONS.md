@@ -3448,3 +3448,20 @@ Entry format:
     rock, the ground or another sheet's curl now shows where it is seen
     from inside them.
 -   References: D113, D135, D140
+
+## D145: The crest foam's real sources
+
+-   Date: 2026-10-21
+-   Decision: a diagnostic colouring each foam source (red the bake's foam
+    and wake, green the drop's bands, blue the lines) showed the crests
+    foamed by two sources D138-D143 never touched:
+    -   The bake's foam and wake (flow.foam, flow.wake) mark every sheet's
+        rims and crests as rock: dropped from the falls' foam until the
+        bake's own aeration replaces them (the solver rework).
+    -   The seam, meet, cut and contact lines across the crests of lower
+        drops (sheets with no calm water over them, so D143's quiet lip did
+        not apply): quiet too for the first 0.3-0.6 s of a sheet's flow
+        (its run time).
+-   Lesson: when a look keeps coming back, colour every input separately
+    in the user's view before changing any.
+-   References: D138, D141, D143
