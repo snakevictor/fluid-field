@@ -3541,3 +3541,18 @@ Entry format:
     dark, milky and murky). The weather fog on the refraction is still
     not ported (needs the fog colours from C++).
 -   References: D148, D149
+
+## D151: The sky's fog on the falls, as on the river; less milk
+
+-   Date: 2026-10-21
+-   Decision:
+    -   The falls take the sky's distance fog as Water.hlsl does
+        (Sky::fogNear, fogFar, fogPower, fogClamp and its kFogNear / kFogFar
+        colours, passed per frame): what lies behind fogged at its own
+        distance before the water's colour is laid over it (the river's
+        refraction fog), and the sheet's own colour fogged at its distance.
+        Named SkyFog\* (the water type's FogFar is the depth fog).
+    -   The bed's milky lift 0.12 (D150's 0.45): the foam colour is the
+        scene's light, and from above at noon the bed read as flat beige
+        (SS 1057).
+-   References: D150

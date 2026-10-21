@@ -51,6 +51,13 @@ cbuffer FallSurfaceCB : register(b7)
 	float NoiseTime;    // Seconds
 	float3 NoiseAmplitude;
 	uint HasNoise;
+	float3 SkyFogNearColor;  // D151: the sky's distance fog (as the water shader's SkyFogNearColor, SkyFogFarColor and FogParam)
+	float SkyFogNear;
+	float3 SkyFogFarColor;
+	float SkyFogFar;  // 0: no fog
+	float SkyFogPower;
+	float SkyFogClamp;
+	float2 SkyFogPadding;
 };
 
 struct FallSurfaceVertex
@@ -126,6 +133,21 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 float Square(float a_value)
 {
 	return a_value * a_value;
+}
+
+/** D151: the sky's distance fog at a_distance world units (Water.hlsl: min(clamp, ((d - near) / (far - near))^power)), 0 to 1. */
+float SkyFogAmount(float a_distance)
+{
+	if (SkyFogFar <= SkyFogNear)
+		return 0.0;
+	return min(SkyFogClamp, pow(saturate((a_distance - SkyFogNear) / (SkyFogFar - SkyFogNear)), SkyFogPower));
+}
+
+/** D151: a_color under the sky's fog at a_distance, as Water.hlsl fogs its colours. */
+float3 Fogged(float3 a_color, float a_distance)
+{
+	const float amount = SkyFogAmount(a_distance);
+	return lerp(a_color, Color::Fog(lerp(SkyFogNearColor, SkyFogFarColor, amount)), Color::FogAlpha(amount));
 }
 
 /** a_vector normalised, or a_fallback where it has no length (a zero vector normalises to NaN, which bloom spreads into squares). */
@@ -299,7 +321,7 @@ static const float FALLS_MURK = 4.0;
 /** D150: world units of water (the path, FALLS_MURK in it) that stay clear, the range over which the murk comes in, and how milky and how dark the bed reads at its fullest. */
 static const float MURK_CLEAR = 8.0;
 static const float MURK_RANGE = 48.0;
-static const float MURK_MILK = 0.45;
+static const float MURK_MILK = 0.12;  // D151: 0.12 (was 0.45): the foam colour is the bright scene light; at noon the bed read as flat beige (SS 1057)
 static const float MURK_DARK = 0.75;
 
 /** D120: past this gap behind (world units), the sheet has left the rock: what lies between is air, not water. */
@@ -559,8 +581,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// (Water.hlsl's ApplyAeration on the refraction) and dimmed toward the water's colour with depth, past the first few
 	// tens of units clear (the user: clear for the first 30 cm, then dark, milky and murky; the falls showed their bed)
 	const float murk = saturate((path - MURK_CLEAR) / MURK_RANGE);
-	const float3 behindSeen = lerp(lerp(behind, foamColor, MURK_MILK * murk), waterColor, MURK_DARK * murk);
-	color = lerp(behindSeen, color, opacity);
+	// D151: and under the sky's fog at its own distance, as the river fogs its refraction (Water.hlsl's refractionColor)
+	const float3 behindSeen = Fogged(lerp(lerp(behind, foamColor, MURK_MILK * murk), waterColor, MURK_DARK * murk), behindDepth * rayScale);
+	color = lerp(behindSeen, Fogged(color, length(input.WorldPosition)), opacity);
 
 	// White water: D122, the river's foam colour from the same inputs, opaque over the rest (as ApplyFoamBlended)
 	color = lerp(color, foamColor, foam);

@@ -572,6 +572,15 @@ namespace FluidFieldSim
 					data.noiseAmplitude[k] = look.noise[k] ? std::clamp(finite(look.noiseAmplitude[k], 0.0f), 0.0f, 4.0f) : 0.0f;
 				}
 				data.noiseTime = a_params.time;
+				// D151: the sky's fog (a frame's, the same for every piece)
+				for (int k = 0; k < 3; k++) {
+					data.skyFogNearColor[k] = a_params.skyFogNearColor[k];
+					data.skyFogFarColor[k] = a_params.skyFogFarColor[k];
+				}
+				data.skyFogNear = a_params.skyFogNear;
+				data.skyFogFar = a_params.skyFogFar;
+				data.skyFogPower = a_params.skyFogPower;
+				data.skyFogClamp = a_params.skyFogClamp;
 				std::copy_n(draw->world, 12, data.world);
 				data.hasDiffuse = draw->diffuse ? 1u : 0u;
 				data.hasNormal = draw->normal ? 1u : 0u;

@@ -1870,6 +1870,21 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 	params.targetTexture = a_targetTexture;
 	params.frame = globals::state->frameCount;
 	params.time = fallSurfaceTime;
+	// D151: the sky's distance fog, as the river's water shader receives it (its colours blended over the day and weather)
+	if (auto* sky = globals::game::sky; sky && sky->fogFar > sky->fogNear) {
+		const auto& nearColor = sky->skyColor[RE::TESWeather::ColorTypes::kFogNear];
+		const auto& farColor = sky->skyColor[RE::TESWeather::ColorTypes::kFogFar];
+		params.skyFogNearColor[0] = nearColor.red;
+		params.skyFogNearColor[1] = nearColor.green;
+		params.skyFogNearColor[2] = nearColor.blue;
+		params.skyFogFarColor[0] = farColor.red;
+		params.skyFogFarColor[1] = farColor.green;
+		params.skyFogFarColor[2] = farColor.blue;
+		params.skyFogNear = sky->fogNear;
+		params.skyFogFar = sky->fogFar;
+		params.skyFogPower = std::isfinite(sky->fogPower) ? std::clamp(sky->fogPower, 0.01f, 16.0f) : 1.0f;
+		params.skyFogClamp = std::isfinite(sky->fogClamp) ? std::clamp(sky->fogClamp, 0.0f, 1.0f) : 1.0f;
+	}
 	params.depth = a_depth;
 	params.sceneDepth = a_sceneDepth;
 	params.camera = cameraSnapshot.get();

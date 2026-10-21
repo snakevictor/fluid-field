@@ -71,11 +71,17 @@ namespace FluidFieldSim
 			ID3D11ShaderResourceView* poolHeights = nullptr;  ///< FallGround's Heights (t120)
 			ID3D11ShaderResourceView* environment = nullptr;  ///< A cubemap of the surroundings (Dynamic Cubemaps, once it holds a capture), or null for each water's reflection colour
 			float time = 0.0f;                                ///< D129: seconds, for the water normal maps' drift
-			uint32_t frame = 0;                               ///< D123: the rendered frame's number (a pre-water copy of this frame is used)
-			float depthScale = 1.0f;                          ///< D102: how thick the sheet reads (Water Depth): its opacity and depth of colour
-			float refraction = 0.5f;                          ///< How strongly the surface bends what is seen through it
-			float streakFoam = 0.4f;                          ///< How much of vanilla's streak texture reads as white water
-			bool volumetricShadows = false;                   ///< D102: Volumetric Shadows is loaded: its shadow map (t18) and cascades (t98) shadow the sheet while bound
+			float skyFogNearColor[3]{};                       ///< D151: the sky's distance fog, as the water shader takes it
+			float skyFogFarColor[3]{};
+			float skyFogNear = 0.0f;
+			float skyFogFar = 0.0f;  ///< 0: no fog
+			float skyFogPower = 1.0f;
+			float skyFogClamp = 0.0f;
+			uint32_t frame = 0;              ///< D123: the rendered frame's number (a pre-water copy of this frame is used)
+			float depthScale = 1.0f;         ///< D102: how thick the sheet reads (Water Depth): its opacity and depth of colour
+			float refraction = 0.5f;         ///< How strongly the surface bends what is seen through it
+			float streakFoam = 0.4f;         ///< How much of vanilla's streak texture reads as white water
+			bool volumetricShadows = false;  ///< D102: Volumetric Shadows is loaded: its shadow map (t18) and cascades (t98) shadow the sheet while bound
 		};
 
 		/** @brief Draws a_meshes; nothing when the shaders failed or nothing is bound. */
@@ -158,8 +164,15 @@ namespace FluidFieldSim
 			float noiseTime;      ///< D129: seconds, for the maps' drift along the flow
 			float noiseAmplitude[3];
 			uint32_t hasNoise;
+			float skyFogNearColor[3];  ///< D151: the sky's distance fog (Sky: its near and far colours, distances, power and clamp)
+			float skyFogNear;
+			float skyFogFarColor[3];
+			float skyFogFar;
+			float skyFogPower;
+			float skyFogClamp;
+			float skyFogPadding[2];
 		};
-		static_assert(sizeof(Constants) == 192);
+		static_assert(sizeof(Constants) == 240);
 
 		std::unordered_map<const RE::BSGeometry*, MeshBuffers> meshes;
 		std::unordered_set<const RE::BSGeometry*> failedMeshes;  ///< No CPU copy: not tried again
