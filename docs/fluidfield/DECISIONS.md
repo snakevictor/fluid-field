@@ -3233,3 +3233,14 @@ Entry format:
 -   Untested: builds; not run in game; the strand harness was not re-run:
     the bake's inputs are again what they were before D126.
 -   References: D126
+
+## D137: The foam's pattern is the falls' own normal map again
+
+-   Date: 2026-10-21
+-   Decision: D127's pattern (the falls' normal map, two blurred samples on
+    the flow coordinates, whole repeats along the scroll) is back. It was
+    dropped (D131) for the zebra bands, which were the bake's foam and wake
+    fields (fixed in D136), not the pattern. It moves exactly with the
+    water, never resets, and needs no water normal maps (not found, D134).
+    The lace stays the fallback.
+-   References: D127, D131, D133, D134, D136

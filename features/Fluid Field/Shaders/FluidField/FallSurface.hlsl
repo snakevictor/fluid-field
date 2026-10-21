@@ -409,15 +409,14 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// streaks of a pattern, here vanilla's normal map running on the baked flow (the river's runs on its simulated flow)
 	// D127: fuzzier, as the river's: two blurred samples of the pattern at different scales blended (the river blends two
 	// phases), and a wider soft band; one sharp sample broke the foam into crisp shapes
-	// D131: the river's own pattern, its water type's first normal map. D133: on the flow's coordinates, two scales, each
-	// a whole number of repeats along the scroll (FlowScale): the foam moves exactly with the water and never resets.
-	// Drifted in world space its two phases crossfaded (a pulse), and the lace's hashed noise is not periodic, so it
-	// jumped at the phase's wrap (the user: the looping is on the foam)
+	// D137: the falls' own normal map again (D127's pattern): the zebra bands it was dropped for were the bake's foam and
+	// wake fields (D136), not the pattern. Two blurred samples, each a whole number of repeats along the scroll, so it
+	// moves exactly with the water and never resets; the lace where there is no normal map
 	float pattern = lace;
-	[branch] if (HasNoise)
+	[branch] if (HasNormal)
 	{
-		const float p0 = length(Noise1Tex.Sample(WrapSampler, flow.uvA * FlowScale(FOAM_TILE)).xy * 2.0 - 1.0);
-		const float p1 = length(Noise1Tex.Sample(WrapSampler, flow.uvA * FlowScale(FOAM_TILE * 0.6) + 0.37).xy * 2.0 - 1.0);
+		const float p0 = length(NormalTex.SampleBias(WrapSampler, flow.uvA, 1.5).xy * 2.0 - 1.0);
+		const float p1 = length(NormalTex.SampleBias(WrapSampler, flow.uvA * float2(0.6, 2.0) + 0.37, 1.5).xy * 2.0 - 1.0);
 		pattern = saturate((p0 + p1) * 0.5 * 1.4);
 	}
 	const float threshold = pattern * 0.5;
