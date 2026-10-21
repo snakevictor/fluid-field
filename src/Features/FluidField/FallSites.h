@@ -344,6 +344,9 @@ namespace FluidFieldSim
 			uint8_t votes = 0;         ///< D138: axes that called it inside a static
 			float ground = -FLT_MAX;   ///< D126: BuryStep: the landscape's height under it (-FLT_MAX: none, or an interior)
 			uint8_t buried = 0;        ///< BuryStep: under the landscape, or no ray from open air reaches it (not in a.x)
+			uint8_t outward = 0;       ///< D165: OutwardGuard: open to the outside: the burial, inside and river cuts do not apply
+			uint8_t openTested = 0;    ///< D165: OpenToOutside's ways already cast (a bit each)...
+			uint8_t openHavok = 0;     ///< D165: ...and those that met no rock
 		};
 		std::vector<VertexCut> vertexCuts;      ///< D112: parallel to vertexClips
 		static constexpr float NO_CUT = 38.0f;  ///< D112: a part of VertexCut that hides nothing (CLIP_MARGIN + CLIP_RANGE, ClipStep's "not cut")
@@ -458,7 +461,11 @@ namespace FluidFieldSim
 			int stage = 0;
 			std::size_t sheet = 0, vertex = 0;  ///< Where the current stage is
 			uint32_t inside = 0, tested = 0, inward = 0, covered = 0, sideTested = 0, submerged = 0, meeting = 0;
-			uint32_t islands = 0, islandVertices = 0, islandTriangles = 0, holes = 0, holeVertices = 0;  ///< D138: CleanupSheet's
+			uint32_t islands = 0, islandVertices = 0, islandTriangles = 0, holes = 0, holeVertices = 0;
+			std::vector<std::array<uint32_t, 4>> guardSaved;  ///< D165: per sheet, vertices the guard kept from the landscape, statics, another sheet, the river
+			std::vector<uint32_t> guardTested, guardOpen;     ///< D165: per sheet, cut vertices asked, and found open
+			uint32_t guardRays = 0, orphansOutward = 0;
+			uint32_t guardUnderLand = 0, guardClamped = 0, guardBackBlocked = 0;  ///< D165: what the guard refused: vertices under the landscape, rays leaning down, rays closed from their far end  ///< D138: CleanupSheet's
 			std::chrono::steady_clock::time_point started;
 			double busy = 0.0;  ///< Milliseconds of work over its frames
 		};
@@ -484,7 +491,23 @@ namespace FluidFieldSim
 		 * (VertexCut::island), small cut pieces enclosed by kept vertices and cut only by rock or another sheet are restored.
 		 * Logs what cut its vertices and its largest pieces cut by rock or a sheet.
 		 */
-		void CleanupSheet(const CullSheet& a_sheet, CullJob& a_job);
+		void CleanupSheet(const std::vector<CullSheet>& a_sheets, std::size_t a_index, CullJob& a_job);
+		/** @brief D165: the collision world over a geometry (its cell's), or null. */
+		RE::bhkWorld* WorldFor(const RE::BSGeometry* a_geometry) const;
+		/**
+		 * @brief D165: whether a vertex is open to the outside: of five rays out of its outer side (its outer normal, and tilted
+		 * OUTWARD_TILT up, down and to either side; none leaning down: turned level), one meets no rock out to OUTWARD_REACH
+		 * (cast from both ends) and no shown surface of another sheet within OUTWARD_SHEET. Never under the landscape (checked
+		 * first). Call under the world's read lock.
+		 */
+		bool OpenToOutside(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, RE::hkpWorld* a_world, CullJob& a_job);
+		/** @brief D165: VertexCut::outward for one vertex cut by the burial, the inside or the river cut (CullStep's stage 3). */
+		void OutwardGuard(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job, RE::hkpWorld* a_world);
+		static constexpr float OUTWARD_REACH = 300.0f;             ///< D165: world units a guard ray must run clear of rock
+		static constexpr float OUTWARD_START = 2.0f;               ///< D165: ...starting this far off the surface
+		static constexpr float OUTWARD_TILT = 0.61f;               ///< D165: radians the four tilted rays lean off the outer normal (35 degrees)
+		static constexpr float OUTWARD_SHEET = 64.0f;              ///< D165: another sheet's shown surface nearer than this along a ray closes it (beyond: open water)
+		static constexpr float ORPHAN_OUTWARD = 0.3f;              ///< D165: a piece with more than this share of its kept vertices open to the outside is never an orphan
 		static constexpr std::size_t ORPHAN_MOST_TRIANGLES = 128;  ///< D143: a kept piece off its part's body this small (drawn triangles) is an orphan, cut...
 		static constexpr float ORPHAN_MOST_FRACTION = 0.01f;       ///< D143: ...or this small a share of its part's drawn triangles
 		static constexpr std::size_t BODY_SCRAP_TRIANGLES = 512;   ///< D138: a part's main body this small (D143: drawn triangles)...

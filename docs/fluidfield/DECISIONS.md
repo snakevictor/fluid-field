@@ -3618,3 +3618,57 @@ Entry format:
         clear as soon as the depth job finished: the user saw the murk
         right after a restore, before the job, then lose it.
 -   References: D120, D126, D148, D154
+
+## D165: The outward shell guarded by construction (branch feature/fluid-field-culling-8)
+
+-   Date: 2026-10-21
+-   Context: the user: "culling still needs some work to avoid eating at
+    outward meshes". Instead of tuning thresholds again, a vertex open to
+    the outside is protected outright. Then a correction (the user): rays
+    cast down, or from inside a solid, can read open falsely (Havok misses
+    the landscape from below and a static from inside).
+-   Decision:
+    -   **OpenToOutside**: five rays out of the vertex's outer side, from
+        where it is drawn (rest plus the composed moves), 2 units off it:
+        along the consistent outer normal, and tilted 35 degrees up, down
+        and to either side along the sheet. A ray is open when:
+        -   it meets no rock, static or landscape out to 300 units, and the
+            ray cast back from its far end meets nothing either (a solid the
+            vertex sits inside shows its face from outside);
+        -   it meets no shown surface of another sheet within 64 units
+            (beyond that it counts as open water space).
+            The vertex is open if any ray is.
+    -   **Safety (the correction)**:
+        -   never open when the vertex is under the landscape (the exact
+            heightfield test with BURY_LAND's margin, checked first);
+        -   only the upper hemisphere: a ray leaning down is turned level,
+            so an outer normal facing down gets level rays;
+        -   the far-end confirmation above.
+    -   **OutwardGuard**, a culling stage after the inside cut, 16 vertices a
+        step under the world's read lock: only vertices cut by the burial,
+        the inside or the river cut are asked. The Havok answers are kept per
+        vertex (the rock does not move); the other sheets' part is asked
+        afresh each pass.
+    -   **The guard in a.x (ComposeCut)**: an outward vertex is never cut by
+        the burial (landscape, statics), the inside or the river cuts. Only
+        the water below, the lead-in, the pools (the shaders') and the
+        orphan cleanup remove it. VertexShown and VertexInShell take it as
+        not buried.
+    -   **Orphans**: a piece with more than 30% of its kept vertices open to
+        the outside is never an orphan (asked in the cleanup, under the
+        lock).
+    -   **Log**:
+        -   per mesh: "outward guard '<name>': N cut vertices tested, M open
+            to the outside; kept from the landscape …, statics …, inside
+            another sheet …, the river …";
+        -   totals, Havok rays, orphans kept for being outward;
+        -   what the safety refused: vertices under the landscape, rays
+            turned level, rays closed from their far end.
+-   Cost: up to ten casts per cut vertex once per load (most stop at the
+    first open way), then CPU-only checks per pass.
+-   Untested: builds; not run in game.
+-   Risks: inside a large C-shaped sheet (its far side more than 64 units
+    away) a vertex reads open, so D113's inside cut can be undone there by
+    design (open water space). A vertex inside a static whose ray's far end
+    also lies inside the same static (300 units deep) reads open.
+-   References: D105, D113, D135, D143, D157
