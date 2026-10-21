@@ -81,7 +81,7 @@ namespace FallGround
 	}
 
 	/** D47: the falls are cut this far under the pools' surface, so the pool's water overlaps the cut. */
-	static const float POOL_CUT = 8.0;  // D49: under the pools the falls are hidden, the foam at the waterline covering the line; D58: with the pool read bilinear, shallow again
+	static const float POOL_CUT = 48.0;  // D49: under the pools the falls are hidden, the foam at the waterline covering the line; D58: with the pool read bilinear, shallow again; D176: deeper, under the water only the foam shows (the cut's steps showed as the meshes moved)
 
 	/**
 	 * D38: how far a vertex of falling water stands above where it is buried (under the pools' surface,

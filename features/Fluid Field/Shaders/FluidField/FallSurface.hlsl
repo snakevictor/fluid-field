@@ -434,8 +434,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float straightBehind = max(straightDepth - sheetDepth, 0.0);
 	// D121: and where it meets rock or any other mesh (the scene's depth just behind it)
 	// D174: foam wherever the sheet touches something, per pixel (FallShading::ContactStrength)
-	const float sheetGap = min(FallShading::SheetGap(NextSheetDepth, int2(input.Position.xy), sheetDepth), input.ToOtherSheet);  // D174: as Water.hlsl
-	const float contact = FallShading::ContactStrength(sheetGap, straightBehind, input.Fade.y, lip, input.Clip);
+	const float sheetGap = FallShading::SheetGap(NextSheetDepth, int2(input.Position.xy), sheetDepth, input.ToOtherSheet);                                    // D174: as Water.hlsl
+	const float aboveWater = FallShading::AboveWater(input.WorldPosition + FrameBuffer::CameraPosAdjust.xyz, input.Fade.z, input.Fade.y, input.BelowSource);  // D176
+	const float contact = FallShading::ContactStrength(sheetGap, straightBehind, aboveWater, lip, input.Clip);
 	// D120: without Foam on the Falls, none: the streaks' foam is the scene's full light against the water's dim pre-lit
 	// colour, so even 15% of it laid a pale veil over every sheet (SS 971)
 	// D122: covered as the river's foam (FluidField::GetFoamCover): dense foam solidly, thin foam only in the bubbles and
@@ -451,8 +452,8 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	[branch] if (contact > 0.02)
 	{
 		const float3 world = input.WorldPosition + FrameBuffer::CameraPosAdjust.xyz;
-		const float pattern = HasNoise ? FallShading::FoamPattern(Noise1Tex, WrapSampler, world, sheetNormal, flow.velocity, SharedData::Timer, SharedData::MipBias) :
-		                                 FallShading::FoamPattern(NormalTex, WrapSampler, world, sheetNormal, flow.velocity, SharedData::Timer, SharedData::MipBias);
+		const float pattern = HasNoise ? FallShading::FoamPattern(Noise1Tex, WrapSampler, world, sheetNormal, 0.0, flow.velocity, SharedData::Timer, SharedData::MipBias) :
+		                                 FallShading::FoamPattern(NormalTex, WrapSampler, world, sheetNormal, 0.0, flow.velocity, SharedData::Timer, SharedData::MipBias);
 		foam = FallShading::FoamCover(contact, pattern);
 	}
 	const float3 viewNormal = mul((float3x3)FrameBuffer::CameraView, normal - geometric);
@@ -563,7 +564,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// the sheet's triangles with the rock's as a white sawtooth; and the water fades out toward its cut
 	// D158: no lip fade (D141): the front-surface pre-pass (PSDepth) still claimed those pixels, so the fade punched holes
 	// along the crests (SS 1086); FallShading::Alpha has none
-	const float alpha = FallShading::Alpha(input.Fade.x, straightBehind, foam, input.Clip);
+	const float alpha = FallShading::Alpha(input.Fade.x, straightBehind, foam, input.Clip) * (aboveWater < 0.0 ? foam : 1.0);  // D176: as Water.hlsl
 	if (alpha <= 0.002)
 		discard;
 	// D108: Waterfall Shading debug "Depth Behind": the open water or air behind the sheet. D110: in bands of colour (a grey

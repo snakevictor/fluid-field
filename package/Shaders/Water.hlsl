@@ -1270,10 +1270,14 @@ PS_OUTPUT main(PS_INPUT input)
 	// in the river's foam pattern laid on the sheet and drifting on the flow
 	// D174: and the vertices' own distance to the nearest other sheet (D128): up close, the line where two sheets cross runs
 	// wider than SheetGap's pixels reach (no sheet in the second layer along it, a dark line, the user)
-	const float fallSheetGap = min(FallShading::SheetGap(FallBehindDepth, int2(input.HPosition.xy), fallDepth), input.FallData.z);
-	const float fallContact = FallShading::ContactStrength(fallSheetGap, fallBehind, input.FallFade.y, fallLip, input.FallClip);
-	const float fallFoam = fallContact > 0.02 ? FallShading::FoamCover(fallContact, FallShading::FoamPattern(FallFoamTex, Normals01Sampler, input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, FallUp, fallFlow.velocity, SharedData::Timer, SharedData::MipBias)) : 0.0;
-	const float fallAlpha = FallShading::Alpha(input.FallFade.x, fallBehind, fallFoam, input.FallClip);
+	const float fallSheetGap = FallShading::SheetGap(FallBehindDepth, int2(input.HPosition.xy), fallDepth, input.FallData.z);
+	const float fallAboveWater = FallShading::AboveWater(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, input.FallFade.z, input.FallFade.y, input.FallData.y);
+	const float fallContact = FallShading::ContactStrength(fallSheetGap, fallBehind, fallAboveWater, fallLip, input.FallClip);
+	const float fallFoam = fallContact > 0.02 ? FallShading::FoamCover(fallContact, FallShading::FlowFoamPattern(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias)) : 0.0;
+	// D176: under the water below (its plane is flat: the height over it interpolates exactly), only the foam shows, fading as it
+	// does: the water faded more slowly than the foam's cover, a strip of dark water between the falls' foam and the pool's down to
+	// the per-vertex cut, in the triangles' steps (SS 1235, 1236)
+	const float fallAlpha = FallShading::Alpha(input.FallFade.x, fallBehind, fallFoam, input.FallClip) * (fallAboveWater < 0.0 ? fallFoam : 1.0);
 	if (fallAlpha <= 0.002)
 		discard;
 	const float3 waterUp = FallUp;
@@ -1629,7 +1633,12 @@ PS_OUTPUT main(PS_INPUT input)
 		// Foam is opaque: it covers the see-through refraction as well
 #							if defined(FLUID_FIELD_FALLS)
 		// D159: the falls' own foam, laid as ApplyFoamBlended lays the river's
-		if (fallFoam > 0.0) {
+		if (fallAboveWater < 0.0) {
+			// D176: under the water below only the foam shows (fallAlpha is its cover): its colour alone, not mixed with the
+			// sheet's dark water, which specked the pool's foam where the falls' foam thins (SS 1245, 1246)
+			finalColorPreFog = fluidFoamLight;
+			waterOpacity = 1.0;
+		} else if (fallFoam > 0.0) {
 			const float fallOpacity = lerp(waterOpacity, 1.0, fallFoam);
 			finalColorPreFog = (finalColorPreFog * (waterOpacity * (1.0 - fallFoam)) + fluidFoamLight * fallFoam) / max(fallOpacity, 1e-3);
 			waterOpacity = fallOpacity;

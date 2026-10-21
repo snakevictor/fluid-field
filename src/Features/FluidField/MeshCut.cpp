@@ -5,7 +5,9 @@
 #include "WaterSurfaces.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <string>
 
 namespace FluidFieldSim
 {
@@ -42,6 +44,21 @@ namespace FluidFieldSim
 			default:
 				return false;
 			}
+		}
+
+		/**
+		 * @brief D176: a waterfall or rapids effect (Fluid Field draws these as water): never solid. Cut at the water's surface,
+		 * the falls' sheets became a row of dry cells along every foot, holes in the pool's foam there (SS 1245, 1246).
+		 */
+		bool IsFallingWater(const RE::TESBoundObject* a_base)
+		{
+			const auto* model = a_base ? a_base->As<RE::TESModel>() : nullptr;
+			const char* path = model ? model->GetModel() : nullptr;
+			if (!path)
+				return false;
+			std::string lower(path);
+			std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char a_c) { return static_cast<char>(std::tolower(a_c)); });
+			return lower.find("effects\\") != std::string::npos && (lower.find("waterfall") != std::string::npos || lower.find("waterwall") != std::string::npos || lower.find("rapids") != std::string::npos);
 		}
 
 		/** @brief Has collision somewhere in its 3D: mist, clouds and markers have none and never block water. */
@@ -243,7 +260,7 @@ namespace FluidFieldSim
 			if (!a_cell || (a_requireAttached && !a_cell->IsAttached()))
 				return;
 			a_cell->ForEachReference([&](RE::TESObjectREFR* a_ref) {
-				if (!a_ref || a_ref->IsDisabled() || a_ref->IsDeleted() || !IsCandidateBase(a_ref->GetBaseObject()))
+				if (!a_ref || a_ref->IsDisabled() || a_ref->IsDeleted() || !IsCandidateBase(a_ref->GetBaseObject()) || IsFallingWater(a_ref->GetBaseObject()))
 					return RE::BSContainer::ForEachResult::kContinue;
 				auto* root = a_ref->Get3D();
 				if (!root)

@@ -268,6 +268,10 @@ void FluidField::DrawSettings()
 			const char* meshViews[] = { T(TKEY("fall_mesh_debug_off"), "Off"), T(TKEY("fall_mesh_debug_wireframe"), "Wireframe"), T(TKEY("fall_mesh_debug_flow"), "Flow"),
 				T(TKEY("fall_mesh_debug_both"), "Wireframe and Flow"), T(TKEY("fall_mesh_debug_rays"), "Depth Rays"), T(TKEY("fall_mesh_debug_wireframe_rays"), "Wireframe and Depth Rays") };
 			ImGui::Combo(T(TKEY("fall_mesh_debug"), "Falls Mesh Debug"), &fallMeshDebug, meshViews, IM_ARRAYSIZE(meshViews));
+			ImGui::SliderFloat(T(TKEY("plunge_foam_behind"), "Plunge Foam Behind (tuning)"), &plungeFoamBehind, -64.0f, 256.0f, "%.0f");
+			tooltip(T(TKEY("plunge_foam_behind_tooltip"), "World units the foam where the falls meet the water below is moved behind their line, against their flow. Not saved."));
+			ImGui::SliderFloat(T(TKEY("plunge_foam_radius"), "Plunge Foam Radius (tuning)"), &plungeFoamRadius, 0.25f, 4.0f, "%.2f");
+			tooltip(T(TKEY("plunge_foam_radius_tooltip"), "How far round each point the falls meet the water below it foams, as a scale. Not saved."));
 
 			tooltip(T(TKEY("fall_mesh_debug_tooltip"),
 				"Drawn over everything, through the ground. Wireframe: the falls' meshes as drawn (yellow: our dense copies). Flow: the simulated water on each mesh as arrows, longer and redder when faster, bluer when slower, white where it strikes rock. Depth Rays: the rays measuring the depth behind each sheet, from its vertices, green to what they hit, red to their reach where they miss. Not saved."));
@@ -1551,7 +1555,10 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	constexpr float half = 0.5f * FALL_GROUND_SIZE * FALL_GROUND_CELL;
 	const float dx = a_playerPos.x - (fallGroundOrigin[0] + half);
 	const float dy = a_playerPos.y - (fallGroundOrigin[1] + half);
-	if (fallSites.GetGroundVersion() != fallGroundVersion || dx * dx + dy * dy >= FALL_GROUND_RECENTRE * FALL_GROUND_RECENTRE) {
+	const bool plungeTuned = plungeFoamBuilt[0] != plungeFoamBehind || plungeFoamBuilt[1] != plungeFoamRadius;  // D176: rebuilt live
+	if (plungeTuned || fallSites.GetGroundVersion() != fallGroundVersion || dx * dx + dy * dy >= FALL_GROUND_RECENTRE * FALL_GROUND_RECENTRE) {
+		plungeFoamBuilt[0] = plungeFoamBehind;
+		plungeFoamBuilt[1] = plungeFoamRadius;
 		fallGroundVersion = fallSites.GetGroundVersion();
 		fallGroundOrigin[0] = std::floor((a_playerPos.x - half) / FALL_GROUND_CELL) * FALL_GROUND_CELL;
 		fallGroundOrigin[1] = std::floor((a_playerPos.y - half) / FALL_GROUND_CELL) * FALL_GROUND_CELL;
@@ -1564,7 +1571,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		}
 		context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, interleaved.data(), FALL_GROUND_SIZE * 2 * sizeof(float), 0);
 		if (fallPlungeTexture) {
-			fallSites.BuildPlungeMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallPlungeScratch);
+			fallSites.BuildPlungeMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallPlungeScratch, plungeFoamBehind, plungeFoamRadius);
 			std::vector<uint16_t> halves(fallPlungeScratch.size());
 			for (std::size_t i = 0; i < halves.size(); i++)
 				halves[i] = DirectX::PackedVector::XMConvertFloatToHalf(fallPlungeScratch[i]);

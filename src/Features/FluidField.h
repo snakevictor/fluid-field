@@ -404,6 +404,9 @@ private:
 	void ReleaseFallGround();
 	int fallDebugView = 0;                                   ///< Debug: 1 the spray emitters and plunges (D36, D78); not saved
 	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
+	float plungeFoamBehind = 0.0f;                           ///< D176: tuning, world units the plunge foam is moved behind the falls' line (against their flow); not saved
+	float plungeFoamRadius = 1.0f;                           ///< D176: tuning, the plunge foam's radius scale; not saved
+	float plungeFoamBuilt[2] = { 0.0f, 1.0f };               ///< D176: the values the plunge map was last built with
 	int fallMeshDebug = 0;                                   ///< D75: the falls' meshes debug overlay (FallSites::DrawMeshDebug: 1 wireframe, 2 flow, 3 both); not saved
 	bool hideFallEffects = true;                             ///< Debug: hides vanilla's mist, skirt, splash and rapids meshes; not saved
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls

@@ -254,7 +254,7 @@ namespace FluidFieldSim
 		void BuildPoolMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const;
 
 		/** @brief D44: per texel of a ground map's lattice, how strongly the falls plunge into the water there (0 to 1), round the plunge points (D78). */
-		void BuildPlungeMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
+		void BuildPlungeMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field, float a_behind = 0.0f, float a_radiusScale = 1.0f) const;
 
 		/** @brief Prints each cell's summary to the game console too, not only the log. */
 		void SetConsoleSummary(bool a_print) { consoleSummary = a_print; }
@@ -521,7 +521,7 @@ namespace FluidFieldSim
 		void SideFlags(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job);
 		static constexpr float GAP_REACH = 40.0f;        ///< D69: an open edge this near another mesh's open edge, and not over it, closes the gap
 		static constexpr float GAP_OVERLAP = 4.0f;       ///< D69: ...each side moving past the middle by this much
-		static constexpr float WATER_KEEP = 6.0f;        ///< D68: falling water is cut this far under the water it falls into (D95: 6, was 24: see-through water showed the sheet under it)
+		static constexpr float WATER_KEEP = 48.0f;       ///< D68: falling water is cut this far under the water it falls into (D95: 6, was 24: see-through water showed the sheet under it; D176: 48, under the water only its foam shows, fading over WATER_FOAM_SINK 32)
 		static constexpr float WATER_CUT_BAND = 160.0f;  ///< D70: ...only this near its mesh's foot (a plane's bound reaches past its water, D63)
 		static constexpr float NO_WATER = 1.0e4f;        ///< D68: a vertex's height above the water below where there is none
 		/**

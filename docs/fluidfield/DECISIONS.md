@@ -3999,3 +3999,38 @@ Entry format:
     was written for FallSurface's; redo it on the river-shader falls); the
     falls' own depth test.
 -   References: D128, D170, D173, D174
+
+## D176: The falls' foam on their flow; their feet in the water; falls are not obstacles
+
+-   Date: 2026-10-21
+-   Decision:
+    -   **The foam on the bake's flow coordinates** (FallShading::FlowFoamPattern,
+        FallGround::Flow's uvA, FOAM_TILE a repeat, whole along the flow): it
+        moves, stretches and bends with the baked water (the user: "conform to
+        the water flow baked").
+    -   **The height over the water below per pixel** (FallShading::AboveWater):
+        over the pools' captured surface where the pixel is over a pool (but not
+        the pool the falls pour out of), else the vertices'. Each vertex took
+        its own plane, and the height leapt across triangles at the waterline.
+    -   **The source is water over the mesh's middle** (FallSites): a short
+        drop's foot took the pool it lands in for the water it pours out of,
+        a lip, and had no waterline foam (SS 1236). With that, the water below's
+        foam is gated by the lip again (on a short drop the crest lies within
+        its reach of the pool below, SS 1259-1261).
+    -   **Under the water only the falls' foam shows**, in its colour, carried on
+        WATER_FOAM_SINK 32 under the surface; the cuts under the water are 48
+        down (WATER_KEEP, POOL_CUT): the sheets' wobble lifted a cut line into
+        view (the user).
+    -   **Waterfall and rapids effects are not obstacles** (MeshCut): cut at the
+        water's surface, every fall's foot became a row of dry cells, holes in
+        the pool's foam (SS 1245, 1246; the user: on the water plane's shader).
+    -   **The next sheet's per-pixel gap only where the vertices say another
+        sheet is near** (SHEET_GAP_TRUST 96): a falls' own stacked layers,
+        brought within a hair of each other by the wobble, foamed in slivers
+        (SS 1251-1253).
+    -   **Tuning sliders for the plunge foam** (not saved): moved behind the
+        falls' line against their flow, and its radius; behind closed the gaps
+        behind the curtains (the user).
+-   Tried and reverted: a skirt of geometry at each mesh's foot (it was cut
+    away again under the ground; the sheets already run under the water).
+-   References: D44, D47, D68, D145, D174, D175

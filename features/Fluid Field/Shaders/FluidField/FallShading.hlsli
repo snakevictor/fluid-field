@@ -17,19 +17,28 @@ namespace FallShading
 	static const float BEHIND_LAYER_EPSILON = 0.05;
 	/** D174: pixels out the next sheet behind is also read at (SheetGap). */
 	static const int SHEET_GAP_SPREAD = 3;
+	/** D176: world units from another sheet (per vertex) within which the pixels' next sheet is trusted fully, none past twice it. */
+	static const float SHEET_GAP_TRUST = 96.0;
+	/** D176: world units within which a pool under a pixel is the water the falls pour out of (AboveWater). */
+	static const float SOURCE_POOL_MATCH = 24.0;
 
 	/**
 	 * D174: world units from a pixel of the falls (a_depth, linear) to the next sheet behind it (a_behind, the second depth
 	 * layer), the nearest of the pixel's own and its neighbours' a few pixels out: right on the line where two sheets cross, they
 	 * lie at the same depth and the second layer holds neither (a dark line through the meeting foam, SS 1228, 1229)
 	 */
-	float SheetGap(Texture2D<float4> a_behind, int2 a_pixel, float a_depth)
+	float SheetGap(Texture2D<float4> a_behind, int2 a_pixel, float a_depth, float a_vertexGap)
 	{
+		// D176: the pixels' answer only where the vertices (D128: other sheets only, not the mesh's own) say another sheet is
+		// near: a falls' own stacked layers, brought within a hair of each other by the wobble, foamed in slivers (SS 1251-1253)
+		const float trust = 1.0 - saturate((a_vertexGap - SHEET_GAP_TRUST) / SHEET_GAP_TRUST);
+		if (trust <= 0.0)
+			return a_vertexGap;
 		const int2 offsets[5] = { int2(0, 0), int2(SHEET_GAP_SPREAD, 0), int2(-SHEET_GAP_SPREAD, 0), int2(0, SHEET_GAP_SPREAD), int2(0, -SHEET_GAP_SPREAD) };
 		float gap = 1e9;
 		[unroll] for (int k = 0; k < 5; k++)
 			gap = min(gap, abs(SharedData::GetScreenDepth(a_behind.Load(int3(a_pixel + offsets[k], 0)).x) - a_depth));
-		return gap;
+		return lerp(a_vertexGap, min(gap, a_vertexGap), trust);
 	}
 	/** D129: world units one repeat of the falls' texture (their flow coordinates) spans, for the water's normal maps' scale. */
 	static const float FALLS_UV_WORLD = 512.0;
@@ -38,7 +47,7 @@ namespace FallShading
 	/** D174: world units from the sheet's cut over which it foams. */
 	static const float CUT_FOAM_REACH = 24.0;
 	/** D174: world units under the water below over which the falls' foam fades out. */
-	static const float WATER_FOAM_SINK = 8.0;
+	static const float WATER_FOAM_SINK = 32.0;  // D176: the falls' foam carried on under the water (the user: the sheets' wobble lifted a waterline cut into view), gone before its cuts (WATER_KEEP, POOL_CUT 48)
 	/** D141: world units below the water a fall pours out of over which the sheet fades in: the river runs on into the falling water, no seam. */
 	static const float LIP_BLEND = 24.0;
 	/** D143: world units below the lip's blend over which the other foam (seams, sheets meeting, rock contact) comes in. */
@@ -56,6 +65,8 @@ namespace FallShading
 	static const float FOAM_MAX_DRIFT = 120.0;
 	/** D174: the fastest the foam's pattern drifts on level water (along the bake's flow, whose texel-to-texel changes it must not open). */
 	static const float FOAM_LEVEL_DRIFT = 40.0;
+	/** D176: the bake's speed along the mesh's flow lines under which the foam's drift fades to none (world units a second). */
+	static const float FOAM_STILL_SPEED = 30.0;
 	/** D127: how far aerated water's colour goes toward the river's foam colour. */
 	static const float AERATION_LIFT = 0.06;
 	/** The brightest the falls add: the scene is HDR, but one runaway value is a square after bloom and the upscalers. */
@@ -159,15 +170,19 @@ namespace FallShading
 			return 0.0;
 		float contact = 1.0 - saturate(a_sheetGap / MEET_FOAM_REACH);
 		contact = max(contact, 1.0 - saturate(a_sceneGap / CONTACT_FOAM_REACH));
-		contact = max(contact, 1.0 - saturate(max(a_aboveWater, 0.0) / WATER_FOAM_REACH));
 		// The sheet's cut (FallGround::ClipDistance: where it was cut at another sheet, the ground or the water): the foam where two
 		// sheets meet ran short of their cut edges, a strip of bare water there faded out, a dark line (SS 1209, 1228)
 		contact = max(contact, 1.0 - saturate(a_clip / CUT_FOAM_REACH));
+		contact = max(contact, 1.0 - saturate(max(a_aboveWater, 0.0) / WATER_FOAM_REACH));
+		// Not on the lip (the crest stays glassy, D145), the water below's foam too: on a short drop the crest lies within its
+		// reach of the pool below (SS 1259-1261). D176: a foot no longer takes its pool for its source (FallSites: only water
+		// over the mesh's middle), which had cut the waterline foam (SS 1236)
+		contact *= a_lip;
 		// Falling off as the river's simulated foam does, a narrow solid core and a wide tail broken into the pattern's
 		// bubbles: linear over a short reach, it drew a solid white outline
 		// Stops at the water below (a_aboveWater is negative under its surface): seen through the water, foam under it read
 		// as floating behind the surface
-		return contact * contact * a_lip * saturate(1.0 + a_aboveWater / WATER_FOAM_SINK);
+		return contact * contact * saturate(1.0 + a_aboveWater / WATER_FOAM_SINK);
 	}
 
 	/** D174: the river's foam pattern on one fixed world plane (its axes a_u, a_v), two phases drifting (a_drift, world units a second along them) and restarting. */
@@ -202,21 +217,69 @@ namespace FallShading
 	 * on level water at FOAM_LEVEL_DRIFT at most. Dragged by the bake's velocity at full speed, its small changes from one texel to
 	 * the next opened the pattern into a larger lattice on the bake's grid (SS 1191-1193).
 	 */
-	float FoamPattern(Texture2D<float4> a_tex, SamplerState a_sampler, float3 a_world, float3 a_normal, float3 a_velocity, float a_time, float a_mipBias)
+	float FoamPattern(Texture2D<float4> a_tex, SamplerState a_sampler, float3 a_world, float3 a_normal, float3 a_tangent, float3 a_velocity, float a_time, float a_mipBias)
 	{
 		float3 w = pow(abs(a_normal), 4.0);
 		w /= max(w.x + w.y + w.z, 1e-4);
-		float2 level = a_velocity.xy;
-		level *= min(1.0, FOAM_LEVEL_DRIFT / max(length(level), 1e-3));
-		const float2 fall = float2(0.0, FOAM_MAX_DRIFT);  // along v, down
+		// D176: drifting along the mesh's own flow lines (a_tangent, the direction its texture runs, smooth over the mesh) at a
+		// constant speed, its sense from the bake's flow (faded where the water is still): the foam follows the water round
+		// crests and rocks without the bake's steps from texel to texel (its speed per pixel opened a lattice, SS 1191-1193)
+		float3 drift;
+		const float tangentLength = length(a_tangent);
+		[branch] if (tangentLength > 1e-3)
+		{
+			float3 along = a_tangent - a_normal * dot(a_tangent, a_normal);
+			along = SafeNormalize(along, a_tangent / tangentLength);
+			const float sense = clamp(dot(a_velocity, along) / FOAM_STILL_SPEED, -1.0, 1.0);
+			drift = along * (FOAM_MAX_DRIFT * sense);
+		}
+		else
+		{
+			// No tangent (FallSurface.hlsl's pass): down steep water, along the bake's flow on level water, slower
+			float3 level = float3(a_velocity.xy, 0.0);
+			level *= min(1.0, FOAM_LEVEL_DRIFT / max(length(level), 1e-3));
+			drift = lerp(float3(0.0, 0.0, -FOAM_MAX_DRIFT), level, w.z);
+		}
 		float pattern = 0.0;
 		[branch] if (w.z > 0.01)
-			pattern += w.z * FoamPlane(a_tex, a_sampler, a_world, float3(1, 0, 0), float3(0, 1, 0), level, a_time, a_mipBias);
+			pattern += w.z * FoamPlane(a_tex, a_sampler, a_world, float3(1, 0, 0), float3(0, 1, 0), drift.xy, a_time, a_mipBias);
 		[branch] if (w.x > 0.01)
-			pattern += w.x * FoamPlane(a_tex, a_sampler, a_world + 0.31 * FOAM_TILE, float3(0, 1, 0), float3(0, 0, -1), fall, a_time, a_mipBias);
+			pattern += w.x * FoamPlane(a_tex, a_sampler, a_world + 0.31 * FOAM_TILE, float3(0, 1, 0), float3(0, 0, -1), float2(drift.y, -drift.z), a_time, a_mipBias);
 		[branch] if (w.y > 0.01)
-			pattern += w.y * FoamPlane(a_tex, a_sampler, a_world + 0.67 * FOAM_TILE, float3(1, 0, 0), float3(0, 0, -1), fall, a_time, a_mipBias);
+			pattern += w.y * FoamPlane(a_tex, a_sampler, a_world + 0.67 * FOAM_TILE, float3(1, 0, 0), float3(0, 0, -1), float2(drift.x, -drift.z), a_time, a_mipBias);
 		return pattern;
+	}
+
+	/**
+	 * D176: the river's foam pattern (its normal map read as bubbles) on the falls' flow coordinates (FallGround::Flow's uvA:
+	 * the bake's flow, integrated and scrolled), FOAM_TILE world units a repeat, a whole number along the flow (D130): the foam
+	 * moves, stretches and bends with the baked water. Not dragged by FlowSample::velocity, the direction v runs from the
+	 * screen derivatives, constant per triangle (a lattice, SS 1191-1193)
+	 */
+	float FlowFoamPattern(Texture2D<float4> a_tex, SamplerState a_sampler, float2 a_flowUv, float a_mipBias)
+	{
+		const float2 uv = a_flowUv * FlowScale(FOAM_TILE);
+		const float p0 = length(a_tex.SampleBias(a_sampler, uv, a_mipBias).xy * 2.0 - 1.0);
+		const float p1 = length(a_tex.SampleBias(a_sampler, uv * 0.61 + 0.37, a_mipBias).xy * 2.0 - 1.0);
+		return saturate((p0 + p1) * 0.5 * 1.4);
+	}
+
+	/**
+	 * D176: world units over the water the falls pour into, per pixel: over the pools' captured surface (FallGround::Pool) at a
+	 * mesh's foot (a_foot, FallGround::Fade's z: as the pool cut, D71: near a lip the pool above reaches over the drop), else the
+	 * vertices' own (a_vertexAbove). Each vertex took its own plane: one just under the pool, its neighbour a plane far below, the
+	 * height between them leapt over one triangle (no waterline foam, the line in the triangles' steps, SS 1235, 1236)
+	 */
+	float AboveWater(float3 a_world, float a_foot, float a_vertexAbove, float a_belowSource)
+	{
+		// Also wherever the pixel is over the pool: over its surface, it can only be the water below; but not the pool the
+		// falls pour out of (a_belowSource: how far under it they are): a crest bulging over it foamed (SS 1259)
+		float pool;
+		if (FallGround::Pool(a_world.xy, pool) && (a_foot > 0.01 || a_world.z >= pool)) {
+			const bool source = a_belowSource < NONE_ABOVE && pool >= a_world.z + a_belowSource - SOURCE_POOL_MATCH;
+			return source ? a_vertexAbove : a_world.z - pool;
+		}
+		return a_vertexAbove;
 	}
 
 	/** D174: how much of the pixel the foam covers, as the river's (dense foam solid, thin foam only in the pattern's bubbles). */

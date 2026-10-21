@@ -1309,17 +1309,17 @@ namespace FluidFieldSim
 				float source = FLT_MAX;
 				for (const auto& plane : sources) {
 					if (positions[v].x >= plane[0] - SOURCE_REACH && positions[v].x <= plane[2] + SOURCE_REACH && positions[v].y >= plane[1] - SOURCE_REACH &&
-						positions[v].y <= plane[3] + SOURCE_REACH && plane[4] >= positions[v].z - rise && plane[4] <= positions[v].z + SOURCE_DEPTH_MOST)
+						positions[v].y <= plane[3] + SOURCE_REACH && plane[4] >= positions[v].z - rise && plane[4] <= positions[v].z + SOURCE_DEPTH_MOST &&
+						plane[4] >= (top + bottom) * 0.5f)  // D176: the water it pours out of lies over its middle (a short drop's foot took its pool for it)
 						source = std::min(source, plane[4]);
 				}
-				// D174: on the upper half, not the water it pours out of (lower down, a vertex just over its pool finds that as its
-				// source too, and must keep it). D139: the height above the water it falls into for its foam, per vertex: the highest plane under it from every
+				// D174, D176: not the water it pours out of. D139: the height above the water it falls into for its foam, per vertex: the highest plane under it from every
 				// plane near the mesh (sources), not only those under its own top. Per mesh, the band stopped on a straight line
 				// where the next mesh up found none (SS 1031, 1032). The cut below keeps the mesh's own planes (D70)
 				float under = -FLT_MAX;
 				float over = FLT_MAX;
 				for (const auto& plane : sources) {
-					if (positions[v].x >= plane[0] && positions[v].x <= plane[2] && positions[v].y >= plane[1] && positions[v].y <= plane[3] && (!upper || plane[4] != source)) {
+					if (positions[v].x >= plane[0] && positions[v].x <= plane[2] && positions[v].y >= plane[1] && positions[v].y <= plane[3] && plane[4] != source) {
 						if (plane[4] <= positions[v].z + 8.0f)
 							under = std::max(under, plane[4]);
 						else
@@ -5051,7 +5051,7 @@ namespace FluidFieldSim
 		}
 	}
 
-	void FallSites::BuildPlungeMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
+	void FallSites::BuildPlungeMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field, float a_behind, float a_radiusScale) const
 	{
 		// D44, D47: where the falls meet the water below, along their whole line into it: every plunge point (D78: from
 		// the meshes' own sims, ComputePlunges) foams the water round it, harder plunges more, and the simulated flow
@@ -5060,10 +5060,13 @@ namespace FluidFieldSim
 		const auto n = static_cast<int32_t>(a_size);
 		for (const auto& plunge : plungePoints) {
 			// D98: a crossing reaches further (its foam made 50% stronger)
-			const float radius = PLUNGE_FOAM_RADIUS * std::max(plunge.reach, 1.0f);
+			const float radius = PLUNGE_FOAM_RADIUS * std::max(plunge.reach, 1.0f) * std::max(a_radiusScale, 0.05f);
 			const auto reach = static_cast<int32_t>(std::ceil(radius / a_cell));
-			const auto cx = static_cast<int32_t>(std::lround((plunge.position[0] - a_originX) / a_cell));
-			const auto cy = static_cast<int32_t>(std::lround((plunge.position[1] - a_originY) / a_cell));
+			// D176: moved a_behind world units against the falling water's way (behind the curtain's line)
+			const float px = plunge.position[0] - plunge.direction[0] * a_behind;
+			const float py = plunge.position[1] - plunge.direction[1] * a_behind;
+			const auto cx = static_cast<int32_t>(std::lround((px - a_originX) / a_cell));
+			const auto cy = static_cast<int32_t>(std::lround((py - a_originY) / a_cell));
 			if (cx < -reach || cy < -reach || cx >= n + reach || cy >= n + reach)
 				continue;
 			const float strength = std::clamp(0.85f + 0.15f * plunge.strength, 0.0f, 1.0f);  // D52: the rim is solid for every fall
@@ -5071,8 +5074,8 @@ namespace FluidFieldSim
 				for (int32_t x = cx - reach; x <= cx + reach; x++) {
 					if (x < 0 || y < 0 || x >= n || y >= n)
 						continue;
-					const float dx = a_originX + static_cast<float>(x) * a_cell - plunge.position[0];
-					const float dy = a_originY + static_cast<float>(y) * a_cell - plunge.position[1];
+					const float dx = a_originX + static_cast<float>(x) * a_cell - px;
+					const float dy = a_originY + static_cast<float>(y) * a_cell - py;
 					const float falloff = std::clamp(1.0f - std::sqrt(dx * dx + dy * dy) / radius, 0.0f, 1.0f);
 					float& value = a_field[static_cast<std::size_t>(y) * a_size + x];
 					value = std::max(value, strength * falloff);
