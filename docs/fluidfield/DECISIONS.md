@@ -3515,3 +3515,15 @@ Entry format:
     depth behind (D105) it reads cleanly.
 -   Open: a bright white blob (also SS 999) on some sheets.
 -   References: D105, D106, D125, D127, D147
+
+## D149: Falling water is murkier than its depth
+
+-   Date: 2026-10-21
+-   Decision: the falls' water path is read 4 times its depth
+    (FALLS_MURK). An opacity diagnostic (bands of refractionMul, user's
+    view) showed the thin water over a sheet's rock under 20% opaque almost
+    everywhere: the river is murky because it is deep, the falls are a
+    shallow film, so under the same fog curve they read nearly clear
+    (SS 1052). Falling water is turbid (bubbles, stirred sediment), so it
+    reads deeper than it is. Water Depth still scales it.
+-   References: D148

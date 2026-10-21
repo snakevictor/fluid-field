@@ -294,6 +294,9 @@ float BehindDepth(VSOutput a_input, float a_sheetDepth, float a_behindDepth)
 	return max(a_input.Behind, 0.0);
 }
 
+/** D149: how much deeper than its depth falling water reads (turbid with bubbles and sediment). */
+static const float FALLS_MURK = 4.0;
+
 /** D120: past this gap behind (world units), the sheet has left the rock: what lies between is air, not water. */
 static const float LAYER_GAP = 48.0;
 
@@ -492,7 +495,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float rayScale = length(input.WorldPosition) / max(sheetDepth, 1e-3);
 	const float rayBehind = max(behindDepth - sheetDepth, 0.0) * rayScale;
 	const float curtain = smoothstep(LAYER_GAP * 0.5, LAYER_GAP, input.Behind);
-	const float path = lerp(min(rayBehind, FogFar), SheetThickness / max(cosine, 0.25), curtain) * DepthScale;
+	// D149: times FALLS_MURK: falling water is turbid (bubbles, stirred sediment), and the thin water over the sheet's rock
+	// stayed under 20% opaque where the river, deep, is murky (SS 1052, an opacity diagnostic)
+	const float path = lerp(min(rayBehind, FogFar), SheetThickness / max(cosine, 0.25), curtain) * DepthScale * FALLS_MURK;
 	const float refractionMul = 1.0 - pow(saturate((FogFar - path) / FogRange), FogAmount);
 	const float opacity = max(FluidField::TintedRefractionWeight(refractionMul, path), AERATION_OPACITY * aerated);
 
