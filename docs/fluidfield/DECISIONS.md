@@ -3793,3 +3793,11 @@ Entry format:
     texture coordinates stretched along the flow; they are on them again
     here, at 512 units per repeat.
 -   References: D98, D105, D123, D131, D159
+
+## Withdrawn: D165-D166, the outward guard
+
+-   Date: 2026-10-21
+-   Reverted in game: with the guard, the sheet-inside-sheet cut no longer
+    worked and most of the undersides came back (SS 1089, 1090: "a major
+    step back", the user). The culling is back to D157 (D144 plus the
+    stricter submerged cut). Branch feature/fluid-field-culling-8 keeps it.
