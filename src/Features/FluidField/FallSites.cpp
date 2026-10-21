@@ -2141,7 +2141,7 @@ namespace FluidFieldSim
 						float depth = BURY_REACH;
 						std::vector<StaticHit> out, back;
 						for (const auto& axis : axes) {
-							if (inside >= 4 || outside >= 3)
+							if (inside >= 5 || outside >= 3)
 								break;
 							out.clear();
 							back.clear();
@@ -2176,8 +2176,12 @@ namespace FluidFieldSim
 						votes = static_cast<uint8_t>(inside);
 						// Cut from BURY_MARGIN inside the face (the nearest one along the inside axes), so a sheet dipping into the
 						// rock it lies on keeps its edge in the rock: the cut line stays hidden there
-						if (inside >= 4)
+						// D143: strong evidence only (the user: "better for it to be a little tolerant than for it to eat away at mesh
+						// parts we actually want"): five axes of six, or four with the cut twice as deep in
+						if (inside >= 5)
 							staticClip = std::clamp(BURY_MARGIN - depth, -CLIP_RANGE, NO_CUT);
+						else if (inside == 4)
+							staticClip = std::clamp(2.0f * BURY_MARGIN - depth, -CLIP_RANGE, NO_CUT);
 					}
 					// D131: both in a.x now (the GPU cuts them): the depth test was to hide them, but seen from under the landscape
 					// (one-sided, not drawn from below) or from inside a mesh, nothing did (SS 993-995)
@@ -2368,7 +2372,11 @@ namespace FluidFieldSim
 						if (PoolLevelAt(at.x, at.y, pool))
 							level = pool;
 						for (const auto& plane : sheet.planes) {
-							if (at.x >= plane[0] && at.x <= plane[2] && at.y >= plane[1] && at.y <= plane[3] && plane[4] - parts.ground <= SUBMERGED_COLUMN)
+							// D143: and no higher than SUBMERGED_OVER_TOP over this sheet's own top: the river it pours out of, not the
+							// river of the drop above it (a cascade's lower sheets lie under the upper river's level, inside its plane's
+							// bound, near their bed: they were eaten, SS 1035)
+							if (at.x >= plane[0] && at.x <= plane[2] && at.y >= plane[1] && at.y <= plane[3] && plane[4] - parts.ground <= SUBMERGED_COLUMN &&
+								plane[4] <= sheet.top + SUBMERGED_OVER_TOP)
 								level = std::max(level, plane[4]);
 						}
 						if (level > -FLT_MAX) {
@@ -2404,8 +2412,8 @@ namespace FluidFieldSim
 			job.sheets.size(), job.inside, job.tested, job.inward, job.covered, job.sideTested, job.meeting, MEET_REACH, job.busy,
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - job.started).count());
 		const uint32_t submerged = job.submerged;
-		logger::info("[Fluid Field]   {} vertices under the river's water by its bed, cut; cleanup: {} kept pieces ({} vertices) cut off their sheet's body and cut, {} small enclosed holes ({} vertices) restored",
-			submerged, job.islands, job.islandVertices, job.holes, job.holeVertices);
+		logger::info("[Fluid Field]   {} vertices under the river's water by its bed, cut; cleanup: {} orphan pieces ({} triangles, {} vertices) cut, {} small enclosed holes ({} vertices) restored",
+			submerged, job.islands, job.islandTriangles, job.islandVertices, job.holes, job.holeVertices);
 		cullJob.reset();
 		// D126: the spray, plunges and lips come only from the shell (BuildPlunges reads VertexInShell)
 		if (!bakeFields.empty())
@@ -2414,6 +2422,7 @@ namespace FluidFieldSim
 
 	void FallSites::CleanupSheet(const CullSheet& a_sheet, CullJob& a_job)
 	{
+		const uint32_t holesBefore = a_job.holes, holeVerticesBefore = a_job.holeVertices, orphansBefore = a_job.islands, orphanTrianglesBefore = a_job.islandTriangles;
 		// D138: the cuts are decided vertex by vertex, so their mistakes are small pieces: a few kept vertices left floating in
 		// rock or air where all round them was cut (SS 1020-1024, 1026, 1029), a few cut ones holing a plain sheet (SS 1019,
 		// 1025, 1028). On the sheet's own graph (vertices welded by position: the texture seams join), after every cut: kept
@@ -2523,45 +2532,96 @@ namespace FluidFieldSim
 			a_job.holeVertices += static_cast<uint32_t>(piece.size());
 			keptNodes += static_cast<uint32_t>(piece.size());
 		}
-		// Then the kept pieces off the main body: per connected part of the mesh as authored (a mesh can hold several), its
-		// largest kept piece is the body; a smaller one is cut if it is small and the cuts made it (it borders a cut vertex: a
-		// part of the mesh that is small but whole is left alone)
+		// D143: then the orphans, by triangles (a triangle is drawn if any corner is kept: a lone kept vertex draws a fan of
+		// slivers). Kept triangles join across an edge with a kept end (two triangles sharing only cut corners show apart);
+		// per part of the mesh as authored (a mesh can hold several) the largest kept piece is its body. Another piece is cut
+		// when the cuts made it (it has a cut corner) and it is small; the body too when it is a scrap of its part (SS 1021).
+		// The user: "detecting floating orphaned quads/tris and culling them should be a must"
 		std::vector<int32_t> partOf;
 		std::vector<std::vector<uint32_t>> authored;
 		pieces([](uint32_t) { return true; }, partOf, authored);
-		std::vector<std::size_t> partKept(authored.size(), 0), body(authored.size(), SIZE_MAX);
-		for (std::size_t n = 0; n < nodes; n++)
-			partKept[partOf[n]] += kept[n] ? 1 : 0;
-		pieces([&](uint32_t a_n) { return kept[a_n] != 0; }, label, found);
-		for (std::size_t k = 0; k < found.size(); k++) {
-			std::size_t& best = body[partOf[found[k].front()]];
-			if (best == SIZE_MAX || found[k].size() > found[best].size())
-				best = k;
-		}
-		for (std::size_t k = 0; k < found.size(); k++) {
-			const auto whole = partOf[found[k].front()];
-			const auto islandMost = std::max<std::size_t>(ISLAND_MOST_VERTICES, static_cast<std::size_t>(ISLAND_MOST_FRACTION * static_cast<float>(partKept[whole])));
-			// The body too, where the cuts left only a scrap of its part (SS 1021: a lone piece floating in the rock, all round it cut)
-			const bool scrap = found[k].size() <= BODY_SCRAP_VERTICES && static_cast<float>(found[k].size()) < BODY_SCRAP_FRACTION * static_cast<float>(authored[whole].size());
-			if ((k == body[whole] && !scrap) || (k != body[whole] && found[k].size() > islandMost))
-				continue;
-			bool split = false;
-			for (const uint32_t n : found[k]) {
-				for (const uint32_t m : next[n])
-					split = split || !kept[m];
-				if (split)
-					break;
+		const std::size_t triangles = a_sheet.triangles.size();
+		std::vector<uint8_t> drawn(triangles, 0), touchesCut(triangles, 0);
+		std::vector<std::array<uint32_t, 3>> corner(triangles);
+		for (std::size_t t = 0; t < triangles; t++) {
+			for (int k = 0; k < 3; k++) {
+				corner[t][k] = node[a_sheet.triangles[t][k]];
+				drawn[t] = drawn[t] || kept[corner[t][k]];
+				touchesCut[t] = touchesCut[t] || !kept[corner[t][k]];
 			}
-			if (!split)
-				continue;
-			for (const uint32_t n : found[k]) {
-				for (const uint32_t v : copies[n]) {
-					vertexCuts[a_sheet.base + v].island = -CLIP_RANGE;
-					ComposeCut(a_sheet.base + v);
+		}
+		std::vector<uint32_t> root(triangles);
+		for (std::size_t t = 0; t < triangles; t++)
+			root[t] = static_cast<uint32_t>(t);
+		const auto find = [&](uint32_t a_t) {
+			while (root[a_t] != a_t) {
+				root[a_t] = root[root[a_t]];
+				a_t = root[a_t];
+			}
+			return a_t;
+		};
+		{
+			std::unordered_map<uint64_t, uint32_t> edgeOwner;
+			for (std::size_t t = 0; t < triangles; t++) {
+				if (!drawn[t])
+					continue;
+				for (int k = 0; k < 3; k++) {
+					const uint32_t ea = corner[t][k], eb = corner[t][(k + 1) % 3];
+					if (ea == eb || (!kept[ea] && !kept[eb]))
+						continue;
+					const uint64_t key = static_cast<uint64_t>(std::min(ea, eb)) << 32 | std::max(ea, eb);
+					const auto [owner, added] = edgeOwner.try_emplace(key, static_cast<uint32_t>(t));
+					if (!added)
+						root[find(static_cast<uint32_t>(t))] = find(owner->second);
 				}
 			}
-			a_job.islands++;
-			a_job.islandVertices += static_cast<uint32_t>(found[k].size());
+		}
+		std::unordered_map<uint32_t, std::vector<uint32_t>> pieceTriangles;
+		std::vector<std::size_t> partTriangles(authored.size(), 0), partAuthored(authored.size(), 0);
+		for (std::size_t t = 0; t < triangles; t++) {
+			partAuthored[partOf[corner[t][0]]]++;
+			if (!drawn[t])
+				continue;
+			pieceTriangles[find(static_cast<uint32_t>(t))].push_back(static_cast<uint32_t>(t));
+			partTriangles[partOf[corner[t][0]]]++;
+		}
+		std::vector<uint32_t> body(authored.size(), UINT32_MAX);
+		for (const auto& [id, members] : pieceTriangles) {
+			uint32_t& best = body[partOf[corner[members.front()][0]]];
+			if (best == UINT32_MAX || members.size() > pieceTriangles[best].size())
+				best = id;
+		}
+		std::vector<uint8_t> orphanNode(nodes, 0), bodyNode(nodes, 0);
+		for (const auto& [id, members] : pieceTriangles) {
+			const auto whole = partOf[corner[members.front()][0]];
+			const auto most = std::max<std::size_t>(ORPHAN_MOST_TRIANGLES, static_cast<std::size_t>(ORPHAN_MOST_FRACTION * static_cast<float>(partTriangles[whole])));
+			const bool scrap = members.size() <= BODY_SCRAP_TRIANGLES && static_cast<float>(members.size()) < BODY_SCRAP_FRACTION * static_cast<float>(partAuthored[whole]);
+			bool split = false;
+			for (const uint32_t t : members)
+				split = split || touchesCut[t];
+			const bool orphan = split && (id == body[whole] ? scrap : members.size() <= most);
+			for (const uint32_t t : members) {
+				for (const uint32_t n : corner[t]) {
+					if (!kept[n])
+						continue;
+					(orphan ? orphanNode : bodyNode)[n] = 1;
+				}
+			}
+			if (orphan) {
+				a_job.islands++;
+				a_job.islandTriangles += static_cast<uint32_t>(members.size());
+			}
+		}
+		// A kept vertex is cut only if every piece it draws in is an orphan (a bow tie's middle vertex stays with the body)
+		for (std::size_t n = 0; n < nodes; n++) {
+			if (!orphanNode[n] || bodyNode[n])
+				continue;
+			kept[n] = 0;
+			for (const uint32_t v : copies[n]) {
+				vertexCuts[a_sheet.base + v].island = -CLIP_RANGE;
+				ComposeCut(a_sheet.base + v);
+			}
+			a_job.islandVertices++;
 		}
 		// D138: the log: what cut this sheet's vertices, and its two largest pieces cut by rock or a sheet alone (where they are,
 		// and by which test), so a hole in a plain sheet can be traced to its test
@@ -2577,8 +2637,9 @@ namespace FluidFieldSim
 			byPool += parts.pool <= 0.0f ? 1 : 0;
 			byIsland += parts.island <= 0.0f ? 1 : 0;
 		}
-		logger::info("[Fluid Field]   cut '{}' ({} vertices): {} under the landscape, {} in statics, {} inside another sheet, {} lead-in, {} in the river, {} the water below, {} the pools, {} lone pieces",
-			a_sheet.geometry->name.c_str(), count, byLand, byStatic, byInside, byLead, byRiver, byWater, byPool, byIsland);
+		logger::info("[Fluid Field]   cut '{}' ({} vertices): {} under the landscape, {} in statics, {} inside another sheet, {} lead-in, {} in the river, {} the water below, {} the pools, {} orphans; {} orphan pieces ({} triangles) cut, {} holes ({} vertices) restored",
+			a_sheet.geometry->name.c_str(), count, byLand, byStatic, byInside, byLead, byRiver, byWater, byPool, byIsland, a_job.islands - orphansBefore,
+			a_job.islandTriangles - orphanTrianglesBefore, a_job.holes - holesBefore, a_job.holeVertices - holeVerticesBefore);
 		pieces([&](uint32_t a_n) { return !kept[a_n] && solid[a_n]; }, label, found);
 		std::sort(found.begin(), found.end(), [](const auto& a_a, const auto& a_b) { return a_a.size() > a_b.size(); });
 		for (std::size_t k = 0; k < found.size() && k < 2; k++) {

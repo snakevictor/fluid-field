@@ -3400,3 +3400,51 @@ Entry format:
         right under a violent drop churn in the references; they read as
         clear water (the fall foam needed both a source and steepness).
 -   References: D141, D142
+
+## D144: Culling biased toward keeping; orphans cut by triangles (branch feature/fluid-field-culling-7)
+
+-   Date: 2026-10-21
+-   Context: D140 in game ("cleanup: 205 kept pieces (331 vertices) cut off
+    their sheet's body and cut, 395 small enclosed holes (780 vertices)
+    restored"). SS 1035: visible falls eaten by the culling (top left, a low
+    cascade), and D140's list still stands (holes SS 1019, 1025, 1027, 1028;
+    floating bits SS 1020-1024, 1026, 1029). The user: "Culling will never
+    be perfect but it should seek to leave only the 'outward' mesh, it's
+    better for it to be a little tolerant than for it to eat away at mesh
+    parts we actually want. Also if it doesn't already, detecting floating
+    orphaned quads/tris and culling them should be a must."
+-   Decision, every cut on strong evidence only:
+    -   **Landscape**: buried from 24 units under it (was 8): low runs lying
+        on the ground dip into it.
+    -   **Statics**: five axes of six (was four), or four with the cut
+        starting twice as deep (48 units in).
+    -   **Inside another sheet**: four rays of six must leave it through its
+        outer face (was three), none entering.
+    -   **In the river by its bed**: an engine water plane counts only up to
+        96 units over the sheet's own top (its source). A cascade's lower
+        sheets lie under the upper river's level, inside its plane's bound,
+        near their bed, and were cut (likely SS 1035).
+    -   **Holes restored** up to 96 vertices or 0.5% of the sheet's kept
+        ones (was 32, 0.2%): a hole in a kept face is worse than hidden mesh.
+    -   **Orphans by triangles** (replaces D140's kept-vertex pieces). A
+        triangle is drawn if any corner is kept, so a lone kept vertex draws
+        a fan of slivers. Drawn triangles join across an edge with a kept
+        end (two sharing only cut corners show apart), vertices welded by
+        position. Per part of the mesh as authored, the largest piece is
+        its body. Another piece is an orphan when the cuts made it (it has
+        a cut corner) and it has at most 128 triangles or 1% of its part's
+        drawn ones. The body too is cut when it is a scrap: at most 512
+        triangles and under 3% of its part's triangles. An orphan's kept
+        vertices are cut (VertexCut::island), unless a vertex also draws in
+        a kept piece (a bow tie's middle). Whole pieces switch, so no cut
+        line moves.
+    -   **Log per mesh**: "cut '<name>' (V vertices): ... under the
+        landscape, ... in statics, ... inside another sheet, ... lead-in, ...
+        in the river, ... the water below, ... the pools, ... orphans; N
+        orphan pieces (T triangles) cut, H holes (W vertices) restored", and
+        the totals in the culling's summary.
+-   Untested: builds; not run in game. The thresholds are guesses.
+-   Risks: more hidden mesh stays (by intent): a sheet a little inside
+    rock, the ground or another sheet's curl now shows where it is seen
+    from inside them.
+-   References: D113, D135, D140
