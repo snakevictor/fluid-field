@@ -451,6 +451,8 @@ namespace FluidFieldSim
 		buryQueue.clear();  // D112
 		buryJob.reset();
 		buryDone = true;
+		cullJob.reset();  // D113
+		cullRequested = false;
 		hideEffects = false;
 		RefreshHiddenEffects();
 		// D91: the pieces the refractive pass drew show again (the wish is kept for the next sites)
@@ -721,7 +723,7 @@ namespace FluidFieldSim
 			BuildPlunges();
 		// D112: the pools cut the meshes' feet, which the culling reads (once the rock test has run; its end reads them anyway)
 		if (buryDone && !vertexClipBase.empty())
-			RefreshCulling();
+			RequestCulling();
 	}
 
 	void FallSites::AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes,
@@ -1010,11 +1012,12 @@ namespace FluidFieldSim
 					}
 					return;
 				}
-				// D109: a mesh waits for its consistent outward normals (ComputeSides)
+				// D109: a mesh waits for its consistent outward normals (CullStep)
 				RE::NiPointer<RE::BSGeometry> geometry = depthQueue.back();
 				// D110: and for every cut (the lead-in's comes with the swell, ComputePushes). D112: and the rock test (BuryStep),
-				// whose end works the culling out again
-				if (geometry && vertexClipBase.contains(geometry.get()) && (!outwardNormals.contains(geometry.get()) || !vertexPushes.contains(geometry.get()) || !buryDone))
+				// whose end works the culling out again. D113: and for the culling itself, now spread over frames (CullStep)
+				if (geometry && vertexClipBase.contains(geometry.get()) &&
+					(!outwardNormals.contains(geometry.get()) || !vertexPushes.contains(geometry.get()) || !buryDone || CullBusy()))
 					return;
 				depthQueue.pop_back();
 				const auto base = geometry ? vertexClipBase.find(geometry.get()) : vertexClipBase.end();
@@ -1827,8 +1830,8 @@ namespace FluidFieldSim
 		ComposeShifts();
 		logger::info("[Fluid Field] Waterfall seams: {} of {} open-edge vertices of {} lit meshes lie on a mesh leading them, and fade; {} move across a gap to the mesh beside them; {} edge vertices smoothed", faded,
 			edges, meshes.size(), gaps, smoothed);
-		// D112: the curl cut (D98) and the sides (D103) with the fades known; again once the rock and the lead-in cuts are
-		RefreshCulling();
+		// D112: the inside cut and the sides (D103) with the fades known; again once the rock and the lead-in cuts are
+		RequestCulling();
 	}
 
 	void FallSites::ComposeCut(std::size_t a_index)
@@ -1837,7 +1840,7 @@ namespace FluidFieldSim
 		if (a_index >= vertexClips.size() || a_index >= vertexCuts.size())
 			return;
 		const VertexCut& cut = vertexCuts[a_index];
-		vertexClips[a_index][0] = std::min({ cut.water, cut.curl, cut.lead });
+		vertexClips[a_index][0] = std::min({ cut.water, cut.inside, cut.lead });
 	}
 
 	bool FallSites::VertexShown(std::size_t a_index) const
@@ -1888,10 +1891,8 @@ namespace FluidFieldSim
 				// D112: all tested: everything that reads the rock is worked out again
 				if (buryQueue.empty()) {
 					buryDone = true;
-					logger::info("[Fluid Field] Waterfall rock test: {} of {} vertices inside rock ({} rays)", buriedCount, buryTested, buryRays);
-					const auto start = std::chrono::steady_clock::now();
-					RefreshCulling();
-					logger::info("[Fluid Field]   culling took {:.1f} ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+					logger::info("[Fluid Field] Waterfall rock test: {} of {} vertices inside rock ({} under level ground; {} rays)", buriedCount, buryTested, buriedGround, buryRays);
+					RequestCulling();
 					return;
 				}
 				RE::NiPointer<RE::BSGeometry> geometry = buryQueue.back();
@@ -1958,8 +1959,25 @@ namespace FluidFieldSim
 					RE::NiPoint3 across = n.Cross(RE::NiPoint3(0.0f, 0.0f, 1.0f));
 					across = across.Length() > 1e-3f ? across / across.Length() : RE::NiPoint3(1.0f, 0.0f, 0.0f);
 					const RE::NiPoint3 ways[5] = { n, -n, RE::NiPoint3(0.0f, 0.0f, 1.0f), across, -across };
+					// D113: under level landscape (a river's bed): the ray from under the ground starts inside it and reads as
+					// reaching, so the lead-in curving down into the bed showed under the river (SS 979). Only where the
+					// height grid is level round it: on a cliff it smooths the face and buried a third of the falls (D82)
+					bool underGround = false;
+					{
+						float heights[5];
+						const float offsets[5][2] = { { 0.0f, 0.0f }, { 64.0f, 0.0f }, { -64.0f, 0.0f }, { 0.0f, 64.0f }, { 0.0f, -64.0f } };
+						bool level = true;
+						for (int k = 0; k < 5 && level; k++)
+							level = tes->GetLandHeight(RE::NiPoint3(p.x + offsets[k][0], p.y + offsets[k][1], p.z + 1024.0f), heights[k]);
+						if (level) {
+							const auto [lowest, highest] = std::minmax_element(heights, heights + 5);
+							underGround = *highest - *lowest < BURY_LEVEL && p.z < heights[0] - BURY_GROUND;
+						}
+					}
 					bool buried = true;
 					for (const auto& way : ways) {
+						if (underGround)
+							break;
 						const float hit = RockAlong(world, p + way * BURY_REACH, -way, BURY_REACH);
 						rays++;
 						buryRays++;
@@ -1970,6 +1988,7 @@ namespace FluidFieldSim
 					}
 					vertexCuts[buryJob->base + v].buried = buried ? 1 : 0;
 					buriedCount += buried ? 1 : 0;
+					buriedGround += underGround ? 1 : 0;
 					buryTested++;
 				}
 			}
@@ -1978,310 +1997,322 @@ namespace FluidFieldSim
 		}
 	}
 
-	std::vector<FallSites::CullSheet> FallSites::BuildCullSheets()
+	FallSites::CullSheet FallSites::BuildCullSheet(RE::BSGeometry* a_geometry, uint32_t a_base)
 	{
 		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
 		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
-		std::vector<CullSheet> sheets;
-		std::unordered_set<const RE::BSGeometry*> seen;
-		for (const auto& lit : litMeshList) {
-			auto* geometry = lit.geometry.get();
-			const auto base = vertexClipBase.find(geometry);
-			if (!geometry || base == vertexClipBase.end() || !seen.insert(geometry).second)
+		auto* geometry = a_geometry;
+		auto* triShape = geometry ? geometry->AsTriShape() : nullptr;
+		auto* renderer = geometry ? geometry->GetGeometryRuntimeData().rendererData : nullptr;
+		if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
+			return {};
+		const auto& counts = triShape->GetTrishapeRuntimeData();
+		if (a_base + counts.vertexCount > vertexClips.size() || a_base + counts.vertexCount > vertexCuts.size())
+			return {};
+		auto& desc = renderer->vertexDesc;  // CommonLib's getters are not const
+		const uint32_t stride = desc.GetSize();
+		const uint32_t positionOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+		const bool haveNormals = desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_NORMAL);
+		const uint32_t normalOffset = haveNormals ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_NORMAL) : 0;
+		CullSheet sheet;
+		sheet.geometry = geometry;
+		sheet.base = a_base;
+		sheet.positions.resize(counts.vertexCount);
+		sheet.drawn.resize(counts.vertexCount);
+		sheet.outward.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+		sheet.shown.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+		for (uint32_t v = 0; v < counts.vertexCount; v++) {
+			const uint8_t* data = renderer->rawVertexData + static_cast<std::size_t>(v) * stride;
+			float local[3];
+			std::memcpy(local, data + positionOffset, sizeof(local));
+			sheet.positions[v] = geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
+			// Where it is drawn: moved by the seams' gap and the swell (b.xyz, in the mesh's own space; the wobble about it aside)
+			const auto& clip = vertexClips[sheet.base + v];
+			sheet.drawn[v] = sheet.positions[v] + geometry->world.rotate * (RE::NiPoint3(clip[4], clip[5], clip[6]) * geometry->world.scale);
+			for (int k = 0; k < 3; k++) {
+				const float c = k == 0 ? sheet.positions[v].x : (k == 1 ? sheet.positions[v].y : sheet.positions[v].z);
+				sheet.lo[k] = std::min(sheet.lo[k], c);
+				sheet.hi[k] = std::max(sheet.hi[k], c);
+			}
+			sheet.top = std::max(sheet.top, sheet.positions[v].z);
+			// As FallRefraction::BuildMesh reads it: the see-through pass turns this normal by the flag
+			if (haveNormals) {
+				const uint8_t* n = data + normalOffset;
+				sheet.shown[v] = geometry->world.rotate * RE::NiPoint3(n[0] / 255.0f * 2.0f - 1.0f, n[1] / 255.0f * 2.0f - 1.0f, n[2] / 255.0f * 2.0f - 1.0f);
+			}
+		}
+		std::map<std::pair<uint16_t, uint16_t>, int> uses;
+		for (uint32_t i = 0; i < counts.triangleCount; i++) {
+			const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+			if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
 				continue;
-			auto* triShape = geometry->AsTriShape();
-			auto* renderer = geometry->GetGeometryRuntimeData().rendererData;
-			if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
-				continue;
-			const auto& counts = triShape->GetTrishapeRuntimeData();
-			if (base->second + counts.vertexCount > vertexClips.size() || base->second + counts.vertexCount > vertexCuts.size())
-				continue;
-			auto& desc = renderer->vertexDesc;  // CommonLib's getters are not const
-			const uint32_t stride = desc.GetSize();
-			const uint32_t positionOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-			const bool haveNormals = desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_NORMAL);
-			const uint32_t normalOffset = haveNormals ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_NORMAL) : 0;
-			CullSheet sheet;
-			sheet.geometry = geometry;
-			sheet.base = base->second;
-			sheet.positions.resize(counts.vertexCount);
-			sheet.drawn.resize(counts.vertexCount);
-			sheet.outward.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
-			sheet.shown.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
-			for (uint32_t v = 0; v < counts.vertexCount; v++) {
-				const uint8_t* data = renderer->rawVertexData + static_cast<std::size_t>(v) * stride;
-				float local[3];
-				std::memcpy(local, data + positionOffset, sizeof(local));
-				sheet.positions[v] = geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
-				// Where it is drawn: moved by the seams' gap and the swell (b.xyz, in the mesh's own space; the wobble about it aside)
-				const auto& clip = vertexClips[sheet.base + v];
-				sheet.drawn[v] = sheet.positions[v] + geometry->world.rotate * (RE::NiPoint3(clip[4], clip[5], clip[6]) * geometry->world.scale);
-				for (int k = 0; k < 3; k++) {
-					const float c = k == 0 ? sheet.positions[v].x : (k == 1 ? sheet.positions[v].y : sheet.positions[v].z);
-					sheet.lo[k] = std::min(sheet.lo[k], c);
-					sheet.hi[k] = std::max(sheet.hi[k], c);
-				}
-				sheet.top = std::max(sheet.top, sheet.positions[v].z);
-				// As FallRefraction::BuildMesh reads it: the see-through pass turns this normal by the flag
-				if (haveNormals) {
-					const uint8_t* n = data + normalOffset;
-					sheet.shown[v] = geometry->world.rotate * RE::NiPoint3(n[0] / 255.0f * 2.0f - 1.0f, n[1] / 255.0f * 2.0f - 1.0f, n[2] / 255.0f * 2.0f - 1.0f);
+			sheet.triangles.push_back({ index[0], index[1], index[2] });
+			for (int k = 0; k < 3; k++)
+				uses[{ std::min(index[k], index[(k + 1) % 3]), std::max(index[k], index[(k + 1) % 3]) }]++;
+		}
+		sheet.open.assign(counts.vertexCount, 0);
+		for (const auto& [edge, count] : uses) {
+			if (count == 1)
+				sheet.open[edge.first] = sheet.open[edge.second] = 1;
+		}
+		// D98: its outer side: from its highest tenth to its lowest, level, tipped up. D103: carried over the sheet
+		// (OrientSheet), not asked of each triangle alone: the lead-in's outer side faces against the travel
+		sheet.side = OrientSheet(sheet.positions, sheet.triangles, SheetTravel(sheet.positions), haveNormals ? &sheet.shown : nullptr);
+		for (uint32_t t = 0; t < sheet.triangles.size(); t++) {
+			const auto& tri = sheet.triangles[t];
+			const RE::NiPoint3 &a = sheet.positions[tri[0]], &b = sheet.positions[tri[1]], &c = sheet.positions[tri[2]];
+			const RE::NiPoint3 face = (b - a).Cross(c - a);
+			sheet.area += 0.5f * face.Length();
+			for (const uint16_t k : tri) {
+				sheet.outward[k] += face * static_cast<float>(sheet.side[t]);
+				if (!haveNormals)
+					sheet.shown[k] += face;
+			}
+			for (int64_t x = cellOf(std::min({ a.x, b.x, c.x })); x <= cellOf(std::max({ a.x, b.x, c.x })); x++) {
+				for (int64_t y = cellOf(std::min({ a.y, b.y, c.y })); y <= cellOf(std::max({ a.y, b.y, c.y })); y++) {
+					for (int64_t z = cellOf(std::min({ a.z, b.z, c.z })); z <= cellOf(std::max({ a.z, b.z, c.z })); z++)
+						sheet.bins[binKey(x, y, z)].push_back(t);
 				}
 			}
-			std::map<std::pair<uint16_t, uint16_t>, int> uses;
-			for (uint32_t i = 0; i < counts.triangleCount; i++) {
-				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
-				if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+		}
+		for (auto& n : sheet.outward) {
+			const float length = n.Length();
+			n = length > 1e-6f ? n / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
+		}
+		return sheet;
+	}
+
+	void FallSites::CullStep()
+	{
+		if (cullRequested) {
+			// Asked again: from the start, with what is known now (a half-done pass read older cuts)
+			cullRequested = false;
+			cullJob = std::make_unique<CullJob>();
+			cullJob->started = std::chrono::steady_clock::now();
+		}
+		if (!cullJob)
+			return;
+		const auto begin = std::chrono::steady_clock::now();
+		const auto deadline = begin + std::chrono::duration<double, std::milli>(CLIP_BUDGET_MS);
+		CullJob& job = *cullJob;
+		constexpr int DONE = 4;
+		while (job.stage < DONE && std::chrono::steady_clock::now() < deadline) {
+			// Stage 0: the sheets, one a step (each one OrientSheet)
+			if (job.stage == 0) {
+				if (job.sheet >= litMeshList.size()) {
+					job.stage = 1;
+					job.sheet = job.vertex = 0;
 					continue;
-				sheet.triangles.push_back({ index[0], index[1], index[2] });
-				for (int k = 0; k < 3; k++)
-					uses[{ std::min(index[k], index[(k + 1) % 3]), std::max(index[k], index[(k + 1) % 3]) }]++;
-			}
-			sheet.open.assign(counts.vertexCount, 0);
-			for (const auto& [edge, count] : uses) {
-				if (count == 1)
-					sheet.open[edge.first] = sheet.open[edge.second] = 1;
-			}
-			// D98: its outer side: from its highest tenth to its lowest, level, tipped up. D103: carried over the sheet
-			// (OrientSheet), not asked of each triangle alone: the lead-in's outer side faces against the travel
-			sheet.side = OrientSheet(sheet.positions, sheet.triangles, SheetTravel(sheet.positions), haveNormals ? &sheet.shown : nullptr);
-			for (uint32_t t = 0; t < sheet.triangles.size(); t++) {
-				const auto& tri = sheet.triangles[t];
-				const RE::NiPoint3 &a = sheet.positions[tri[0]], &b = sheet.positions[tri[1]], &c = sheet.positions[tri[2]];
-				const RE::NiPoint3 face = (b - a).Cross(c - a);
-				sheet.area += 0.5f * face.Length();
-				for (const uint16_t k : tri) {
-					sheet.outward[k] += face * static_cast<float>(sheet.side[t]);
-					if (!haveNormals)
-						sheet.shown[k] += face;
 				}
-				for (int64_t x = cellOf(std::min({ a.x, b.x, c.x })); x <= cellOf(std::max({ a.x, b.x, c.x })); x++) {
-					for (int64_t y = cellOf(std::min({ a.y, b.y, c.y })); y <= cellOf(std::max({ a.y, b.y, c.y })); y++) {
-						for (int64_t z = cellOf(std::min({ a.z, b.z, c.z })); z <= cellOf(std::max({ a.z, b.z, c.z })); z++)
-							sheet.bins[binKey(x, y, z)].push_back(t);
+				auto* geometry = litMeshList[job.sheet++].geometry.get();
+				const auto base = geometry ? vertexClipBase.find(geometry) : vertexClipBase.end();
+				if (base == vertexClipBase.end() || std::any_of(job.sheets.begin(), job.sheets.end(), [&](const CullSheet& a_sheet) { return a_sheet.geometry == geometry; }))
+					continue;
+				auto sheet = BuildCullSheet(geometry, base->second);
+				if (sheet.geometry)
+					job.sheets.push_back(std::move(sheet));
+				continue;
+			}
+			// Stages 1-3, a vertex at a time over every sheet: the pools' cut, the inside cut (then a.x), the sides. Each stage
+			// reads only what the stages before it finished over all sheets
+			if (job.sheet >= job.sheets.size()) {
+				job.stage++;
+				job.sheet = job.vertex = 0;
+				continue;
+			}
+			const CullSheet& sheet = job.sheets[job.sheet];
+			for (int n = 0; n < 32 && job.vertex < sheet.positions.size(); n++, job.vertex++) {
+				const auto v = static_cast<uint32_t>(job.vertex);
+				if (job.stage == 1) {
+					PoolCut(sheet, v);
+				} else if (job.stage == 2) {
+					VolumeCut(job.sheets, job.sheet, v, job);
+					ComposeCut(sheet.base + v);
+				} else {
+					SideFlags(job.sheets, job.sheet, v, job);
+				}
+			}
+			if (job.vertex >= sheet.positions.size()) {
+				job.sheet++;
+				job.vertex = 0;
+			}
+		}
+		job.busy += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+		if (job.stage < DONE)
+			return;
+		// D109: the depth rays' way in (against the outer side), for meshes still loaded where they were
+		for (const auto& sheet : job.sheets) {
+			const auto base = vertexClipBase.find(sheet.geometry);
+			if (base != vertexClipBase.end() && base->second == sheet.base)
+				outwardNormals[sheet.geometry] = sheet.outward;
+		}
+		vertexClipVersion++;
+		logger::info("[Fluid Field] Waterfall culling: {} lit meshes; {} of {} vertices tested lie inside another sheet; {} turned to face out; {} of {} tested have a sheet in front of their inner side ({:.1f} ms of work over {:.0f} ms)",
+			job.sheets.size(), job.inside, job.tested, job.inward, job.covered, job.sideTested, job.busy,
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - job.started).count());
+		cullJob.reset();
+	}
+
+	void FallSites::PoolCut(const CullSheet& a_sheet, uint32_t a_vertex)
+	{
+		VertexCut& parts = vertexCuts[a_sheet.base + a_vertex];
+		parts.pool = NO_CUT;
+		// D71: only its foot (a.w's first bit), as FallGround::ClipDistance
+		if (std::fmod(vertexClips[a_sheet.base + a_vertex][3], 2.0f) < 0.5f)
+			return;
+		const RE::NiPoint3& p = a_sheet.drawn[a_vertex];
+		float level = 0.0f;
+		if (PoolCutAt(p.x, p.y, level))
+			parts.pool = std::min(p.z - level, NO_CUT);
+	}
+
+	void FallSites::VolumeCut(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job)
+	{
+		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
+		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
+		const CullSheet& mesh = a_sheets[a_sheet];
+		const RE::NiPoint3& p = mesh.positions[a_vertex];
+		float deepest = NO_CUT;
+		bool tested = false;
+		static const RE::NiPoint3 axes[6] = { { 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, -1.0f } };
+		std::vector<int64_t> cells;
+		for (std::size_t o = 0; o < a_sheets.size(); o++) {
+			const CullSheet& other = a_sheets[o];
+			// Only a sheet whose bound holds the vertex can enclose it
+			if (o == a_sheet || p.x < other.lo[0] || p.x > other.hi[0] || p.y < other.lo[1] || p.y > other.hi[1] || p.z < other.lo[2] || p.z > other.hi[2])
+				continue;
+			tested = true;
+			// Each axis: the first of the other's triangles it meets. Leaving through its outer face is a vote for inside; coming
+			// in through it means the vertex is outside (that ray reaches the other's outer side first). No hit: open on the
+			// rock or water closing the sheet, or past it: neither
+			int leaving = 0;
+			bool entering = false;
+			for (int a = 0; a < 6; a++) {
+				// Too few axes left to make the votes: outside
+				if (leaving + (6 - a) < VOLUME_VOTES)
+					break;
+				const RE::NiPoint3& axis = axes[a];
+				const RE::NiPoint3 to = p + axis * VOLUME_REACH;
+				cells.clear();
+				const int steps = static_cast<int>(std::ceil(VOLUME_REACH / (SEAM_BIN * 0.25f)));
+				for (int i = 0; i <= steps; i++) {
+					const RE::NiPoint3 q = p + (to - p) * (static_cast<float>(i) / static_cast<float>(steps));
+					if (q.x < other.lo[0] - SEAM_BIN || q.x > other.hi[0] + SEAM_BIN || q.y < other.lo[1] - SEAM_BIN || q.y > other.hi[1] + SEAM_BIN || q.z < other.lo[2] - SEAM_BIN ||
+						q.z > other.hi[2] + SEAM_BIN)
+						break;  // Past the other's bound: nothing more of it along this axis
+					const int64_t key = binKey(cellOf(q.x), cellOf(q.y), cellOf(q.z));
+					if (cells.empty() || cells.back() != key)
+						cells.push_back(key);
+				}
+				float nearest = VOLUME_REACH;
+				int sign = 0;
+				for (const int64_t key : cells) {
+					const auto it = other.bins.find(key);
+					if (it == other.bins.end())
+						continue;
+					for (const uint32_t t : it->second) {
+						const auto& tri = other.triangles[t];
+						const float along = RayTriangle(p, axis, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]], nearest);
+						if (along < 1.0f)
+							continue;  // Behind, past the nearest so far, or on the vertex itself (two sheets touching)
+						nearest = along;
+						const RE::NiPoint3 face = (other.positions[tri[1]] - other.positions[tri[0]]).Cross(other.positions[tri[2]] - other.positions[tri[0]]) * static_cast<float>(other.side[t]);
+						sign = face.Dot(axis) > 0.0f ? 1 : -1;
 					}
 				}
+				leaving += sign > 0 ? 1 : 0;
+				if (sign < 0) {
+					entering = true;
+					break;
+				}
 			}
-			for (auto& n : sheet.outward) {
-				const float length = n.Length();
-				n = length > 1e-6f ? n / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
-			}
-			sheets.push_back(std::move(sheet));
-		}
-		return sheets;
-	}
-
-	void FallSites::RefreshCulling()
-	{
-		// D112: in this order, each step reading only what the steps before it settled: the pools' cut (where the meshes are
-		// drawn, so after the moves), the curl cut (behind leading faces that are themselves shown: in rock, under the
-		// water, at a faded seam or cut by the lead-in, a face hides nothing), a.x, then the inner sides (covered only by
-		// a shown sheet). D103-D111 ran the curl cut once, as the seams were done: before the rock, the pools and the
-		// lead-in cut were known, so a sheet behind a leading face buried in the river or the rock was cut, a hole
-		const auto sheets = BuildCullSheets();
-		ComputePoolCuts(sheets);
-		ComputeCurlCuts(sheets);
-		ComputeSides(sheets);
-	}
-
-	void FallSites::ComputePoolCuts(const std::vector<CullSheet>& a_sheets)
-	{
-		uint32_t cut = 0;
-		for (const auto& sheet : a_sheets) {
-			for (uint32_t v = 0; v < sheet.positions.size(); v++) {
-				VertexCut& parts = vertexCuts[sheet.base + v];
-				parts.pool = NO_CUT;
-				// D71: only its foot (a.w's first bit), as FallGround::ClipDistance
-				if (std::fmod(vertexClips[sheet.base + v][3], 2.0f) < 0.5f)
-					continue;
-				float level = 0.0f;
-				if (!PoolCutAt(sheet.drawn[v].x, sheet.drawn[v].y, level))
-					continue;
-				parts.pool = std::min(sheet.drawn[v].z - level, NO_CUT);
-				cut += parts.pool <= 0.0f ? 1 : 0;
-			}
-		}
-		logger::info("[Fluid Field]   {} foot vertices under the pools' cut", cut);
-	}
-
-	void FallSites::ComputeCurlCuts(const std::vector<CullSheet>& a_sheets)
-	{
-		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
-		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
-		// The triangles of a sheet within a_reach of a point (a superset): those in the cells round it
-		const auto nearby = [&](const CullSheet& a_sheet, const RE::NiPoint3& a_p, float a_reach, const auto& a_visit) {
-			const int64_t x0 = cellOf(a_p.x - a_reach), x1 = cellOf(a_p.x + a_reach), y0 = cellOf(a_p.y - a_reach), y1 = cellOf(a_p.y + a_reach), z0 = cellOf(a_p.z - a_reach),
-						  z1 = cellOf(a_p.z + a_reach);
+			if (entering || leaving < VOLUME_VOTES)
+				continue;
+			// Inside: cut from VOLUME_MARGIN within the other's surface (its nearest triangle), so the cut line runs a little past
+			// where the two sheets cross and the seam stays closed; held to -CLIP_RANGE as every cut (D58)
+			const float reach = VOLUME_MARGIN + CLIP_RANGE;
+			float best = reach * reach;
+			const int64_t x0 = cellOf(p.x - reach), x1 = cellOf(p.x + reach), y0 = cellOf(p.y - reach), y1 = cellOf(p.y + reach), z0 = cellOf(p.z - reach), z1 = cellOf(p.z + reach);
 			for (int64_t x = x0; x <= x1; x++) {
 				for (int64_t y = y0; y <= y1; y++) {
 					for (int64_t z = z0; z <= z1; z++) {
-						const auto it = a_sheet.bins.find(binKey(x, y, z));
-						if (it == a_sheet.bins.end())
+						const auto it = other.bins.find(binKey(x, y, z));
+						if (it == other.bins.end())
 							continue;
-						for (const uint32_t t : it->second)
-							a_visit(t);
-					}
-				}
-			}
-		};
-		// A mesh leads another: higher, or as high and larger (D67)
-		const auto leads = [](const CullSheet& a_lead, const CullSheet& a_mesh) {
-			return a_lead.top > a_mesh.top + 8.0f || (std::abs(a_lead.top - a_mesh.top) <= 8.0f && a_lead.area > a_mesh.area);
-		};
-		// Every curl cut undone first, then the sheets highest first, so a leading sheet's own curl cut is in place before the
-		// sheets behind it read whether its face shows (a sheet cut inside a third one's curl hides nothing behind it)
-		for (const auto& sheet : a_sheets) {
-			for (uint32_t v = 0; v < sheet.positions.size(); v++) {
-				vertexCuts[sheet.base + v].curl = NO_CUT;
-				ComposeCut(sheet.base + v);
-			}
-		}
-		std::vector<std::size_t> order(a_sheets.size());
-		for (std::size_t i = 0; i < order.size(); i++)
-			order[i] = i;
-		std::sort(order.begin(), order.end(), [&](std::size_t a_a, std::size_t a_b) {
-			return a_sheets[a_a].top != a_sheets[a_b].top ? a_sheets[a_a].top > a_sheets[a_b].top : a_sheets[a_a].area > a_sheets[a_b].area;
-		});
-		uint32_t overlapped = 0, unshownFaces = 0;
-		for (const std::size_t index : order) {
-			const CullSheet& mesh = a_sheets[index];
-			// D98: inside a leading mesh's curl (behind its outer face, within INSIDE_REACH of it, its face there not itself
-			// cut): cut. Two C-shaped sheets crossing each leave the one inside the other; see-through, both showed
-			// D99: cut by how far behind the face it lies (signed, from INSIDE_MARGIN), not a whole vertex at -CLIP_RANGE:
-			// interpolated linearly, a step put the cut line along the triangles' edges (a sawtooth); a distance puts it
-			// where the sheet passes behind the face. A vertex in front is not touched
-			for (std::size_t v = 0; v < mesh.positions.size(); v++) {
-				if (mesh.open[v])
-					continue;
-				const RE::NiPoint3& p = mesh.positions[v];
-				float deepest = NO_CUT;
-				for (const auto& other : a_sheets) {
-					if (&other == &mesh || !leads(other, mesh) || p.x < other.lo[0] - INSIDE_REACH || p.x > other.hi[0] + INSIDE_REACH || p.y < other.lo[1] - INSIDE_REACH ||
-						p.y > other.hi[1] + INSIDE_REACH || p.z < other.lo[2] - INSIDE_REACH || p.z > other.hi[2] + INSIDE_REACH)
-						continue;
-					float best = INSIDE_REACH * INSIDE_REACH;
-					int64_t nearest = -1;
-					nearby(other, p, INSIDE_REACH, [&](uint32_t a_t) {
-						const auto& tri = other.triangles[a_t];
-						const float d = TriangleDistanceSquared(p, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]]);
-						if (d < best) {
-							best = d;
-							nearest = a_t;
+						for (const uint32_t t : it->second) {
+							const auto& tri = other.triangles[t];
+							best = std::min(best, TriangleDistanceSquared(p, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]]));
 						}
-					});
-					if (nearest < 0)
-						continue;
-					const auto t = static_cast<std::size_t>(nearest);
-					const auto& tri = other.triangles[t];
-					// Its face there not shown (D112: VertexShown: cut, under the pools, inside rock, faded at a seam): nothing
-					// to hide behind
-					bool faceShown = true;
-					for (int k = 0; k < 3; k++)
-						faceShown = faceShown && VertexShown(other.base + tri[k]);
-					if (!faceShown) {
-						unshownFaces++;
-						continue;
 					}
-					// D103: its outer side as carried over its sheet (OrientSheet), not the travel's per triangle: on the lead-in
-					// climbing to the crest that turned the face round, and the river side of it (a neighbour's lip) was cut
-					RE::NiPoint3 n = (other.positions[tri[1]] - other.positions[tri[0]]).Cross(other.positions[tri[2]] - other.positions[tri[0]]);
-					if (t < other.side.size() && other.side[t] < 0)
-						n = -n;
-					const RE::NiPoint3 centre = (other.positions[tri[0]] + other.positions[tri[1]] + other.positions[tri[2]]) / 3.0f;
-					const float area = n.Length();
-					if (area < 1e-6f)
-						continue;
-					const float behind = (p - centre).Dot(n) / area;
-					if (behind >= 0.0f)
-						continue;
-					// D103: only where the face covers it: a vertex beside the leading sheet (its nearest point on an open edge
-					// or a fold, off to the side) is not inside its curl. A neighbour sheet running on past the leading one's
-					// edge, a little behind its plane, was cut up to INSIDE_REACH from it (the gaps between sheets). The cut
-					// grows with how far to the side it lies (INSIDE_LATERAL per unit), so it fades out smoothly there
-					const float lateral = std::sqrt(std::max(best - behind * behind, 0.0f));
-					const float clip = std::max(behind + INSIDE_MARGIN + INSIDE_LATERAL * lateral, -CLIP_RANGE);
-					deepest = std::min(deepest, clip);
 				}
-				vertexCuts[mesh.base + v].curl = deepest;
-				ComposeCut(mesh.base + v);
-				overlapped += deepest < 0.0f ? 1 : 0;
 			}
+			deepest = std::min(deepest, std::max(VOLUME_MARGIN - std::sqrt(best), -CLIP_RANGE));
 		}
-		vertexClipVersion++;
-		logger::info("[Fluid Field]   curl cut: {} vertices inside another sheet's curl; {} times a leading face was passed by, not shown", overlapped, unshownFaces);
+		vertexCuts[mesh.base + a_vertex].inside = deepest;
+		a_job.tested += tested ? 1 : 0;
+		a_job.inside += deepest < 0.0f ? 1 : 0;
 	}
 
-	void FallSites::ComputeSides(const std::vector<CullSheet>& a_sheets)
+	void FallSites::SideFlags(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job)
 	{
 		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
 		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
-		const auto start = std::chrono::steady_clock::now();
-		for (const auto& sheet : a_sheets)
-			outwardNormals[sheet.geometry] = sheet.outward;  // D109: the depth rays' way in (against it)
+		const CullSheet& sheet = a_sheets[a_sheet];
 		// D103: a vertex's inner side is hidden (D100's discard) only where another shown sheet lies behind it, its outer side
 		// turned away from the vertex: looking at the vertex's inner side, that sheet's outer face is in front. A sheet with
 		// open air or rock behind it (a free curtain seen from behind or above, the lip seen from upstream) still shows
 		// from inside: D100 hid it everywhere and the cliff showed through
-		uint32_t inward = 0, covered = 0, tested = 0;
-		std::vector<int64_t> cells;
-		for (const auto& sheet : a_sheets) {
-			for (uint32_t v = 0; v < sheet.positions.size(); v++) {
-				const RE::NiPoint3& p = sheet.positions[v];
-				const RE::NiPoint3 back = -sheet.outward[v];
-				bool hidden = false;
-				if (back.Length() > 0.5f) {
-					tested++;
-					const RE::NiPoint3 from = p + back * COVER_NEAR;
-					const RE::NiPoint3 to = p + back * INSIDE_REACH;
-					// The bins the ray passes, sampled at a quarter bin (a bin's triangles include every one whose bound touches it)
-					cells.clear();
-					const int steps = static_cast<int>(std::ceil((INSIDE_REACH - COVER_NEAR) / (SEAM_BIN * 0.25f)));
-					for (int i = 0; i <= steps; i++) {
-						const RE::NiPoint3 q = from + (to - from) * (static_cast<float>(i) / static_cast<float>(steps));
-						const int64_t key = binKey(cellOf(q.x), cellOf(q.y), cellOf(q.z));
-						if (cells.empty() || cells.back() != key)
-							cells.push_back(key);
-					}
-					const float lo[3] = { std::min(from.x, to.x), std::min(from.y, to.y), std::min(from.z, to.z) };
-					const float hi[3] = { std::max(from.x, to.x), std::max(from.y, to.y), std::max(from.z, to.z) };
-					float nearest = INSIDE_REACH - COVER_NEAR;
-					bool hitShown = false;
-					for (const auto& other : a_sheets) {
-						if (lo[0] > other.hi[0] || hi[0] < other.lo[0] || lo[1] > other.hi[1] || hi[1] < other.lo[1] || lo[2] > other.hi[2] || hi[2] < other.lo[2])
-							continue;
-						for (const int64_t key : cells) {
-							const auto it = other.bins.find(key);
-							if (it == other.bins.end())
-								continue;
-							for (const uint32_t t : it->second) {
-								const auto& tri = other.triangles[t];
-								const float along = RayTriangle(from, back, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]], nearest);
-								if (along < 0.0f)
-									continue;
-								nearest = along;
-								// The first sheet behind decides: shown (D112: VertexShown, not only a.x: not under the pools, not in
-								// rock, not faded at a seam) with its outer side away from this vertex
-								const RE::NiPoint3 face = (other.positions[tri[1]] - other.positions[tri[0]]).Cross(other.positions[tri[2]] - other.positions[tri[0]]) * static_cast<float>(other.side[t]);
-								bool shown = face.Dot(back) > 0.0f;
-								for (const uint16_t k : tri)
-									shown = shown && VertexShown(other.base + k);
-								hitShown = shown;
-							}
-						}
-					}
-					hidden = hitShown;
-				}
-				const bool turned = sheet.shown[v].Dot(sheet.outward[v]) < 0.0f;
-				inward += turned ? 1 : 0;
-				covered += hidden ? 1 : 0;
-				// a.w: 1 its foot (D71), +2 its normal faces in (D100), +4 its inner side is covered (D103)
-				float& flags = vertexClips[sheet.base + v][3];
-				flags = std::fmod(flags, 2.0f) + (turned ? 2.0f : 0.0f) + (hidden ? 4.0f : 0.0f);
+		const RE::NiPoint3& p = sheet.positions[a_vertex];
+		const RE::NiPoint3 back = -sheet.outward[a_vertex];
+		bool hidden = false;
+		if (back.Length() > 0.5f) {
+			a_job.sideTested++;
+			const RE::NiPoint3 from = p + back * COVER_NEAR;
+			const RE::NiPoint3 to = p + back * INSIDE_REACH;
+			// The bins the ray passes, sampled at a quarter bin (a bin's triangles include every one whose bound touches it)
+			std::vector<int64_t> cells;
+			const int steps = static_cast<int>(std::ceil((INSIDE_REACH - COVER_NEAR) / (SEAM_BIN * 0.25f)));
+			for (int i = 0; i <= steps; i++) {
+				const RE::NiPoint3 q = from + (to - from) * (static_cast<float>(i) / static_cast<float>(steps));
+				const int64_t key = binKey(cellOf(q.x), cellOf(q.y), cellOf(q.z));
+				if (cells.empty() || cells.back() != key)
+					cells.push_back(key);
 			}
+			const float lo[3] = { std::min(from.x, to.x), std::min(from.y, to.y), std::min(from.z, to.z) };
+			const float hi[3] = { std::max(from.x, to.x), std::max(from.y, to.y), std::max(from.z, to.z) };
+			float nearest = INSIDE_REACH - COVER_NEAR;
+			bool hitShown = false;
+			for (const auto& other : a_sheets) {
+				if (lo[0] > other.hi[0] || hi[0] < other.lo[0] || lo[1] > other.hi[1] || hi[1] < other.lo[1] || lo[2] > other.hi[2] || hi[2] < other.lo[2])
+					continue;
+				for (const int64_t key : cells) {
+					const auto it = other.bins.find(key);
+					if (it == other.bins.end())
+						continue;
+					for (const uint32_t t : it->second) {
+						const auto& tri = other.triangles[t];
+						const float along = RayTriangle(from, back, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]], nearest);
+						if (along < 0.0f)
+							continue;
+						nearest = along;
+						// The first sheet behind decides: shown (D112: VertexShown, not only a.x: not under the pools, not in
+						// rock, not faded at a seam; D113: not inside a third sheet) with its outer side away from this vertex
+						const RE::NiPoint3 face = (other.positions[tri[1]] - other.positions[tri[0]]).Cross(other.positions[tri[2]] - other.positions[tri[0]]) * static_cast<float>(other.side[t]);
+						bool shown = face.Dot(back) > 0.0f;
+						for (const uint16_t k : tri)
+							shown = shown && VertexShown(other.base + k);
+						hitShown = shown;
+					}
+				}
+			}
+			hidden = hitShown;
 		}
-		vertexClipVersion++;
-		logger::info("[Fluid Field] Waterfall sides: {} of {} vertices of {} lit meshes turned to face out; {} of {} tested have a sheet in front of their inner side ({:.1f} ms)", inward,
-			vertexClips.size(), a_sheets.size(), covered, tested, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+		const bool turned = sheet.shown[a_vertex].Dot(sheet.outward[a_vertex]) < 0.0f;
+		a_job.inward += turned ? 1 : 0;
+		a_job.covered += hidden ? 1 : 0;
+		// a.w: 1 its foot (D71), +2 its normal faces in (D100), +4 its inner side is covered (D103)
+		float& flags = vertexClips[sheet.base + a_vertex][3];
+		flags = std::fmod(flags, 2.0f) + (turned ? 2.0f : 0.0f) + (hidden ? 4.0f : 0.0f);
 	}
 
 	std::unique_ptr<FallSites::BakeJob> FallSites::StartBake(RE::BSGeometry* a_geometry)
@@ -3101,7 +3132,10 @@ namespace FluidFieldSim
 				// the cliff reached over a lead-in standing in the open, and cut the visible top of the sheet
 				const auto waterOver = [&](const RE::NiPoint3& a_p, float a_ceiling) {
 					float level = 0.0f, highest = -FLT_MAX;
-					if (PoolLevelAt(a_p.x, a_p.y, level) && level <= a_ceiling)
+					// D113: our pools with no ceiling: they are water confirmed over the rock (D40, D78), not a plane's bound, and the
+					// river over a deeply submerged crest stood more than LEAD_WATER_OVER_CREST over it (SS 979: the lead-in
+					// curving down into the bed showed under the river)
+					if (PoolLevelAt(a_p.x, a_p.y, level))
 						highest = level;
 					for (const auto& plane : leadPlanes) {
 						if (a_p.x >= plane[0] && a_p.x <= plane[2] && a_p.y >= plane[1] && a_p.y <= plane[3] && plane[4] <= a_ceiling)
@@ -3184,7 +3218,7 @@ namespace FluidFieldSim
 			meshes++;
 		}
 		ComposeShifts();
-		RefreshCulling();  // D103: after the lead-in cuts, which the covering sheets' test reads; D112: and the curl cut's leading faces
+		RequestCulling();  // D103: after the lead-in cuts, which the covering sheets' test reads
 		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units; {} wobble, at most {:.1f} units; {} normals turned outward; {} hidden lead-in vertices cut",
 			pushed, meshes, most, wobbled, mostWobble, flippedTotal, leadCut);
 	}
@@ -3650,6 +3684,7 @@ namespace FluidFieldSim
 		CaptureStep();
 		ClipStep();
 		BuryStep();
+		CullStep();  // D113
 		DepthStep();
 		BakeStep();
 		PollPools();
