@@ -192,6 +192,13 @@ static const float NORMAL_STRENGTH = 0.8;
 static const float FALLS_UV_WORLD = 512.0;
 /** D129: the water type's ripples on the sheet over the river's (Water.hlsl's amplitude-weighted blend). */
 static const float RIPPLE_STRENGTH = 1.0;
+/** D147: the fine detail ripples: world units per repeat, and how much they tilt the surface. */
+static const float DETAIL_TILE = 160.0;
+static const float DETAIL_STRENGTH = 0.8;
+/** D147: the share of the river's reflection (fresnel) the falls take. */
+static const float FALLS_REFLECTION = 0.35;
+/** D147: world units of water the sheet's colour and opacity read at least. */
+static const float BODY_DEPTH = 120.0;
 
 /**
  * D130: the repeats of a texture a_worldScale units across per repeat of the falls' flow coordinates (FALLS_UV_WORLD),
@@ -267,10 +274,10 @@ static const float CREST_QUIET_SECONDS = 0.3;
 static const float FOOT_FOAM_REACH = 100.0;
 /** D139: the same for the foot band (at 1, short curtains were solid white top to bottom, SS 1031-1032). */
 static const float FOOT_FOAM = 0.8;
-static const float CONTACT_FOAM_REACH = 20.0;
+static const float CONTACT_FOAM_REACH = 32.0;  // D147: 32 and 0.45 (were 20 and 0.9): soft as the river's shore, not a line
 /** D121: how white a seam's overlap and a mesh's contact foam at most. */
 static const float SEAM_FOAM = 0.7;
-static const float CONTACT_FOAM = 0.9;
+static const float CONTACT_FOAM = 0.45;
 /** D128: world units from another sheet over which the water foams where two meet, and how white at most. */
 static const float MEET_FOAM_REACH = 64.0;  // D131: 64 (was 40): the user, larger
 static const float MEET_FOAM = 1.0;
@@ -366,6 +373,10 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 								Drifted(Noise3Tex, position, geometric, drift, NoiseScale.z, 0.67).xyz * NoiseAmplitude.z) *
 		                    RIPPLE_STRENGTH;
 		normal = SafeNormalize(normal + tilt - normal * dot(normal, tilt), normal);
+		// D147: the river's fine detail (its flow detail, 384-unit tiles, two drifting phases): small ripples the sun breaks
+		// into sparkle; the water type's maps alone are hundreds to thousands of units across, a slow wobble (SS 1046)
+		const float3 detail = Drifted(Noise3Tex, position, geometric, drift, DETAIL_TILE, 0.53).xyz * DETAIL_STRENGTH;
+		normal = SafeNormalize(normal + detail - normal * dot(normal, detail), normal);
 	}
 	const float facing = saturate(dot(normal, toCamera));
 	const float cosine = abs(dot(geometric, toCamera));
@@ -476,7 +487,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// the ray crosses (refractionMul) with Fluid Field's water tint (TintedRefractionWeight), its colour shallow to deep
 	// linearly over the fog's far distance; aerated water at least AERATION_OPACITY opaque. D105-D121's separate
 	// absorption made the falls solid tinted sheets where the river beside them reads clear
-	const float path = SheetPath(BehindDepth(input, sheetDepth, behindDepth), cosine) * DepthScale;
+	// D147: at least BODY_DEPTH of water: the river beside the falls reads as a deep, dark body, the sheet as a clear film
+	// over its rock (SS 1046)
+	const float path = max(SheetPath(BehindDepth(input, sheetDepth, behindDepth), cosine), BODY_DEPTH) * DepthScale;
 	const float refractionMul = 1.0 - pow(saturate((FogFar - path) / FogRange), FogAmount);
 	const float opacity = max(FluidField::TintedRefractionWeight(refractionMul, path), AERATION_OPACITY * aerated);
 
@@ -515,13 +528,15 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 		const float fresnelRI = exponent != 0.0 ? pow(abs(FresnelF0), exponent) : 1.0;
 		fresnel = lerp(SharedData::enbSettings.WaterFresnelMin, SharedData::enbSettings.WaterFresnelMax, (1.0 - fresnelRI) * pow(viewAngle, 5.0) + fresnelRI) * SharedData::enbSettings.WaterReflectionAmount;
 	}
-	float3 color = lerp(waterColor, environment, saturate(fresnel) * (1.0 - 0.5 * foam));
+	// D147: falling water's broken surface reflects less than the river's level one: seen grazing (as from above) its full
+	// fresnel made every steep sheet a blue-grey mirror of the sky, beside the river's dark water colour (SS 1046)
+	float3 color = lerp(waterColor, environment, saturate(fresnel) * FALLS_REFLECTION * (1.0 - 0.5 * foam));
 
 	// The sun's glint (Water.hlsl's GetSunColor): the directional light as ShadowSampling gives it (the moon at night),
 	// the water type's sun specular power and magnitude, in the surface's shadow; matte on foam. D127: the river's
 	// (FluidField::SunGlint: widened and energy kept where the water is rough, here aerated), at its full strength
 	const float3 sunReflected = reflect(-toCamera, normal);
-	FluidField::PixelRoughness = aerated * 1.5;
+	FluidField::PixelRoughness = 0.0;  // D147: the river's tight glint (aeration widened and dimmed it to nothing)
 	float3 glint = sun * FluidField::SunGlint(saturate(dot(sunReflected, lightDirection)), SunSpecularPower) * SunSpecularStrength * shadow;
 	if (SharedData::enbSettings.EnableWater)
 		glint *= SharedData::enbSettings.WaterSunSpecularMultiplier;

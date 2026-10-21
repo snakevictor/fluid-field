@@ -3481,3 +3481,22 @@ Entry format:
         every crest.
     -   Left: thin contact foam where sheets touch rock at their sides.
 -   References: D124, D139, D142, D143, D145
+
+## D147: The falls nearer the river's look
+
+-   Date: 2026-10-21
+-   Decision (SS 1046: the river a dark body with dense small sparkle, the
+    falls a clear film over their rock with a slow wobble and hard white
+    rims):
+    -   The sheet's colour and opacity read at least 120 units of water
+        (BODY_DEPTH), so it reads as a body like the river beside it.
+    -   Its reflection is 0.35 of the river's fresnel: seen grazing (as from
+        above) the full fresnel made every steep sheet a blue-grey mirror.
+    -   A fine detail ripple layer (the water type's third map, 160 units
+        per repeat, drifting with the flow, 0.8) and the river's tight glint
+        (no roughness from aeration).
+    -   The rock contact foam softer and wider (0.45 over 32 units, was 0.9
+        over 20): white lines where sheets meet rock.
+-   Open: the falls a little browner than the river's olive; sparkle on
+    steep sheets is rare (the sun seldom lines up with them).
+-   References: D127, D129, D131
