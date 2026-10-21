@@ -176,3 +176,6 @@ FallGround::Flow's uvA is the bake's coordinates minus the scroll phase, and
 the phase wraps at 1. A texture sampled at uvA scaled by a fraction along v
 jumps by that fraction once a cycle, a visible reset of the whole sheet.
 Scale u freely; round v to a whole number of repeats (FallSurface's FlowScale).
+
+-   **Never cut a sheet sim's domain to save work** (2026-10-21, D132). Leaving culled texels out of the falls bake (covered 0) turned every cull edge into a sheet edge: rims, crests and strand starts there, foam and wake in bands across the flow. Bake whole; mask only the outputs.
+-   **The depth test does not hide what is inside the landscape from below** (2026-10-21, D131). The landscape is one-sided: from under it, buried falls parts show. Anything known to be buried must be cut (SV_ClipDistance), not left to depth.

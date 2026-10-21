@@ -3136,3 +3136,74 @@ Entry format:
 -   Lesson (LEARNINGS): any texture laid on flow.uvA must have an integer
     scale along v.
 -   References: D85, D127, D129
+
+## D131: Burial cut on the GPU; statics by parity; the river's planes for the submerged cut (branch feature/fluid-field-culling-5)
+
+-   Date: 2026-10-21
+-   Context: round 3 in game ("Waterfall rock test: 222939 of 372729 vertices
+    inside rock (192976 under the landscape; 1111555 rays)"). SS 993-995
+    (camera under the ground or inside rock): sheet parts under the
+    landscape and inside rock still show; SS 994/995 are SS 983/985's spots.
+    The user: the sheets' crossing (D113) "gets us the results we want as a
+    whole": treat the landscape and statics the same way, one union with
+    the sheets, only its outer shell kept. SS 996 (under the upper river):
+    the lead-in arch is still visible and now pokes through the riverbed.
+-   Cause (SS 993-995, the main one): **burial was never cut on the GPU.**
+    D112 left "buried" out of a.x, trusting the depth test to hide what lies
+    in rock. From under the landscape (one-sided, not drawn from below) or
+    inside a mesh, nothing hides it. The landscape test probably called most
+    of those pieces buried already; now the log says so per mesh (below).
+-   Decision:
+    -   **VertexCut::rock, in a.x**: under the landscape, its height less
+        BURY_LAND (8) under it, signed, so the cut line runs 8 units under
+        the ground; inside a static, from BURY_MARGIN (24) inside the nearest
+        face, so a sheet dipping into the rock it lies on keeps its edge in
+        the rock.
+    -   **Statics by parity** (as VolumeCut, D113): along each of the six
+        axes, the static faces (layers 1, 2; the falls' own collision passed)
+        between the vertex and BURY_REACH (1000) out, cast from both ends
+        and merged (a face seen from both sides counted once), odd: inside
+        along that axis. Inside with four of six (a far end can sit in a
+        cliff). Replaces D126's "a way from open air reaches it". The
+        landscape stays the exact heightfield test.
+    -   **Evidence in the log**: per mesh, "rock test '<name>': N vertices with
+        no landscape under them, M whose ray passed something first", and the
+        four lowest vertices the landscape test kept, with the landscape's
+        height, their height over it, the ray's steps and the first hit's
+        layer and reference.
+    -   **The submerged cut also reads the engine's water planes** over the
+        sheet (CollectWaterPlanes), where the plane stands at most 256 units
+        over the landscape under the vertex (a river over its bed, not a
+        cell's plane high up the cliff, D103), still only within 64 units of
+        that landscape. SS 996: our pools did not reach that river.
+-   Cost: per vertex not under the landscape, two to six axes of two stepped
+    casts each (about 4-12 casts, more where statics stack).
+-   Untested: builds; not run in game.
+-   Risks: the burial is now visible as a cut: a false "inside" holes the
+    sheet (four axes must agree, and the cut starts 24 units in). A static
+    whose collision is open (a cliff shell with no back) reads as outside
+    along its open side.
+-   References: D103, D112, D113, D126
+
+## D132: The bake on the whole mesh again; the cull masks only the emitters
+
+-   Date: 2026-10-21
+-   Context: after D126's re-bake the bake's foam and wake (rendered raw by
+    the coordinator) were high over nearly every sheet, in bands across the
+    flow a few texels apart (the user's "zebra" foam, SS 997, 999; whole
+    foamed sheets, SS 1000-1002). Before, they were sparse: rock rims and
+    wakes.
+-   Cause: D126 left culled texels out of the bake's domain (covered 0).
+    Every edge of the cull became an edge of the sheet to the strands, the
+    rims and the crests, and the culled bands across the flow (cut at
+    landscape and statics, often in rows) restarted them every few texels.
+-   Decision: the bake runs on the whole mesh, as before D126, and no longer
+    waits for the culling (BAKE_CACHE_VERSION 8, the shell hash out of the
+    key). The culled parts are hidden by the cut. BuildPlunges reads the
+    mesh whole (neighbours, crests, top and foot) and uses the shell only as
+    the gate on each texel's own spray, plunge or crossing, so a cull's edge
+    is never a rim or a foot. The user's "cull before the bake to save
+    work" is set aside: the culled domain changed the flow.
+-   Untested: builds; not run in game; the strand harness was not re-run:
+    the bake's inputs are again what they were before D126.
+-   References: D126

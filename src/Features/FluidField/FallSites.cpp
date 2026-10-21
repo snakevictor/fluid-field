@@ -453,7 +453,6 @@ namespace FluidFieldSim
 		buryDone = true;
 		cullJob.reset();  // D113
 		cullRequested = false;
-		landCache.clear();  // D126
 		hideEffects = false;
 		RefreshHiddenEffects();
 		// D91: the pieces the refractive pass drew show again (the wish is kept for the next sites)
@@ -1852,7 +1851,7 @@ namespace FluidFieldSim
 		if (a_index >= vertexClips.size() || a_index >= vertexCuts.size())
 			return;
 		const VertexCut& cut = vertexCuts[a_index];
-		vertexClips[a_index][0] = std::min({ cut.water, cut.inside, cut.lead, cut.submerged });
+		vertexClips[a_index][0] = std::min({ cut.water, cut.inside, cut.lead, cut.submerged, cut.rock });
 	}
 
 	bool FallSites::VertexInShell(std::size_t a_index) const
@@ -1863,7 +1862,7 @@ namespace FluidFieldSim
 		return !cut.buried && cut.inside > 0.0f && cut.lead > 0.0f && cut.submerged > 0.0f;
 	}
 
-	float FallSites::LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above) const
+	float FallSites::LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above, LandProbe* a_probe) const
 	{
 		// D126: straight down, past every hit that is not the landscape's own collision: layer 17 (ground) or 13 (terrain) with
 		// no reference (placed meshes on those layers carry one). LEARNINGS: landscape rays hit kGround, never kTerrain
@@ -1880,11 +1879,50 @@ namespace FluidFieldSim
 				return -FLT_MAX;
 			const float hit = z + (bottom - z) * output.hitFraction;
 			const auto layer = output.rootCollidable->GetCollisionLayer();
-			if ((layer == RE::COL_LAYER::kGround || layer == RE::COL_LAYER::kTerrain) && !RE::TESHavokUtilities::FindCollidableRef(*output.rootCollidable))
+			const bool referenced = RE::TESHavokUtilities::FindCollidableRef(*output.rootCollidable) != nullptr;
+			// D131: what the ray met, for the log's samples (SS 994, 995: was a piece under the ground called above it?)
+			if (a_probe) {
+				a_probe->steps = step + 1;
+				if (step == 0) {
+					a_probe->firstLayer = static_cast<uint32_t>(layer);
+					a_probe->firstReferenced = referenced;
+					a_probe->firstHeight = hit;
+				}
+			}
+			if ((layer == RE::COL_LAYER::kGround || layer == RE::COL_LAYER::kTerrain) && !referenced)
 				return hit;
 			z = hit - 0.5f;
 		}
 		return -FLT_MAX;
+	}
+
+	void FallSites::StaticHits(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, bool a_flip, std::vector<float>& a_hits) const
+	{
+		// D131: every face of a static (layers 1 and 2, the falls' own collision passed through) the ray meets, as distances
+		// from a_from (a_flip: from its far end, a_reach along); the landscape is left to LandHeightAt
+		const float scale = RE::bhkWorld::GetWorldScale();
+		float from = 0.0f;
+		for (int step = 0; step < 16 && from < a_reach; step++) {
+			const RE::NiPoint3 start = a_from + a_direction * from;
+			const RE::NiPoint3 end = a_from + a_direction * a_reach;
+			RE::hkpWorldRayCastInput input;
+			input.from = RE::hkVector4(start.x * scale, start.y * scale, start.z * scale, 0.0f);
+			input.to = RE::hkVector4(end.x * scale, end.y * scale, end.z * scale, 0.0f);
+			RE::hkpWorldRayCastOutput output;
+			a_world->CastRay(input, output);
+			if (!output.HasHit() || !output.rootCollidable)
+				break;
+			const float hit = from + (a_reach - from) * output.hitFraction;
+			const auto layer = output.rootCollidable->GetCollisionLayer();
+			if (layer == RE::COL_LAYER::kStatic || layer == RE::COL_LAYER::kAnimStatic) {
+				const auto* ref = RE::TESHavokUtilities::FindCollidableRef(*output.rootCollidable);
+				const char* model = ref ? ModelOf(ref->GetBaseObject()) : nullptr;
+				const std::string name = model ? Lowercase(model) : std::string();
+				if (name.find("fxwaterfall") == std::string::npos && name.find("fxrapids") == std::string::npos)
+					a_hits.push_back(a_flip ? a_reach - hit : hit);
+			}
+			from = hit + 0.5f;
+		}
 	}
 
 	std::vector<uint8_t> FallSites::ShellTexels(RE::BSGeometry* a_geometry, uint32_t a_width, uint32_t a_height, const float a_uvMin[2], const float a_uvSize[2], uint64_t* a_hash) const
@@ -2052,63 +2090,91 @@ namespace FluidFieldSim
 				for (int rays = 0; buryJob->next < buryJob->positions.size() && rays < 64; buryJob->next++) {
 					const std::size_t v = buryJob->next;
 					const RE::NiPoint3& p = buryJob->positions[v];
-					const RE::NiPoint3& n = buryJob->normals[v];
 					VertexCut& parts = vertexCuts[buryJob->base + v];
 					// D126: the landscape is a heightfield (no overhangs): a vertex under its surface is buried, cliffs included.
 					// Exact, from the landscape's own collision straight down (D113's height grid smoothed cliffs and was only
 					// trusted on level ground, so the underworld parts survived: SS 983-986)
 					const bool exterior = tes->interiorCell == nullptr;
-					parts.ground = exterior ? LandHeightAt(world, p.x, p.y, p.z + LAND_RAY_ABOVE) : -FLT_MAX;
+					LandProbe probe;
+					parts.ground = exterior ? LandHeightAt(world, p.x, p.y, p.z + LAND_RAY_ABOVE, &probe) : -FLT_MAX;
 					rays++;
 					buryRays++;
 					const bool underGround = parts.ground > -FLT_MAX && p.z < parts.ground - BURY_LAND;
-					// D126: in statics (boulders, cliffs): rays toward it from open air, BURY_REACH out, along its normal and against it,
-					// then the six axes and the eight diagonals. A way reaches it only if its start is above the landscape, nothing
-					// lies between the start and it (cast from the start), and nothing lies between it and the start (cast from the
-					// vertex: a start inside a static is seen from outside, the face it lies behind; D112 counted a ray starting
-					// inside rock as reaching, and deep parts survived)
-					bool buried = true;
+					// D131: in statics, as VolumeCut decides inside another sheet (D113): along each of the six axes, the faces of
+					// statics between the vertex and BURY_REACH out, cast from both ends (Havok may miss a face seen from behind;
+					// one seen from both sides is counted once), odd: inside along that axis. Inside by a majority (four of six),
+					// the far end itself sometimes in a cliff. D126 asked "does any way from open air reach it", which a start
+					// inside rock passed; the user: the sheets' crossing (D113) "gets us the results we want as a whole"
+					float staticClip = NO_CUT;
 					if (!underGround) {
-						static const float DIAGONAL = 0.57735027f;
-						const RE::NiPoint3 ways[16] = { n, -n, { 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f },
-							{ 0.0f, 0.0f, -1.0f }, { DIAGONAL, DIAGONAL, DIAGONAL }, { -DIAGONAL, DIAGONAL, DIAGONAL }, { DIAGONAL, -DIAGONAL, DIAGONAL },
-							{ -DIAGONAL, -DIAGONAL, DIAGONAL }, { DIAGONAL, DIAGONAL, -DIAGONAL }, { -DIAGONAL, DIAGONAL, -DIAGONAL }, { DIAGONAL, -DIAGONAL, -DIAGONAL },
-							{ -DIAGONAL, -DIAGONAL, -DIAGONAL } };
-						for (const auto& way : ways) {
-							const RE::NiPoint3 start = p + way * BURY_REACH;
-							if (exterior) {
-								const auto key = (static_cast<int64_t>(std::floor(start.x / LAND_CACHE_CELL)) << 32) ^ static_cast<uint32_t>(static_cast<int32_t>(std::floor(start.y / LAND_CACHE_CELL)));
-								auto [cached, added] = landCache.try_emplace(key, -FLT_MAX);
-								if (added) {
-									cached->second = LandHeightAt(world, start.x, start.y, std::max(start.z, p.z) + LAND_RAY_ABOVE);
-									rays++;
-									buryRays++;
+						static const RE::NiPoint3 axes[6] = { { 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f },
+							{ 0.0f, 0.0f, -1.0f } };
+						int inside = 0, outside = 0;
+						float depth = BURY_REACH;
+						std::vector<float> hits;
+						for (const auto& axis : axes) {
+							if (inside >= 4 || outside >= 3)
+								break;
+							hits.clear();
+							StaticHits(world, p, axis, BURY_REACH, false, hits);
+							StaticHits(world, p + axis * BURY_REACH, -axis, BURY_REACH, true, hits);
+							rays += 2;
+							buryRays += 2;
+							std::sort(hits.begin(), hits.end());
+							int crossings = 0;
+							float last = -FLT_MAX, nearest = BURY_REACH;
+							for (const float hit : hits) {
+								if (hit - last > 2.0f) {
+									crossings++;
+									nearest = std::min(nearest, hit);
 								}
-								if (cached->second > -FLT_MAX && start.z < cached->second)
-									continue;  // Starts under the landscape
+								last = hit;
 							}
-							const float in = RockAlong(world, start, -way, BURY_REACH);
-							rays++;
-							buryRays++;
-							if (in >= 0.0f && in < BURY_REACH - BURY_MARGIN)
-								continue;
-							const float out = RockAlong(world, p + way * BURY_MARGIN, way, BURY_REACH - BURY_MARGIN);
-							rays++;
-							buryRays++;
-							if (out >= 0.0f)
-								continue;
-							buried = false;
-							break;
+							if (crossings % 2 == 1) {
+								inside++;
+								depth = std::min(depth, nearest);
+							} else {
+								outside++;
+							}
+						}
+						// Cut from BURY_MARGIN inside the face (the nearest crossing along the inside axes), so a sheet dipping into
+						// the rock it lies on keeps its edge in the rock: the cut line stays hidden there
+						if (inside >= 4)
+							staticClip = std::clamp(BURY_MARGIN - depth, -CLIP_RANGE, NO_CUT);
+					}
+					// D131: both in a.x now (the GPU cuts them): the depth test was to hide them, but seen from under the landscape
+					// (one-sided, not drawn from below) or from inside a mesh, nothing did (SS 993-995)
+					const float landClip = parts.ground > -FLT_MAX ? std::clamp(p.z - (parts.ground - BURY_LAND), -CLIP_RANGE, NO_CUT) : NO_CUT;
+					parts.rock = std::min(landClip, staticClip);
+					const bool buried = parts.rock <= 0.0f;
+					// D131: the samples the log keeps: the lowest vertices over the landscape that were not buried
+					if (!buried && parts.ground > -FLT_MAX) {
+						const float over = p.z - parts.ground;
+						if (buryJob->samples.size() < 4 || over < buryJob->samples.back().over) {
+							buryJob->samples.push_back({ p, parts.ground, over, probe.steps, probe.firstLayer, probe.firstReferenced, probe.firstHeight });
+							std::sort(buryJob->samples.begin(), buryJob->samples.end(), [](const auto& a_a, const auto& a_b) { return a_a.over < a_b.over; });
+							if (buryJob->samples.size() > 4)
+								buryJob->samples.pop_back();
 						}
 					}
+					buryJob->landMissing += exterior && parts.ground == -FLT_MAX ? 1 : 0;
+					buryJob->landStepped += probe.steps > 1 ? 1 : 0;
 					parts.buried = buried ? 1 : 0;
 					buriedCount += buried ? 1 : 0;
 					buriedGround += underGround ? 1 : 0;
 					buryTested++;
 				}
 			}
-			if (buryJob->next >= buryJob->positions.size())
+			if (buryJob->next >= buryJob->positions.size()) {
+				// D131: the landscape test's evidence, per mesh: where no landscape was found, how many rays had to pass something
+				// first, and the lowest vertices it left standing (their height over it, and what the ray met first)
+				logger::info("[Fluid Field]   rock test '{}': {} vertices with no landscape under them, {} whose ray passed something first", buryJob->geometry->name.c_str(),
+					buryJob->landMissing, buryJob->landStepped);
+				for (const auto& sample : buryJob->samples)
+					logger::info("[Fluid Field]     kept at ({:.0f}, {:.0f}, {:.0f}): landscape {:.0f} ({:+.1f} over it), {} ray steps, first hit layer {} {} at {:.0f}", sample.at.x, sample.at.y,
+						sample.at.z, sample.ground, sample.over, sample.steps, sample.firstLayer, sample.firstReferenced ? "with a reference" : "without one", sample.firstHeight);
 				buryJob.reset();
+			}
 		}
 	}
 
@@ -2194,6 +2260,8 @@ namespace FluidFieldSim
 			const float length = n.Length();
 			n = length > 1e-6f ? n / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
 		}
+		// D131: the engine's water planes over it, for the submerged cut
+		CollectWaterPlanes(sheet.lo[0], sheet.lo[1], sheet.hi[0], sheet.hi[1], sheet.planes);
 		return sheet;
 	}
 
@@ -2246,10 +2314,21 @@ namespace FluidFieldSim
 					VertexCut& parts = vertexCuts[sheet.base + v];
 					parts.submerged = NO_CUT;
 					const RE::NiPoint3& at = sheet.positions[v];
-					float level = 0.0f;
-					if (parts.ground > -FLT_MAX && at.z - parts.ground <= SUBMERGED_BED && PoolLevelAt(at.x, at.y, level)) {
-						parts.submerged = std::clamp(at.z - (level - LEAD_CUT_DEPTH), -CLIP_RANGE, NO_CUT);
-						job.submerged += parts.submerged < 0.0f ? 1 : 0;
+					if (parts.ground > -FLT_MAX && at.z - parts.ground <= SUBMERGED_BED) {
+						// D131: and the engine's water planes over it (SS 996: the arch still showed where our pools did not reach),
+						// a plane only where it stands at most SUBMERGED_COLUMN over the landscape there: a river over its bed, not a
+						// lake's or a cell's plane high up the cliff reaching over (D103)
+						float level = -FLT_MAX, pool = 0.0f;
+						if (PoolLevelAt(at.x, at.y, pool))
+							level = pool;
+						for (const auto& plane : sheet.planes) {
+							if (at.x >= plane[0] && at.x <= plane[2] && at.y >= plane[1] && at.y <= plane[3] && plane[4] - parts.ground <= SUBMERGED_COLUMN)
+								level = std::max(level, plane[4]);
+						}
+						if (level > -FLT_MAX) {
+							parts.submerged = std::clamp(at.z - (level - LEAD_CUT_DEPTH), -CLIP_RANGE, NO_CUT);
+							job.submerged += parts.submerged < 0.0f ? 1 : 0;
+						}
 					}
 				} else if (job.stage == 2) {
 					VolumeCut(job.sheets, job.sheet, v, job);
@@ -2954,7 +3033,6 @@ namespace FluidFieldSim
 		mix(quantise(geometry->world.translate.z, 0.1f));
 		mix(quantise(geometry->world.scale, 0.001f));
 		mix(a_job.width);
-		mix(static_cast<int64_t>(a_job.shellHash));  // D126: a bake of another culled domain is another bake
 		mix(a_job.height);
 		for (int k = 0; k < 2; k++) {
 			mix(quantise(a_job.uvMin[k], 1e-4f));
@@ -3717,37 +3795,22 @@ namespace FluidFieldSim
 					});
 				}
 				RE::NiPointer<RE::BSGeometry> geometry = bakeQueue.back();
-				// D126: culled first: a mesh waits for its cut and rock test, and for the culling to settle (the bake's domain is
-				// its shell). One its ClipStep passed by (no collision world) bakes whole
-				if (geometry && grounded.contains(geometry.get())) {
-					const bool clipped = vertexClipBase.contains(geometry.get());
-					const bool clipping = std::any_of(clipQueue.begin(), clipQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == geometry.get(); });
-					if ((!clipped && clipping) || (clipped && (!buryDone || CullBusy())))
-						return;
-				}
 				bakeQueue.pop_back();
 				if (!geometry || !grounded.contains(geometry.get()))
 					continue;
 				bakeJob = StartBake(geometry.get());
 				if (!bakeJob)
 					continue;
-				// D126: culled first: the texels of what the culling hid for good (under the landscape, in statics, inside another
-				// sheet, in the river) are outside the domain: no rock test, no strands, no spray. The user: "culling maybe should come
-				// first? Then we don't waste resources baking flow on mesh parts we won't be using"
-				const auto shell = ShellTexels(geometry.get(), bakeJob->width, bakeJob->height, bakeJob->uvMin, bakeJob->uvSize, &bakeJob->shellHash);
-				for (std::size_t i = 0; i < shell.size() && i < bakeJob->covered.size(); i++) {
-					if (bakeJob->covered[i] && !shell[i]) {
-						bakeJob->covered[i] = 0;
-						bakeJob->culledTexels++;
-					}
-				}
+				// D132: the whole mesh is baked again (D126 left the culled texels out of the domain: every edge of the cull became
+				// a rim, and the foam and wake filled whole sheets in bands across the flow, SS 997-1002). The culled parts are
+				// hidden by the cut, and their spray, plunges and lips by BuildPlunges' shell mask
 				GatherSolids(*bakeJob);
 				// D82: baked before (same reference, placement, rock and ground): read back, no rock test or solve
 				bakeJob->cache = BakeCachePath(*bakeJob);
 				std::error_code error;
 				const bool cached = !bakeJob->cache.empty() && std::filesystem::exists(bakeJob->cache, error);
-				logger::info("[Fluid Field]   bake job '{}' ({}x{}, {} texels culled): cache {} '{}'", geometry->name.c_str(), bakeJob->width, bakeJob->height, bakeJob->culledTexels,
-					cached ? "hit" : "miss", bakeJob->cache.filename().string());
+				logger::info("[Fluid Field]   bake job '{}' ({}x{}): cache {} '{}'", geometry->name.c_str(), bakeJob->width, bakeJob->height, cached ? "hit" : "miss",
+					bakeJob->cache.filename().string());
 				if (cached) {
 					auto field = LoadBake(bakeJob->cache);
 					if (!field)
@@ -4314,8 +4377,9 @@ namespace FluidFieldSim
 			const std::size_t count = static_cast<std::size_t>(w) * h;
 			if (field->position.size() != count || field->turn.size() != count || field->normal.size() != count)
 				continue;
-			// D126: only the shell's texels (VertexInShell, as the culling stands now; the bake's own domain was its shell then):
-			// no spray, plunge or lip from parts under the landscape, in statics, inside another sheet or in the river
+			// D126: only the shell's texels (VertexInShell, as the culling stands now) give spray, plunges or lips: none from parts
+			// under the landscape, in statics, inside another sheet or in the river. D132: only as the gate on a texel's own
+			// output; the mesh's shape (its neighbours, crests, top and foot) is read whole, so a cull's edge is no rim or foot
 			std::vector<uint8_t> shellCovered = field->covered;
 			{
 				const float uvMin[2] = { field->uvMin[0], field->uvMin[1] }, uvSize[2] = { field->uvSize[0], field->uvSize[1] };
@@ -4324,10 +4388,10 @@ namespace FluidFieldSim
 					shellCovered[i] = shellCovered[i] && shell[i] ? 1 : 0;
 			}
 			const auto index = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * w + a_x; };
-			const auto covered = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < w && a_y < h && shellCovered[index(a_x, a_y)]; };
+			const auto covered = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < w && a_y < h && field->covered[index(a_x, a_y)]; };
 			float top = -FLT_MAX, bottom = FLT_MAX, lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
 			for (std::size_t i = 0; i < count; i++) {
-				if (!shellCovered[i])
+				if (!field->covered[i])
 					continue;
 				const RE::NiPoint3& p = field->position[i];
 				top = std::max(top, p.z);
@@ -4387,7 +4451,7 @@ namespace FluidFieldSim
 				const int32_t band = std::max(1, h / 10);
 				for (int32_t y = 0; y < h; y++) {
 					for (int32_t x = 0; x < w; x++) {
-						if (!shellCovered[index(x, y)])
+						if (!field->covered[index(x, y)])
 							continue;
 						if (y < band) {
 							head += field->position[index(x, y)];
@@ -4417,7 +4481,7 @@ namespace FluidFieldSim
 				input.width = field->width;
 				input.height = field->height;
 				input.position = reinterpret_cast<const float*>(field->position.data());
-				input.covered = shellCovered.data();
+				input.covered = field->covered.data();
 				FallStrands::FindCrests(input, crestRows, hiddenLead);
 			}
 			for (int32_t y = 0; y < h; y++) {
@@ -4486,7 +4550,7 @@ namespace FluidFieldSim
 			const std::size_t count = static_cast<std::size_t>(w) * h;
 			if (field->position.size() != count)
 				continue;
-			// D126: the shell's texels only, as above
+			// D126: the shell's texels only, as above (D132: as the gate on a crossing's own texel)
 			std::vector<uint8_t> shellCovered = field->covered;
 			{
 				const float uvMin[2] = { field->uvMin[0], field->uvMin[1] }, uvSize[2] = { field->uvSize[0], field->uvSize[1] };
@@ -4496,7 +4560,7 @@ namespace FluidFieldSim
 			}
 			float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
 			for (std::size_t i = 0; i < count; i++) {
-				if (!shellCovered[i])
+				if (!field->covered[i])
 					continue;
 				lo[0] = std::min(lo[0], field->position[i].x);
 				lo[1] = std::min(lo[1], field->position[i].y);
@@ -4505,11 +4569,11 @@ namespace FluidFieldSim
 			}
 			std::vector<std::array<float, 5>> crossPlanes;
 			CollectWaterPlanes(lo[0], lo[1], hi[0], hi[1], crossPlanes);
-			const auto water = [&](std::size_t a_i) { return shellCovered[a_i] && (field->rock.empty() || !field->rock[a_i]); };
+			const auto water = [&](std::size_t a_i) { return field->covered[a_i] && (field->rock.empty() || !field->rock[a_i]); };
 			for (int32_t y = 0; y < h; y++) {
 				for (int32_t x = 0; x < w; x++) {
 					const std::size_t i = static_cast<std::size_t>(y) * w + x;
-					if (!water(i))
+					if (!water(i) || !shellCovered[i])
 						continue;
 					const RE::NiPoint3& a = field->position[i];
 					// The levels over this texel
