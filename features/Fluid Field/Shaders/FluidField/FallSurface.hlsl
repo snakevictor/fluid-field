@@ -45,6 +45,7 @@ cbuffer FallSurfaceCB : register(b7)
 	uint HasEnvironment;
 	uint HasDiffuse;
 	uint HasNormal;
+	uint HasFront;  // D125: FrontDepth holds the falls' front surface
 };
 
 struct FallSurfaceVertex
@@ -60,6 +61,7 @@ Texture2D<float> SceneDepth : register(t101);
 Texture2D<float4> DiffuseTex : register(t102);  // The piece's own material (vanilla's falls texture)
 Texture2D<float4> NormalTex : register(t103);
 TextureCube<float4> EnvironmentTex : register(t104);
+Texture2D<float> FrontDepth : register(t105);  // D125: the scene's depth with the falls' front surface drawn in
 
 struct VSOutput
 {
@@ -154,6 +156,10 @@ float PoolWeight(float2 a_position, out float a_height)
 	return smoothstep(0.2, 0.7, total);
 }
 
+/** D125: world units behind the falls' front surface within which a layer is the same body of water (hidden), and the margin that is still the front itself. */
+static const float BODY_GAP = 48.0;
+static const float FRONT_EPSILON = 2.0;
+
 /** The cubemap's mip the sheet reads: falling water is broken and foamy, so rougher than the river's mirror (mip 0). */
 static const float ENVIRONMENT_MIP = 2.0;
 /** The brightest the pass adds: the scene is HDR, but one runaway value is a square after bloom and the upscalers. */
@@ -232,6 +238,14 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 {
 	const float3 position = input.WorldPosition + FrameBuffer::CameraPosAdjust.xyz;
 	const float3 toCamera = SafeNormalize(-input.WorldPosition, float3(0.0, 0.0, 1.0));
+
+	// D125: a layer just behind the falls' front surface is inside the same body of water (an overlapping mesh's inner
+	// layer, there in no real water): not drawn. A sheet further back (a separate curtain, air between) still shows
+	if (HasFront) {
+		const float behindFront = SharedData::GetScreenDepth(input.Position.z) - SharedData::GetScreenDepth(FrontDepth.Load(int3(input.Position.xy, 0)));
+		if (behindFront > FRONT_EPSILON && behindFront < BODY_GAP)
+			discard;
+	}
 
 	// The flow, as in the lit pass: the texture coordinates the water reads, its run time, wake and foam
 	// D96: Flow takes the coordinates as the lit pass has them, after vanilla's scroll and zoom (it takes them back out):
@@ -406,5 +420,22 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 		return float4(band * 0.5, 1.0);
 	}
 	return float4(color * alpha, alpha);  // Premultiplied
+}
+
+/**
+ * D125: the front surface's depth, for the shading pass to draw only the nearest sheet (EQUAL): a sheet hides the
+ * sheets behind it, so the falls read as one body of water, not transparent to themselves. Discards what PSMain hides
+ * (the inner side over another sheet, the cut, and where it fades out by more than half), so a faded or cut front does
+ * not hide what lies behind it.
+ */
+void PSDepth(VSOutput input)
+{
+	const float3 toCamera = SafeNormalize(-input.WorldPosition, float3(0.0, 0.0, 1.0));
+	if (input.Outward.w > 0.5 && dot(SafeNormalize(input.Outward.xyz, toCamera), toCamera) < -0.05)
+		discard;
+	const float sheetDepth = SharedData::GetScreenDepth(input.Position.z);
+	const float straightBehind = max(SharedData::GetScreenDepth(SceneDepth.Load(int3(input.Position.xy, 0))) - sheetDepth, 0.0);
+	if (saturate(input.Fade.x) * saturate(straightBehind / 4.0) * FallGround::CutFade(input.Clip) < 0.5)
+		discard;
 }
 #endif  // PSHADER

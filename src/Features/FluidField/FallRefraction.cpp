@@ -23,6 +23,7 @@ namespace FluidFieldSim
 		constexpr UINT SCENE_COLOR_SLOT = 100;
 		constexpr UINT DIFFUSE_SLOT = 102;
 		constexpr UINT ENVIRONMENT_SLOT = 104;
+		constexpr UINT FRONT_DEPTH_SLOT = 105;     // D125
 		constexpr UINT SAMPLER_COUNT = 2;          // s0 wrap, s1 clamp
 		constexpr UINT SHADOW_MAP_SLOT = 18;       // D102: Volumetric Shadows' map (VolumetricShadows::kSharedShadowMapShaderSlot), read, never set
 		constexpr UINT SHADOW_CASCADES_SLOT = 98;  // ...and the directional light's cascades (Deferred::CopyShadowLightData)
@@ -133,6 +134,11 @@ namespace FluidFieldSim
 		raster = nullptr;
 		wrapSampler = nullptr;
 		clampSampler = nullptr;
+		frontDepth = nullptr;
+		frontDepthDSV = nullptr;
+		frontDepthSRV = nullptr;
+		frontDepthState = nullptr;
+		frontDepthFailed = false;
 		ReleaseShaders();
 	}
 
@@ -143,6 +149,8 @@ namespace FluidFieldSim
 		pixelShaderShadowed = nullptr;
 		shaderFailed = false;
 		shadowedShaderFailed = false;
+		depthPixelShader = nullptr;
+		depthShaderFailed = false;
 	}
 
 	void FallRefraction::Prune(const std::unordered_set<const RE::BSGeometry*>& a_keep)
@@ -241,6 +249,89 @@ namespace FluidFieldSim
 		a_context->CopyResource(sceneCopy.get(), a_source);
 		preWaterSource = a_source;
 		preWaterFrame = a_frame;
+	}
+
+	ID3D11PixelShader* FallRefraction::EnsureDepthShader()
+	{
+		if (depthPixelShader || depthShaderFailed)
+			return depthPixelShader.get();
+		depthPixelShader.attach(reinterpret_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSurface.hlsl", {}, "ps_5_0", "PSDepth")));
+		if (!depthPixelShader) {
+			logger::warn("[Fluid Field] Refractive falls: the front surface's shader failed to compile; every sheet layer is drawn");
+			depthShaderFailed = true;
+		}
+		return depthPixelShader.get();
+	}
+
+	bool FallRefraction::EnsureFrontDepth(ID3D11Device* a_device, ID3D11DepthStencilView* a_sceneDepth)
+	{
+		if (frontDepthFailed || !a_sceneDepth)
+			return false;
+		winrt::com_ptr<ID3D11Resource> resource;
+		a_sceneDepth->GetResource(resource.put());
+		auto texture = resource.try_as<ID3D11Texture2D>();
+		if (!texture)
+			return false;
+		D3D11_TEXTURE2D_DESC source{};
+		texture->GetDesc(&source);
+		if (frontDepth) {
+			D3D11_TEXTURE2D_DESC existing{};
+			frontDepth->GetDesc(&existing);
+			if (existing.Width == source.Width && existing.Height == source.Height && existing.Format == source.Format)
+				return true;
+		}
+		frontDepth = nullptr;
+		frontDepthDSV = nullptr;
+		frontDepthSRV = nullptr;
+		D3D11_DEPTH_STENCIL_VIEW_DESC sceneView{};
+		a_sceneDepth->GetDesc(&sceneView);
+		// The views' formats from the depth's typeless one (the engine's depth is R24G8 or R32 typeless)
+		DXGI_FORMAT readFormat = DXGI_FORMAT_UNKNOWN;
+		switch (sceneView.Format) {
+		case DXGI_FORMAT_D24_UNORM_S8_UINT:
+			readFormat = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+			break;
+		case DXGI_FORMAT_D32_FLOAT:
+			readFormat = DXGI_FORMAT_R32_FLOAT;
+			break;
+		case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+			readFormat = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+			break;
+		default:
+			break;
+		}
+		D3D11_TEXTURE2D_DESC desc = source;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+		desc.CPUAccessFlags = 0;
+		desc.MiscFlags = 0;
+		D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
+		dsvDesc.Format = sceneView.Format;
+		dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+		srvDesc.Format = readFormat;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MipLevels = 1;
+		D3D11_DEPTH_STENCIL_DESC stateDesc{};
+		stateDesc.DepthEnable = TRUE;
+		stateDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+		stateDesc.DepthFunc = D3D11_COMPARISON_LESS;
+		if (readFormat == DXGI_FORMAT_UNKNOWN || source.SampleDesc.Count != 1 || sceneView.ViewDimension != D3D11_DSV_DIMENSION_TEXTURE2D ||
+			FAILED(a_device->CreateTexture2D(&desc, nullptr, frontDepth.put())) || FAILED(a_device->CreateDepthStencilView(frontDepth.get(), &dsvDesc, frontDepthDSV.put())) ||
+			FAILED(a_device->CreateShaderResourceView(frontDepth.get(), &srvDesc, frontDepthSRV.put())) ||
+			(!frontDepthState && FAILED(a_device->CreateDepthStencilState(&stateDesc, frontDepthState.put())))) {
+			frontDepth = nullptr;
+			frontDepthDSV = nullptr;
+			frontDepthSRV = nullptr;
+			logger::warn("[Fluid Field] Refractive falls: no front surface depth (scene depth format {}); every sheet layer is drawn", static_cast<int>(sceneView.Format));
+			frontDepthFailed = true;
+			return false;
+		}
+		Util::SetResourceName(frontDepth.get(), "FluidField::FallFrontDepth");
+		Util::SetResourceName(frontDepthDSV.get(), "FluidField::FallFrontDepth DSV");
+		Util::SetResourceName(frontDepthSRV.get(), "FluidField::FallFrontDepth SRV");
+		Util::SetResourceName(frontDepthState.get(), "FluidField::FallFrontDepthState");
+		return true;
 	}
 
 	bool FallRefraction::EnsureSceneCopy(ID3D11Device* a_device, ID3D11Texture2D* a_source, ID3D11RenderTargetView* a_target)
@@ -455,40 +546,66 @@ namespace FluidFieldSim
 
 		// D98: each piece's water (the water type's values guarded: a broken form must not divide by zero in the shader)
 		const auto finite = [](float a_value, float a_fallback) { return std::isfinite(a_value) ? a_value : a_fallback; };
-		for (const auto& [draw, mesh] : drawable) {
-			const auto& look = draw->look;
-			for (int k = 0; k < 3; k++) {
-				data.shallowColor[k] = std::clamp(finite(look.shallowColor[k], 0.0f), 0.0f, 1.0f);
-				data.deepColor[k] = std::clamp(finite(look.deepColor[k], 0.0f), 0.0f, 1.0f);
-				data.reflectionColor[k] = std::clamp(finite(look.reflectionColor[k], 0.0f), 0.0f, 4.0f);
-			}
-			data.fogFar = std::clamp(finite(look.fogFar, 600.0f), 16.0f, 1.0e6f);
-			data.fogRange = std::max(data.fogFar - std::clamp(finite(look.fogNear, 0.0f), 0.0f, data.fogFar), 1.0f);
-			data.fogAmount = std::clamp(finite(look.fogAmount, 1.0f), 0.01f, 16.0f);
-			data.fresnel = std::clamp(finite(look.fresnel, 0.02f), 0.0f, 1.0f);
-			data.sunSpecularPower = std::clamp(finite(look.sunSpecularPower, 600.0f), 1.0f, 10000.0f);
-			data.sunSpecularStrength = 1.0f - std::exp(-std::clamp(finite(look.sunSpecularMagnitude, 1.0f), 0.0f, 50.0f));
-			data.reflectionMagnitude = std::clamp(finite(look.reflectionMagnitude, 1.0f), 0.0f, 1.0f);
-			std::copy_n(draw->world, 12, data.world);
-			data.hasDiffuse = draw->diffuse ? 1u : 0u;
-			data.hasNormal = draw->normal ? 1u : 0u;
-			D3D11_MAPPED_SUBRESOURCE mapped{};
-			if (FAILED(a_context->Map(constants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-				continue;
-			std::memcpy(mapped.pData, &data, sizeof(data));
-			a_context->Unmap(constants.get(), 0);
-			if (FAILED(a_context->Map(groundConstants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-				continue;
-			std::memcpy(mapped.pData, draw->ground, std::min(draw->groundSize, groundSize));
-			a_context->Unmap(groundConstants.get(), 0);
+		// D125: the front surface's depth first, into a copy of the scene's; then the shading pass, which drops what lies just
+		// behind that front (within FallSurface's BODY_GAP: the same body of water, its overlapping meshes' inner layers),
+		// while a sheet further back (a separate curtain, air between) still shows through
+		const auto drawMeshes = [&]() {
+			for (const auto& [draw, mesh] : drawable) {
+				const auto& look = draw->look;
+				for (int k = 0; k < 3; k++) {
+					data.shallowColor[k] = std::clamp(finite(look.shallowColor[k], 0.0f), 0.0f, 1.0f);
+					data.deepColor[k] = std::clamp(finite(look.deepColor[k], 0.0f), 0.0f, 1.0f);
+					data.reflectionColor[k] = std::clamp(finite(look.reflectionColor[k], 0.0f), 0.0f, 4.0f);
+				}
+				data.fogFar = std::clamp(finite(look.fogFar, 600.0f), 16.0f, 1.0e6f);
+				data.fogRange = std::max(data.fogFar - std::clamp(finite(look.fogNear, 0.0f), 0.0f, data.fogFar), 1.0f);
+				data.fogAmount = std::clamp(finite(look.fogAmount, 1.0f), 0.01f, 16.0f);
+				data.fresnel = std::clamp(finite(look.fresnel, 0.02f), 0.0f, 1.0f);
+				data.sunSpecularPower = std::clamp(finite(look.sunSpecularPower, 600.0f), 1.0f, 10000.0f);
+				data.sunSpecularStrength = 1.0f - std::exp(-std::clamp(finite(look.sunSpecularMagnitude, 1.0f), 0.0f, 50.0f));
+				data.reflectionMagnitude = std::clamp(finite(look.reflectionMagnitude, 1.0f), 0.0f, 1.0f);
+				std::copy_n(draw->world, 12, data.world);
+				data.hasDiffuse = draw->diffuse ? 1u : 0u;
+				data.hasNormal = draw->normal ? 1u : 0u;
+				D3D11_MAPPED_SUBRESOURCE mapped{};
+				if (FAILED(a_context->Map(constants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+					continue;
+				std::memcpy(mapped.pData, &data, sizeof(data));
+				a_context->Unmap(constants.get(), 0);
+				if (FAILED(a_context->Map(groundConstants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+					continue;
+				std::memcpy(mapped.pData, draw->ground, std::min(draw->groundSize, groundSize));
+				a_context->Unmap(groundConstants.get(), 0);
 
-			ID3D11ShaderResourceView* vertices = mesh->verticesSRV.get();
-			a_context->VSSetShaderResources(VERTICES_SLOT, 1, &vertices);
-			a_context->PSSetShaderResources(BAKE_SLOT, 1, &draw->bake);
-			ID3D11ShaderResourceView* textures[2] = { draw->diffuse, draw->normal };  // t102, t103
-			a_context->PSSetShaderResources(DIFFUSE_SLOT, 2, textures);
-			a_context->IASetIndexBuffer(mesh->indices.get(), DXGI_FORMAT_R16_UINT, 0);
-			a_context->DrawIndexed(mesh->indexCount, 0, 0);
+				ID3D11ShaderResourceView* vertices = mesh->verticesSRV.get();
+				a_context->VSSetShaderResources(VERTICES_SLOT, 1, &vertices);
+				a_context->PSSetShaderResources(BAKE_SLOT, 1, &draw->bake);
+				ID3D11ShaderResourceView* textures[2] = { draw->diffuse, draw->normal };  // t102, t103
+				a_context->PSSetShaderResources(DIFFUSE_SLOT, 2, textures);
+				a_context->IASetIndexBuffer(mesh->indices.get(), DXGI_FORMAT_R16_UINT, 0);
+				a_context->DrawIndexed(mesh->indexCount, 0, 0);
+			}
+		};
+		ID3D11ShaderResourceView* front = nullptr;
+		if (auto* depthShader = EnsureDepthShader(); depthShader && EnsureFrontDepth(a_device, a_params.depth)) {
+			winrt::com_ptr<ID3D11Resource> sceneDepthResource;
+			a_params.depth->GetResource(sceneDepthResource.put());
+			a_context->OMSetRenderTargets(0, nullptr, nullptr);
+			a_context->CopyResource(frontDepth.get(), sceneDepthResource.get());
+			a_context->OMSetRenderTargets(0, nullptr, frontDepthDSV.get());
+			a_context->OMSetDepthStencilState(frontDepthState.get(), 0);
+			a_context->PSSetShader(depthShader, nullptr, 0);
+			drawMeshes();
+			a_context->OMSetRenderTargets(1, &a_params.target, a_params.depth);
+			a_context->OMSetDepthStencilState(depthState.get(), 0);
+			a_context->PSSetShader(shader, nullptr, 0);
+			front = frontDepthSRV.get();
 		}
+		ID3D11ShaderResourceView* frontViews[1] = { front ? front : a_params.sceneDepth };
+		a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, frontViews);
+		data.hasFront = front ? 1u : 0u;
+		drawMeshes();
+		ID3D11ShaderResourceView* none[1] = { nullptr };
+		a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, none);
 	}
 }

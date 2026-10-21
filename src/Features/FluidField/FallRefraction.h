@@ -100,6 +100,10 @@ namespace FluidFieldSim
 		ID3D11PixelShader* EnsureShadowedShader();
 		bool EnsureStates(ID3D11Device* a_device);
 		bool EnsureSceneCopy(ID3D11Device* a_device, ID3D11Texture2D* a_source, ID3D11RenderTargetView* a_target);
+		/** @brief D125: the front surface's depth pass shader (FallSurface.hlsl's PSDepth); null if it fails to compile. */
+		ID3D11PixelShader* EnsureDepthShader();
+		/** @brief D125: a depth target like the scene's (a_sceneDepth's texture), its depth and shader views and the pass's state. */
+		bool EnsureFrontDepth(ID3D11Device* a_device, ID3D11DepthStencilView* a_sceneDepth);
 
 		/** @brief A piece's own buffers: vertex data read by SV_VertexID (t125) and its indices. */
 		struct MeshBuffers
@@ -144,8 +148,10 @@ namespace FluidFieldSim
 			uint32_t hasEnvironment;
 			uint32_t hasDiffuse;
 			uint32_t hasNormal;
+			uint32_t hasFront;  ///< D125: the front surface's depth is bound (t105): a register of its own in the cbuffer
+			uint32_t padding[3];
 		};
-		static_assert(sizeof(Constants) == 144);
+		static_assert(sizeof(Constants) == 160);
 
 		std::unordered_map<const RE::BSGeometry*, MeshBuffers> meshes;
 		std::unordered_set<const RE::BSGeometry*> failedMeshes;  ///< No CPU copy: not tried again
@@ -166,6 +172,14 @@ namespace FluidFieldSim
 		bool shaderFailed = false;
 		bool shadowedShaderFailed = false;  ///< D102: the shadowed variant failed; the plain one is used
 		bool sceneCopyFailed = false;
+		// D125: the falls' front surface: its depth pass's shader, and a copy of the scene's depth it is drawn into
+		winrt::com_ptr<ID3D11PixelShader> depthPixelShader;
+		bool depthShaderFailed = false;
+		winrt::com_ptr<ID3D11Texture2D> frontDepth;
+		winrt::com_ptr<ID3D11DepthStencilView> frontDepthDSV;
+		winrt::com_ptr<ID3D11ShaderResourceView> frontDepthSRV;
+		winrt::com_ptr<ID3D11DepthStencilState> frontDepthState;
+		bool frontDepthFailed = false;
 		const ID3D11Texture2D* preWaterSource = nullptr;  ///< D123: what the pre-water copy was taken from, and in which frame
 		uint32_t preWaterFrame = UINT32_MAX;
 	};

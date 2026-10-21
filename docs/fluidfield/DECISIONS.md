@@ -2917,3 +2917,20 @@ Entry format:
         so the bands stay near solid: the whole drop's top and foot, not
         every mesh's (the user: "a lot longer and denser").
 -   References: D91, D105, D121, D122
+
+## D125: The falls' front surface hides the layers just behind it
+
+-   Date: 2026-10-20
+-   Decision: the see-through pass first draws the falls' depth into a copy
+    of the scene's depth (PSDepth: discarding what PSMain hides, the inner
+    side over another sheet, the cut, and where it fades out by more than
+    half), then shades every sheet but drops a fragment 2 to 48 units
+    behind that front surface: inside the same body of water, where real
+    water has no surface (overlapping meshes' inner layers). A sheet further
+    back (a separate curtain, air between) still shows through the front
+    one, as real water would. The user: the water "seems to be transparent
+    to itself". Complements the culling (D113), which removes the inner
+    layers from the geometry.
+-   Falls back to drawing every layer if the depth format is not one it
+    knows (D24S8, D32, D32S8) or PSDepth fails to compile (logged).
+-   References: D91, D113, D123
