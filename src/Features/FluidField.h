@@ -298,6 +298,8 @@ public:
 	 * state (the water shader's refracting surface, once a frame) for the see-through falls to be shaded by the same shader.
 	 */
 	void CaptureRiverDraw(RE::BSShader* a_shader, uint32_t a_vertexDescriptor, uint32_t a_pixelDescriptor);
+	/** @brief D171: the water shader's geometry being set up (BSWaterShader::SetupGeometry): its next draw's water type. */
+	void SetupWaterGeometry(RE::BSRenderPass* a_pass);
 
 private:
 	void DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderResourceView* a_depth);
@@ -353,8 +355,10 @@ private:
 	void DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Texture2D* a_targetTexture, ID3D11DepthStencilView* a_depth, ID3D11ShaderResourceView* a_sceneDepth);
 	/** @brief D91: whether the refractive pass draws the falls this frame (the lit pieces are then hidden). */
 	bool RefractiveFallsActive() const;
-	FluidFieldSim::FallRefraction fallRefraction;  ///< D91
-	FluidFieldSim::RiverCapture riverCapture;      ///< D159: the river's draw state, for the falls drawn by its shader
+	FluidFieldSim::FallRefraction fallRefraction;                                            ///< D91
+	std::unordered_map<const RE::TESWaterForm*, FluidFieldSim::RiverCapture> riverCaptures;  ///< D159, D171: each water type's draw state, for the falls drawn by its shader
+	const RE::BSGeometry* waterGeometry = nullptr;                                           ///< D171: the water geometry last set up (SetupWaterGeometry)
+	std::unordered_map<const RE::TESWaterForm*, const RE::BSGeometry*> riverPieces;          ///< D171: each water type's river piece the falls keep taking while it is drawn
 	/** @brief D159: whether the see-through falls are to be shaded by the river's water shader this frame (the capture runs). */
 	bool RiverShaderFallsWanted() const;
 	/** @brief D98: the water type each refractive falls piece pours out of (null: none found), looked up again every FALL_WATER_REFRESH frames. */

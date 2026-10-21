@@ -12,7 +12,8 @@ namespace FluidFieldSim
 	 * @brief D159: the river's draw state, captured at one of its draws each frame, so the see-through falls can be shaded by
 	 * the engine's own water pixel shader (Water.hlsl with FLUID_FIELD_FALLS) exactly as the river is.
 	 *
-	 * Taken at the first draw of a frame with the water shader's refracting surface technique (SPECULAR with no specular
+	 * Taken per water type (D171: one capture for all took whichever water was drawn first, another type's as the camera
+	 * moved, and every fall took its fog and glint), at its first draw of a frame with the water shader's refracting surface technique (SPECULAR with no specular
 	 * lights, the Refractions flag), from State::Draw, after the engine has bound everything for it: the contents of its
 	 * constant buffers (the engine's shared per-size buffers, rewritten by every draw, so their contents are copied into our
 	 * own buffers, never the buffers kept), and references to every pixel shader resource and sampler it binds (the water's
@@ -41,6 +42,11 @@ namespace FluidFieldSim
 		void Release();
 
 		RE::BSShader* GetShader() const { return shader; }
+		/** @brief D171: the river piece (its geometry) the capture was taken at, set by the caller. */
+		const void* GetGeometry() const { return geometry; }
+		void SetGeometry(const void* a_geometry) { geometry = a_geometry; }
+		/** @brief D171: our copy of its PerMaterial (b1: the water type's colours, fog and glint), kept past the frame, or null. */
+		ID3D11Buffer* GetMaterialBuffer() const { return shader && pixelBound[1] ? pixelBuffers[1].get() : nullptr; }
 		uint32_t GetVertexDescriptor() const { return vertexDescriptor; }
 		uint32_t GetPixelDescriptor() const { return pixelDescriptor; }
 		/** @brief t0-t127 as the river had them (entries may be null). */
@@ -61,6 +67,7 @@ namespace FluidFieldSim
 		std::array<winrt::com_ptr<ID3D11Buffer>, VERTEX_BUFFER_COUNT> vertexBuffers;
 		std::array<bool, VERTEX_BUFFER_COUNT> vertexBound{};
 		RE::BSShader* shader = nullptr;
+		const void* geometry = nullptr;
 		uint32_t vertexDescriptor = 0;
 		uint32_t pixelDescriptor = 0;
 		uint32_t capturedFrame = UINT32_MAX;

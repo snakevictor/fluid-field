@@ -27,6 +27,7 @@ namespace FluidFieldSim
 		constexpr UINT NOISE_SLOT = 106;           // D129: t106-t108
 		constexpr UINT REFRACTION_SLOT = 1;        // D159: Water.hlsl's RefractionTex
 		constexpr UINT WATER_DEPTH_SLOT = 7;       // D159: ...and DepthTex
+		constexpr UINT RIVER_NORMALS_SLOT = 4;     // D171: ...and Normals01-03 (t4-t6)
 		constexpr UINT SAMPLER_COUNT = 2;          // s0 wrap, s1 clamp
 		constexpr UINT SHADOW_MAP_SLOT = 18;       // D102: Volumetric Shadows' map (VolumetricShadows::kSharedShadowMapShaderSlot), read, never set
 		constexpr UINT SHADOW_CASCADES_SLOT = 98;  // ...and the directional light's cascades (Deferred::CopyShadowLightData)
@@ -589,8 +590,30 @@ namespace FluidFieldSim
 		// D125: the front surface's depth first, into a copy of the scene's; then the shading pass, which drops what lies just
 		// behind that front (within FallSurface's BODY_GAP: the same body of water, its overlapping meshes' inner layers),
 		// while a sheet further back (a separate curtain, air between) still shows through
-		const auto drawMeshes = [&]() {
+		std::function<void(const RiverCapture*)> bindRiver;
+		const RiverCapture* boundRiver = nullptr;
+		const auto drawMeshes = [&](bool a_shade) {
 			for (const auto& [draw, mesh] : drawable) {
+				if (a_shade && riverShader) {
+					// D171: the piece's own water type's state when it was drawn this frame, else the frame's with the piece's
+					// own material (b1) as last captured; and its shader variant
+					const RiverCapture* state = draw->river ? draw->river : a_params.river;
+					bindRiver(state);
+					ID3D11Buffer* pixelBuffers[RiverCapture::PIXEL_BUFFER_COUNT];
+					state->GetPixelBuffers(pixelBuffers);
+					ID3D11Buffer* material = !draw->river && draw->riverMaterial ? draw->riverMaterial : pixelBuffers[1];
+					a_context->PSSetConstantBuffers(1, 1, &material);
+					// D171: the water type's own normal maps over Normals01-03 (t4-t6): a flowmap piece of the river binds only
+					// the first, and the falls variant (no flowmap) read nothing from the other two in the frames such a piece
+					// was the one captured: their ripples went flat and tilted, the reflection turned to the ground below
+					if (draw->look.noise[0] && draw->look.noise[1] && draw->look.noise[2]) {
+						ID3D11ShaderResourceView* const* normalMaps = draw->look.noise;
+						a_context->PSSetShaderResources(RIVER_NORMALS_SLOT, 3, normalMaps);
+					}
+					const bool own = draw->riverVertexShader && draw->riverPixelShader;
+					a_context->VSSetShader(own ? draw->riverVertexShader : a_params.riverVertexShader, nullptr, 0);
+					a_context->PSSetShader(own ? draw->riverPixelShader : a_params.riverPixelShader, nullptr, 0);
+				}
 				const auto& look = draw->look;
 				for (int k = 0; k < 3; k++) {
 					data.shallowColor[k] = std::clamp(finite(look.shallowColor[k], 0.0f), 0.0f, 1.0f);
@@ -654,7 +677,7 @@ namespace FluidFieldSim
 			a_context->OMSetDepthStencilState(frontDepthState.get(), 0);
 			a_context->VSSetShader(vertexShader.get(), nullptr, 0);
 			a_context->PSSetShader(depthShader, nullptr, 0);
-			drawMeshes();
+			drawMeshes(false);
 			a_context->OMSetRenderTargets(1, &a_params.target, a_params.depth);
 			a_context->OMSetDepthStencilState(depthState.get(), 0);
 			a_context->PSSetShader(shader, nullptr, 0);
@@ -663,13 +686,16 @@ namespace FluidFieldSim
 		ID3D11ShaderResourceView* frontViews[1] = { front ? front : a_params.sceneDepth };
 		a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, frontViews);
 		data.hasFront = front ? 1u : 0u;
-		if (riverShader) {
-			// D159: the river's state as captured (its textures, shadow maps, lights, samplers and the contents of its constant
-			// buffers), then ours over the slots the falls variant reads: what lies behind (t1, t7: the pre-water scene and
-			// the opaque depth, as FallSurface.hlsl reads them), the front surface (t105), FallGround (t120, t123, t124, b13),
-			// the piece's normal map (t122, per piece) and constants (b7), the camera (b12)
+		// D159: the river's state as captured (its textures, shadow maps, lights, samplers and the contents of its constant
+		// buffers), then ours over the slots the falls variant reads: what lies behind (t1, t7: the pre-water scene and the
+		// opaque depth, as FallSurface.hlsl reads them), the front surface (t105), FallGround (t120, t123, t124, b13), the
+		// piece's normal map (t122, per piece) and constants (b7), the camera (b12). D171: per piece, its own water's
+		bindRiver = [&](const RiverCapture* a_river) {
+			if (a_river == boundRiver)
+				return;
+			boundRiver = a_river;
 			ID3D11ShaderResourceView* views[RiverCapture::VIEW_COUNT];
-			a_params.river->GetViews(views);
+			a_river->GetViews(views);
 			views[REFRACTION_SLOT] = sceneCopySRV.get();
 			views[WATER_DEPTH_SLOT] = a_params.sceneDepth;
 			views[FRONT_DEPTH_SLOT] = frontViews[0];
@@ -677,20 +703,23 @@ namespace FluidFieldSim
 			views[VERTEX_CLIP_SLOT] = a_params.vertexClip;
 			a_context->PSSetShaderResources(0, RiverCapture::VIEW_COUNT, views);
 			ID3D11SamplerState* riverSamplers[RiverCapture::SAMPLER_COUNT];
-			a_params.river->GetSamplers(riverSamplers);
+			a_river->GetSamplers(riverSamplers);
 			a_context->PSSetSamplers(0, RiverCapture::SAMPLER_COUNT, riverSamplers);
 			ID3D11Buffer* pixelBuffers[RiverCapture::PIXEL_BUFFER_COUNT];
-			a_params.river->GetPixelBuffers(pixelBuffers);
+			a_river->GetPixelBuffers(pixelBuffers);
 			a_context->PSSetConstantBuffers(0, RiverCapture::PIXEL_BUFFER_COUNT, pixelBuffers);
 			ID3D11Buffer* vertexBuffers[RiverCapture::VERTEX_BUFFER_COUNT];
-			a_params.river->GetVertexBuffers(vertexBuffers);
+			a_river->GetVertexBuffers(vertexBuffers);
 			a_context->VSSetConstantBuffers(0, RiverCapture::VERTEX_BUFFER_COUNT, vertexBuffers);
+		};
+		if (riverShader) {
+			bindRiver(a_params.river);
 			a_context->VSSetShader(a_params.riverVertexShader, nullptr, 0);
 			a_context->PSSetShader(a_params.riverPixelShader, nullptr, 0);
 		} else {
 			a_context->VSSetShader(vertexShader.get(), nullptr, 0);
 		}
-		drawMeshes();
+		drawMeshes(true);
 		ID3D11ShaderResourceView* none[1] = { nullptr };
 		a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, none);
 	}

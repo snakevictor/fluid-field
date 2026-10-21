@@ -3801,3 +3801,32 @@ Entry format:
     worked and most of the undersides came back (SS 1089, 1090: "a major
     step back", the user). The culling is back to D157 (D144 plus the
     stricter submerged cut). Branch feature/fluid-field-culling-8 keeps it.
+
+## D171: The falls bind their water type's own normal maps; the river's state per water type
+
+-   Date: 2026-10-21
+-   Problem: the river-shader falls (D159) flipped between their look and a
+    clear, depthless sheet showing the bed under it, every fall in view at
+    once, with the smallest camera moves (SS 1093-1136). FallSurface.hlsl
+    never did.
+-   Cause, measured: in the broken frames Normals02 (t5) read nothing (black
+    in a band of the screen, SS 1136). The falls took t4-t6 from the captured
+    river draw; a flowmap piece of the river (descriptor 0x21a) binds only the
+    first normal map, and which piece was captured changed with the draw
+    order, so with the camera. The falls variant has no flowmap code and reads
+    all three: with two zero, the ripple normal went flat and tilted, the
+    reflection ray went into the cubemaps' ground faces, and the fresnel and
+    depth look went with it.
+-   Decision:
+    -   **The falls bind their water type's three normal maps** (loaded by
+        MakeFallWaterLook, D129) over t4-t6 for every piece.
+    -   **One capture per water type** (a hook on
+        BSWaterShader::SetupGeometry finds the TESWaterObject whose shape is
+        drawn), each fall drawn with its own water's state and material.
+    -   **The same river piece frame after frame** while it is drawn: the
+        piece first drawn changes with the camera, and its material with it.
+-   Not the cause, measured and reverted: the shore fade and the refracted
+    depth (depth and opacity diagnostics steady across a flip), the reflection
+    march, the cubemaps on their own (the reflection was only the messenger),
+    which water type or render pass was captured (logged, unchanged at a flip).
+-   References: D129, D159, D160, LEARNINGS (one capture, every slot)

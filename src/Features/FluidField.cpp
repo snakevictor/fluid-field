@@ -936,7 +936,9 @@ void FluidField::ReleaseWater()
 	ReleaseFallGround();
 	fallSurface.Release();
 	fallRefraction.Release();
-	riverCapture.Release();
+	riverCaptures.clear();
+	riverPieces.clear();
+	waterGeometry = nullptr;
 	fallWaterTypes.clear();
 	waterShaderData = {};
 }
@@ -1176,7 +1178,8 @@ void FluidField::DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main)
 			globals::d3d::context->CopyResource(cameraSnapshot.get(), perFrame);
 	}
 	// D159: last frame's river capture lets go of the engine's textures before this frame's water is captured
-	riverCapture.ReleaseViews();
+	for (auto& capture : riverCaptures | std::views::values)
+		capture.ReleaseViews();
 	if (fogDebugMode == FOG_DEBUG_BEFORE_WATER && settings.InteractiveFog && fogReady)
 		DrawGroundFog(a_main, Util::GetCurrentSceneDepthSRV(false));
 	// D123: the scene before the water, for the see-through falls to refract
@@ -1690,13 +1693,40 @@ bool FluidField::RiverShaderFallsWanted() const
 	return settings.FallsRiverShader && RefractiveFallsActive();
 }
 
+void FluidField::SetupWaterGeometry(RE::BSRenderPass* a_pass)
+{
+	waterGeometry = a_pass ? a_pass->geometry : nullptr;
+}
+
 void FluidField::CaptureRiverDraw(RE::BSShader* a_shader, uint32_t a_vertexDescriptor, uint32_t a_pixelDescriptor)
 {
 	// D159: cheap tests first: this runs before every draw call of the frame
-	const uint32_t frame = globals::state->frameCount;
-	if (riverCapture.WasTried(frame) || !FluidFieldSim::RiverCapture::IsRiverDraw(a_shader, a_pixelDescriptor) || !RiverShaderFallsWanted())
+	if (!FluidFieldSim::RiverCapture::IsRiverDraw(a_shader, a_pixelDescriptor) || !RiverShaderFallsWanted())
 		return;
-	riverCapture.Capture(globals::d3d::device, globals::d3d::context, a_shader, a_vertexDescriptor, a_pixelDescriptor, frame);
+	// D171: per water type (that of the water object whose shape this is, as FindFallWaterType finds the falls'), each at
+	// its first draw of the frame
+	const RE::TESWaterForm* waterType = nullptr;
+	if (auto* waterSystem = RE::TESWaterSystem::GetSingleton(); waterSystem && waterGeometry) {
+		RE::BSSpinLockGuard guard(waterSystem->lock);
+		for (const auto& object : waterSystem->waterObjects) {
+			if (object && object->shape.get() == waterGeometry) {
+				waterType = object->waterType;
+				break;
+			}
+		}
+	}
+	const uint32_t frame = globals::state->frameCount;
+	auto [capture, added] = riverCaptures.try_emplace(waterType);
+	if (added)
+		logger::info("[Fluid Field] Falls take the river shader's state of water type {:08X} '{}'", waterType ? waterType->GetFormID() : 0, waterType ? waterType->GetFormEditorID() : "(no water object)");
+	// D171: the same river piece frame after frame while it is drawn (the first drawn changes with the camera, and its
+	// material, the flowmap piece's or the plain one's, with it: the falls flipped between looks); a later draw of that
+	// piece replaces another's taken first
+	const auto* piece = riverPieces.try_emplace(waterType, waterGeometry).first->second;
+	if (capture->second.WasTried(frame) && (waterGeometry != piece || capture->second.GetGeometry() == piece))
+		return;
+	if (capture->second.Capture(globals::d3d::device, globals::d3d::context, a_shader, a_vertexDescriptor, a_pixelDescriptor, frame))
+		capture->second.SetGeometry(waterGeometry);
 }
 
 bool FluidField::RefractiveFallsActive() const
@@ -1828,6 +1858,8 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 	grounds.reserve(lit.size());
 	std::vector<FluidFieldSim::FallRefraction::MeshDraw> draws;
 	draws.reserve(lit.size());
+	std::vector<const RE::TESWaterForm*> drawWaters;  // D171: each draw's water type
+	drawWaters.reserve(lit.size());
 	std::unordered_set<const RE::BSGeometry*> keep;
 	// D98: each piece takes the look of the water it pours out of (looked up once per piece, again every few seconds)
 	if (++fallWaterTypesAge >= FALL_WATER_REFRESH) {
@@ -1876,6 +1908,7 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 			look = looks.emplace(waterType->second, MakeFallWaterLook(waterType->second, multiplier)).first;
 		draw.look = look->second;
 		draws.push_back(draw);
+		drawWaters.push_back(waterType->second);
 	}
 	for (std::size_t i = 0; i < draws.size(); i++) {
 		draws[i].ground = &grounds[i];
@@ -1930,22 +1963,59 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 	params.volumetricShadows = globals::features::volumetricShadows.loaded;
 	// D159: the falls shaded by the river's own water shader: the variant of the captured draw's shaders for the falls (no
 	// per-vertex, flowmap or wading variants: a sheet has none of them), from the shader cache, which compiles it in the
-	// background on first asking (null until then: FallSurface.hlsl draws the falls meanwhile)
-	if (RiverShaderFallsWanted() && riverCapture.IsCaptured(globals::state->frameCount) && riverCapture.GetShader()) {
+	// background on first asking (null until then: FallSurface.hlsl draws the falls meanwhile). D171: the frame's state
+	// (shadow maps, lights, SSR, the camera) from any water drawn this frame; each fall's water type (its material: colours,
+	// fog, glint; and its variant) from that type's own capture, kept from the last frame it was drawn in. Until its type
+	// is first drawn, a fall takes the frame's
+	const uint32_t frame = globals::state->frameCount;
+	for (const auto& [waterType, capture] : riverCaptures) {
+		// D171: the kept piece was not drawn this frame: the one taken instead is kept from now on
+		if (capture.IsCaptured(frame) && capture.GetGeometry() != riverPieces[waterType]) {
+			riverPieces[waterType] = static_cast<const RE::BSGeometry*>(capture.GetGeometry());
+		}
+	}
+	const FluidFieldSim::RiverCapture* frameCapture = nullptr;
+	const RE::TESWaterForm* frameWater = nullptr;
+	for (const auto& [waterType, capture] : riverCaptures) {
+		// A water object's first (a draw that is none: LOD or another's, only when nothing else was drawn)
+		if (capture.IsCaptured(frame) && capture.GetShader() && (!frameCapture || !frameWater)) {
+			frameCapture = &capture;
+			frameWater = waterType;
+		}
+	}
+	if (RiverShaderFallsWanted() && frameCapture) {
 		using Flags = SIE::ShaderCache::WaterShaderFlags;
 		constexpr auto notOnSheets = static_cast<uint32_t>(Flags::Vc) | static_cast<uint32_t>(Flags::NormalTexCoord) | static_cast<uint32_t>(Flags::Wading) |
 		                             static_cast<uint32_t>(Flags::VertexAlphaDepth) | static_cast<uint32_t>(Flags::Flowmap) | static_cast<uint32_t>(Flags::BlendNormals);
 		constexpr auto falls = static_cast<uint32_t>(Flags::FluidFieldFalls);
-		auto* vertexShader = globals::shaderCache->GetVertexShader(*riverCapture.GetShader(), (riverCapture.GetVertexDescriptor() & ~notOnSheets) | falls);
-		auto* pixelShader = globals::shaderCache->GetPixelShader(*riverCapture.GetShader(), (riverCapture.GetPixelDescriptor() & ~notOnSheets) | falls);
-		if (vertexShader && pixelShader && vertexShader->shader && pixelShader->shader) {
-			params.river = &riverCapture;
-			params.riverVertexShader = reinterpret_cast<ID3D11VertexShader*>(vertexShader->shader);
-			params.riverPixelShader = reinterpret_cast<ID3D11PixelShader*>(pixelShader->shader);
+		const auto shadersOf = [&](const FluidFieldSim::RiverCapture& a_capture) -> std::pair<ID3D11VertexShader*, ID3D11PixelShader*> {
+			auto* vertexShader = globals::shaderCache->GetVertexShader(*a_capture.GetShader(), (a_capture.GetVertexDescriptor() & ~notOnSheets) | falls);
+			auto* pixelShader = globals::shaderCache->GetPixelShader(*a_capture.GetShader(), (a_capture.GetPixelDescriptor() & ~notOnSheets) | falls);
+			if (!vertexShader || !pixelShader || !vertexShader->shader || !pixelShader->shader)
+				return { nullptr, nullptr };
+			return { reinterpret_cast<ID3D11VertexShader*>(vertexShader->shader), reinterpret_cast<ID3D11PixelShader*>(pixelShader->shader) };
+		};
+		const auto [frameVertexShader, framePixelShader] = shadersOf(*frameCapture);
+		if (frameVertexShader && framePixelShader) {
+			params.river = frameCapture;
+			params.riverVertexShader = frameVertexShader;
+			params.riverPixelShader = framePixelShader;
+			for (std::size_t i = 0; i < draws.size(); i++) {
+				const auto own = riverCaptures.find(drawWaters[i]);
+				if (own == riverCaptures.end() || !own->second.GetMaterialBuffer())
+					continue;
+				draws[i].riverMaterial = own->second.GetMaterialBuffer();
+				if (own->second.IsCaptured(frame))
+					draws[i].river = &own->second;
+				const auto [vertexShader, pixelShader] = shadersOf(own->second);
+				draws[i].riverVertexShader = vertexShader;
+				draws[i].riverPixelShader = pixelShader;
+			}
 		}
 	}
 	globals::profiler->BeginPass("FluidField::RefractiveFalls");
 	fallRefraction.Draw(globals::d3d::device, globals::d3d::context, params, draws);
 	globals::profiler->EndPass();
-	riverCapture.ReleaseViews();  // D159: the engine's textures are not held past the falls
+	for (auto& capture : riverCaptures | std::views::values)
+		capture.ReleaseViews();  // D159: the engine's textures are not held past the falls
 }

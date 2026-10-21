@@ -239,6 +239,21 @@ namespace LightingExtensions
 	};
 }
 
+namespace WaterExtensions
+{
+	// D171: Fluid Field learns which water type each river draw is (its see-through falls take their own water's state)
+	struct BSWaterShader_SetupGeometry
+	{
+		static void thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
+		{
+			func(shader, pass, renderFlags);
+			if (globals::features::fluidField.loaded)
+				globals::features::fluidField.SetupWaterGeometry(pass);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+}
+
 namespace EffectExtensions
 {
 	struct BSEffectShader_SetupGeometry
@@ -1131,6 +1146,7 @@ namespace Hooks
 		logger::info("Installing SetupGeometry hooks");
 		stl::write_vfunc<0x6, LightingExtensions::BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
 		stl::write_vfunc<0x6, EffectExtensions::BSEffectShader_SetupGeometry>(RE::VTABLE_BSEffectShader[0]);
+		stl::write_vfunc<0x6, WaterExtensions::BSWaterShader_SetupGeometry>(RE::VTABLE_BSWaterShader[0]);
 		stl::write_vfunc<0x6, UtilityExtensions::BSUtilityShader_SetupGeometry>(RE::VTABLE_BSUtilityShader[0]);
 		stl::write_vfunc<0x6, SkyExtensions::BSSkyShader_SetupGeometry>(RE::VTABLE_BSSkyShader[0]);
 		stl::write_thunk_call<GrassExtensions::BSGrassShaderProperty_ctor>(REL::RelocationID(15214, 15383).address() + Util::VersionedRelocation::Select(0x45B, 0x4F5, 0x4FD));
