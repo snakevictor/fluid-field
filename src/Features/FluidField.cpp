@@ -266,7 +266,7 @@ void FluidField::DrawSettings()
 			ImGui::Combo(T(TKEY("fall_mesh_debug"), "Falls Mesh Debug"), &fallMeshDebug, meshViews, IM_ARRAYSIZE(meshViews));
 
 			tooltip(T(TKEY("fall_mesh_debug_tooltip"),
-				"Drawn over everything, through the ground. Wireframe: the falls' meshes as drawn (yellow: our dense copies). Flow: the simulated water on each mesh as arrows, longer and redder when faster, bluer when slower, white where it strikes rock. Depth Rays: the rays measuring the depth behind each sheet, from 40 units off its face through the vertex, green to what they hit, red to their reach where they miss. Not saved."));
+				"Drawn over everything, through the ground. Wireframe: the falls' meshes as drawn (yellow: our dense copies). Flow: the simulated water on each mesh as arrows, longer and redder when faster, bluer when slower, white where it strikes rock. Depth Rays: the rays measuring the depth behind each sheet, from its vertices, green to what they hit, red to their reach where they miss. Not saved."));
 			uint32_t captured, captures;
 			fallSites.CountCaptures(captured, captures);
 			ImGui::Text(T(TKEY("waterfall_sites"), "Sites: %u falls, %u cascades, %u rapids, %u no bottom, %u failed; ground captured for %u of %u"),

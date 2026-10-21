@@ -1080,6 +1080,11 @@ namespace FluidFieldSim
 					const auto& clip = vertexClips[job->base + v];
 					if (clip[0] <= 0.0f || clip[3] >= 3.5f)
 						continue;
+					// D111: nor the underside (the C's curl back under its crest toward the rock, its outer side facing
+					// down): its ray went up into the hollow behind the curtain, and is seen from nowhere but under it.
+					// Filled from the samples round it
+					if (job->normals[v].z < DEPTH_UNDERSIDE_Z)
+						continue;
 					const RE::NiPoint3& p = job->positions[v];
 					const int64_t key = (static_cast<int64_t>(std::floor(p.x / DEPTH_CELL)) & 0x1FFFFF) << 42 | (static_cast<int64_t>(std::floor(p.y / DEPTH_CELL)) & 0x1FFFFF) << 21 |
 					                    (static_cast<int64_t>(std::floor(p.z / DEPTH_CELL)) & 0x1FFFFF);
@@ -1112,8 +1117,9 @@ namespace FluidFieldSim
 					depthJob->minus[v] = hit >= 0.0f ? std::clamp(hit - DEPTH_START, 0.0f, CLEAR_REACH) : CLEAR_REACH;
 					depthRays++;
 					depthHits += hit >= 0.0f ? 1 : 0;
-					// D108: kept for the overlay (Falls Mesh Debug: Depth Rays): from the face, to the hit or the reach
-					depthJob->rays.push_back({ from, from - n * (hit >= 0.0f ? hit : CLEAR_REACH + DEPTH_START), RE::NiPoint3(hit >= 0.0f ? 1.0f : 0.0f, 0.0f, 0.0f) });
+					// D108: kept for the overlay (Falls Mesh Debug: Depth Rays). D111: from the vertex (the DEPTH_START lead-in
+					// off its face left out), to the hit or the reach
+					depthJob->rays.push_back({ p, p - n * (hit >= 0.0f ? std::max(hit - DEPTH_START, 0.0f) : CLEAR_REACH), RE::NiPoint3(hit >= 0.0f ? 1.0f : 0.0f, 0.0f, 0.0f) });
 					// TEMPORARY D106 diagnostics: the ray's tilt (-n.z: 1 straight down), and for a miss, straight down
 					depthJob->tiltSum += -n.z;                  // The ray's z: negative is down
 					depthJob->downward += -n.z < 0.0f ? 1 : 0;  // Rays pointing down

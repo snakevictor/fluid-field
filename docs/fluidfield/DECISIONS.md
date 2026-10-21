@@ -2729,3 +2729,20 @@ Entry format:
         curtains; magenta only in a few patches. Logged per mesh over shown
         vertices: depth 10% 9-43, median 61-248, 90% 363-600.
 -   References: D104, D106
+
+## D111: No depth rays from the underside; the overlay draws from the vertex
+
+-   Date: 2026-10-20
+-   Decision:
+    -   A vertex whose outer side faces more than about 17 degrees down (unit
+        normal z < -0.3: the C's curl back under its crest toward the rock)
+        casts no depth ray; its depth is filled from the samples round it.
+        Its ray went up into the hollow behind the curtain (SS 955: a mass
+        of rays on what is basically the underside, the user); the ground
+        is never above.
+    -   The Depth Rays overlay draws each ray from the vertex to its hit (or
+        the 600 reach), without the 40-unit lead-in off the face, which read
+        as rays offset from the vertices (SS 954).
+    -   Logged: rays now point down on about 85-90% of the curtains' samples
+        (was 75-80%) and about 90% on the sloped runs.
+-   References: D106, D110

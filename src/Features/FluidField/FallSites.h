@@ -313,10 +313,11 @@ namespace FluidFieldSim
 		std::unordered_map<const RE::BSGeometry*, std::vector<std::array<RE::NiPoint3, 3>>> depthRaysShown;  ///< D108: the overlay's rays
 		std::unique_ptr<DepthJob> depthJob;
 		uint32_t depthRays = 0, depthHits = 0;
-		bool depthAudited = true;                     ///< TEMPORARY D110
-		static constexpr float DEPTH_CELL = 30.0f;    ///< D106: world units: one sampled vertex per cell this size
-		static constexpr float DEPTH_START = 40.0f;   ///< D106: the ray starts this far off the other face
-		static constexpr int DEPTH_FILL_PASSES = 60;  ///< D106: rounds spreading the samples to the vertices between
+		bool depthAudited = true;                          ///< TEMPORARY D110
+		static constexpr float DEPTH_UNDERSIDE_Z = -0.3f;  ///< D111: a vertex whose outer side faces further down than this (z of its unit normal) casts no depth ray
+		static constexpr float DEPTH_CELL = 30.0f;         ///< D106: world units: one sampled vertex per cell this size
+		static constexpr float DEPTH_START = 40.0f;        ///< D106: the ray starts this far off the other face
+		static constexpr int DEPTH_FILL_PASSES = 60;       ///< D106: rounds spreading the samples to the vertices between
 		/** @brief D57: the nearest rock along a ray from a point, world units, or a negative value for none (the falls' own collision passed through). */
 		float RockAlong(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, int* a_crossings = nullptr, float* a_last = nullptr) const;
 		std::unordered_map<const RE::BSGeometry*, uint32_t> vertexClipBase;

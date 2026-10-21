@@ -879,7 +879,7 @@
     "feature.fluid_field.fall_mesh_debug_flow": "Flow",
     "feature.fluid_field.fall_mesh_debug_off": "Off",
     "feature.fluid_field.fall_mesh_debug_rays": "Depth Rays",
-    "feature.fluid_field.fall_mesh_debug_tooltip": "Drawn over everything, through the ground. Wireframe: the falls' meshes as drawn (yellow: our dense copies). Flow: the simulated water on each mesh as arrows, longer and redder when faster, bluer when slower, white where it strikes rock. Depth Rays: the rays measuring the depth behind each sheet, from 40 units off its face through the vertex, green to what they hit, red to their reach where they miss. Not saved.",
+    "feature.fluid_field.fall_mesh_debug_tooltip": "Drawn over everything, through the ground. Wireframe: the falls' meshes as drawn (yellow: our dense copies). Flow: the simulated water on each mesh as arrows, longer and redder when faster, bluer when slower, white where it strikes rock. Depth Rays: the rays measuring the depth behind each sheet, from its vertices, green to what they hit, red to their reach where they miss. Not saved.",
     "feature.fluid_field.fall_mesh_debug_wireframe": "Wireframe",
     "feature.fluid_field.fall_mesh_debug_wireframe_rays": "Wireframe and Depth Rays",
     "feature.fluid_field.fall_refraction": "Refraction",
