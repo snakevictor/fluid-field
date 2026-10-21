@@ -102,7 +102,26 @@ namespace FluidFieldSim
 		 * triangle across shared edges (vertices welded by position, so texture seams join), and each connected sheet
 		 * takes the side its lowest third faces the travel with (the curtain over its foot, never the lead-in).
 		 */
-		std::vector<int8_t> OrientSheet(const std::vector<RE::NiPoint3>& a_positions, const std::vector<std::array<uint16_t, 3>>& a_triangles, const RE::NiPoint3& a_travel)
+		/** @brief D109: a geometry's authored per-vertex normals in world space (vanilla's, kept by the dense copies); empty without. */
+		std::vector<RE::NiPoint3> AuthoredNormals(RE::BSGeometry* a_geometry)
+		{
+			auto* triShape = a_geometry ? a_geometry->AsTriShape() : nullptr;
+			auto* renderer = a_geometry ? a_geometry->GetGeometryRuntimeData().rendererData : nullptr;
+			if (!triShape || !renderer || !renderer->rawVertexData || !renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_NORMAL))
+				return {};
+			auto& desc = renderer->vertexDesc;
+			const uint32_t stride = desc.GetSize();
+			const uint32_t offset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_NORMAL);
+			std::vector<RE::NiPoint3> normals(triShape->GetTrishapeRuntimeData().vertexCount);
+			for (uint32_t v = 0; v < normals.size(); v++) {
+				const uint8_t* n = renderer->rawVertexData + static_cast<std::size_t>(v) * stride + offset;
+				normals[v] = a_geometry->world.rotate * RE::NiPoint3(n[0] / 255.0f * 2.0f - 1.0f, n[1] / 255.0f * 2.0f - 1.0f, n[2] / 255.0f * 2.0f - 1.0f);
+			}
+			return normals;
+		}
+
+		std::vector<int8_t> OrientSheet(const std::vector<RE::NiPoint3>& a_positions, const std::vector<std::array<uint16_t, 3>>& a_triangles, const RE::NiPoint3& a_travel,
+			const std::vector<RE::NiPoint3>* a_authored = nullptr)
 		{
 			std::vector<int8_t> side(a_triangles.size(), 0);
 			std::map<std::tuple<int64_t, int64_t, int64_t>, uint32_t> welds;
@@ -153,6 +172,21 @@ namespace FluidFieldSim
 							queue.push_back(n);
 						}
 					}
+				}
+				// D109: with vanilla's own normals, their majority over the sheet decides (they face out of the visible face
+				// on about three vertices in four; the travel's foot was a guess)
+				if (a_authored && a_authored->size() == a_positions.size()) {
+					double vote = 0.0;
+					for (const uint32_t t : component) {
+						const auto& tri = a_triangles[t];
+						const RE::NiPoint3 authored = (*a_authored)[tri[0]] + (*a_authored)[tri[1]] + (*a_authored)[tri[2]];
+						vote += static_cast<double>(face[t].Dot(authored)) * side[t];
+					}
+					if (vote < 0.0) {
+						for (const uint32_t t : component)
+							side[t] = static_cast<int8_t>(-side[t]);
+					}
+					continue;
 				}
 				float atFoot = 0.0f, all = 0.0f;
 				for (const uint32_t t : component) {
@@ -410,6 +444,10 @@ namespace FluidFieldSim
 
 	void FallSites::Clear()
 	{
+		outwardNormals.clear();  // D109
+		depthRaysShown.clear();
+		depthQueue.clear();
+		depthJob.reset();
 		hideEffects = false;
 		RefreshHiddenEffects();
 		// D91: the pieces the refractive pass drew show again (the wish is kept for the next sites)
@@ -845,6 +883,8 @@ namespace FluidFieldSim
 		std::erase_if(vertexClipBase, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
 		std::erase_if(gapShifts, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
 		std::erase_if(vertexPushes, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
+		std::erase_if(outwardNormals, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
+		std::erase_if(depthRaysShown, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
 		if (std::erase_if(flowBakes, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); }))
 			flowBakeVersion++;
 		// D78: the plunges and spray of meshes that went go with them
@@ -939,7 +979,10 @@ namespace FluidFieldSim
 			if (!depthJob) {
 				if (depthQueue.empty())
 					return;
+				// D109: a mesh waits for its consistent outward normals (ComputeSides)
 				RE::NiPointer<RE::BSGeometry> geometry = depthQueue.back();
+				if (geometry && vertexClipBase.contains(geometry.get()) && !outwardNormals.contains(geometry.get()))
+					return;
 				depthQueue.pop_back();
 				const auto base = geometry ? vertexClipBase.find(geometry.get()) : vertexClipBase.end();
 				auto* triShape = geometry ? geometry->AsTriShape() : nullptr;
@@ -989,6 +1032,14 @@ namespace FluidFieldSim
 					const float length = n.Length();
 					n = length > 1e-6f ? n / length : RE::NiPoint3(0.0f, 0.0f, 1.0f);
 				}
+				// D109: the sheet's consistent outer side (ComputeSides: carried across the mesh, the side vanilla's normals
+				// mostly face); its rays go against it, into what lies below or behind the sheet
+				if (const auto outward = outwardNormals.find(geometry.get()); outward != outwardNormals.end() && outward->second.size() == job->normals.size()) {
+					for (std::size_t v = 0; v < job->normals.size(); v++) {
+						if (outward->second[v].Length() > 0.5f)
+							job->normals[v] = outward->second[v];
+					}
+				}
 				// One vertex per DEPTH_CELL cell
 				std::unordered_set<int64_t> cells;
 				for (uint32_t v = 0; v < counts.vertexCount; v++) {
@@ -1017,15 +1068,18 @@ namespace FluidFieldSim
 					const RE::NiPoint3& n = depthJob->normals[v];
 					// From DEPTH_START out of its visible face (along its normal), through the vertex, into what lies behind
 					// it: the first rock or ground
-					// D106: along its authored normal (logged: these meshes' normals point into the bed, away from the face we
-					// see; against them, two thirds of the rays went up into the air)
-					const float hit = RockAlong(world, p - n * DEPTH_START, n, CLEAR_REACH + DEPTH_START);
+					// D106: against its authored normal (vanilla's: out of the visible face, up on 75% of the vertices; level
+					// on the curtains, where the open air or water behind is the true answer when nothing is hit)
+					const RE::NiPoint3 from = p + n * DEPTH_START;
+					const float hit = RockAlong(world, from, -n, CLEAR_REACH + DEPTH_START);
 					depthJob->minus[v] = hit >= 0.0f ? std::clamp(hit - DEPTH_START, 0.0f, CLEAR_REACH) : CLEAR_REACH;
 					depthRays++;
 					depthHits += hit >= 0.0f ? 1 : 0;
+					// D108: kept for the overlay (Falls Mesh Debug: Depth Rays): from the face, to the hit or the reach
+					depthJob->rays.push_back({ from, from - n * (hit >= 0.0f ? hit : CLEAR_REACH + DEPTH_START), RE::NiPoint3(hit >= 0.0f ? 1.0f : 0.0f, 0.0f, 0.0f) });
 					// TEMPORARY D106 diagnostics: the ray's tilt (-n.z: 1 straight down), and for a miss, straight down
-					depthJob->tiltSum += n.z;
-					depthJob->downward += n.z < 0.0f ? 1 : 0;
+					depthJob->tiltSum += -n.z;                  // The ray's z: negative is down
+					depthJob->downward += -n.z < 0.0f ? 1 : 0;  // Rays pointing down
 					if (hit >= 0.0f) {
 						depthJob->hits++;
 						depthJob->hitDistances.push_back(hit - DEPTH_START);
@@ -1069,6 +1123,7 @@ namespace FluidFieldSim
 					shallow += job.minus[v] < CLEAR_REACH * 0.5f ? 1 : 0;
 				}
 				vertexClipVersion++;
+				depthRaysShown[job.geometry.get()] = std::move(job.rays);
 				logger::info("[Fluid Field]   depth behind '{}': {} vertices sampled of {}, {} of {} rays hit rock or ground so far; {} vertices within {:.0f} units of it",
 					job.geometry->name.c_str(), job.samples.size(), count, depthHits, depthRays, shallow, CLEAR_REACH * 0.5f);
 				// TEMPORARY D106 diagnostics
@@ -1079,7 +1134,7 @@ namespace FluidFieldSim
 					return a_values[a_values.size() / 2];
 				};
 				const auto samples = std::max<std::size_t>(job.samples.size(), 1);
-				logger::info("[Fluid Field]   depth rays '{}' at ({:.0f}, {:.0f}, {:.0f}): {} hit (median {:.0f} units), {} missed; rays point down on {} of {} (mean -n.z {:.2f}); of the misses, {} find ground straight down (median {:.0f} units)",
+				logger::info("[Fluid Field]   depth rays '{}' at ({:.0f}, {:.0f}, {:.0f}): {} hit (median {:.0f} units), {} missed; rays point down on {} of {} (mean ray z {:.2f}, negative is down); of the misses, {} find ground straight down (median {:.0f} units)",
 					job.geometry->name.c_str(), job.geometry->world.translate.x, job.geometry->world.translate.y, job.geometry->world.translate.z, job.hits, median(job.hitDistances), job.misses,
 					job.downward, samples, job.tiltSum / static_cast<double>(samples), job.missDownHits, median(job.missDown));
 			}
@@ -1518,7 +1573,10 @@ namespace FluidFieldSim
 			// D98: its outer side: from its highest tenth to its lowest, level, tipped up. D103: carried over the sheet
 			// (OrientSheet), not asked of each triangle alone: the lead-in's outer side faces against the travel
 			mesh.travel = SheetTravel(mesh.positions);
-			mesh.side = OrientSheet(mesh.positions, mesh.triangles, mesh.travel);
+			{
+				const auto authored = AuthoredNormals(const_cast<RE::BSGeometry*>(mesh.geometry));
+				mesh.side = OrientSheet(mesh.positions, mesh.triangles, mesh.travel, &authored);
+			}
 			mesh.open.assign(counts.vertexCount, 0);
 			for (const auto& [edge, count] : uses) {
 				if (count != 1)
@@ -1791,6 +1849,7 @@ namespace FluidFieldSim
 		struct Sheet
 		{
 			uint32_t base = 0;
+			const RE::BSGeometry* geometry = nullptr;
 			std::vector<RE::NiPoint3> positions, outward, shown;  ///< shown: the normal the see-through pass reads (vanilla's, or the winding's)
 			std::vector<std::array<uint16_t, 3>> triangles;
 			std::vector<int8_t> side;
@@ -1845,7 +1904,8 @@ namespace FluidFieldSim
 				if (index[0] < counts.vertexCount && index[1] < counts.vertexCount && index[2] < counts.vertexCount)
 					sheet.triangles.push_back({ index[0], index[1], index[2] });
 			}
-			sheet.side = OrientSheet(sheet.positions, sheet.triangles, SheetTravel(sheet.positions));
+			sheet.side = OrientSheet(sheet.positions, sheet.triangles, SheetTravel(sheet.positions), haveNormals ? &sheet.shown : nullptr);
+			sheet.geometry = geometry;
 			for (uint32_t t = 0; t < sheet.triangles.size(); t++) {
 				const auto& tri = sheet.triangles[t];
 				const RE::NiPoint3 &a = sheet.positions[tri[0]], &b = sheet.positions[tri[1]], &c = sheet.positions[tri[2]];
@@ -1866,6 +1926,7 @@ namespace FluidFieldSim
 				const float length = n.Length();
 				n = length > 1e-6f ? n / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
 			}
+			outwardNormals[geometry] = sheet.outward;  // D109: the depth rays' way in (against it)
 			sheets.push_back(std::move(sheet));
 		}
 		// D103: a vertex's inner side is hidden (D100's discard) only where another shown sheet lies behind it, its outer side
@@ -2591,7 +2652,8 @@ namespace FluidFieldSim
 				std::vector<RE::NiPoint3> world(counts.vertexCount);
 				for (uint32_t v = 0; v < counts.vertexCount; v++)
 					world[v] = geometry->world * positions[v];
-				const auto side = OrientSheet(world, triangles, SheetTravel(world));
+				const auto authored = AuthoredNormals(geometry);
+				const auto side = OrientSheet(world, triangles, SheetTravel(world), &authored);
 				std::vector<RE::NiPoint3> winding = normals;
 				std::fill(normals.begin(), normals.end(), RE::NiPoint3(0.0f, 0.0f, 0.0f));
 				for (std::size_t t = 0; t < triangles.size(); t++) {
@@ -4120,6 +4182,24 @@ namespace FluidFieldSim
 			return true;
 		};
 		const auto nearCamera = [&](const RE::NiBound& a_bound) { return (a_bound.center - eye).Length() < a_range + a_bound.radius; };
+		// D108: the depth rays as cast: green from the face through the vertex to what they hit, red to their reach for a miss
+		if (a_mode & 4) {
+			for (const auto& lit : litMeshList) {
+				auto* geometry = lit.geometry.get();
+				const auto it = geometry ? depthRaysShown.find(geometry) : depthRaysShown.end();
+				if (it == depthRaysShown.end() || !nearCamera(geometry->worldBound))
+					continue;
+				for (const auto& ray : it->second) {
+					ImVec2 a, b;
+					if (!project(ray[0], a) || !project(ray[1], b))
+						continue;
+					const bool hit = ray[2].x > 0.5f;
+					a_drawList->AddLine(a, b, hit ? IM_COL32(60, 230, 90, 170) : IM_COL32(240, 60, 60, 140), 1.0f);
+					if (hit)
+						a_drawList->AddCircleFilled(b, 2.0f, IM_COL32(60, 255, 90, 230));
+				}
+			}
+		}
 		// Wireframe: every grounded lit mesh's triangles, from its CPU copy
 		if (a_mode & 1) {
 			for (const auto& lit : litMeshList) {

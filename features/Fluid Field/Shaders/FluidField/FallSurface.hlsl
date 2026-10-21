@@ -349,13 +349,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float alpha = saturate(input.Fade.x) * lerp(contact, sqrt(contact), foam) * FallGround::CutFade(input.Clip);
 	if (alpha <= 0.002)
 		discard;
-	// TEMPORARY D105 diagnostic (Refraction at its 3.0 maximum): r opacity, g foam, b fresnel x reflection weight; and
-	// the left third of the screen the water's colour, the middle what lies behind, unblended
-	if (RefractionStrength > 2.95) {
-		const float third = input.Position.x / max(region.x, 1.0);
-		const float rayScale = length(input.WorldPosition) / max(sheetDepth, 1e-3);
-		return float4(saturate(input.Behind / 600.0).xxx, 1.0);  // Baked depth behind: black at the rock, white 600+
-	}
+	// D108: Waterfall Shading debug "Depth Behind": the open water or air behind the sheet, black at the rock, white at 600
+	if (FallGround::DebugMode == 4)
+		return float4(saturate(input.Behind / 600.0).xxx, 1.0);
 	return float4(color * alpha, alpha);  // Premultiplied
 }
 #endif  // PSHADER

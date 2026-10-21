@@ -257,15 +257,16 @@ void FluidField::DrawSettings()
 		ImGui::SeparatorText(T(TKEY("debug_waterfalls"), "Waterfalls"));
 		{
 			const char* fallDebugModes[] = { T(TKEY("waterfall_debug_off"), "Off"), T(TKEY("waterfall_debug_bake"), "Mesh Flow Bake"), T(TKEY("waterfall_debug_direction"), "Flow Direction"),
-				T(TKEY("waterfall_debug_vanilla"), "Vanilla Texture (No Flow)") };
-			settings.WaterfallDebug = std::clamp(settings.WaterfallDebug, 0, 3);
+				T(TKEY("waterfall_debug_vanilla"), "Vanilla Texture (No Flow)"), T(TKEY("waterfall_debug_depth"), "Depth Behind (See-Through Falls)") };
+			settings.WaterfallDebug = std::clamp(settings.WaterfallDebug, 0, 4);
 			ImGui::Combo(T(TKEY("waterfall_debug"), "Waterfall Shading"), &settings.WaterfallDebug, fallDebugModes, IM_ARRAYSIZE(fallDebugModes));
-			tooltip(T(TKEY("waterfall_debug_tooltip"), "Paints the falling water with its flow. Mesh Flow Bake: red how the streaks spread, green the run time (a band per second), blue foam, white the wake of rock; dark magenta where a mesh has no bake. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster. Vanilla Texture: the falls without the flow."));
+			tooltip(T(TKEY("waterfall_debug_tooltip"), "Paints the falling water with its flow. Mesh Flow Bake: red how the streaks spread, green the run time (a band per second), blue foam, white the wake of rock; dark magenta where a mesh has no bake. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster. Vanilla Texture: the falls without the flow. Depth Behind: with See-Through Falls, each sheet by the open water or air behind it to the first rock or ground, black at the rock, white at 600 units (8.5 m) or more."));
 			const char* meshViews[] = { T(TKEY("fall_mesh_debug_off"), "Off"), T(TKEY("fall_mesh_debug_wireframe"), "Wireframe"), T(TKEY("fall_mesh_debug_flow"), "Flow"),
-				T(TKEY("fall_mesh_debug_both"), "Wireframe and Flow") };
+				T(TKEY("fall_mesh_debug_both"), "Wireframe and Flow"), T(TKEY("fall_mesh_debug_rays"), "Depth Rays"), T(TKEY("fall_mesh_debug_wireframe_rays"), "Wireframe and Depth Rays") };
 			ImGui::Combo(T(TKEY("fall_mesh_debug"), "Falls Mesh Debug"), &fallMeshDebug, meshViews, IM_ARRAYSIZE(meshViews));
+
 			tooltip(T(TKEY("fall_mesh_debug_tooltip"),
-				"Drawn over everything, through the ground. Wireframe: the falls' meshes as drawn (yellow: our dense copies). Flow: the simulated water on each mesh as arrows, longer and redder when faster, bluer when slower, white where it strikes rock. Not saved."));
+				"Drawn over everything, through the ground. Wireframe: the falls' meshes as drawn (yellow: our dense copies). Flow: the simulated water on each mesh as arrows, longer and redder when faster, bluer when slower, white where it strikes rock. Depth Rays: the rays measuring the depth behind each sheet, from 40 units off its face through the vertex, green to what they hit, red to their reach where they miss. Not saved."));
 			uint32_t captured, captures;
 			fallSites.CountCaptures(captured, captures);
 			ImGui::Text(T(TKEY("waterfall_sites"), "Sites: %u falls, %u cascades, %u rapids, %u no bottom, %u failed; ground captured for %u of %u"),
@@ -1555,7 +1556,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		}
 	}
 	fallGroundData = { { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u,
-		static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 3)), fallSurfaceTime, FALL_POOL_FOAM, {}, {}, {}, settings.FallWhitening ? 1u : 0u, UINT32_MAX,
+		static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 4)), fallSurfaceTime, FALL_POOL_FOAM, {}, {}, {}, settings.FallWhitening ? 1u : 0u, UINT32_MAX,
 		settings.HideUnderwaterFalls ? 1u : 0u, { 1.0f, 1.0f }, 0u, {}, {} };
 }
 
@@ -1676,7 +1677,7 @@ bool FluidField::RefractiveFallsActive() const
 {
 	// The debug views (D40) are drawn by the lit pass, so the lit pieces stay while one is on
 	return loaded && settings.Enabled && settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && settings.RefractiveFalls &&
-	       settings.WaterfallDebug == 0 && fallGroundSRV && fallGroundOn && fallRefraction.IsUsable();
+	       (settings.WaterfallDebug == 0 || settings.WaterfallDebug == 4) && fallGroundSRV && fallGroundOn && fallRefraction.IsUsable();  // D108: 4 is its own
 }
 
 namespace

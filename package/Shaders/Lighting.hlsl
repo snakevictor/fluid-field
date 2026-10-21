@@ -1063,7 +1063,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// Fluid Field (D32): a waterfall's lit surface carried by the falls' flow, sampled through uv
 	FallGround::FlowSample fallFlow = (FallGround::FlowSample)0;
 	const float2 fallUvVanilla = uv;
-	const bool fallFlowOn = FallGround::Enabled && FallGround::DebugMode < 3;
+	const bool fallFlowOn = FallGround::Enabled && FallGround::DebugMode != 3;  // D108: 4 is See-Through Falls' own
 	float fallPoolHeight = 0.0;
 	bool fallPool = false;
 	[branch] if (fallFlowOn)

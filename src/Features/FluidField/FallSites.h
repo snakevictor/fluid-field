@@ -302,12 +302,15 @@ namespace FluidFieldSim
 			std::size_t next = 0;
 			std::vector<float> plus, minus;  ///< Clearance along and against the winding normal
 			std::vector<uint8_t> known;
+			std::vector<std::array<RE::NiPoint3, 3>> rays;  ///< D108: each ray's start, end and (x) whether it hit, for the overlay
 			// TEMPORARY D106 diagnostics
 			std::vector<float> hitDistances, missDown;
 			uint32_t hits = 0, misses = 0, missDownHits = 0, downward = 0;
 			double tiltSum = 0.0;
 		};
 		std::vector<RE::NiPointer<RE::BSGeometry>> depthQueue;
+		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> outwardNormals;                 ///< D109: each lit mesh's consistent outward normals, world (ComputeSides)
+		std::unordered_map<const RE::BSGeometry*, std::vector<std::array<RE::NiPoint3, 3>>> depthRaysShown;  ///< D108: the overlay's rays
 		std::unique_ptr<DepthJob> depthJob;
 		uint32_t depthRays = 0, depthHits = 0;
 		static constexpr float DEPTH_CELL = 30.0f;    ///< D106: world units: one sampled vertex per cell this size
