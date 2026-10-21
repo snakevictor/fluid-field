@@ -1861,7 +1861,7 @@ namespace FluidFieldSim
 		if (a_index >= vertexClips.size() || a_index >= vertexCuts.size())
 			return;
 		const VertexCut& cut = vertexCuts[a_index];
-		vertexClips[a_index][0] = std::min({ cut.water, cut.inside, cut.lead, cut.submerged, cut.rock });
+		vertexClips[a_index][0] = std::min({ cut.water, cut.inside, cut.lead, cut.submerged, cut.rock, cut.island });
 	}
 
 	bool FallSites::VertexInShell(std::size_t a_index) const
@@ -1869,7 +1869,7 @@ namespace FluidFieldSim
 		if (a_index >= vertexCuts.size())
 			return true;
 		const VertexCut& cut = vertexCuts[a_index];
-		return !cut.buried && cut.inside > 0.0f && cut.lead > 0.0f && cut.submerged > 0.0f;
+		return !cut.buried && cut.inside > 0.0f && cut.lead > 0.0f && cut.submerged > 0.0f && cut.island > 0.0f;
 	}
 
 	float FallSites::LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above, LandProbe* a_probe) const
@@ -1899,17 +1899,30 @@ namespace FluidFieldSim
 					a_probe->firstHeight = hit;
 				}
 			}
-			if ((layer == RE::COL_LAYER::kGround || layer == RE::COL_LAYER::kTerrain) && !referenced)
-				return hit;
+			if ((layer == RE::COL_LAYER::kGround || layer == RE::COL_LAYER::kTerrain) && !referenced) {
+				// D138: and only where the engine's own landscape height agrees (TES::GetLandHeight, the same heightfield): some
+				// collision with no reference on layer 17 is not the landscape (a mesh's ground-layer collision), and read as
+				// the ground it buried a visible sheet under it (a hole). Passed by, counted
+				float engine = 0.0f;
+				auto* tes = RE::TES::GetSingleton();
+				if (!tes || !tes->GetLandHeight(RE::NiPoint3(a_x, a_y, hit + 64.0f), engine) || std::abs(engine - hit) <= LAND_AGREE) {
+					if (a_probe)
+						a_probe->engine = engine;
+					return hit;
+				}
+				if (a_probe)
+					a_probe->disagreed++;
+			}
 			z = hit - 0.5f;
 		}
 		return -FLT_MAX;
 	}
 
-	void FallSites::StaticHits(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, bool a_flip, std::vector<float>& a_hits) const
+	void FallSites::StaticHits(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, std::vector<StaticHit>& a_hits) const
 	{
-		// D131: every face of a static (layers 1 and 2, the falls' own collision passed through) the ray meets, as distances
-		// from a_from (a_flip: from its far end, a_reach along); the landscape is left to LandHeightAt
+		// D135: every face of a static (layers 1 and 2, the falls' own collision passed through) the ray meets, as distances
+		// from a_from; the landscape is left to LandHeightAt. D138: with which way the face turns to the ray (its normal along
+		// the ray: negative, the ray meets its front)
 		const float scale = RE::bhkWorld::GetWorldScale();
 		float from = 0.0f;
 		for (int step = 0; step < 16 && from < a_reach; step++) {
@@ -1928,8 +1941,11 @@ namespace FluidFieldSim
 				const auto* ref = RE::TESHavokUtilities::FindCollidableRef(*output.rootCollidable);
 				const char* model = ref ? ModelOf(ref->GetBaseObject()) : nullptr;
 				const std::string name = model ? Lowercase(model) : std::string();
-				if (name.find("fxwaterfall") == std::string::npos && name.find("fxrapids") == std::string::npos)
-					a_hits.push_back(a_flip ? a_reach - hit : hit);
+				if (name.find("fxwaterfall") == std::string::npos && name.find("fxrapids") == std::string::npos) {
+					float normal[4];
+					_mm_storeu_ps(normal, output.normal.quad);
+					a_hits.push_back({ hit, normal[0] * a_direction.x + normal[1] * a_direction.y + normal[2] * a_direction.z });
+				}
 			}
 			from = hit + 0.5f;
 		}
@@ -2110,45 +2126,56 @@ namespace FluidFieldSim
 					rays++;
 					buryRays++;
 					const bool underGround = parts.ground > -FLT_MAX && p.z < parts.ground - BURY_LAND;
-					// D131: in statics, as VolumeCut decides inside another sheet (D113): along each of the six axes, the faces of
-					// statics between the vertex and BURY_REACH out, cast from both ends (Havok may miss a face seen from behind;
-					// one seen from both sides is counted once), odd: inside along that axis. Inside by a majority (four of six),
-					// the far end itself sometimes in a cliff. D126 asked "does any way from open air reach it", which a start
-					// inside rock passed; the user: the sheets' crossing (D113) "gets us the results we want as a whole"
+					// D135: in statics, by the six axes, inside by four of them. D138: each axis decided by the face nearest the vertex
+					// along it, not by the parity of every face out to BURY_REACH: in a gorge a far end sits in the cliff opposite,
+					// its far face is missed, and that axis read inside; three or four such axes made a hole mid-sheet (SS 1027). A
+					// ray from the vertex meeting a face's front first: outside along that axis. A ray from the far end meeting a
+					// face nearer the vertex than anything the vertex's own ray met (Havok misses the faces of a shape seen from
+					// inside it): behind that face, inside. Met from both sides: by which way it turns to the vertex's ray
 					float staticClip = NO_CUT;
+					uint8_t votes = 0;
 					if (!underGround) {
 						static const RE::NiPoint3 axes[6] = { { 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f },
 							{ 0.0f, 0.0f, -1.0f } };
 						int inside = 0, outside = 0;
 						float depth = BURY_REACH;
-						std::vector<float> hits;
+						std::vector<StaticHit> out, back;
 						for (const auto& axis : axes) {
 							if (inside >= 4 || outside >= 3)
 								break;
-							hits.clear();
-							StaticHits(world, p, axis, BURY_REACH, false, hits);
-							StaticHits(world, p + axis * BURY_REACH, -axis, BURY_REACH, true, hits);
+							out.clear();
+							back.clear();
+							StaticHits(world, p, axis, BURY_REACH, out);
+							StaticHits(world, p + axis * BURY_REACH, -axis, BURY_REACH, back);
 							rays += 2;
 							buryRays += 2;
-							std::sort(hits.begin(), hits.end());
-							int crossings = 0;
-							float last = -FLT_MAX, nearest = BURY_REACH;
-							for (const float hit : hits) {
-								if (hit - last > 2.0f) {
-									crossings++;
-									nearest = std::min(nearest, hit);
-								}
-								last = hit;
+							// The vertex's own ray: its first face. The far end's: the face nearest the vertex
+							const StaticHit* mine = out.empty() ? nullptr : &out.front();
+							float theirs = -1.0f;
+							for (const auto& hit : back)
+								theirs = std::max(theirs, hit.distance);  // From the far end: the largest is nearest the vertex
+							const float theirsFromVertex = theirs >= 0.0f ? BURY_REACH - theirs : FLT_MAX;
+							bool behind = false;
+							float nearest = BURY_REACH;
+							if (mine && (theirs < 0.0f || mine->distance <= theirsFromVertex + 2.0f)) {
+								const bool both = theirs >= 0.0f && std::abs(mine->distance - theirsFromVertex) <= 2.0f;
+								// Met by the vertex first: outside, unless it is the back of a face (seen from inside)
+								behind = both && mine->facing > 0.0f;
+								nearest = mine->distance;
+							} else if (theirs >= 0.0f) {
+								behind = true;
+								nearest = theirsFromVertex;
 							}
-							if (crossings % 2 == 1) {
+							if (behind) {
 								inside++;
 								depth = std::min(depth, nearest);
 							} else {
 								outside++;
 							}
 						}
-						// Cut from BURY_MARGIN inside the face (the nearest crossing along the inside axes), so a sheet dipping into
-						// the rock it lies on keeps its edge in the rock: the cut line stays hidden there
+						votes = static_cast<uint8_t>(inside);
+						// Cut from BURY_MARGIN inside the face (the nearest one along the inside axes), so a sheet dipping into the
+						// rock it lies on keeps its edge in the rock: the cut line stays hidden there
 						if (inside >= 4)
 							staticClip = std::clamp(BURY_MARGIN - depth, -CLIP_RANGE, NO_CUT);
 					}
@@ -2156,6 +2183,10 @@ namespace FluidFieldSim
 					// (one-sided, not drawn from below) or from inside a mesh, nothing did (SS 993-995)
 					const float landClip = parts.ground > -FLT_MAX ? std::clamp(p.z - (parts.ground - BURY_LAND), -CLIP_RANGE, NO_CUT) : NO_CUT;
 					parts.rock = std::min(landClip, staticClip);
+					// D138: which test cut it, for the culling's log (and its cleanup)
+					parts.rockCause = static_cast<uint8_t>((landClip <= 0.0f ? 1 : 0) | (staticClip <= 0.0f ? 2 : 0));
+					parts.votes = votes;
+					buryJob->landDisagreed += probe.disagreed;
 					const bool buried = parts.rock <= 0.0f;
 					// D131: the samples the log keeps: the lowest vertices over the landscape that were not buried
 					if (!buried && parts.ground > -FLT_MAX) {
@@ -2178,8 +2209,8 @@ namespace FluidFieldSim
 			if (buryJob->next >= buryJob->positions.size()) {
 				// D131: the landscape test's evidence, per mesh: where no landscape was found, how many rays had to pass something
 				// first, and the lowest vertices it left standing (their height over it, and what the ray met first)
-				logger::info("[Fluid Field]   rock test '{}': {} vertices with no landscape under them, {} whose ray passed something first", buryJob->geometry->name.c_str(),
-					buryJob->landMissing, buryJob->landStepped);
+				logger::info("[Fluid Field]   rock test '{}': {} vertices with no landscape under them, {} whose ray passed something first, {} ground hits passed by (not the engine's landscape height)",
+					buryJob->geometry->name.c_str(), buryJob->landMissing, buryJob->landStepped, buryJob->landDisagreed);
 				for (const auto& sample : buryJob->samples)
 					logger::info("[Fluid Field]     kept at ({:.0f}, {:.0f}, {:.0f}): landscape {:.0f} ({:+.1f} over it), {} ray steps, first hit layer {} {} at {:.0f}", sample.at.x, sample.at.y,
 						sample.at.z, sample.ground, sample.over, sample.steps, sample.firstLayer, sample.firstReferenced ? "with a reference" : "without one", sample.firstHeight);
@@ -2288,7 +2319,7 @@ namespace FluidFieldSim
 		const auto begin = std::chrono::steady_clock::now();
 		const auto deadline = begin + std::chrono::duration<double, std::milli>(CLIP_BUDGET_MS);
 		CullJob& job = *cullJob;
-		constexpr int DONE = 5;
+		constexpr int DONE = 6;
 		while (job.stage < DONE && std::chrono::steady_clock::now() < deadline) {
 			// Stage 0: the sheets, one a step (each one OrientSheet)
 			if (job.stage == 0) {
@@ -2306,11 +2337,16 @@ namespace FluidFieldSim
 					job.sheets.push_back(std::move(sheet));
 				continue;
 			}
-			// Stages 1-3, a vertex at a time over every sheet: the pools' cut, the inside cut (then a.x), the sides. Each stage
-			// reads only what the stages before it finished over all sheets
+			// Stages 1-5, a vertex at a time over every sheet: the pools' cut, the inside cut (then a.x), the cleanup (D138: a
+			// sheet a step), the sides, where sheets meet. Each stage reads only what the stages before it finished over all sheets
 			if (job.sheet >= job.sheets.size()) {
 				job.stage++;
 				job.sheet = job.vertex = 0;
+				continue;
+			}
+			if (job.stage == 3) {
+				CleanupSheet(job.sheets[job.sheet], job);
+				job.sheet++;
 				continue;
 			}
 			const CullSheet& sheet = job.sheets[job.sheet];
@@ -2343,7 +2379,7 @@ namespace FluidFieldSim
 				} else if (job.stage == 2) {
 					VolumeCut(job.sheets, job.sheet, v, job);
 					ComposeCut(sheet.base + v);
-				} else if (job.stage == 3) {
+				} else if (job.stage == 4) {
 					SideFlags(job.sheets, job.sheet, v, job);
 				} else {
 					MeetDistance(job.sheets, job.sheet, v, job);
@@ -2368,11 +2404,201 @@ namespace FluidFieldSim
 			job.sheets.size(), job.inside, job.tested, job.inward, job.covered, job.sideTested, job.meeting, MEET_REACH, job.busy,
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - job.started).count());
 		const uint32_t submerged = job.submerged;
+		logger::info("[Fluid Field]   {} vertices under the river's water by its bed, cut; cleanup: {} kept pieces ({} vertices) cut off their sheet's body and cut, {} small enclosed holes ({} vertices) restored",
+			submerged, job.islands, job.islandVertices, job.holes, job.holeVertices);
 		cullJob.reset();
-		logger::info("[Fluid Field]   {} vertices under the river's water by its bed, cut", submerged);
 		// D126: the spray, plunges and lips come only from the shell (BuildPlunges reads VertexInShell)
 		if (!bakeFields.empty())
 			BuildPlunges();
+	}
+
+	void FallSites::CleanupSheet(const CullSheet& a_sheet, CullJob& a_job)
+	{
+		// D138: the cuts are decided vertex by vertex, so their mistakes are small pieces: a few kept vertices left floating in
+		// rock or air where all round them was cut (SS 1020-1024, 1026, 1029), a few cut ones holing a plain sheet (SS 1019,
+		// 1025, 1028). On the sheet's own graph (vertices welded by position: the texture seams join), after every cut: kept
+		// pieces cut off the main body and small are cut; cut pieces enclosed by kept ones, small, and cut only by the rock or
+		// another sheet (never by the water, the lead-in or the pools) are restored. Whole pieces switch, so no cut line moves
+		const std::size_t count = a_sheet.positions.size();
+		if (count == 0)
+			return;
+		std::unordered_map<int64_t, uint32_t> welds;
+		std::vector<uint32_t> node(count);
+		for (std::size_t v = 0; v < count; v++) {
+			const RE::NiPoint3& q = a_sheet.positions[v];
+			const int64_t key = (std::llround(q.x * 8.0) & 0x1FFFFF) << 42 | (std::llround(q.y * 8.0) & 0x1FFFFF) << 21 | (std::llround(q.z * 8.0) & 0x1FFFFF);
+			node[v] = welds.try_emplace(key, static_cast<uint32_t>(welds.size())).first->second;
+		}
+		const std::size_t nodes = welds.size();
+		std::vector<std::vector<uint32_t>> next(nodes);
+		for (const auto& tri : a_sheet.triangles) {
+			for (int k = 0; k < 3; k++) {
+				const uint32_t a = node[tri[k]], b = node[tri[(k + 1) % 3]];
+				if (a == b)
+					continue;
+				next[a].push_back(b);
+				next[b].push_back(a);
+			}
+		}
+		// Each node's state from its vertices: the island cut undone first (worked out again here); cut if any copy is
+		std::vector<uint8_t> kept(nodes, 1), solid(nodes, 1), open(nodes, 0);
+		std::vector<std::vector<uint32_t>> copies(nodes);
+		for (std::size_t v = 0; v < count; v++) {
+			const std::size_t index = a_sheet.base + v;
+			VertexCut& parts = vertexCuts[index];
+			parts.island = NO_CUT;
+			ComposeCut(index);
+			const uint32_t n = node[v];
+			copies[n].push_back(static_cast<uint32_t>(v));
+			const bool shown = vertexClips[index][0] > 0.0f && parts.pool > 0.0f;
+			kept[n] = kept[n] && shown;
+			// Cut only by the rock or by another sheet: the water, the lead-in, the river and the pools cut where they mean to
+			solid[n] = solid[n] && parts.water > 0.0f && parts.lead > 0.0f && parts.submerged > 0.0f && parts.pool > 0.0f;
+			open[n] = open[n] || a_sheet.open[v];
+		}
+		// The pieces of one kind (kept, or cut by rock or a sheet), by a flood over the graph
+		const auto pieces = [&](const auto& a_member, std::vector<int32_t>& a_label, std::vector<std::vector<uint32_t>>& a_pieces) {
+			a_label.assign(nodes, -1);
+			a_pieces.clear();
+			std::vector<uint32_t> open2;
+			for (uint32_t start = 0; start < nodes; start++) {
+				if (a_label[start] >= 0 || !a_member(start))
+					continue;
+				const auto label = static_cast<int32_t>(a_pieces.size());
+				a_pieces.emplace_back();
+				open2.assign(1, start);
+				a_label[start] = label;
+				while (!open2.empty()) {
+					const uint32_t n = open2.back();
+					open2.pop_back();
+					a_pieces.back().push_back(n);
+					for (const uint32_t m : next[n]) {
+						if (a_label[m] < 0 && a_member(m)) {
+							a_label[m] = label;
+							open2.push_back(m);
+						}
+					}
+				}
+			}
+		};
+		std::vector<int32_t> label;
+		std::vector<std::vector<uint32_t>> found;
+		// Holes first: a cut piece with no open edge, every neighbour kept, small, cut only by rock or a sheet
+		uint32_t keptNodes = 0;
+		for (std::size_t n = 0; n < nodes; n++)
+			keptNodes += kept[n] ? 1 : 0;
+		pieces([&](uint32_t a_n) { return !kept[a_n]; }, label, found);
+		const auto holeMost = std::max<std::size_t>(HOLE_MOST_VERTICES, static_cast<std::size_t>(HOLE_MOST_FRACTION * static_cast<float>(keptNodes)));
+		for (const auto& piece : found) {
+			if (piece.size() > holeMost)
+				continue;
+			bool enclosed = true;
+			for (const uint32_t n : piece) {
+				if (open[n] || !solid[n]) {
+					enclosed = false;
+					break;
+				}
+				for (const uint32_t m : next[n]) {
+					if (label[m] != label[piece.front()] && !kept[m]) {
+						enclosed = false;
+						break;
+					}
+				}
+				if (!enclosed)
+					break;
+			}
+			if (!enclosed)
+				continue;
+			for (const uint32_t n : piece) {
+				kept[n] = 1;
+				for (const uint32_t v : copies[n]) {
+					VertexCut& parts = vertexCuts[a_sheet.base + v];
+					parts.rock = NO_CUT;
+					parts.inside = NO_CUT;
+					parts.buried = 0;
+					ComposeCut(a_sheet.base + v);
+				}
+			}
+			a_job.holes++;
+			a_job.holeVertices += static_cast<uint32_t>(piece.size());
+			keptNodes += static_cast<uint32_t>(piece.size());
+		}
+		// Then the kept pieces off the main body: per connected part of the mesh as authored (a mesh can hold several), its
+		// largest kept piece is the body; a smaller one is cut if it is small and the cuts made it (it borders a cut vertex: a
+		// part of the mesh that is small but whole is left alone)
+		std::vector<int32_t> partOf;
+		std::vector<std::vector<uint32_t>> authored;
+		pieces([](uint32_t) { return true; }, partOf, authored);
+		std::vector<std::size_t> partKept(authored.size(), 0), body(authored.size(), SIZE_MAX);
+		for (std::size_t n = 0; n < nodes; n++)
+			partKept[partOf[n]] += kept[n] ? 1 : 0;
+		pieces([&](uint32_t a_n) { return kept[a_n] != 0; }, label, found);
+		for (std::size_t k = 0; k < found.size(); k++) {
+			std::size_t& best = body[partOf[found[k].front()]];
+			if (best == SIZE_MAX || found[k].size() > found[best].size())
+				best = k;
+		}
+		for (std::size_t k = 0; k < found.size(); k++) {
+			const auto whole = partOf[found[k].front()];
+			const auto islandMost = std::max<std::size_t>(ISLAND_MOST_VERTICES, static_cast<std::size_t>(ISLAND_MOST_FRACTION * static_cast<float>(partKept[whole])));
+			// The body too, where the cuts left only a scrap of its part (SS 1021: a lone piece floating in the rock, all round it cut)
+			const bool scrap = found[k].size() <= BODY_SCRAP_VERTICES && static_cast<float>(found[k].size()) < BODY_SCRAP_FRACTION * static_cast<float>(authored[whole].size());
+			if ((k == body[whole] && !scrap) || (k != body[whole] && found[k].size() > islandMost))
+				continue;
+			bool split = false;
+			for (const uint32_t n : found[k]) {
+				for (const uint32_t m : next[n])
+					split = split || !kept[m];
+				if (split)
+					break;
+			}
+			if (!split)
+				continue;
+			for (const uint32_t n : found[k]) {
+				for (const uint32_t v : copies[n]) {
+					vertexCuts[a_sheet.base + v].island = -CLIP_RANGE;
+					ComposeCut(a_sheet.base + v);
+				}
+			}
+			a_job.islands++;
+			a_job.islandVertices += static_cast<uint32_t>(found[k].size());
+		}
+		// D138: the log: what cut this sheet's vertices, and its two largest pieces cut by rock or a sheet alone (where they are,
+		// and by which test), so a hole in a plain sheet can be traced to its test
+		uint32_t byLand = 0, byStatic = 0, byInside = 0, byLead = 0, byRiver = 0, byWater = 0, byPool = 0, byIsland = 0;
+		for (std::size_t v = 0; v < count; v++) {
+			const VertexCut& parts = vertexCuts[a_sheet.base + v];
+			byLand += (parts.rockCause & 1) && parts.rock <= 0.0f ? 1 : 0;
+			byStatic += (parts.rockCause & 2) && parts.rock <= 0.0f ? 1 : 0;
+			byInside += parts.inside <= 0.0f ? 1 : 0;
+			byLead += parts.lead <= 0.0f ? 1 : 0;
+			byRiver += parts.submerged <= 0.0f ? 1 : 0;
+			byWater += parts.water <= 0.0f ? 1 : 0;
+			byPool += parts.pool <= 0.0f ? 1 : 0;
+			byIsland += parts.island <= 0.0f ? 1 : 0;
+		}
+		logger::info("[Fluid Field]   cut '{}' ({} vertices): {} under the landscape, {} in statics, {} inside another sheet, {} lead-in, {} in the river, {} the water below, {} the pools, {} lone pieces",
+			a_sheet.geometry->name.c_str(), count, byLand, byStatic, byInside, byLead, byRiver, byWater, byPool, byIsland);
+		pieces([&](uint32_t a_n) { return !kept[a_n] && solid[a_n]; }, label, found);
+		std::sort(found.begin(), found.end(), [](const auto& a_a, const auto& a_b) { return a_a.size() > a_b.size(); });
+		for (std::size_t k = 0; k < found.size() && k < 2; k++) {
+			RE::NiPoint3 centre(0.0f, 0.0f, 0.0f);
+			uint32_t land = 0, statics = 0, inside = 0, votes = 0, edge = 0;
+			for (const uint32_t n : found[k]) {
+				const uint32_t v = copies[n].front();
+				const VertexCut& parts = vertexCuts[a_sheet.base + v];
+				centre += a_sheet.positions[v];
+				land += (parts.rockCause & 1) && parts.rock <= 0.0f ? 1 : 0;
+				statics += (parts.rockCause & 2) && parts.rock <= 0.0f ? 1 : 0;
+				inside += parts.inside <= 0.0f ? 1 : 0;
+				votes += parts.votes;
+				edge += open[n] ? 1 : 0;
+			}
+			const float size = static_cast<float>(found[k].size());
+			centre = centre / size;
+			logger::info("[Fluid Field]     cut piece of {} vertices round ({:.0f}, {:.0f}, {:.0f}): {} by the landscape, {} by statics (mean {:.1f} of 6 axes inside), {} inside another sheet; {} on its open edge",
+				found[k].size(), centre.x, centre.y, centre.z, land, statics, static_cast<float>(votes) / size, inside, edge);
+		}
 	}
 
 	void FallSites::PoolCut(const CullSheet& a_sheet, uint32_t a_vertex)

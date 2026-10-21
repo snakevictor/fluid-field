@@ -339,6 +339,9 @@ namespace FluidFieldSim
 			float pool = NO_CUT;       ///< ComputePoolCuts: under our pools at the foot, as the shaders cut it (not in a.x)
 			float submerged = NO_CUT;  ///< D126: CullStep: inside our pools' water near the bed (the river over a lead-in): under it by LEAD_CUT_DEPTH or more
 			float rock = NO_CUT;       ///< D131: BuryStep: under the landscape (by its height, from BURY_LAND under it) or inside a static (parity, from BURY_MARGIN in); in a.x
+			float island = NO_CUT;     ///< D138: CleanupSheet: a small piece of kept sheet cut off from its sheet's main body; in a.x
+			uint8_t rockCause = 0;     ///< D138: 1 the landscape cut it, 2 a static (for the log)
+			uint8_t votes = 0;         ///< D138: axes that called it inside a static
 			float ground = -FLT_MAX;   ///< D126: BuryStep: the landscape's height under it (-FLT_MAX: none, or an interior)
 			uint8_t buried = 0;        ///< BuryStep: under the landscape, or no ray from open air reaches it (not in a.x)
 		};
@@ -365,10 +368,17 @@ namespace FluidFieldSim
 			uint32_t firstLayer = 0;
 			bool firstReferenced = false;
 			float firstHeight = 0.0f;
+			float engine = 0.0f;  ///< D138: TES::GetLandHeight where the ray stopped
+			int disagreed = 0;    ///< D138: unreferenced ground-layer hits passed by, the engine's height elsewhere
 		};
 		float LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above, LandProbe* a_probe = nullptr) const;
 		/** @brief D131: the distances along a ray at which it meets a static's face (stepping past each), appended to a_hits; a_flip measures them from the ray's far end. */
-		void StaticHits(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, bool a_flip, std::vector<float>& a_hits) const;
+		struct StaticHit
+		{
+			float distance = 0.0f;  ///< Along the ray from its start
+			float facing = 0.0f;    ///< D138: the face's normal along the ray (negative: its front)
+		};
+		void StaticHits(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, std::vector<StaticHit>& a_hits) const;
 		/**
 		 * @brief D126: VertexInShell rasterised onto a bake's texel grid (as StartBake lays the triangles in), 1 where kept; empty
 		 * where the mesh has no culling yet. a_hash, if given, gets a hash of the mesh's kept vertices (the bake cache's key).
@@ -399,7 +409,7 @@ namespace FluidFieldSim
 				float firstHeight = 0.0f;
 			};
 			std::vector<Sample> samples;  ///< The lowest four over the landscape
-			uint32_t landMissing = 0, landStepped = 0;
+			uint32_t landMissing = 0, landStepped = 0, landDisagreed = 0;
 		};
 		std::vector<RE::NiPointer<RE::BSGeometry>> buryQueue;
 		std::unique_ptr<BuryJob> buryJob;
@@ -407,6 +417,7 @@ namespace FluidFieldSim
 		static constexpr float BURY_REACH = 1000.0f;       ///< D112: how far the burial rays reach from a vertex (D126: 500, was 160; D131: 1000, the parity test's far ends out of the big cliffs)
 		static constexpr float BURY_MARGIN = 24.0f;        ///< D112: rock this near short of the vertex does not bury it (vanilla's sheets dip into the rock they lie on, as BAKE_ROCK_MARGIN)
 		static constexpr float BURY_LAND = 8.0f;           ///< D126: a vertex this far under the landscape's surface is buried (D113's 12 on level ground only, from the height grid)
+		static constexpr float LAND_AGREE = 16.0f;         ///< D138: a ground hit counts as the landscape only within this of TES::GetLandHeight there
 		static constexpr float LAND_RAY_ABOVE = 4000.0f;   ///< D126: the landscape ray starts this far over the point...
 		static constexpr float LAND_RAY_DROP = 20000.0f;   ///< D126: ...and looks this far down
 		static constexpr float SUBMERGED_BED = 64.0f;      ///< D126: a vertex at most this far over the landscape, under our pools' water, lies in the river (not the air under a lip)
@@ -445,6 +456,7 @@ namespace FluidFieldSim
 			int stage = 0;
 			std::size_t sheet = 0, vertex = 0;  ///< Where the current stage is
 			uint32_t inside = 0, tested = 0, inward = 0, covered = 0, sideTested = 0, submerged = 0, meeting = 0;
+			uint32_t islands = 0, islandVertices = 0, holes = 0, holeVertices = 0;  ///< D138: CleanupSheet's
 			std::chrono::steady_clock::time_point started;
 			double busy = 0.0;  ///< Milliseconds of work over its frames
 		};
@@ -465,6 +477,18 @@ namespace FluidFieldSim
 		static constexpr float VOLUME_REACH = 400.0f;  ///< D113: world units each ray looks for the other sheet
 		static constexpr int VOLUME_VOTES = 3;         ///< D113: rays of six that must leave the other sheet through its outer face
 		static constexpr float VOLUME_MARGIN = 20.0f;  ///< D113: a vertex this near the other sheet's surface, inside it, still shows (about one of the dense copy's edges: no opening at the crossing)
+		/**
+		 * @brief D138: after every cut, on one sheet's graph (welded by position): small kept pieces cut off its main body are cut
+		 * (VertexCut::island), small cut pieces enclosed by kept vertices and cut only by rock or another sheet are restored.
+		 * Logs what cut its vertices and its largest pieces cut by rock or a sheet.
+		 */
+		void CleanupSheet(const CullSheet& a_sheet, CullJob& a_job);
+		static constexpr std::size_t ISLAND_MOST_VERTICES = 64;  ///< D138: a kept piece off the main body this small (welded vertices) is cut...
+		static constexpr float ISLAND_MOST_FRACTION = 0.01f;     ///< D138: ...or this small a share of the sheet's kept vertices
+		static constexpr std::size_t BODY_SCRAP_VERTICES = 256;  ///< D138: a part's main body this small (welded vertices)...
+		static constexpr float BODY_SCRAP_FRACTION = 0.03f;      ///< D138: ...and this small a share of its part as authored is a scrap the cuts left: cut too
+		static constexpr std::size_t HOLE_MOST_VERTICES = 32;    ///< D138: an enclosed piece cut by rock or a sheet this small is restored...
+		static constexpr float HOLE_MOST_FRACTION = 0.002f;      ///< D138: ...or this small a share of the sheet's kept vertices
 		/** @brief D126: VertexClip d.w for one vertex: the distance from where it is drawn to the nearest shown surface of another sheet, up to MEET_REACH, else NO_WATER. */
 		void MeetDistance(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job);
 		static constexpr float MEET_REACH = 64.0f;  ///< D126: world units within which another sheet's surface counts as meeting this one
