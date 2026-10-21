@@ -220,7 +220,7 @@ static const float RIPPLE_STRENGTH = 1.0;
 static const float DETAIL_TILE = 160.0;
 static const float DETAIL_STRENGTH = 0.8;
 /** D147: the share of the river's reflection (fresnel) the falls take. */
-static const float FALLS_REFLECTION = 0.35;
+static const float FALLS_REFLECTION = 1.0;  // D154: the river's (measured: the falls' depth and water parameters match the river's)
 
 /**
  * D130: the repeats of a texture a_worldScale units across per repeat of the falls' flow coordinates (FALLS_UV_WORLD),
@@ -319,12 +319,14 @@ float BehindDepth(VSOutput a_input, float a_sheetDepth, float a_behindDepth)
 }
 
 /** D149: how much deeper than its depth falling water reads (turbid with bubbles and sediment). */
-static const float FALLS_MURK = 4.0;
+static const float FALLS_MURK = 1.0;  // D154: 1 (D149-D153's 4 and 12 were fudges: measured, the falls' depth along the view ray and their water's fog match the river's)
+/** D153: world units of the falls' water path (FALLS_MURK in it) at which their colour is wholly the water's deep colour. */
+static const float FALLS_DEEP_AT = 160.0;
 /** D150: world units of water (the path, FALLS_MURK in it) that stay clear, the range over which the murk comes in, and how milky and how dark the bed reads at its fullest. */
 static const float MURK_CLEAR = 8.0;
 static const float MURK_RANGE = 48.0;
-static const float MURK_MILK = 0.12;  // D151: 0.12 (was 0.45): the foam colour is the bright scene light; at noon the bed read as flat beige (SS 1057)
-static const float MURK_DARK = 0.75;
+static const float MURK_MILK = 0.0;  // D153: 0 (was 0.12): it greyed the sheets  // D151: 0.12 (was 0.45): the foam colour is the bright scene light; at noon the bed read as flat beige (SS 1057)
+static const float MURK_DARK = 0.0;  // D154: off (the river lays no such step)
 
 /** D120: past this gap behind (world units), the sheet has left the rock: what lies between is air, not water. */
 static const float LAYER_GAP = 48.0;
@@ -535,7 +537,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float3 shallow = Color::Water(ShallowColor);
 	const float3 deep = Color::Water(DeepColor);
 	float3 dirColor, ambientColor;
-	ShadowSampling::ExtractLighting(lerp(shallow, deep, saturate(path / FogFar)), dirColor, ambientColor);
+	// D153: shallow to deep over FALLS_DEEP_AT (the river's FogFar is hundreds of units; the falls' thin water stayed its
+	// shallow, light grey-olive everywhere where the river beside them goes near black, SS 1063-1064)
+	ShadowSampling::ExtractLighting(lerp(shallow, deep, saturate(path / FogFar)), dirColor, ambientColor);  // D154: the river's mix (Water.hlsl: over FogFar)
 	const float3 lightDirection = SafeNormalize(SharedData::DirLightDirection.xyz, float3(0.0, 0.0, 1.0));
 	const float3 sun = SharedData::InInterior ? 0.0 : ShadowSampling::GetDirectionalLighting();
 	const float3 sceneLight = sun * shadow + ShadowSampling::GetAmbientLighting();

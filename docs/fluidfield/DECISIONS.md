@@ -3570,3 +3570,21 @@ Entry format:
         with its fog already.
 -   Open: the river's dense sun sparkle; the falls read a little flatter.
 -   References: D151
+
+## D154: Measured: the falls' depth and water parameters match the river's
+
+-   Date: 2026-10-21
+-   Decision: matching diagnostics in Water.hlsl (deployed copy only) and
+    FallSurface.hlsl, in the user's view: water depth along the view ray
+    150-300 units on both, fog far 100-300 on both, fog amount 0.5-1 on
+    both. With the depth at or past fog far the shared formulas make both
+    fully opaque and deep-coloured. D149-D153's fudges (murk x4 then x12,
+    deep colour at 160 units, the bed's darkening, the reflection at 0.35)
+    are removed: the falls run the river's formulas as they stand.
+-   Found, still different: the reflection's source. The river reflects
+    screen-space reflections (its dark banks) and the vanilla cubemap at
+    distance; the falls only the sky cubemap, which at full fresnel greys
+    them blue (the user's "petroleum", D147's 0.35 was hiding this).
+-   Lesson (LEARNINGS, D145): measure each input on both shaders before
+    tuning any.
+-   References: D127, D147-D153
