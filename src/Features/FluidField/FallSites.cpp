@@ -448,6 +448,9 @@ namespace FluidFieldSim
 		depthRaysShown.clear();
 		depthQueue.clear();
 		depthJob.reset();
+		buryQueue.clear();  // D112
+		buryJob.reset();
+		buryDone = true;
 		hideEffects = false;
 		RefreshHiddenEffects();
 		// D91: the pieces the refractive pass drew show again (the wish is kept for the next sites)
@@ -716,6 +719,9 @@ namespace FluidFieldSim
 		// D78: the plunges stand on the pools' water
 		if (!bakeFields.empty())
 			BuildPlunges();
+		// D112: the pools cut the meshes' feet, which the culling reads (once the rock test has run; its end reads them anyway)
+		if (buryDone && !vertexClipBase.empty())
+			RefreshCulling();
 	}
 
 	void FallSites::AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes,
@@ -990,9 +996,8 @@ namespace FluidFieldSim
 								continue;
 							std::vector<float> shown;
 							for (uint32_t v = 0; v < count; v++) {
-								const auto& clip = vertexClips[base + v];
-								if (clip[0] > 0.0f && clip[3] < 3.5f)
-									shown.push_back(clip[13]);
+								if (VertexShown(base + v) && vertexClips[base + v][3] < 3.5f)
+									shown.push_back(vertexClips[base + v][13]);
 							}
 							if (shown.empty())
 								continue;
@@ -1007,8 +1012,9 @@ namespace FluidFieldSim
 				}
 				// D109: a mesh waits for its consistent outward normals (ComputeSides)
 				RE::NiPointer<RE::BSGeometry> geometry = depthQueue.back();
-				// D110: and for every cut (the lead-in's comes with the swell, ComputePushes)
-				if (geometry && vertexClipBase.contains(geometry.get()) && (!outwardNormals.contains(geometry.get()) || !vertexPushes.contains(geometry.get())))
+				// D110: and for every cut (the lead-in's comes with the swell, ComputePushes). D112: and the rock test (BuryStep),
+				// whose end works the culling out again
+				if (geometry && vertexClipBase.contains(geometry.get()) && (!outwardNormals.contains(geometry.get()) || !vertexPushes.contains(geometry.get()) || !buryDone))
 					return;
 				depthQueue.pop_back();
 				const auto base = geometry ? vertexClipBase.find(geometry.get()) : vertexClipBase.end();
@@ -1068,17 +1074,19 @@ namespace FluidFieldSim
 					}
 				}
 				// D110: from where the vertex is drawn (its rest place moved by the seams' gap and the swell, ComposeShifts; the
-				// wobble about it aside), so the rays start on the surface seen
+				// wobble about it aside), so the rays start on the surface seen. D112: the moves are in the mesh's own space
+				// (b.xyz), turned and scaled into the world's (they were added as world moves)
 				for (uint32_t v = 0; v < counts.vertexCount; v++) {
 					const auto& clip = vertexClips[job->base + v];
-					job->positions[v] += RE::NiPoint3(clip[4], clip[5], clip[6]);
+					job->positions[v] += geometry->world.rotate * (RE::NiPoint3(clip[4], clip[5], clip[6]) * geometry->world.scale);
 				}
-				// One vertex per DEPTH_CELL cell, of those shown (D110: not cut by rock, the water, the curl or the lead-in, nor
-				// hidden behind another sheet: only the outer surface's depth matters, and the buried ones' rays were noise)
+				// One vertex per DEPTH_CELL cell, of those shown (D110: only the outer surface's depth matters, and the buried
+				// ones' rays were noise). D112: shown as the GPU draws it (VertexShown: also the pools' cut at the foot, which
+				// only the shaders made, and the rock), and seen from outside (not in another sheet's curl: a.w's +4 covers its
+				// inner side, so its outer side faces into that sheet's hollow)
 				std::unordered_set<int64_t> cells;
 				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					const auto& clip = vertexClips[job->base + v];
-					if (clip[0] <= 0.0f || clip[3] >= 3.5f)
+					if (!VertexShown(job->base + v) || vertexClips[job->base + v][3] >= 3.5f)
 						continue;
 					// D111: nor the underside (the C's curl back under its crest toward the rock, its outer side facing
 					// down): its ray went up into the hollow behind the curtain, and is seen from nowhere but under it.
@@ -1247,10 +1255,13 @@ namespace FluidFieldSim
 					clip = std::min(clip, above + WATER_KEEP);
 				// D71: w marks the mesh's foot, the only place the pools may cut it (the shader's pool cut)
 				vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, CLEAR_REACH, 0.0f, 0.0f, 0.0f });
+				vertexCuts.push_back({ .water = clip });  // D112: a.x's parts, kept apart
 				clipTested++;
 			}
 			vertexClipBase[geometry.get()] = base;
 			depthQueue.emplace_back(geometry);  // D106
+			buryQueue.emplace_back(geometry);   // D112
+			buryDone = false;
 			vertexClipVersion++;
 		}
 		if (clipQueue.empty()) {
@@ -1540,8 +1551,6 @@ namespace FluidFieldSim
 			float lo[3]{ FLT_MAX, FLT_MAX, FLT_MAX }, hi[3]{ -FLT_MAX, -FLT_MAX, -FLT_MAX };
 			float top = -FLT_MAX, area = 0.0f;
 			std::unordered_map<int64_t, std::vector<uint32_t>> bins;  ///< D91: its triangles by SEAM_BIN cell (each in every cell its bound touches)
-			RE::NiPoint3 travel;                                      ///< D98: the way its water travels, level, tipped up: its outer side
-			std::vector<int8_t> side;                                 ///< D103: each triangle's outer side (+1 its winding), the same over the sheet
 		};
 		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
 		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
@@ -1614,13 +1623,6 @@ namespace FluidFieldSim
 					}
 				}
 			}
-			// D98: its outer side: from its highest tenth to its lowest, level, tipped up. D103: carried over the sheet
-			// (OrientSheet), not asked of each triangle alone: the lead-in's outer side faces against the travel
-			mesh.travel = SheetTravel(mesh.positions);
-			{
-				const auto authored = AuthoredNormals(const_cast<RE::BSGeometry*>(mesh.geometry));
-				mesh.side = OrientSheet(mesh.positions, mesh.triangles, mesh.travel, &authored);
-			}
 			mesh.open.assign(counts.vertexCount, 0);
 			for (const auto& [edge, count] : uses) {
 				if (count != 1)
@@ -1635,7 +1637,7 @@ namespace FluidFieldSim
 		const auto leads = [&](const Mesh& a_lead, const Mesh& a_mesh) {
 			return a_lead.top > a_mesh.top + 8.0f || (std::abs(a_lead.top - a_mesh.top) <= 8.0f && a_lead.area > a_mesh.area);
 		};
-		uint32_t faded = 0, edges = 0, gaps = 0, smoothed = 0, overlapped = 0;
+		uint32_t faded = 0, edges = 0, gaps = 0, smoothed = 0;
 		for (const auto& mesh : meshes) {
 			// Which vertices lie on a mesh leading this one. D91: only those on or next to an open edge are asked (the rest
 			// are never read; asking all of a dense copy's vertices against every triangle near it took seconds)
@@ -1678,65 +1680,6 @@ namespace FluidFieldSim
 					faded += fade == 0.0f ? 1 : 0;
 				}
 				vertexClips[mesh.base + v][1] = fade;
-			}
-			// D98: inside a leading mesh's curl (behind its outer face, within INSIDE_REACH of it, its face there not itself
-			// cut): cut. Two C-shaped sheets crossing each leave the one inside the other; see-through, both showed
-			// D99: cut by how far behind the face it lies (signed, from INSIDE_MARGIN), not a whole vertex at -CLIP_RANGE:
-			// interpolated linearly, a step put the cut line along the triangles' edges (a sawtooth); a distance puts it
-			// where the sheet passes behind the face. A vertex in front is not touched
-			for (std::size_t v = 0; v < mesh.positions.size(); v++) {
-				if (mesh.open[v])
-					continue;
-				const RE::NiPoint3& p = mesh.positions[v];
-				bool inside = false;
-				for (const auto& other : meshes) {
-					if (&other == &mesh || !leads(other, mesh) || p.x < other.lo[0] - INSIDE_REACH || p.x > other.hi[0] + INSIDE_REACH || p.y < other.lo[1] - INSIDE_REACH ||
-						p.y > other.hi[1] + INSIDE_REACH || p.z < other.lo[2] - INSIDE_REACH || p.z > other.hi[2] + INSIDE_REACH)
-						continue;
-					float best = INSIDE_REACH * INSIDE_REACH;
-					const std::array<uint16_t, 3>* nearest = nullptr;
-					nearby(other, p, INSIDE_REACH, [&](const auto& tri) {
-						const float d = TriangleDistanceSquared(p, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]]);
-						if (d < best) {
-							best = d;
-							nearest = &tri;
-						}
-						return false;
-					});
-					if (!nearest)
-						continue;
-					const auto& tri = *nearest;
-					// Its face there cut (in rock, under the water): nothing to hide behind
-					bool faceShown = true;
-					for (int k = 0; k < 3; k++)
-						faceShown = faceShown && vertexClips[other.base + tri[k]][0] > 0.0f;
-					if (!faceShown)
-						continue;
-					// D103: its outer side as carried over its sheet (OrientSheet), not the travel's per triangle: on the lead-in
-					// climbing to the crest that turned the face round, and the river side of it (a neighbour's lip) was cut
-					const auto t = static_cast<std::size_t>(nearest - other.triangles.data());
-					RE::NiPoint3 n = (other.positions[tri[1]] - other.positions[tri[0]]).Cross(other.positions[tri[2]] - other.positions[tri[0]]);
-					if (t < other.side.size() && other.side[t] < 0)
-						n = -n;
-					const RE::NiPoint3 centre = (other.positions[tri[0]] + other.positions[tri[1]] + other.positions[tri[2]]) / 3.0f;
-					const float area = n.Length();
-					if (area < 1e-6f)
-						continue;
-					const float behind = (p - centre).Dot(n) / area;
-					if (behind >= 0.0f)
-						continue;
-					// D103: only where the face covers it: a vertex beside the leading sheet (its nearest point on an open edge
-					// or a fold, off to the side) is not inside its curl. A neighbour sheet running on past the leading one's
-					// edge, a little behind its plane, was cut up to INSIDE_REACH from it (the gaps between sheets). The cut
-					// grows with how far to the side it lies (INSIDE_LATERAL per unit), so it fades out smoothly there
-					const float lateral = std::sqrt(std::max(best - behind * behind, 0.0f));
-					const float clip = std::max(behind + INSIDE_MARGIN + INSIDE_LATERAL * lateral, -CLIP_RANGE);
-					if (clip >= CLIP_MARGIN + CLIP_RANGE)
-						continue;
-					vertexClips[mesh.base + v][0] = std::min(vertexClips[mesh.base + v][0], clip);
-					inside = inside || clip < 0.0f;
-				}
-				overlapped += inside ? 1 : 0;
 			}
 			// D69: an open edge's vertex that lies off every other mesh but near another mesh's open edge (two meshes
 			// meeting edge to edge with air between: the dark lines along their seam) moves across the gap, past the
@@ -1882,28 +1825,164 @@ namespace FluidFieldSim
 			}
 		}
 		ComposeShifts();
-		logger::info("[Fluid Field] Waterfall seams: {} of {} open-edge vertices of {} lit meshes lie on a mesh leading them, and fade; {} move across a gap to the mesh beside them; {} edge vertices smoothed; {} inside another, cut", faded,
-			edges, meshes.size(), gaps, smoothed, overlapped);
-		ComputeSides();
+		logger::info("[Fluid Field] Waterfall seams: {} of {} open-edge vertices of {} lit meshes lie on a mesh leading them, and fade; {} move across a gap to the mesh beside them; {} edge vertices smoothed", faded,
+			edges, meshes.size(), gaps, smoothed);
+		// D112: the curl cut (D98) and the sides (D103) with the fades known; again once the rock and the lead-in cuts are
+		RefreshCulling();
 	}
 
-	void FallSites::ComputeSides()
+	void FallSites::ComposeCut(std::size_t a_index)
 	{
-		// Every tested lit mesh: its vertices and outer normals (world), its triangles' outer sides, and its bins
-		struct Sheet
-		{
-			uint32_t base = 0;
-			const RE::BSGeometry* geometry = nullptr;
-			std::vector<RE::NiPoint3> positions, outward, shown;  ///< shown: the normal the see-through pass reads (vanilla's, or the winding's)
-			std::vector<std::array<uint16_t, 3>> triangles;
-			std::vector<int8_t> side;
-			float lo[3]{ FLT_MAX, FLT_MAX, FLT_MAX }, hi[3]{ -FLT_MAX, -FLT_MAX, -FLT_MAX };
-			std::unordered_map<int64_t, std::vector<uint32_t>> bins;
-		};
+		static_assert(NO_CUT == CLIP_MARGIN + CLIP_RANGE, "D112: a part of VertexCut that hides nothing is ClipStep's uncut value");
+		if (a_index >= vertexClips.size() || a_index >= vertexCuts.size())
+			return;
+		const VertexCut& cut = vertexCuts[a_index];
+		vertexClips[a_index][0] = std::min({ cut.water, cut.curl, cut.lead });
+	}
+
+	bool FallSites::VertexShown(std::size_t a_index) const
+	{
+		if (a_index >= vertexClips.size())
+			return false;
+		const auto& clip = vertexClips[a_index];
+		// a.x (the water below, the curl, the lead-in) and its seam fade (a.y: an edge on a leading mesh is dithered out, D67)
+		if (clip[0] <= 0.0f || clip[1] < 0.5f)
+			return false;
+		if (a_index >= vertexCuts.size())
+			return true;
+		// The pools' cut at the foot (the shaders', per frame) and the rock (the depth test): neither is in a.x
+		const VertexCut& cut = vertexCuts[a_index];
+		return cut.pool > 0.0f && !cut.buried;
+	}
+
+	bool FallSites::PoolCutAt(float a_x, float a_y, float& a_level) const
+	{
+		// As BuildPoolMap fills the shaders' pool map (the pool the falls come from cut deeper, D50), at the nearest texel
+		// (the shaders read it bilinear, the same lattice), less FallGround::POOL_CUT
+		bool found = false;
+		for (const auto& [key, pools] : sitePools) {
+			const auto x = static_cast<int32_t>(std::lround((a_x - pools.originX) / FallCapture::CELL));
+			const auto y = static_cast<int32_t>(std::lround((a_y - pools.originY) / FallCapture::CELL));
+			if (x < 0 || y < 0 || x >= static_cast<int32_t>(pools.width) || y >= static_cast<int32_t>(pools.height))
+				continue;
+			const float cover = pools.cover[static_cast<std::size_t>(y) * pools.width + x];
+			if (cover <= NO_SURFACE)
+				continue;
+			const float cut = (cover >= pools.top - POOL_BAND ? cover - TOP_POOL_CUT : cover) - POOL_CUT_DEPTH;
+			a_level = found ? std::max(a_level, cut) : cut;
+			found = true;
+		}
+		return found;
+	}
+
+	void FallSites::BuryStep()
+	{
+		if (buryDone)
+			return;
+		auto* tes = RE::TES::GetSingleton();
+		if (!tes)
+			return;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double, std::milli>(CLIP_BUDGET_MS);
+		while (std::chrono::steady_clock::now() < deadline) {
+			if (!buryJob) {
+				// D112: all tested: everything that reads the rock is worked out again
+				if (buryQueue.empty()) {
+					buryDone = true;
+					logger::info("[Fluid Field] Waterfall rock test: {} of {} vertices inside rock ({} rays)", buriedCount, buryTested, buryRays);
+					const auto start = std::chrono::steady_clock::now();
+					RefreshCulling();
+					logger::info("[Fluid Field]   culling took {:.1f} ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+					return;
+				}
+				RE::NiPointer<RE::BSGeometry> geometry = buryQueue.back();
+				buryQueue.pop_back();
+				const auto base = geometry ? vertexClipBase.find(geometry.get()) : vertexClipBase.end();
+				auto* triShape = geometry ? geometry->AsTriShape() : nullptr;
+				auto* renderer = geometry ? geometry->GetGeometryRuntimeData().rendererData : nullptr;
+				if (base == vertexClipBase.end() || !triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
+					continue;
+				const auto& counts = triShape->GetTrishapeRuntimeData();
+				if (base->second + counts.vertexCount > vertexCuts.size())
+					continue;
+				const uint32_t stride = renderer->vertexDesc.GetSize();
+				const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+				auto job = std::make_unique<BuryJob>();
+				job->geometry = geometry;
+				job->base = base->second;
+				job->positions.resize(counts.vertexCount);
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					float local[3];
+					std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
+					job->positions[v] = geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
+				}
+				// Vanilla's normals (out of the visible face, D109), else the winding's: only a first way to look from, both
+				// sides are tried
+				job->normals = AuthoredNormals(geometry.get());
+				if (job->normals.size() != counts.vertexCount) {
+					job->normals.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+					for (uint32_t i = 0; i < counts.triangleCount; i++) {
+						const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+						if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+							continue;
+						const RE::NiPoint3 face = (job->positions[index[1]] - job->positions[index[0]]).Cross(job->positions[index[2]] - job->positions[index[0]]);
+						for (int k = 0; k < 3; k++)
+							job->normals[index[k]] += face;
+					}
+				}
+				for (auto& n : job->normals) {
+					const float length = n.Length();
+					n = length > 1e-6f ? n / length : RE::NiPoint3(0.0f, 0.0f, 1.0f);
+				}
+				buryJob = std::move(job);
+				continue;
+			}
+			auto* cell = tes->interiorCell ? tes->interiorCell : tes->GetCell(buryJob->geometry->world.translate);
+			auto* bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
+			auto* world = bhkWorld ? bhkWorld->GetWorld1() : nullptr;
+			if (!world)
+				return;
+			const auto base = vertexClipBase.find(buryJob->geometry.get());
+			if (base == vertexClipBase.end() || base->second != buryJob->base || buryJob->base + buryJob->positions.size() > vertexCuts.size()) {
+				buryJob.reset();  // Unloaded meanwhile
+				continue;
+			}
+			{
+				const RE::BSReadLockGuard lock(bhkWorld->worldLock);
+				for (int rays = 0; buryJob->next < buryJob->positions.size() && rays < 64; buryJob->next++) {
+					const std::size_t v = buryJob->next;
+					const RE::NiPoint3& p = buryJob->positions[v];
+					const RE::NiPoint3& n = buryJob->normals[v];
+					// Out of its face, out of its back, from above, and from either side along the sheet (level): a vertex any of
+					// them reaches can be seen from somewhere. A ray starting inside rock sees no face (D105), so it reads as
+					// reaching: the test errs toward shown, never a hole
+					RE::NiPoint3 across = n.Cross(RE::NiPoint3(0.0f, 0.0f, 1.0f));
+					across = across.Length() > 1e-3f ? across / across.Length() : RE::NiPoint3(1.0f, 0.0f, 0.0f);
+					const RE::NiPoint3 ways[5] = { n, -n, RE::NiPoint3(0.0f, 0.0f, 1.0f), across, -across };
+					bool buried = true;
+					for (const auto& way : ways) {
+						const float hit = RockAlong(world, p + way * BURY_REACH, -way, BURY_REACH);
+						rays++;
+						buryRays++;
+						if (hit < 0.0f || hit >= BURY_REACH - BURY_MARGIN) {
+							buried = false;
+							break;
+						}
+					}
+					vertexCuts[buryJob->base + v].buried = buried ? 1 : 0;
+					buriedCount += buried ? 1 : 0;
+					buryTested++;
+				}
+			}
+			if (buryJob->next >= buryJob->positions.size())
+				buryJob.reset();
+		}
+	}
+
+	std::vector<FallSites::CullSheet> FallSites::BuildCullSheets()
+	{
 		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
 		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
-		const auto start = std::chrono::steady_clock::now();
-		std::vector<Sheet> sheets;
+		std::vector<CullSheet> sheets;
 		std::unordered_set<const RE::BSGeometry*> seen;
 		for (const auto& lit : litMeshList) {
 			auto* geometry = lit.geometry.get();
@@ -1915,16 +1994,18 @@ namespace FluidFieldSim
 			if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
 				continue;
 			const auto& counts = triShape->GetTrishapeRuntimeData();
-			if (base->second + counts.vertexCount > vertexClips.size())
+			if (base->second + counts.vertexCount > vertexClips.size() || base->second + counts.vertexCount > vertexCuts.size())
 				continue;
 			auto& desc = renderer->vertexDesc;  // CommonLib's getters are not const
 			const uint32_t stride = desc.GetSize();
 			const uint32_t positionOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
 			const bool haveNormals = desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_NORMAL);
 			const uint32_t normalOffset = haveNormals ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_NORMAL) : 0;
-			Sheet sheet;
+			CullSheet sheet;
+			sheet.geometry = geometry;
 			sheet.base = base->second;
 			sheet.positions.resize(counts.vertexCount);
+			sheet.drawn.resize(counts.vertexCount);
 			sheet.outward.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
 			sheet.shown.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
@@ -1932,28 +2013,43 @@ namespace FluidFieldSim
 				float local[3];
 				std::memcpy(local, data + positionOffset, sizeof(local));
 				sheet.positions[v] = geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
+				// Where it is drawn: moved by the seams' gap and the swell (b.xyz, in the mesh's own space; the wobble about it aside)
+				const auto& clip = vertexClips[sheet.base + v];
+				sheet.drawn[v] = sheet.positions[v] + geometry->world.rotate * (RE::NiPoint3(clip[4], clip[5], clip[6]) * geometry->world.scale);
 				for (int k = 0; k < 3; k++) {
 					const float c = k == 0 ? sheet.positions[v].x : (k == 1 ? sheet.positions[v].y : sheet.positions[v].z);
 					sheet.lo[k] = std::min(sheet.lo[k], c);
 					sheet.hi[k] = std::max(sheet.hi[k], c);
 				}
+				sheet.top = std::max(sheet.top, sheet.positions[v].z);
 				// As FallRefraction::BuildMesh reads it: the see-through pass turns this normal by the flag
 				if (haveNormals) {
 					const uint8_t* n = data + normalOffset;
 					sheet.shown[v] = geometry->world.rotate * RE::NiPoint3(n[0] / 255.0f * 2.0f - 1.0f, n[1] / 255.0f * 2.0f - 1.0f, n[2] / 255.0f * 2.0f - 1.0f);
 				}
 			}
+			std::map<std::pair<uint16_t, uint16_t>, int> uses;
 			for (uint32_t i = 0; i < counts.triangleCount; i++) {
 				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
-				if (index[0] < counts.vertexCount && index[1] < counts.vertexCount && index[2] < counts.vertexCount)
-					sheet.triangles.push_back({ index[0], index[1], index[2] });
+				if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+					continue;
+				sheet.triangles.push_back({ index[0], index[1], index[2] });
+				for (int k = 0; k < 3; k++)
+					uses[{ std::min(index[k], index[(k + 1) % 3]), std::max(index[k], index[(k + 1) % 3]) }]++;
 			}
+			sheet.open.assign(counts.vertexCount, 0);
+			for (const auto& [edge, count] : uses) {
+				if (count == 1)
+					sheet.open[edge.first] = sheet.open[edge.second] = 1;
+			}
+			// D98: its outer side: from its highest tenth to its lowest, level, tipped up. D103: carried over the sheet
+			// (OrientSheet), not asked of each triangle alone: the lead-in's outer side faces against the travel
 			sheet.side = OrientSheet(sheet.positions, sheet.triangles, SheetTravel(sheet.positions), haveNormals ? &sheet.shown : nullptr);
-			sheet.geometry = geometry;
 			for (uint32_t t = 0; t < sheet.triangles.size(); t++) {
 				const auto& tri = sheet.triangles[t];
 				const RE::NiPoint3 &a = sheet.positions[tri[0]], &b = sheet.positions[tri[1]], &c = sheet.positions[tri[2]];
 				const RE::NiPoint3 face = (b - a).Cross(c - a);
+				sheet.area += 0.5f * face.Length();
 				for (const uint16_t k : tri) {
 					sheet.outward[k] += face * static_cast<float>(sheet.side[t]);
 					if (!haveNormals)
@@ -1970,16 +2066,165 @@ namespace FluidFieldSim
 				const float length = n.Length();
 				n = length > 1e-6f ? n / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
 			}
-			outwardNormals[geometry] = sheet.outward;  // D109: the depth rays' way in (against it)
 			sheets.push_back(std::move(sheet));
 		}
+		return sheets;
+	}
+
+	void FallSites::RefreshCulling()
+	{
+		// D112: in this order, each step reading only what the steps before it settled: the pools' cut (where the meshes are
+		// drawn, so after the moves), the curl cut (behind leading faces that are themselves shown: in rock, under the
+		// water, at a faded seam or cut by the lead-in, a face hides nothing), a.x, then the inner sides (covered only by
+		// a shown sheet). D103-D111 ran the curl cut once, as the seams were done: before the rock, the pools and the
+		// lead-in cut were known, so a sheet behind a leading face buried in the river or the rock was cut, a hole
+		const auto sheets = BuildCullSheets();
+		ComputePoolCuts(sheets);
+		ComputeCurlCuts(sheets);
+		ComputeSides(sheets);
+	}
+
+	void FallSites::ComputePoolCuts(const std::vector<CullSheet>& a_sheets)
+	{
+		uint32_t cut = 0;
+		for (const auto& sheet : a_sheets) {
+			for (uint32_t v = 0; v < sheet.positions.size(); v++) {
+				VertexCut& parts = vertexCuts[sheet.base + v];
+				parts.pool = NO_CUT;
+				// D71: only its foot (a.w's first bit), as FallGround::ClipDistance
+				if (std::fmod(vertexClips[sheet.base + v][3], 2.0f) < 0.5f)
+					continue;
+				float level = 0.0f;
+				if (!PoolCutAt(sheet.drawn[v].x, sheet.drawn[v].y, level))
+					continue;
+				parts.pool = std::min(sheet.drawn[v].z - level, NO_CUT);
+				cut += parts.pool <= 0.0f ? 1 : 0;
+			}
+		}
+		logger::info("[Fluid Field]   {} foot vertices under the pools' cut", cut);
+	}
+
+	void FallSites::ComputeCurlCuts(const std::vector<CullSheet>& a_sheets)
+	{
+		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
+		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
+		// The triangles of a sheet within a_reach of a point (a superset): those in the cells round it
+		const auto nearby = [&](const CullSheet& a_sheet, const RE::NiPoint3& a_p, float a_reach, const auto& a_visit) {
+			const int64_t x0 = cellOf(a_p.x - a_reach), x1 = cellOf(a_p.x + a_reach), y0 = cellOf(a_p.y - a_reach), y1 = cellOf(a_p.y + a_reach), z0 = cellOf(a_p.z - a_reach),
+						  z1 = cellOf(a_p.z + a_reach);
+			for (int64_t x = x0; x <= x1; x++) {
+				for (int64_t y = y0; y <= y1; y++) {
+					for (int64_t z = z0; z <= z1; z++) {
+						const auto it = a_sheet.bins.find(binKey(x, y, z));
+						if (it == a_sheet.bins.end())
+							continue;
+						for (const uint32_t t : it->second)
+							a_visit(t);
+					}
+				}
+			}
+		};
+		// A mesh leads another: higher, or as high and larger (D67)
+		const auto leads = [](const CullSheet& a_lead, const CullSheet& a_mesh) {
+			return a_lead.top > a_mesh.top + 8.0f || (std::abs(a_lead.top - a_mesh.top) <= 8.0f && a_lead.area > a_mesh.area);
+		};
+		// Every curl cut undone first, then the sheets highest first, so a leading sheet's own curl cut is in place before the
+		// sheets behind it read whether its face shows (a sheet cut inside a third one's curl hides nothing behind it)
+		for (const auto& sheet : a_sheets) {
+			for (uint32_t v = 0; v < sheet.positions.size(); v++) {
+				vertexCuts[sheet.base + v].curl = NO_CUT;
+				ComposeCut(sheet.base + v);
+			}
+		}
+		std::vector<std::size_t> order(a_sheets.size());
+		for (std::size_t i = 0; i < order.size(); i++)
+			order[i] = i;
+		std::sort(order.begin(), order.end(), [&](std::size_t a_a, std::size_t a_b) {
+			return a_sheets[a_a].top != a_sheets[a_b].top ? a_sheets[a_a].top > a_sheets[a_b].top : a_sheets[a_a].area > a_sheets[a_b].area;
+		});
+		uint32_t overlapped = 0, unshownFaces = 0;
+		for (const std::size_t index : order) {
+			const CullSheet& mesh = a_sheets[index];
+			// D98: inside a leading mesh's curl (behind its outer face, within INSIDE_REACH of it, its face there not itself
+			// cut): cut. Two C-shaped sheets crossing each leave the one inside the other; see-through, both showed
+			// D99: cut by how far behind the face it lies (signed, from INSIDE_MARGIN), not a whole vertex at -CLIP_RANGE:
+			// interpolated linearly, a step put the cut line along the triangles' edges (a sawtooth); a distance puts it
+			// where the sheet passes behind the face. A vertex in front is not touched
+			for (std::size_t v = 0; v < mesh.positions.size(); v++) {
+				if (mesh.open[v])
+					continue;
+				const RE::NiPoint3& p = mesh.positions[v];
+				float deepest = NO_CUT;
+				for (const auto& other : a_sheets) {
+					if (&other == &mesh || !leads(other, mesh) || p.x < other.lo[0] - INSIDE_REACH || p.x > other.hi[0] + INSIDE_REACH || p.y < other.lo[1] - INSIDE_REACH ||
+						p.y > other.hi[1] + INSIDE_REACH || p.z < other.lo[2] - INSIDE_REACH || p.z > other.hi[2] + INSIDE_REACH)
+						continue;
+					float best = INSIDE_REACH * INSIDE_REACH;
+					int64_t nearest = -1;
+					nearby(other, p, INSIDE_REACH, [&](uint32_t a_t) {
+						const auto& tri = other.triangles[a_t];
+						const float d = TriangleDistanceSquared(p, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]]);
+						if (d < best) {
+							best = d;
+							nearest = a_t;
+						}
+					});
+					if (nearest < 0)
+						continue;
+					const auto t = static_cast<std::size_t>(nearest);
+					const auto& tri = other.triangles[t];
+					// Its face there not shown (D112: VertexShown: cut, under the pools, inside rock, faded at a seam): nothing
+					// to hide behind
+					bool faceShown = true;
+					for (int k = 0; k < 3; k++)
+						faceShown = faceShown && VertexShown(other.base + tri[k]);
+					if (!faceShown) {
+						unshownFaces++;
+						continue;
+					}
+					// D103: its outer side as carried over its sheet (OrientSheet), not the travel's per triangle: on the lead-in
+					// climbing to the crest that turned the face round, and the river side of it (a neighbour's lip) was cut
+					RE::NiPoint3 n = (other.positions[tri[1]] - other.positions[tri[0]]).Cross(other.positions[tri[2]] - other.positions[tri[0]]);
+					if (t < other.side.size() && other.side[t] < 0)
+						n = -n;
+					const RE::NiPoint3 centre = (other.positions[tri[0]] + other.positions[tri[1]] + other.positions[tri[2]]) / 3.0f;
+					const float area = n.Length();
+					if (area < 1e-6f)
+						continue;
+					const float behind = (p - centre).Dot(n) / area;
+					if (behind >= 0.0f)
+						continue;
+					// D103: only where the face covers it: a vertex beside the leading sheet (its nearest point on an open edge
+					// or a fold, off to the side) is not inside its curl. A neighbour sheet running on past the leading one's
+					// edge, a little behind its plane, was cut up to INSIDE_REACH from it (the gaps between sheets). The cut
+					// grows with how far to the side it lies (INSIDE_LATERAL per unit), so it fades out smoothly there
+					const float lateral = std::sqrt(std::max(best - behind * behind, 0.0f));
+					const float clip = std::max(behind + INSIDE_MARGIN + INSIDE_LATERAL * lateral, -CLIP_RANGE);
+					deepest = std::min(deepest, clip);
+				}
+				vertexCuts[mesh.base + v].curl = deepest;
+				ComposeCut(mesh.base + v);
+				overlapped += deepest < 0.0f ? 1 : 0;
+			}
+		}
+		vertexClipVersion++;
+		logger::info("[Fluid Field]   curl cut: {} vertices inside another sheet's curl; {} times a leading face was passed by, not shown", overlapped, unshownFaces);
+	}
+
+	void FallSites::ComputeSides(const std::vector<CullSheet>& a_sheets)
+	{
+		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
+		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
+		const auto start = std::chrono::steady_clock::now();
+		for (const auto& sheet : a_sheets)
+			outwardNormals[sheet.geometry] = sheet.outward;  // D109: the depth rays' way in (against it)
 		// D103: a vertex's inner side is hidden (D100's discard) only where another shown sheet lies behind it, its outer side
 		// turned away from the vertex: looking at the vertex's inner side, that sheet's outer face is in front. A sheet with
 		// open air or rock behind it (a free curtain seen from behind or above, the lip seen from upstream) still shows
 		// from inside: D100 hid it everywhere and the cliff showed through
 		uint32_t inward = 0, covered = 0, tested = 0;
 		std::vector<int64_t> cells;
-		for (auto& sheet : sheets) {
+		for (const auto& sheet : a_sheets) {
 			for (uint32_t v = 0; v < sheet.positions.size(); v++) {
 				const RE::NiPoint3& p = sheet.positions[v];
 				const RE::NiPoint3 back = -sheet.outward[v];
@@ -2001,7 +2246,7 @@ namespace FluidFieldSim
 					const float hi[3] = { std::max(from.x, to.x), std::max(from.y, to.y), std::max(from.z, to.z) };
 					float nearest = INSIDE_REACH - COVER_NEAR;
 					bool hitShown = false;
-					for (const auto& other : sheets) {
+					for (const auto& other : a_sheets) {
 						if (lo[0] > other.hi[0] || hi[0] < other.lo[0] || lo[1] > other.hi[1] || hi[1] < other.lo[1] || lo[2] > other.hi[2] || hi[2] < other.lo[2])
 							continue;
 						for (const int64_t key : cells) {
@@ -2014,11 +2259,12 @@ namespace FluidFieldSim
 								if (along < 0.0f)
 									continue;
 								nearest = along;
-								// The first sheet behind decides: shown (not cut) with its outer side away from this vertex
+								// The first sheet behind decides: shown (D112: VertexShown, not only a.x: not under the pools, not in
+								// rock, not faded at a seam) with its outer side away from this vertex
 								const RE::NiPoint3 face = (other.positions[tri[1]] - other.positions[tri[0]]).Cross(other.positions[tri[2]] - other.positions[tri[0]]) * static_cast<float>(other.side[t]);
 								bool shown = face.Dot(back) > 0.0f;
 								for (const uint16_t k : tri)
-									shown = shown && vertexClips[other.base + k][0] > 0.0f;
+									shown = shown && VertexShown(other.base + k);
 								hitShown = shown;
 							}
 						}
@@ -2035,7 +2281,7 @@ namespace FluidFieldSim
 		}
 		vertexClipVersion++;
 		logger::info("[Fluid Field] Waterfall sides: {} of {} vertices of {} lit meshes turned to face out; {} of {} tested have a sheet in front of their inner side ({:.1f} ms)", inward,
-			vertexClips.size(), sheets.size(), covered, tested, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+			vertexClips.size(), a_sheets.size(), covered, tested, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
 	}
 
 	std::unique_ptr<FallSites::BakeJob> FallSites::StartBake(RE::BSGeometry* a_geometry)
@@ -2863,11 +3109,14 @@ namespace FluidFieldSim
 					}
 					return highest;
 				};
-				for (uint32_t v = 0; v < counts.vertexCount && base + v < vertexClips.size(); v++) {
+				for (uint32_t v = 0; v < counts.vertexCount && base + v < vertexClips.size() && base + v < vertexCuts.size(); v++) {
 					const auto gx = std::clamp(static_cast<int32_t>(std::lround((uvs[v][0] - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(bake.width) - 0.5f)), 0,
 						static_cast<int32_t>(bake.width) - 1);
 					const auto gy = std::clamp(static_cast<int32_t>(std::lround((uvs[v][1] - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(bake.height) - 0.5f)), 0,
 						static_cast<int32_t>(bake.height) - 1);
+					// D112: the lead-in's own part of the cut, worked out afresh (a.x composed from it, ComposeCut)
+					vertexCuts[base + v].lead = NO_CUT;
+					ComposeCut(base + v);
 					if (!leadIn[static_cast<std::size_t>(gy) * bake.width + gx])
 						continue;
 					// D99: cut by its height over the cut's level (signed), not a whole vertex at -CLIP_RANGE: the shaders
@@ -2883,7 +3132,8 @@ namespace FluidFieldSim
 					if (level == -FLT_MAX)
 						continue;
 					const float height = std::max(world.z - (level - LEAD_CUT_DEPTH), -CLIP_RANGE);
-					vertexClips[base + v][0] = std::min(vertexClips[base + v][0], height);
+					vertexCuts[base + v].lead = std::min(height, NO_CUT);
+					ComposeCut(base + v);
 					leadCut += height < 0.0f ? 1 : 0;
 				}
 			}
@@ -2934,7 +3184,7 @@ namespace FluidFieldSim
 			meshes++;
 		}
 		ComposeShifts();
-		ComputeSides();  // D103: after the lead-in cuts, which the covering sheets' test reads
+		RefreshCulling();  // D103: after the lead-in cuts, which the covering sheets' test reads; D112: and the curl cut's leading faces
 		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units; {} wobble, at most {:.1f} units; {} normals turned outward; {} hidden lead-in vertices cut",
 			pushed, meshes, most, wobbled, mostWobble, flippedTotal, leadCut);
 	}
@@ -3399,6 +3649,7 @@ namespace FluidFieldSim
 		waterSurfaces = &a_water;
 		CaptureStep();
 		ClipStep();
+		BuryStep();
 		DepthStep();
 		BakeStep();
 		PollPools();

@@ -5,6 +5,7 @@
 #include "ShallowWaterSolver.h"
 
 #include <array>
+#include <cfloat>
 #include <cstdint>
 #include <filesystem>
 #include <future>
@@ -151,6 +152,8 @@ namespace FluidFieldSim
 		static constexpr uint16_t BLENDED_ALPHA_FLAGS = 0x10ED;
 		/** @brief D61: the surface of the pool over a world point (a site's pools, D78: ComputePools), or false where there is none (yet). */
 		bool PoolLevelAt(float a_x, float a_y, float& a_level) const;
+		/** @brief D112: the level the shaders cut the falls' foot at over a world point (BuildPoolMap's, less FallGround::POOL_CUT), or false where there is no pool. */
+		bool PoolCutAt(float a_x, float a_y, float& a_level) const;
 		/** @brief D66: every engine water plane (water objects and cells' water) over a box: min x, min y, max x, max y, height. */
 		void CollectWaterPlanes(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<std::array<float, 5>>& a_planes) const;
 
@@ -322,6 +325,73 @@ namespace FluidFieldSim
 		float RockAlong(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, int* a_crossings = nullptr, float* a_last = nullptr) const;
 		std::unordered_map<const RE::BSGeometry*, uint32_t> vertexClipBase;
 		std::vector<std::array<float, 16>> vertexClips;
+		/**
+		 * @brief D112: why each vertex of vertexClips is hidden, kept apart so each can be worked out again: the cuts a.x
+		 * composes (the water below, the curl, the lead-in), and two the CPU knows but the GPU applies its own way (the
+		 * pools' cut at the foot, per frame in FallGround::ClipDistance; the rock, by the depth test).
+		 */
+		struct VertexCut
+		{
+			float water = NO_CUT;  ///< ClipStep: the engine's water at the mesh's foot (D68)
+			float curl = NO_CUT;   ///< ComputeCurlCuts: inside a leading sheet's curl (D98)
+			float lead = NO_CUT;   ///< ComputePushes: the hidden lead-in under the river (D97)
+			float pool = NO_CUT;   ///< ComputePoolCuts: under our pools at the foot, as the shaders cut it (not in a.x)
+			uint8_t buried = 0;    ///< BuryStep: no ray from outside reaches it: inside rock (not in a.x)
+		};
+		std::vector<VertexCut> vertexCuts;      ///< D112: parallel to vertexClips
+		static constexpr float NO_CUT = 38.0f;  ///< D112: a part of VertexCut that hides nothing (CLIP_MARGIN + CLIP_RANGE, ClipStep's "not cut")
+		/** @brief D112: a.x of every vertex again from its parts (the least of the water's, the curl's and the lead-in's). */
+		void ComposeCut(std::size_t a_index);
+		/**
+		 * @brief D112: whether a vertex of the falls is drawn at all, as the GPU draws it: not cut (a.x, and the pools' cut at
+		 * its foot), not inside rock, not faded out at a seam. The one test the depth rays, the curl cut and the inner sides use.
+		 */
+		bool VertexShown(std::size_t a_index) const;
+		/**
+		 * @brief D112: which vertices lie inside rock, a few milliseconds a frame: rays from outside toward the vertex (along its
+		 * normal, against it, from above, and from either side along the sheet); buried when every one meets rock more than
+		 * BURY_MARGIN short of it. ClipStep's rock cut was dropped (D70), and the bake's test needs rock on both sides of the
+		 * sheet (D59), so a sheet running into a cliff was never known as hidden.
+		 */
+		void BuryStep();
+		struct BuryJob
+		{
+			RE::NiPointer<RE::BSGeometry> geometry;
+			uint32_t base = 0;
+			std::vector<RE::NiPoint3> positions, normals;  ///< World, at rest; normals unit (vanilla's, else the winding's)
+			std::size_t next = 0;
+		};
+		std::vector<RE::NiPointer<RE::BSGeometry>> buryQueue;
+		std::unique_ptr<BuryJob> buryJob;
+		uint32_t buriedCount = 0, buryTested = 0, buryRays = 0;
+		static constexpr float BURY_REACH = 160.0f;    ///< D112: the rays toward a vertex start this far from it
+		static constexpr float BURY_MARGIN = 24.0f;    ///< D112: rock this near short of the vertex does not bury it (vanilla's sheets dip into the rock they lie on, as BAKE_ROCK_MARGIN)
+		static constexpr float POOL_CUT_DEPTH = 8.0f;  ///< D112: FallGround::POOL_CUT: the shaders cut the foot this far under the pools' surface
+		/** @brief D112: a lit mesh as the culling sees it: world positions at rest and as drawn, outer sides, open edges, bins. */
+		struct CullSheet
+		{
+			const RE::BSGeometry* geometry = nullptr;
+			uint32_t base = 0;
+			std::vector<RE::NiPoint3> positions, drawn, outward, shown;  ///< shown: the normal the see-through pass reads (vanilla's, or the winding's)
+			std::vector<std::array<uint16_t, 3>> triangles;
+			std::vector<int8_t> side;   ///< Each triangle's outer side (+1 its winding), the same over the sheet (OrientSheet)
+			std::vector<uint8_t> open;  ///< Vertices on an open edge
+			float lo[3]{ FLT_MAX, FLT_MAX, FLT_MAX }, hi[3]{ -FLT_MAX, -FLT_MAX, -FLT_MAX };
+			float top = -FLT_MAX, area = 0.0f;
+			std::unordered_map<int64_t, std::vector<uint32_t>> bins;  ///< Its triangles by SEAM_BIN cell (each in every cell its bound touches)
+		};
+		std::vector<CullSheet> BuildCullSheets();
+		/**
+		 * @brief D112: everything that decides which vertices show, worked out again in order from what is known now: the
+		 * pools' cut, the curl cut (reading the leading sheets' own cuts), a.x, then the sides. Run whenever a cut or the
+		 * rock becomes known (the seams, the rock test, the lead-in cuts), so no step reads another's stale state.
+		 */
+		void RefreshCulling();
+		bool buryDone = true;  ///< D112: every queued mesh's rock test is done and RefreshCulling has read it
+		/** @brief D112: VertexCut::pool for each sheet: its foot under the pools' surface, where the shaders cut it. */
+		void ComputePoolCuts(const std::vector<CullSheet>& a_sheets);
+		/** @brief D98, D112: VertexCut::curl: a vertex inside a leading sheet's curl, behind a face of it that is itself shown. */
+		void ComputeCurlCuts(const std::vector<CullSheet>& a_sheets);
 		static constexpr float GAP_REACH = 40.0f;        ///< D69: an open edge this near another mesh's open edge, and not over it, closes the gap
 		static constexpr float GAP_OVERLAP = 4.0f;       ///< D69: ...each side moving past the middle by this much
 		static constexpr float WATER_KEEP = 6.0f;        ///< D68: falling water is cut this far under the water it falls into (D95: 6, was 24: see-through water showed the sheet under it)
@@ -343,7 +413,7 @@ namespace FluidFieldSim
 		 * faces into its sheet (+2, its outer side carried over the sheet, OrientSheet), and whether another shown sheet's
 		 * outer face lies behind its inner side within INSIDE_REACH (+4): only there is its inner side hidden (D100).
 		 */
-		void ComputeSides();
+		void ComputeSides(const std::vector<CullSheet>& a_sheets);
 		static constexpr int EDGE_SMOOTH_PASSES = 80;          ///< D86: rounds smoothing each mesh's open edge as a curve (D92: 80: on the dense copies' 20-unit edges, 10 smoothed only 60 units)...
 		static constexpr float EDGE_SMOOTH_MOST = 60.0f;       ///< D86: ...moving a vertex at most this far (D92: 60)
 		static constexpr float EDGE_BLEND_REACH = 120.0f;      ///< D94: world units the open edge's moves fade into the surface over...

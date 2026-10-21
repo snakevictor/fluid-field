@@ -135,6 +135,18 @@ near white over most of its range: the depth view looked "all 600" while the
 values were 60-250. Use banded false colour for anything read by eye in the
 scene, and check the numbers in the log alongside it.
 
+## Order-dependent culling steps go stale silently (D112)
+
+The falls' culling is built from steps that finish at very different times
+(the seams on the first frames, the pools a frame later, the rock tests and the
+bakes' lead-in cuts many seconds after). A step that reads another's result
+once, as the curl cut read "is the leading face shown", keeps whatever was true
+when it ran: here, faces later cut under the river still hid the sheet behind
+them. Keep each cause of a cut in its own field, compose the GPU value from
+them, and work every reader out again when any of them changes. Also: the
+per-vertex moves (VertexClip b.xyz) are in the mesh's own space; turn and scale
+them (world.rotate, world.scale) before adding them to world positions.
+
 ## Foam colour and water colour live on different scales (D120)
 
 FluidField::FoamColor leans toward the scene's light (sun plus ambient, HDR),
