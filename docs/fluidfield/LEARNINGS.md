@@ -134,3 +134,22 @@ A 0-1 grey written straight to the scene before the tonemap and bloom reads as
 near white over most of its range: the depth view looked "all 600" while the
 values were 60-250. Use banded false colour for anything read by eye in the
 scene, and check the numbers in the log alongside it.
+
+## Foam colour and water colour live on different scales (D120)
+
+FluidField::FoamColor leans toward the scene's light (sun plus ambient, HDR),
+while the water type's colours come pre-lit and dim (the weather's water
+multiplier). Any foam weight therefore reads several times stronger than its
+number: 15% foam veiled whole falls in pale beige. Before driving foam by the
+flow, match its brightness to the water's (scale from the lit water colour, as
+the aerated colour does), or it will dominate again. Lighting from sceneLight
+directly blew the sheets out (0.3 of it was many times the rock's brightness).
+
+## Hot-reloading the see-through falls shader
+
+FallSurface.hlsl is compiled by FallRefraction from Data/Shaders at runtime;
+devbench `communityshaders.shadercache {"action":"clear"}` calls each
+feature's ClearShaderCache, which releases it, so editing the deployed copy and
+clearing reloads it in seconds without a restart. Diagnostics read by eye go in
+colour bands (the tonemap hides values), and wait a few seconds after a reload:
+TAA and exposure carry the previous output for a moment.

@@ -2746,3 +2746,34 @@ Entry format:
     -   Logged: rays now point down on about 85-90% of the curtains' samples
         (was 75-80%) and about 90% on the sloped runs.
 -   References: D106, D110
+
+## D120: The falls read as the river's water: no sky mirror, no foam veil, air behind curtains
+
+-   Date: 2026-10-20
+-   Decision (See-Through Falls, FallSurface.hlsl; found with banded diagnostics and live shader reloads):
+    -   **Normal:** turned to the camera. It was flipped by the triangle's
+        winding (not consistent) and, facing away, squashed to graze the
+        view: facing under 0.2 on most sheets, fresnel near 1, every sheet a
+        half mirror of the bright sky. The main cause of the milky look.
+    -   **No foam veil in the base look:** with Foam on the Falls off, no
+        foam. The streaks' foam is the scene's full light against the
+        water's dim pre-lit colour, so even 15% of it laid a pale beige veil
+        over every sheet (SS 971: river dark, falls pale).
+    -   **Water path:** the depth behind counts as water only where the
+        sheet lies on rock (up to 32 units); past a 48-unit gap (a curtain)
+        it is air and only the sheet's 8 units count. Counted whole, the gap
+        made curtains solid water colour that no slider moved. Absorption
+        0.03 per unit of that layer.
+    -   **Aerated water:** coloured with its water type's hue at 1.5 times
+        the river's lit brightness (lit from the water's own colour, so dark
+        at night), and 0.6 aeration opacity again: falling water is opaque
+        by its bubbles, slow water over rock stays clear.
+    -   **Refraction:** 0.06 of the screen height per unit of tilt (was
+        0.02), shrinking from 4096 units away (was 1024).
+    -   Why the old look was turquoise: before D98 every fall used the
+        default water type (turquoise), unlit and nearly opaque; since D98
+        each takes its river's, a khaki green at Riverwood.
+    -   The user: "now we're fucking talking".
+-   Open: the pale strip where falls cross the river (the crossing foam,
+    D-crossing, its own brightness); foam to be driven by the flow later.
+-   References: D91, D98, D102, D105, D110

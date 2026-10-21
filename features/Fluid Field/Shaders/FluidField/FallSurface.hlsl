@@ -157,20 +157,24 @@ static const float ENVIRONMENT_MIP = 2.0;
 /** The brightest the pass adds: the scene is HDR, but one runaway value is a square after bloom and the upscalers. */
 static const float MAX_OUTPUT = 64.0;
 
-/** D102: world units of rock-to-sheet water counted at most, and how much of it counts: the sheet is what the eye reads, not the gap behind it. */
-static const float BEHIND_MOST = 600.0;  // D105: the whole depth behind counts (baked, D104), as the river's depth fog
-static const float BEHIND_WEIGHT = 1.0;
 /** D102: per world unit of thickness (at Water Depth 1), how much light the sheet absorbs: 8 units square on let a quarter through. */
-static const float ABSORPTION = 0.012;  // D105: per world unit: 40 units behind show 60%, 200 units 9% (was 0.17: the sheet read as fog)
+static const float ABSORPTION = 0.03;  // D120: per world unit of the layer (D105 0.012 against the whole gap): a curtain's 8 units let 79% through, 32 on rock 38%
 /** D102: world units deep the water reads per unit of thickness, against its water type's fog far (shallow to deep). */
 static const float DEPTH_PER_THICKNESS = 1.0;  // D105: the apparent depth is the path itself
 /** D102: how much more opaque aerated water is (bubbles scatter what lies behind). */
-static const float AERATION_OPACITY = 0.3;  // D105: 0.3, was 0.6
+static const float AERATION_OPACITY = 0.6;  // D105: 0.3; D120: 0.6 again, the air in falling water is its body (a curtain's 8 units: 70% opaque)
 /** D102: pixels of refraction offset per unit of tilt at Refraction 1, as a fraction of the screen height. */
-static const float REFRACTION_SCREEN = 0.02;
+static const float REFRACTION_SCREEN = 0.06;  // D120: 0.06, was 0.02: at its default a pixel or two, Refraction read as doing nothing
 /** D102: the reflection's share of the fresnel weight, and the glint's strength: modest, the falls are not glossy. */
 static const float REFLECTION_WEIGHT = 0.5;
 static const float GLINT_WEIGHT = 0.5;
+/**
+ * D120: how much brighter aerated water reads than the river's own lit colour, in its water type's hue: falling water
+ * shows the light its bubbles scatter, and the river's (dim, pre-lit) colour barely tinted the sheet. Scaled from that
+ * lit colour (the weather's water multiplier: dark at night, where vanilla's colours unlit glowed, D102); the scene's
+ * light itself is on another scale (at 0.3 of it the sheets blew out)
+ */
+static const float SCATTER_BRIGHTNESS = 1.5;
 /** D102: how far the falls' foam goes from FluidField::FoamColor (the river's foam) toward the scene light, and its most cover in the base look. */
 static const float FOAM_LIFT = 0.25;
 static const float FOAM_MOST = 0.6;
@@ -189,10 +193,19 @@ float BehindDepth(VSOutput a_input, float a_sheetDepth, float a_behindDepth)
 	return max(a_input.Behind, 0.0);
 }
 
-/** D102: the water a ray crosses: the sheet's own thickness over the cosine, and a little of the gap behind it (capped). */
+/** D120: past this gap behind (world units), the sheet has left the rock: what lies between is air, not water. */
+static const float LAYER_GAP = 48.0;
+
+/**
+ * D102: the water a ray crosses. D120: the water layer over the cosine. Where the sheet lies on rock, the depth behind
+ * it (the rays, D106) is the layer itself; where it has left the rock (a curtain), the gap is air and only the sheet's
+ * own thickness counts. Counted whole (D105), the gap made every curtain 80-100% water colour, a fog no slider moved
+ */
 float SheetPath(float a_behind, float a_cosine)
 {
-	return 0.5 * SheetThickness / max(a_cosine, 0.25) + min(a_behind, min(MaxPath, BEHIND_MOST)) * BEHIND_WEIGHT;
+	const float onRock = max(min(a_behind, MaxPath), SheetThickness);
+	const float layer = lerp(onRock, SheetThickness, smoothstep(LAYER_GAP * 0.5, LAYER_GAP, a_behind));
+	return layer / max(a_cosine, 0.25);
 }
 
 /**
@@ -225,10 +238,11 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// outer face lies behind that inner side: a free curtain seen from behind or the lip from upstream still shows
 	if (input.Outward.w > 0.5 && dot(SafeNormalize(input.Outward.xyz, toCamera), toCamera) < -0.05)
 		discard;
-	if (!frontFace)
-		geometric = -geometric;
+	// D120: turned to the camera. Flipped by the triangle's winding first (not consistent on these meshes) and then, facing
+	// away, squashed to graze the view, the normal met the eye at under 0.2 over most sheets: fresnel near 1 made each a
+	// half mirror of the bright sky, the milky look
 	if (dot(geometric, toCamera) < 0.0)
-		geometric = SafeNormalize(geometric - toCamera * (dot(geometric, toCamera) * 1.01), toCamera);
+		geometric = -geometric;
 	float3 normal = geometric;
 	[branch] if (HasNormal)
 	{
@@ -255,7 +269,10 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float cover = white > 0.0 ? saturate(smoothstep(1.0 - white, 1.0 - white * 0.6, lace) + smoothstep(0.75, 1.0, white)) : 0.0;
 	const float streaks = saturate((Color::RGBToLuminance(diffuse.rgb) - 0.35) * 1.8) * StreakFoam * (0.4 + 0.6 * aerated);
 	// D102: the base look keeps its white water modest (foam and particles are laid over it later)
-	const float foam = saturate(max(cover * 0.9, streaks)) * FOAM_MOST;
+	// D120: without Foam on the Falls, none: the streaks' foam is the scene's full light (FluidField::FoamColor) against the
+	// water's dim pre-lit colour, so even 15% of it laid a pale veil over every sheet, unlike the river beside it (SS 971).
+	// Foam is to be driven by the flow later, its brightness matched to the water's first
+	const float foam = FallGround::Whitening ? saturate(max(cover * 0.9, streaks)) * FOAM_MOST : 0.0;
 
 	// The sun's shadow on the sheet (Water.hlsl's surfaceShadow): CS's directional shadows (Volumetric Shadows' map when
 	// this variant has them) and the world's (terrain, clouds). The sheet is thin, so the surface's shadow serves throughout
@@ -272,7 +289,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float straightDepth = SharedData::GetScreenDepth(SceneDepth.Load(int3(input.Position.xy, 0)));
 	const float straightBehind = max(straightDepth - sheetDepth, 0.0);
 	const float3 viewNormal = mul((float3x3)FrameBuffer::CameraView, normal - geometric);
-	const float2 offset = viewNormal.xy * float2(1.0, -1.0) * RefractionStrength * REFRACTION_SCREEN * region.y * saturate(straightBehind / 8.0) / max(sheetDepth / 1024.0, 1.0);
+	const float2 offset = viewNormal.xy * float2(1.0, -1.0) * RefractionStrength * REFRACTION_SCREEN * region.y * saturate(straightBehind / 8.0) / max(sheetDepth / 4096.0, 1.0);  // D120: shrinks from 4096 units, was 1024
 	float2 pixel = clamp(input.Position.xy + offset, 0.5, region - 0.5);
 	float behindDepth = SharedData::GetScreenDepth(SceneDepth.Load(int3(pixel, 0)));
 	if (behindDepth < sheetDepth) {
@@ -302,7 +319,10 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float3 sun = SharedData::InInterior ? 0.0 : ShadowSampling::GetDirectionalLighting();
 	const float3 sceneLight = sun * shadow + ShadowSampling::GetAmbientLighting();
 	const float3 waterLit = WithinLight(dirColor * shadow + ambientColor, sceneLight);
-	float3 waterColor = waterLit;
+	// D120: aerated, the water's hue (the shallow colour, its luminance taken out) under the scene's light
+	const float3 hue = shallow / max(Color::RGBToLuminance(shallow), 1e-3);
+	const float3 scattered = hue * Color::RGBToLuminance(waterLit) * SCATTER_BRIGHTNESS;
+	float3 waterColor = lerp(waterLit, scattered, aerated);
 	if (SharedData::enbSettings.EnableWater) {
 		// Water.hlsl's sun scattered in the water body
 		const float scatter = saturate(dot(normal, lightDirection) * 0.5 + 0.5) * saturate(dot(-toCamera, lightDirection) * 0.5 + 0.5);
