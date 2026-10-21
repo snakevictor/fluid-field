@@ -409,10 +409,17 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// streaks of a pattern, here vanilla's normal map running on the baked flow (the river's runs on its simulated flow)
 	// D127: fuzzier, as the river's: two blurred samples of the pattern at different scales blended (the river blends two
 	// phases), and a wider soft band; one sharp sample broke the foam into crisp shapes
-	// D131: the river's own pattern: its water type's first normal map in world space, drifting along the flow (Drifted)
+	// D131: the river's own pattern, its water type's first normal map. D133: on the flow's coordinates, two scales, each
+	// a whole number of repeats along the scroll (FlowScale): the foam moves exactly with the water and never resets.
+	// Drifted in world space its two phases crossfaded (a pulse), and the lace's hashed noise is not periodic, so it
+	// jumped at the phase's wrap (the user: the looping is on the foam)
 	float pattern = lace;
 	[branch] if (HasNoise)
-		pattern = saturate(Drifted(Noise1Tex, position, geometric, drift, FOAM_TILE, 0.0).w * 1.4);
+	{
+		const float p0 = length(Noise1Tex.Sample(WrapSampler, flow.uvA * FlowScale(FOAM_TILE)).xy * 2.0 - 1.0);
+		const float p1 = length(Noise1Tex.Sample(WrapSampler, flow.uvA * FlowScale(FOAM_TILE * 0.6) + 0.37).xy * 2.0 - 1.0);
+		pattern = saturate((p0 + p1) * 0.5 * 1.4);
+	}
 	const float threshold = pattern * 0.5;
 	const float foam = FallGround::Whitening && white > 0.02 ? smoothstep(threshold, threshold + 0.35, white * FOAM_DENSITY) * 0.95 : 0.0;
 	const float3 viewNormal = mul((float3x3)FrameBuffer::CameraView, normal - geometric);

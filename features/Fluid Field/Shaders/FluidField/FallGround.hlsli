@@ -315,12 +315,16 @@ namespace FallGround
 		return frac((a_p.x + a_p.y) * a_p.x);
 	}
 
-	float LaceNoise(float2 a_p)
+	/** D134: periodic along y every a_period cells (a whole number): the flow's scroll phase wraps at 1, and a hashed
+	 * lattice that does not wrap with it jumped there (the foam snapping back every few seconds) */
+	float LaceNoise(float2 a_p, float a_period)
 	{
 		const float2 i = floor(a_p);
 		const float2 f = a_p - i;
 		const float2 u = f * f * (3.0 - 2.0 * f);
-		return lerp(lerp(LaceHash(i), LaceHash(i + float2(1, 0)), u.x), lerp(LaceHash(i + float2(0, 1)), LaceHash(i + float2(1, 1)), u.x), u.y);
+		const float y0 = i.y - a_period * floor(i.y / a_period);
+		const float y1 = (i.y + 1.0) - a_period * floor((i.y + 1.0) / a_period);
+		return lerp(lerp(LaceHash(float2(i.x, y0)), LaceHash(float2(i.x + 1.0, y0)), u.x), lerp(LaceHash(float2(i.x, y1)), LaceHash(float2(i.x + 1.0, y1)), u.x), u.y);
 	}
 
 	/**
@@ -333,7 +337,7 @@ namespace FallGround
 		// D130: whole numbers along v (the scroll's phase wraps at 1: a fractional scale jumped there, the texture visibly
 		// resetting each cycle)
 		const float2 stretch = float2(0.7, 3.0);
-		const float n = LaceNoise(a_flow.uvA * stretch) * 0.6 + LaceNoise(a_flow.uvA * float2(1.89, 8.0) + 3.1) * 0.4;
+		const float n = LaceNoise(a_flow.uvA * stretch, 3.0) * 0.6 + LaceNoise(a_flow.uvA * float2(1.89, 8.0) + float2(3.1, 0.0), 8.0) * 0.4;
 		// Ridges of the noise: thin lines where it crosses its middle
 		return 1.0 - saturate(abs(n - 0.5) * 2.6);
 	}

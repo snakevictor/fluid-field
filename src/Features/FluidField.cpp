@@ -1774,6 +1774,12 @@ namespace
 			look.noiseScale[k] = data.uvScaleA[k];
 			look.noiseAmplitude[k] = data.amplitudeA[k];
 		}
+		// D134: once per water type, whether its normal maps were found (without them the falls fall back to the lace)
+		static std::unordered_set<const RE::TESWaterForm*> logged;
+		if (logged.insert(a_water).second)
+			logger::info("[Fluid Field] Falls water '{}': normal maps {} {} {} (scale {:.0f} {:.0f} {:.0f}, amplitude {:.2f} {:.2f} {:.2f})", a_water->GetFormEditorID(),
+				look.noise[0] ? "yes" : "no", look.noise[1] ? "yes" : "no", look.noise[2] ? "yes" : "no", look.noiseScale[0], look.noiseScale[1], look.noiseScale[2],
+				look.noiseAmplitude[0], look.noiseAmplitude[1], look.noiseAmplitude[2]);
 		return look;
 	}
 }
