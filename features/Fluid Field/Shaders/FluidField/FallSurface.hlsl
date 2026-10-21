@@ -184,6 +184,17 @@ static const float NORMAL_STRENGTH = 0.8;
 static const float FALLS_UV_WORLD = 512.0;
 /** D129: the water type's ripples on the sheet over the river's (Water.hlsl's amplitude-weighted blend). */
 static const float RIPPLE_STRENGTH = 1.0;
+
+/**
+ * D130: the repeats of a texture a_worldScale units across per repeat of the falls' flow coordinates (FALLS_UV_WORLD),
+ * a whole number of them along v: the flow's scroll phase wraps at 1, so a fractional count there jumped once a cycle
+ * (the texture visibly resetting)
+ */
+float2 FlowScale(float a_worldScale)
+{
+	const float repeats = FALLS_UV_WORLD / max(a_worldScale, 1.0);
+	return float2(repeats, max(round(repeats), 1.0));
+}
 /** D127: how much of the white water reaches the foam cover: below 1, even the densest bands stay patchy where the pattern is high, as the river's foam (solid bands read as paint). */
 static const float FOAM_DENSITY = 0.7;
 /** D102: pixels of refraction offset per unit of tilt at Refraction 1, as a fraction of the screen height. */
@@ -286,10 +297,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// along the flow with it
 	[branch] if (HasNoise)
 	{
-		const float2 worldUV = flow.uvA * FALLS_UV_WORLD;
-		const float3 n1 = Noise1Tex.Sample(WrapSampler, worldUV / NoiseScale.x).xyz * 2.0 - 1.0;
-		const float3 n2 = Noise2Tex.Sample(WrapSampler, worldUV / NoiseScale.y + 0.31).xyz * 2.0 - 1.0;
-		const float3 n3 = Noise3Tex.Sample(WrapSampler, worldUV / NoiseScale.z + 0.67).xyz * 2.0 - 1.0;
+		const float3 n1 = Noise1Tex.Sample(WrapSampler, flow.uvA * FlowScale(NoiseScale.x)).xyz * 2.0 - 1.0;
+		const float3 n2 = Noise2Tex.Sample(WrapSampler, flow.uvA * FlowScale(NoiseScale.y) + 0.31).xyz * 2.0 - 1.0;
+		const float3 n3 = Noise3Tex.Sample(WrapSampler, flow.uvA * FlowScale(NoiseScale.z) + 0.67).xyz * 2.0 - 1.0;
 		const float2 ripple = (n1.xy * NoiseAmplitude.x + n2.xy * NoiseAmplitude.y + n3.xy * NoiseAmplitude.z) * RIPPLE_STRENGTH;
 		normal = PerturbNormal(normal, input.WorldPosition, flow.uvA, SafeNormalize(float3(ripple, 1.0), float3(0.0, 0.0, 1.0)));
 	}
@@ -352,7 +362,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	[branch] if (HasNormal)
 	{
 		const float p0 = length(NormalTex.SampleBias(WrapSampler, flow.uvA, 1.5).xy * 2.0 - 1.0);
-		const float p1 = length(NormalTex.SampleBias(WrapSampler, flow.uvA * 0.6 + 0.37, 1.5).xy * 2.0 - 1.0);
+		const float p1 = length(NormalTex.SampleBias(WrapSampler, flow.uvA * float2(0.6, 2.0) + 0.37, 1.5).xy * 2.0 - 1.0);  // D130: v a whole number (FlowScale)
 		pattern = saturate((p0 + p1) * 0.5 * 1.4);
 	}
 	const float threshold = pattern * 0.5;

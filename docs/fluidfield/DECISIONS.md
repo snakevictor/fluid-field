@@ -3121,3 +3121,18 @@ Entry format:
     river over SS 982's arch is not in our pools (outside the site's capture)
     the part above the bed stays.
 -   References: D40, D78, D97, D105, D112, D113, D124
+
+## D130: Every flow-carried layer whole along the scroll
+
+-   Date: 2026-10-20
+-   Decision: the falls' flow coordinates are the bake's minus the scroll
+    phase, which wraps at 1. The falls' own texture repeats at 1, so the
+    wrap was seamless, but layers sampled at fractional scales of those
+    coordinates jumped once a cycle (the user: "looping issues again"): the
+    foam pattern's second sample (0.6), the lace (3.2 and 8.64) and the
+    water type's ripples (512 over their scale). Each now has a whole
+    number of repeats along v (FlowScale rounds it; the lace 3 and 8, the
+    pattern 2), u left free.
+-   Lesson (LEARNINGS): any texture laid on flow.uvA must have an integer
+    scale along v.
+-   References: D85, D127, D129

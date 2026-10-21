@@ -330,8 +330,10 @@ namespace FallGround
 	 */
 	float Lace(FlowSample a_flow)
 	{
-		const float2 stretch = float2(0.7, 3.2);
-		const float n = LaceNoise(a_flow.uvA * stretch) * 0.6 + LaceNoise(a_flow.uvA * stretch * 2.7 + 3.1) * 0.4;
+		// D130: whole numbers along v (the scroll's phase wraps at 1: a fractional scale jumped there, the texture visibly
+		// resetting each cycle)
+		const float2 stretch = float2(0.7, 3.0);
+		const float n = LaceNoise(a_flow.uvA * stretch) * 0.6 + LaceNoise(a_flow.uvA * float2(1.89, 8.0) + 3.1) * 0.4;
 		// Ridges of the noise: thin lines where it crosses its middle
 		return 1.0 - saturate(abs(n - 0.5) * 2.6);
 	}
