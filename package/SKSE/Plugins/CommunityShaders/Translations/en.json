@@ -888,6 +888,8 @@
     "feature.fluid_field.fall_speed_tooltip": "How fast the falls' water runs, against vanilla's own speed. The whole flow speeds up alike, so the texture never stretches.",
     "feature.fluid_field.fall_whitening": "Foam on the Falls",
     "feature.fluid_field.fall_whitening_tooltip": "White water on the falls where they strike rock, below rock, into the water below and as they run and fall.",
+    "feature.fluid_field.falls_river_shader": "Falls Use River Shader",
+    "feature.fluid_field.falls_river_shader_tooltip": "Shades the see-through falls with the river's own water shader, so they match the river exactly. Off uses Fluid Field's own copy of it. Water Depth and Refraction only apply when off.",
     "feature.fluid_field.far_water": "Far Water",
     "feature.fluid_field.far_water_scale": "Far Water Scale",
     "feature.fluid_field.far_water_scale_tooltip": "How much wider the far water is than the detailed water, at the same resolution.",

@@ -326,7 +326,7 @@ namespace SIE
 		ID3DBlob* blob;
 		ShaderCompilationTask::Status status;
 		system_clock::time_point compileTime = system_clock::now();
-		bool loadedFromDisk = false;  /**< true when the shader blob was read from the disk cache rather than compiled */
+		bool loadedFromDisk = false; /**< true when the shader blob was read from the disk cache rather than compiled */
 	};
 
 	namespace SShaderCache
@@ -707,6 +707,8 @@ namespace SIE
 			Cubemap = 1 << 8,           // 0x100
 			Flowmap = 1 << 9,           // 0x200
 			BlendNormals = 1 << 10,     // 0x400
+			// Bits 11-14 hold the technique
+			FluidFieldFalls = 1 << 15,  // 0x8000: CS only (D159), Fluid Field's see-through falls drawn by the river's shader
 		};
 
 		enum class EffectShaderFlags

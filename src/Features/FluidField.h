@@ -8,6 +8,7 @@
 #include "FluidField/GroundHeightMap.h"
 #include "FluidField/LandscapeCache.h"
 #include "FluidField/MeshCut.h"
+#include "FluidField/RiverCapture.h"
 #include "FluidField/ShallowWaterSolver.h"
 #include "FluidField/VanillaFoam.h"
 #include "FluidField/WakeSources.h"
@@ -98,6 +99,7 @@ struct FluidField : OverlayFeature
 		bool RefractiveFalls = false;        ///< D91: the falls drawn as refractive, see-through water by their own pass after the world (experimental)
 		float FallDepth = 1.0f;              ///< D102: how thick the falls' sheet reads: how opaque and how deep its colour
 		float FallRefraction = 0.5f;         ///< D91: how strongly the falls' surface bends what is seen through them (D102: faint by default)
+		bool FallsRiverShader = true;        ///< D159: the see-through falls shaded by the river's own water shader (Water.hlsl), FallSurface.hlsl's port while it is not ready
 		bool FallBlendedCopies = false;      ///< D91 experiment: dense copies built with a blended alpha property (falls built after it is set)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		int SprayAmount = 200;               ///< Spray droplets alive per emitter at once (D31)
@@ -291,6 +293,12 @@ public:
 	 */
 	void DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main);
 
+	/**
+	 * @brief D159: called from State::Draw before every draw call, once the engine has bound it: captures the river's draw
+	 * state (the water shader's refracting surface, once a frame) for the see-through falls to be shaded by the same shader.
+	 */
+	void CaptureRiverDraw(RE::BSShader* a_shader, uint32_t a_vertexDescriptor, uint32_t a_pixelDescriptor);
+
 private:
 	void DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderResourceView* a_depth);
 
@@ -346,6 +354,9 @@ private:
 	/** @brief D91: whether the refractive pass draws the falls this frame (the lit pieces are then hidden). */
 	bool RefractiveFallsActive() const;
 	FluidFieldSim::FallRefraction fallRefraction;  ///< D91
+	FluidFieldSim::RiverCapture riverCapture;      ///< D159: the river's draw state, for the falls drawn by its shader
+	/** @brief D159: whether the see-through falls are to be shaded by the river's water shader this frame (the capture runs). */
+	bool RiverShaderFallsWanted() const;
 	/** @brief D98: the water type each refractive falls piece pours out of (null: none found), looked up again every FALL_WATER_REFRESH frames. */
 	std::unordered_map<const RE::BSGeometry*, const RE::TESWaterForm*> fallWaterTypes;
 	uint32_t fallWaterTypesAge = 0;

@@ -18,13 +18,15 @@ namespace FluidFieldSim
 		constexpr UINT VERTEX_CLIP_SLOT = 123;
 		constexpr UINT BAKE_SLOT = 124;
 		constexpr UINT VERTICES_SLOT = 125;
-		constexpr UINT OWN_FIRST = 100;  // t100 the scene's colour ... t104 the environment (D3D11 has 128 slots)
-		constexpr UINT OWN_COUNT = 5;
+		constexpr UINT OWN_FIRST = 100;  // t100 the scene's colour ... t108 the water type's normal maps (D3D11 has 128 slots)
+		constexpr UINT OWN_COUNT = 9;
 		constexpr UINT SCENE_COLOR_SLOT = 100;
-		constexpr UINT DIFFUSE_SLOT = 102;
+		constexpr UINT DIFFUSE_SLOT = 121;  // D159: t121 diffuse, t122 normal map (were t102-t103, Light Limit Fix's local shadows)
 		constexpr UINT ENVIRONMENT_SLOT = 104;
 		constexpr UINT FRONT_DEPTH_SLOT = 105;     // D125
 		constexpr UINT NOISE_SLOT = 106;           // D129: t106-t108
+		constexpr UINT REFRACTION_SLOT = 1;        // D159: Water.hlsl's RefractionTex
+		constexpr UINT WATER_DEPTH_SLOT = 7;       // D159: ...and DepthTex
 		constexpr UINT SAMPLER_COUNT = 2;          // s0 wrap, s1 clamp
 		constexpr UINT SHADOW_MAP_SLOT = 18;       // D102: Volumetric Shadows' map (VolumetricShadows::kSharedShadowMapShaderSlot), read, never set
 		constexpr UINT SHADOW_CASCADES_SLOT = 98;  // ...and the directional light's cascades (Deferred::CopyShadowLightData)
@@ -51,10 +53,21 @@ namespace FluidFieldSim
 			winrt::com_ptr<ID3D11Buffer> vsShared[3], psShared[3], vsCamera, psCamera, vsGround, psGround;
 			winrt::com_ptr<ID3D11ShaderResourceView> vsViews[SRV_COUNT], psViews[SRV_COUNT], psOwnViews[OWN_COUNT];
 			winrt::com_ptr<ID3D11SamplerState> samplers[SAMPLER_COUNT];
+			// D159: what the river's shader binds (every pixel shader view and sampler, its b0-b4, the vertex shader's b0-b1)
+			winrt::com_ptr<ID3D11ShaderResourceView> psAllViews[RiverCapture::VIEW_COUNT];
+			winrt::com_ptr<ID3D11SamplerState> psAllSamplers[RiverCapture::SAMPLER_COUNT];
+			winrt::com_ptr<ID3D11Buffer> psLow[RiverCapture::PIXEL_BUFFER_COUNT], vsLow[RiverCapture::VERTEX_BUFFER_COUNT];
+			bool river = false;
 
-			explicit SavedState(ID3D11DeviceContext* a_context) :
-				context(a_context)
+			SavedState(ID3D11DeviceContext* a_context, bool a_river) :
+				context(a_context), river(a_river)
 			{
+				if (river) {
+					context->PSGetShaderResources(0, RiverCapture::VIEW_COUNT, reinterpret_cast<ID3D11ShaderResourceView**>(psAllViews));
+					context->PSGetSamplers(0, RiverCapture::SAMPLER_COUNT, reinterpret_cast<ID3D11SamplerState**>(psAllSamplers));
+					context->PSGetConstantBuffers(0, RiverCapture::PIXEL_BUFFER_COUNT, reinterpret_cast<ID3D11Buffer**>(psLow));
+					context->VSGetConstantBuffers(0, RiverCapture::VERTEX_BUFFER_COUNT, reinterpret_cast<ID3D11Buffer**>(vsLow));
+				}
 				context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, reinterpret_cast<ID3D11RenderTargetView**>(targets), depth.put());
 				context->OMGetBlendState(blend.put(), blendFactor, &sampleMask);
 				context->OMGetDepthStencilState(depthState.put(), &stencilRef);
@@ -116,6 +129,25 @@ namespace FluidFieldSim
 				context->PSSetShaderResources(OWN_FIRST, OWN_COUNT, ownRaw);
 				ID3D11SamplerState* rawSamplers[SAMPLER_COUNT] = { samplers[0].get(), samplers[1].get() };
 				context->PSSetSamplers(0, SAMPLER_COUNT, rawSamplers);
+				if (river) {
+					// After the narrower restores above: these cover the same slots with the same saved values
+					ID3D11ShaderResourceView* allViews[RiverCapture::VIEW_COUNT];
+					for (UINT i = 0; i < RiverCapture::VIEW_COUNT; i++)
+						allViews[i] = psAllViews[i].get();
+					context->PSSetShaderResources(0, RiverCapture::VIEW_COUNT, allViews);
+					ID3D11SamplerState* allSamplers[RiverCapture::SAMPLER_COUNT];
+					for (UINT i = 0; i < RiverCapture::SAMPLER_COUNT; i++)
+						allSamplers[i] = psAllSamplers[i].get();
+					context->PSSetSamplers(0, RiverCapture::SAMPLER_COUNT, allSamplers);
+					ID3D11Buffer* pixelBuffers[RiverCapture::PIXEL_BUFFER_COUNT];
+					for (UINT i = 0; i < RiverCapture::PIXEL_BUFFER_COUNT; i++)
+						pixelBuffers[i] = psLow[i].get();
+					context->PSSetConstantBuffers(0, RiverCapture::PIXEL_BUFFER_COUNT, pixelBuffers);
+					ID3D11Buffer* vertexBuffers[RiverCapture::VERTEX_BUFFER_COUNT];
+					for (UINT i = 0; i < RiverCapture::VERTEX_BUFFER_COUNT; i++)
+						vertexBuffers[i] = vsLow[i].get();
+					context->VSSetConstantBuffers(0, RiverCapture::VERTEX_BUFFER_COUNT, vertexBuffers);
+				}
 			}
 		};
 	}
@@ -491,7 +523,14 @@ namespace FluidFieldSim
 			groundSize = wantedGround;
 		}
 
-		SavedState saved(a_context);
+		// D159: the river's own shader when its draw was captured this frame and the falls variant is compiled (the cache
+		// compiles it in the background: until then, and whenever anything is missing, FallSurface.hlsl draws the falls)
+		const bool riverShader = a_params.river && a_params.riverVertexShader && a_params.riverPixelShader;
+		if (riverShader != lastRiverShader) {
+			logger::info("[Fluid Field] See-through falls shaded by {}", riverShader ? "the river's water shader" : "FallSurface.hlsl");
+			lastRiverShader = riverShader;
+		}
+		SavedState saved(a_context, riverShader);
 
 		// What the falls refract: the scene as drawn so far (the falls' own lit pieces are hidden, D91). D123: as it was
 		// before the water, when copied then this frame: the river's surface behind a sheet is not seen through it
@@ -597,7 +636,7 @@ namespace FluidFieldSim
 				ID3D11ShaderResourceView* vertices = mesh->verticesSRV.get();
 				a_context->VSSetShaderResources(VERTICES_SLOT, 1, &vertices);
 				a_context->PSSetShaderResources(BAKE_SLOT, 1, &draw->bake);
-				ID3D11ShaderResourceView* textures[2] = { draw->diffuse, draw->normal };  // t102, t103
+				ID3D11ShaderResourceView* textures[2] = { draw->diffuse, draw->normal };  // t121, t122
 				a_context->PSSetShaderResources(DIFFUSE_SLOT, 2, textures);
 				ID3D11ShaderResourceView* const* noise = draw->look.noise;  // D129: t106-t108
 				a_context->PSSetShaderResources(NOISE_SLOT, 3, noise);
@@ -613,6 +652,7 @@ namespace FluidFieldSim
 			a_context->CopyResource(frontDepth.get(), sceneDepthResource.get());
 			a_context->OMSetRenderTargets(0, nullptr, frontDepthDSV.get());
 			a_context->OMSetDepthStencilState(frontDepthState.get(), 0);
+			a_context->VSSetShader(vertexShader.get(), nullptr, 0);
 			a_context->PSSetShader(depthShader, nullptr, 0);
 			drawMeshes();
 			a_context->OMSetRenderTargets(1, &a_params.target, a_params.depth);
@@ -623,6 +663,33 @@ namespace FluidFieldSim
 		ID3D11ShaderResourceView* frontViews[1] = { front ? front : a_params.sceneDepth };
 		a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, frontViews);
 		data.hasFront = front ? 1u : 0u;
+		if (riverShader) {
+			// D159: the river's state as captured (its textures, shadow maps, lights, samplers and the contents of its constant
+			// buffers), then ours over the slots the falls variant reads: what lies behind (t1, t7: the pre-water scene and
+			// the opaque depth, as FallSurface.hlsl reads them), the front surface (t105), FallGround (t120, t123, t124, b13),
+			// the piece's normal map (t122, per piece) and constants (b7), the camera (b12)
+			ID3D11ShaderResourceView* views[RiverCapture::VIEW_COUNT];
+			a_params.river->GetViews(views);
+			views[REFRACTION_SLOT] = sceneCopySRV.get();
+			views[WATER_DEPTH_SLOT] = a_params.sceneDepth;
+			views[FRONT_DEPTH_SLOT] = frontViews[0];
+			views[HEIGHTS_SLOT] = a_params.poolHeights;
+			views[VERTEX_CLIP_SLOT] = a_params.vertexClip;
+			a_context->PSSetShaderResources(0, RiverCapture::VIEW_COUNT, views);
+			ID3D11SamplerState* riverSamplers[RiverCapture::SAMPLER_COUNT];
+			a_params.river->GetSamplers(riverSamplers);
+			a_context->PSSetSamplers(0, RiverCapture::SAMPLER_COUNT, riverSamplers);
+			ID3D11Buffer* pixelBuffers[RiverCapture::PIXEL_BUFFER_COUNT];
+			a_params.river->GetPixelBuffers(pixelBuffers);
+			a_context->PSSetConstantBuffers(0, RiverCapture::PIXEL_BUFFER_COUNT, pixelBuffers);
+			ID3D11Buffer* vertexBuffers[RiverCapture::VERTEX_BUFFER_COUNT];
+			a_params.river->GetVertexBuffers(vertexBuffers);
+			a_context->VSSetConstantBuffers(0, RiverCapture::VERTEX_BUFFER_COUNT, vertexBuffers);
+			a_context->VSSetShader(a_params.riverVertexShader, nullptr, 0);
+			a_context->PSSetShader(a_params.riverPixelShader, nullptr, 0);
+		} else {
+			a_context->VSSetShader(vertexShader.get(), nullptr, 0);
+		}
 		drawMeshes();
 		ID3D11ShaderResourceView* none[1] = { nullptr };
 		a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, none);
