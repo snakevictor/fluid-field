@@ -260,6 +260,10 @@ static const float FALL_FOAM_FULL = 0.85;
 static const float FALL_FOAM = 0.9;
 /** D141: world units below that water over which the sheet fades in: the river runs on into the falling water, no seam. */
 static const float LIP_BLEND = 24.0;
+/** D143: world units below the lip's blend over which the other foam (seams, sheets meeting, rock contact) comes in. */
+static const float LIP_QUIET = 48.0;
+/** D143: how white a sheet fed by the drop above it (no calm water over it) is. */
+static const float FED_FOAM = 0.85;
 static const float FOOT_FOAM_REACH = 100.0;
 /** D139: the same for the foot band (at 1, short curtains were solid white top to bottom, SS 1031-1032). */
 static const float FOOT_FOAM = 0.8;
@@ -398,16 +402,21 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	                                                                                                             0.0;
 	if (FallGround::Whitening)
 		white = max(white, fallen * steep * FALL_FOAM);
-	// D141: near the lip nothing else foams either (the lead-in's cut line there is under the river)
-	const float lip = hasSource ? saturate(input.BelowSource / LIP_BLEND) : 1.0;
+	// D143: a sheet with no calm water above it is fed by the drop over it (a fall's lower pieces, the incline under a
+	// violent drop): turbulent from its top, whatever its slope (the user, SS 1037 "2")
+	if (FallGround::Whitening && !hasSource)
+		white = max(white, FED_FOAM);
+	// D141: near the lip nothing else foams either (the lead-in's cut line there is under the river). D143: over
+	// LIP_QUIET, and for the seams, the sheets meeting and the rock under the river too (SS 1037 "1", SS 1038)
+	const float lip = hasSource ? saturate((input.BelowSource - LIP_BLEND) / LIP_QUIET) : 1.0;
 	// D121: where the water breaks: along its cut lines (the lead-in leaving the river above, the foot under the pool or
 	// river below, a sheet cut into another's curl, rock), where it overlaps another sheet at a seam (laid on after the
 	// screen depth below: where it meets rock or any mesh, as the river foams at its shore)
 	if (FallGround::Whitening) {
 		white = max(white, (1.0 - saturate(input.Clip / CUT_FOAM_REACH)) * lip);
-		white = max(white, (1.0 - saturate(input.Fade.x)) * SEAM_FOAM);
+		white = max(white, (1.0 - saturate(input.Fade.x)) * SEAM_FOAM * lip);
 		// D128: where it meets another sheet (SS 992: the join of two sheets had none, the one behind hidden by the front)
-		white = max(white, (1.0 - saturate(input.ToOtherSheet / MEET_FOAM_REACH)) * MEET_FOAM);
+		white = max(white, (1.0 - saturate(input.ToOtherSheet / MEET_FOAM_REACH)) * MEET_FOAM * lip);
 	}
 	const float lace = FallGround::Lace(flow);
 
@@ -427,7 +436,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float straightBehind = max(straightDepth - sheetDepth, 0.0);
 	// D121: and where it meets rock or any other mesh (the scene's depth just behind it)
 	if (FallGround::Whitening)
-		white = max(white, (1.0 - saturate(straightBehind / CONTACT_FOAM_REACH)) * CONTACT_FOAM);
+		white = max(white, (1.0 - saturate(straightBehind / CONTACT_FOAM_REACH)) * CONTACT_FOAM * lip);
 	// D120: without Foam on the Falls, none: the streaks' foam is the scene's full light against the water's dim pre-lit
 	// colour, so even 15% of it laid a pale veil over every sheet (SS 971)
 	// D122: covered as the river's foam (FluidField::GetFoamCover): dense foam solidly, thin foam only in the bubbles and
@@ -523,7 +532,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// foam made the line where the sheet enters a boulder wholly opaque and white, tracing the faceted intersection of
 	// the sheet's triangles with the rock's as a white sawtooth; and the water fades out toward its cut
 	const float contact = saturate(straightBehind / 4.0);
-	const float alpha = saturate(input.Fade.x) * lerp(contact, sqrt(contact), foam) * FallGround::CutFade(input.Clip) * smoothstep(0.0, 1.0, lip);  // D141: faded in under the lip
+	const float alpha = saturate(input.Fade.x) * lerp(contact, sqrt(contact), foam) * FallGround::CutFade(input.Clip) * (hasSource ? smoothstep(0.0, LIP_BLEND, input.BelowSource) : 1.0);  // D141: faded in under the lip
 	if (alpha <= 0.002)
 		discard;
 	// D108: Waterfall Shading debug "Depth Behind": the open water or air behind the sheet. D110: in bands of colour (a grey
