@@ -3677,3 +3677,13 @@ Entry format:
     design (open water space). A vertex inside a static whose ray's far end
     also lies inside the same static (300 units deep) reads open.
 -   References: D105, D113, D135, D143, D157
+
+## D166: The outward guard leaves the sheet-inside-sheet cut alone
+
+-   Date: 2026-10-21
+-   Decision: D165's guard no longer overrides the volume cut (D113). Inside
+    a big C-shaped sheet a vertex more than 64 units from the far side read
+    as open water, so the guard would have restored the inner layers the
+    user wanted gone; it still overrides the burial (landscape, statics)
+    and the river cuts.
+-   References: D113, D165
