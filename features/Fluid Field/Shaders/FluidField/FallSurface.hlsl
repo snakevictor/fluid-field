@@ -255,8 +255,8 @@ static const float REFRACTION_SCREEN = 0.06;  // D120: 0.06, was 0.02: at its de
 static const float CUT_FOAM_REACH = 24.0;
 /** D124: world units the foam reaches down from the water a fall pours out of, and up from the water it falls into (was FallGround::PoolFoamHeight, 26). */
 /** D141: world units of drop below the water a fall pours out of over which its foam grows from nothing to FALL_FOAM, and how white at most. */
-static const float FALL_FOAM_START = 24.0;
-static const float FALL_FOAM_FULL = 260.0;
+static const float FALL_FOAM_START = 0.45;  // D142: shares of the whole drop (were world units: 24 and 260)
+static const float FALL_FOAM_FULL = 0.85;
 static const float FALL_FOAM = 0.9;
 /** D141: world units below that water over which the sheet fades in: the river runs on into the falling water, no seam. */
 static const float LIP_BLEND = 24.0;
@@ -380,15 +380,22 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// D124: the whole drop's top and foot foam long and dense (the user): down from the water it pours out of, and up from
 	// the water it falls into. D131: 1 - x^2, dense most of the way and easing out (sqrt fell to nothing at once at its
 	// end: a hard straight line across the sheet, SS 998)
-	if (FallGround::Whitening)
+	// D142: the foot band only where the drop's height is not known (below)
+	const bool hasSource = input.BelowSource < 500.0;
+	const bool hasFoot = input.Fade.y < 500.0;
+	if (FallGround::Whitening && !(hasSource && hasFoot))
 		white = max(white, (1.0 - Square(saturate(input.Fade.y / FOOT_FOAM_REACH))) * FOOT_FOAM);
 	// D141: as real falls (the user's references): clear and glassy over the lip, foam growing with the drop, thin threads
 	// below the lip to white columns near the foot, on the steep parts only (an incline foams by its rock strikes and
 	// wakes, the bake's). The drop from the water it pours out of; where it has none (a sheet starting mid-fall), its run
 	// time. D124's band at the top was the reverse: most foam where real water has least
+	// D142: by the share of the whole drop fallen (from the water it pours out of to the water it falls into), so every
+	// drop, short or tall, keeps its water look on top and foams from the middle down (the user): a fixed 260-unit ramp
+	// whitened tall falls wholly, and the foot band filled short curtains
 	const float steep = saturate((abs(flow.velocity.z) / max(length(flow.velocity), 1e-3) - 0.4) / 0.4);
-	const bool hasSource = input.BelowSource < 500.0;
-	const float fallen = hasSource ? smoothstep(FALL_FOAM_START, FALL_FOAM_FULL, input.BelowSource) : aerated;
+	const float share = hasSource && hasFoot ? input.BelowSource / max(input.BelowSource + input.Fade.y, 1.0) : 0.0;
+	const float fallen = hasSource && hasFoot ? smoothstep(FALL_FOAM_START, FALL_FOAM_FULL, share) : hasSource ? smoothstep(60.0, 300.0, input.BelowSource) :
+	                                                                                                             0.0;
 	if (FallGround::Whitening)
 		white = max(white, fallen * steep * FALL_FOAM);
 	// D141: near the lip nothing else foams either (the lead-in's cut line there is under the river)
@@ -437,7 +444,8 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 		const float p1 = length(NormalTex.SampleBias(WrapSampler, flow.uvA * float2(0.6, 2.0) + 0.37, 1.5).xy * 2.0 - 1.0);
 		pattern = saturate((p0 + p1) * 0.5 * 1.4);
 	}
-	const float threshold = pattern * 0.5;
+	// D142: dense foam fills in (the pattern only breaks its edges): its dark dashes inside white read as banding (SS 1036)
+	const float threshold = pattern * 0.5 * (1.0 - saturate(white) * 0.7);
 	const float foam = FallGround::Whitening && white > 0.02 ? smoothstep(threshold, threshold + 0.35, white * FOAM_DENSITY) * 0.95 : 0.0;
 	const float3 viewNormal = mul((float3x3)FrameBuffer::CameraView, normal - geometric);
 	const float2 offset = viewNormal.xy * float2(1.0, -1.0) * RefractionStrength * REFRACTION_SCREEN * region.y * saturate(straightBehind / 8.0) / max(sheetDepth / 4096.0, 1.0);  // D120: shrinks from 4096 units, was 1024

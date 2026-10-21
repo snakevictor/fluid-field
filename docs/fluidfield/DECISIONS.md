@@ -3372,3 +3372,18 @@ Entry format:
         of (a level within 96 units of the mesh's top): the river foamed
         along every lip. Plunges into the water below keep theirs.
 -   References: D98, D121, D124, D138
+
+## D142: Foam from the middle of each drop down; dense foam solid
+
+-   Date: 2026-10-21
+-   Decision: D141's foam ramp in world units (24 to 260 below the source)
+    whitened tall falls wholly and, with the foot band, short curtains too
+    (SS 1034-1036). The user: keep the water look and add lots of foam at
+    the mid-to-bottom. The foam now follows the share of the whole drop
+    fallen, from the water a fall pours out of (d.z) to the water it falls
+    into (a.z): from nothing at 45% to full at 85%, on steep parts; the foot
+    band only where the drop is not known. Dense foam fills in: the bubble
+    pattern's threshold shrinks with the foam's density, so its dark dashes
+    no longer band dense foam (SS 1036).
+-   Open: SS 1035, top left: the culling cut away visible falls meshes.
+-   References: D139, D141
