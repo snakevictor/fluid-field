@@ -449,8 +449,24 @@ namespace FluidFieldSim
 		depthQueue.clear();
 		depthJob.reset();
 		buryQueue.clear();  // D112
-		buryJob.reset();
 		buryDone = true;
+		if (denseWork.valid())  // D172: the dense copies' worker finishes; its results are dropped
+			denseWork.wait();
+		denseWork = {};
+		denseJobs.clear();
+		denseFailed.clear();
+		if (heavyWork.valid())  // D172: the seams' or the bakes' linking worker finishes (it has no way to stop)
+			heavyWork.wait();
+		heavyWork = {};
+		linkedDue = false;
+		plungeResult.reset();
+		poolResult.reset();
+		plungesDue = false;
+		if (cullJob)  // D172: the worker stops and is waited for
+			cullJob->cancel = true;
+		if (cullWork.valid())
+			cullWork.wait();
+		cullWork = {};
 		cullJob.reset();  // D113
 		cullRequested = false;
 		hideEffects = false;
@@ -588,7 +604,7 @@ namespace FluidFieldSim
 		}
 	}
 
-	void FallSites::ComputePools(const Site& a_site, const FallCapture& a_capture)
+	FallSites::PoolField FallSites::ComputePools(const Site& a_site, const FallCapture& a_capture) const
 	{
 		// D78: the pools' water over a site's capture, worked out once the capture is complete (it was the old top-down
 		// flow solve's cover, D36, worked out as that solve started): the shader's pool cut, the debug arrows and the
@@ -700,30 +716,29 @@ namespace FluidFieldSim
 		}
 		logger::info("[Fluid Field] Waterfall site #{} pools: {} cells, {} kept out as lips and curtains", a_site.id,
 			std::count_if(pools.cover.begin(), pools.cover.end(), [](float a_cover) { return a_cover > NO_SURFACE; }), lips);
-		sitePools[a_site.captureKey] = std::move(pools);
+		return pools;
 	}
 
 	void FallSites::PollPools()
 	{
-		bool changed = false;
+		// D172: the sites whose capture is complete and whose pools are not worked out: on a worker (up to 90 ms on the render
+		// thread), taken in by FinishHeavyWork
+		std::vector<std::pair<const Site*, const FallCapture*>> todo;
 		for (const auto& site : sites) {
 			if (!site.captureKey || sitePools.contains(site.captureKey))
 				continue;
 			const FallCapture* capture = GetCapture(site);
 			if (!capture || !capture->IsComplete())
 				continue;
-			ComputePools(site, *capture);
-			changed = true;
+			todo.emplace_back(&site, capture);
 		}
-		if (!changed)
+		if (todo.empty())
 			return;
-		groundVersion++;
-		// D78: the plunges stand on the pools' water
-		if (!bakeFields.empty())
-			BuildPlunges();
-		// D112: the pools cut the meshes' feet, which the culling reads (once the rock test has run; its end reads them anyway)
-		if (buryDone && !vertexClipBase.empty())
-			RequestCulling();
+		poolResult = std::make_unique<std::vector<std::pair<uint64_t, PoolField>>>();
+		heavyWork = std::async(std::launch::async, [this, todo, result = poolResult.get()]() {
+			for (const auto& [site, capture] : todo)
+				result->emplace_back(site->captureKey, ComputePools(*site, *capture));
+		});
 	}
 
 	void FallSites::AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes,
@@ -792,9 +807,12 @@ namespace FluidFieldSim
 						denseSeen.insert(a_geometry);
 						return RE::BSVisit::BSVisitControl::kContinue;
 					}
-					if (DENSE && !denseShapes.contains(a_geometry) && a_geometry->AsTriShape() && a_geometry->AsTriShape()->GetTrishapeRuntimeData().triangleCount > 0 &&
-						netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get()))
+					if (DENSE && !denseShapes.contains(a_geometry) && !denseFailed.contains(a_geometry) && a_geometry->AsTriShape() &&
+						a_geometry->AsTriShape()->GetTrishapeRuntimeData().triangleCount > 0 && netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get())) {
+						// D172: its copy is made on a worker (FinishDenseWork): passed by until then, not lit, clipped nor baked
 						toDensify.emplace_back(a_geometry);
+						return RE::BSVisit::BSVisitControl::kContinue;
+					}
 					// Only the water's own surfaces: the models also carry particle spray (no triangles of
 					// their own), which grounding and the streamlines would smear
 					auto* triShape = a_geometry->AsTriShape();
@@ -872,19 +890,27 @@ namespace FluidFieldSim
 			if (it->second.parent && it->second.shape)
 				it->second.parent->DetachChild(it->second.shape.get());
 			denseShapes.erase(it->second.shape.get());
+			untrimmedIndices.erase(it->second.shape.get());  // D172
 			it = denseOf.erase(it);
 		}
-		if (!toDensify.empty() && !refreshing) {
-			uint32_t built = 0;
-			for (const auto& geometry : toDensify)
-				built += Densify(geometry.get()) ? 1 : 0;
-			logger::info("[Fluid Field] Waterfall dense copies: {} of {} lit meshes", built, toDensify.size());
-			if (built > 0) {
-				refreshing = true;
-				RefreshGrounded();
-				refreshing = false;
-				RefreshHiddenEffects();
-				return;
+		if (!toDensify.empty() && !refreshing && !denseWork.valid()) {
+			// D172: copied here, made on a worker, attached by FinishDenseWork
+			for (const auto& geometry : toDensify) {
+				auto job = std::make_unique<DenseJob>();
+				if (ReadDense(geometry.get(), *job))
+					denseJobs.push_back(std::move(job));
+				else
+					denseFailed.insert(geometry.get());
+			}
+			if (!denseJobs.empty()) {
+				std::vector<DenseJob*> running;
+				for (auto& job : denseJobs)
+					running.push_back(job.get());
+				denseStarted = std::chrono::steady_clock::now();
+				denseWork = std::async(std::launch::async, [running]() {
+					for (auto* job : running)
+						ComputeDense(*job);
+				});
 			}
 		}
 		// Meshes no longer grounded (their cell unloaded) lose their cut, so a reused address is not mistaken for them
@@ -897,7 +923,7 @@ namespace FluidFieldSim
 			flowBakeVersion++;
 		// D78: the plunges and spray of meshes that went go with them
 		if (std::erase_if(bakeFields, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); }))
-			BuildPlunges();
+			plungesDue = true;  // D172: ComputePlunges on a worker (Update)
 		groundVersion++;
 		ApplyLitHidden();
 	}
@@ -1290,9 +1316,12 @@ namespace FluidFieldSim
 		}
 		if (clipQueue.empty()) {
 			logger::info("[Fluid Field] Waterfall rock cut: {} vertices of {} lit meshes tested", clipTested, vertexClipBase.size());
-			const auto start = std::chrono::steady_clock::now();
-			ComputeFades();
-			logger::info("[Fluid Field]   seams took {:.1f} ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+			// D172: on a worker (1.8 s on one frame for a cascade's meshes); Update holds everything else back meanwhile (Busy)
+			heavyWork = std::async(std::launch::async, [this]() {
+				const auto start = std::chrono::steady_clock::now();
+				ComputeFades();
+				logger::info("[Fluid Field]   seams took {:.1f} ms (worker)", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+			});
 		}
 	}
 
@@ -1309,7 +1338,7 @@ namespace FluidFieldSim
 		}
 	}
 
-	bool FallSites::Densify(RE::BSGeometry* a_geometry)
+	bool FallSites::ReadDense(RE::BSGeometry* a_geometry, DenseJob& o_job) const
 	{
 		auto* triShape = a_geometry ? a_geometry->AsTriShape() : nullptr;
 		auto* renderer = a_geometry ? a_geometry->GetGeometryRuntimeData().rendererData : nullptr;
@@ -1368,8 +1397,46 @@ namespace FluidFieldSim
 		}
 		for (auto& n : normals)
 			n = normalize(n);
+		// D172: what the worker needs, copied (the landscape's cells round the mesh too: the cache changes every frame)
+		float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
+		for (const auto& position : positions) {
+			const RE::NiPoint3 p = a_geometry->world * position;
+			lo[0] = std::min(lo[0], p.x);
+			lo[1] = std::min(lo[1], p.y);
+			hi[0] = std::max(hi[0], p.x);
+			hi[1] = std::max(hi[1], p.y);
+		}
+		auto* tes = RE::TES::GetSingleton();
+		o_job.interior = !tes || tes->interiorCell != nullptr || !landscape;
+		if (!o_job.interior)
+			o_job.land = landscape->Subset(lo[0] - 512.0f, lo[1] - 512.0f, hi[0] + 512.0f, hi[1] + 512.0f);
+		o_job.geometry.reset(a_geometry);
+		o_job.world = a_geometry->world;
+		o_job.vertexCount = counts.vertexCount;
+		o_job.triangleCount = counts.triangleCount;
+		o_job.haveColors = haveColors;
+		o_job.positions = std::move(positions);
+		o_job.normals = std::move(normals);
+		o_job.uvs = std::move(uvs);
+		o_job.colors = std::move(colors);
+		o_job.triangles = std::move(triangles);
+		return true;
+	}
+
+	void FallSites::ComputeDense(DenseJob& a_job)
+	{
+		// D172: on a worker (the subdivision and the landscape cut: 365 ms on one frame for a cascade's meshes)
+		auto& positions = a_job.positions;
+		auto& normals = a_job.normals;
+		auto& uvs = a_job.uvs;
+		auto& colors = a_job.colors;
+		auto& triangles = a_job.triangles;
+		const auto normalize = [](const RE::NiPoint3& a_v) {
+			const float length = a_v.Length();
+			return length > 1e-6f ? a_v / length : RE::NiPoint3(0.0f, 0.0f, 1.0f);
+		};
 		// The world scale, for the edge length
-		const float scale = std::max(a_geometry->world.scale, 1e-3f);
+		const float scale = std::max(a_job.world.scale, 1e-3f);
 		// Split until the edges are short (or the budget is spent): each edge's midpoint on the PN triangle's curved
 		// edge, its normal, texture coordinate and colour averaged; split vertices (seams in the texture) share the
 		// position's mean normal, so the curved edges meet. D91: only the edges longer than DENSE_EDGE, each pass
@@ -1451,7 +1518,81 @@ namespace FluidFieldSim
 			triangles.swap(finer);
 		}
 		if (positions.size() > 65535)
-			return false;
+			return;
+		// D172: the copy's triangles cut away under the landscape (from DENSE_TRIM_UNDER below it: the cut line stays hidden in
+		// the ground), a triangle crossing it cut along where it crosses; the vertices are all kept, the new ones at the end,
+		// so the bake reads the untrimmed triangles over the same vertices (BakeIndices: it needs the whole sheet, D136). The
+		// landscape from Fluid Field's cache, so nothing is cast for it any more (BuryStep)
+		a_job.untrimmed = triangles;
+		uint32_t& trimmedAway = a_job.trimmedAway;
+		uint32_t& trimmedSplit = a_job.trimmedSplit;
+		if (!a_job.interior) {
+			const RE::NiTransform& world = a_job.world;
+			// Over the landscape (world units, from DENSE_TRIM_UNDER below it); FLT_MAX where its height is not known
+			const auto over = [&](const RE::NiPoint3& a_local) {
+				const RE::NiPoint3 p = world * a_local;
+				float ground = 0.0f;
+				return a_job.land.SampleHeight(p.x, p.y, ground) ? p.z - (ground - DENSE_TRIM_UNDER) : FLT_MAX;
+			};
+			std::vector<float> height(positions.size());
+			for (std::size_t v = 0; v < positions.size(); v++)
+				height[v] = over(positions[v]);
+			std::map<std::pair<uint32_t, uint32_t>, uint32_t> crossings;
+			// Where an edge from a vertex over the cut to one under it crosses the cut: found by bisection against the
+			// landscape itself (not linear between the two: the ground bends within an edge), its attributes interpolated
+			const auto crossing = [&](uint32_t a_over, uint32_t a_under) {
+				const auto key = std::make_pair(a_over, a_under);
+				if (const auto it = crossings.find(key); it != crossings.end())
+					return it->second;
+				float lo = 0.0f, hi = 1.0f;
+				for (int step = 0; step < 12; step++) {
+					const float mid = 0.5f * (lo + hi);
+					if (over(positions[a_over] + (positions[a_under] - positions[a_over]) * mid) >= 0.0f)
+						lo = mid;
+					else
+						hi = mid;
+				}
+				const float f = lo;
+				positions.push_back(positions[a_over] + (positions[a_under] - positions[a_over]) * f);
+				normals.push_back(normalize(normals[a_over] * (1.0f - f) + normals[a_under] * f));
+				uvs.push_back(RE::NiPoint2(uvs[a_over].x + (uvs[a_under].x - uvs[a_over].x) * f, uvs[a_over].y + (uvs[a_under].y - uvs[a_over].y) * f));
+				const RE::NiColorA& c0 = colors[a_over];
+				const RE::NiColorA& c1 = colors[a_under];
+				colors.push_back(RE::NiColorA(c0.red + (c1.red - c0.red) * f, c0.green + (c1.green - c0.green) * f, c0.blue + (c1.blue - c0.blue) * f, c0.alpha + (c1.alpha - c0.alpha) * f));
+				height.push_back(0.0f);
+				const auto index = static_cast<uint32_t>(positions.size() - 1);
+				crossings[key] = index;
+				return index;
+			};
+			std::vector<std::array<uint32_t, 3>> kept;
+			kept.reserve(triangles.size());
+			for (const auto& tri : triangles) {
+				const bool up[3] = { height[tri[0]] >= 0.0f, height[tri[1]] >= 0.0f, height[tri[2]] >= 0.0f };
+				const int ups = (up[0] ? 1 : 0) + (up[1] ? 1 : 0) + (up[2] ? 1 : 0);
+				if (ups == 3) {
+					kept.push_back(tri);
+				} else if (ups == 0) {
+					trimmedAway++;
+				} else if (ups == 1) {
+					// Turned so the one over it is a: what is left of the triangle is a triangle, winding kept
+					const int k = up[0] ? 0 : (up[1] ? 1 : 2);
+					const uint32_t a = tri[k], b = tri[(k + 1) % 3], c = tri[(k + 2) % 3];
+					kept.push_back({ a, crossing(a, b), crossing(a, c) });
+					trimmedSplit++;
+				} else {
+					// Turned so the one under it is c: what is left is a quad, two triangles
+					const int k = !up[0] ? 2 : (!up[1] ? 0 : 1);
+					const uint32_t a = tri[k], b = tri[(k + 1) % 3], c = tri[(k + 2) % 3];
+					const uint32_t bc = crossing(b, c), ac = crossing(a, c);
+					kept.push_back({ a, b, bc });
+					kept.push_back({ a, bc, ac });
+					trimmedSplit++;
+				}
+			}
+			if (positions.size() > 65535)
+				return;
+			triangles.swap(kept);
+		}
 		// Tangents from the texture coordinates
 		std::vector<RE::NiPoint3> tangents(positions.size(), RE::NiPoint3(0.0f, 0.0f, 0.0f)), bitangents(positions.size(), RE::NiPoint3(0.0f, 0.0f, 0.0f));
 		for (const auto& tri : triangles) {
@@ -1483,6 +1624,35 @@ namespace FluidFieldSim
 			for (const uint32_t k : tri)
 				indices.push_back(static_cast<uint16_t>(k));
 		}
+		a_job.tangents = std::move(tangents);
+		a_job.bitangents = std::move(bitangents);
+		a_job.indices = std::move(indices);
+		a_job.ok = true;
+	}
+
+	bool FallSites::AttachDense(DenseJob& a_job)
+	{
+		// D172: the engine's shape, on the render thread, from the worker's geometry (if the original is still where it was)
+		RE::BSGeometry* a_geometry = a_job.geometry.get();
+		auto* parent = a_geometry ? a_geometry->parent : nullptr;
+		auto* source = a_geometry ? a_geometry->GetGeometryRuntimeData().shaderProperty.get() : nullptr;
+		if (!a_job.ok || !a_geometry || !parent || !source || denseOf.contains(a_geometry))
+			return false;
+		auto& positions = a_job.positions;
+		auto& normals = a_job.normals;
+		auto& uvs = a_job.uvs;
+		auto& colors = a_job.colors;
+		auto& tangents = a_job.tangents;
+		auto& bitangents = a_job.bitangents;
+		auto& triangles = a_job.triangles;
+		auto& indices = a_job.indices;
+		auto& untrimmed = a_job.untrimmed;
+		const bool haveColors = a_job.haveColors;
+		const uint32_t trimmedAway = a_job.trimmedAway, trimmedSplit = a_job.trimmedSplit;
+		const struct
+		{
+			uint32_t vertexCount, triangleCount;
+		} counts{ a_job.vertexCount, a_job.triangleCount };
 		RE::BSTriShape* shape = BuildDenseShape(static_cast<uint32_t>(triangles.size()), indices.data(), static_cast<uint32_t>(positions.size()), positions.data(), uvs.data(), normals.data(),
 			tangents.data(), bitangents.data(), haveColors ? colors.data() : nullptr);
 		if (!shape)
@@ -1514,8 +1684,16 @@ namespace FluidFieldSim
 		a_geometry->SetAppCulled(true);
 		denseOf[a_geometry] = { held, RE::NiPointer<RE::BSGeometry>(a_geometry), RE::NiPointer<RE::NiNode>(parent) };
 		denseShapes.insert(shape);
-		logger::info("[Fluid Field]   dense copy of '{}': {} to {} vertices, {} to {} triangles", a_geometry->name.c_str(), counts.vertexCount, positions.size(), counts.triangleCount,
-			triangles.size());
+		// D172: the bake's whole sheet
+		auto& whole = untrimmedIndices[shape];
+		whole.clear();
+		whole.reserve(untrimmed.size() * 3);
+		for (const auto& tri : untrimmed) {
+			for (const uint32_t k : tri)
+				whole.push_back(static_cast<uint16_t>(k));
+		}
+		logger::info("[Fluid Field]   dense copy of '{}': {} to {} vertices, {} to {} triangles ({} under the landscape cut away, {} cut along it)", a_geometry->name.c_str(),
+			counts.vertexCount, positions.size(), counts.triangleCount, triangles.size(), trimmedAway, trimmedSplit);
 		return true;
 	}
 
@@ -1559,6 +1737,7 @@ namespace FluidFieldSim
 		}
 		denseOf.clear();
 		denseShapes.clear();
+		untrimmedIndices.clear();  // D172
 	}
 
 	void FallSites::ComputeFades()
@@ -1872,7 +2051,7 @@ namespace FluidFieldSim
 		return !cut.buried && cut.inside > 0.0f && cut.lead > 0.0f && cut.submerged > 0.0f && cut.island > 0.0f;
 	}
 
-	float FallSites::LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above, LandProbe* a_probe) const
+	float FallSites::LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above, LandProbe* a_probe, float a_engineHeight) const
 	{
 		// D126: straight down, past every hit that is not the landscape's own collision: layer 17 (ground) or 13 (terrain) with
 		// no reference (placed meshes on those layers carry one). LEARNINGS: landscape rays hit kGround, never kTerrain
@@ -1904,8 +2083,15 @@ namespace FluidFieldSim
 				// collision with no reference on layer 17 is not the landscape (a mesh's ground-layer collision), and read as
 				// the ground it buried a visible sheet under it (a hole). Passed by, counted
 				float engine = 0.0f;
-				auto* tes = RE::TES::GetSingleton();
-				if (!tes || !tes->GetLandHeight(RE::NiPoint3(a_x, a_y, hit + 64.0f), engine) || std::abs(engine - hit) <= LAND_AGREE) {
+				bool known = false;
+				if (!std::isnan(a_engineHeight)) {
+					// D172: read on the render thread (the worker's rays)
+					engine = a_engineHeight;
+					known = a_engineHeight > -FLT_MAX;
+				} else if (auto* tes = RE::TES::GetSingleton()) {
+					known = tes->GetLandHeight(RE::NiPoint3(a_x, a_y, hit + 64.0f), engine);
+				}
+				if (!known || std::abs(engine - hit) <= LAND_AGREE) {
 					if (a_probe)
 						a_probe->engine = engine;
 					return hit;
@@ -1960,6 +2146,7 @@ namespace FluidFieldSim
 			a_uvSize[0] <= 0.0f || a_uvSize[1] <= 0.0f || !renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV))
 			return {};
 		const auto& counts = triShape->GetTrishapeRuntimeData();
+		const IndexSpan bakeIndices = BakeIndices(a_geometry);  // D172: the dense copy's untrimmed triangles
 		if (base->second + counts.vertexCount > vertexCuts.size())
 			return {};
 		const uint32_t stride = renderer->vertexDesc.GetSize();
@@ -1979,8 +2166,8 @@ namespace FluidFieldSim
 		std::vector<uint8_t> mask(static_cast<std::size_t>(a_width) * a_height, 1);
 		const auto gx = [&](float a_u) { return (a_u - a_uvMin[0]) / a_uvSize[0] * static_cast<float>(a_width) - 0.5f; };
 		const auto gy = [&](float a_v) { return (a_v - a_uvMin[1]) / a_uvSize[1] * static_cast<float>(a_height) - 0.5f; };
-		for (uint32_t i = 0; i < counts.triangleCount; i++) {
-			const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+		for (uint32_t i = 0; i < bakeIndices.count; i++) {
+			const uint16_t* index = bakeIndices.data + static_cast<std::size_t>(i) * 3;
 			if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
 				continue;
 			const float ax = gx(uvs[index[0]][0]), ay = gy(uvs[index[0]][1]), bx = gx(uvs[index[1]][0]), by = gy(uvs[index[1]][1]), cx = gx(uvs[index[2]][0]), cy = gy(uvs[index[2]][1]);
@@ -2005,6 +2192,17 @@ namespace FluidFieldSim
 			}
 		}
 		return mask;
+	}
+
+	FallSites::IndexSpan FallSites::BakeIndices(RE::BSGeometry* a_geometry) const
+	{
+		if (const auto it = untrimmedIndices.find(a_geometry); it != untrimmedIndices.end())
+			return { it->second.data(), static_cast<uint32_t>(it->second.size() / 3) };
+		auto* triShape = a_geometry ? a_geometry->AsTriShape() : nullptr;
+		auto* renderer = a_geometry ? a_geometry->GetGeometryRuntimeData().rendererData : nullptr;
+		if (!triShape || !renderer || !renderer->rawIndexData)
+			return {};
+		return { renderer->rawIndexData, triShape->GetTrishapeRuntimeData().triangleCount };
 	}
 
 	bool FallSites::VertexShown(std::size_t a_index) const
@@ -2049,180 +2247,53 @@ namespace FluidFieldSim
 		auto* tes = RE::TES::GetSingleton();
 		if (!tes)
 			return;
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double, std::milli>(CLIP_BUDGET_MS);
+		// D172: the landscape's height under each vertex from Fluid Field's landscape cache (the loaded cells' own heights), no
+		// rays: Densify already cut the dense copies' triangles away under it (DENSE_TRIM_UNDER), so this only marks the
+		// vertices left under it (the bake's shell mask reads them, D126) and gives the culling the ground (SUBMERGED_BED).
+		// The six axes' Havok rays inside the statics (D135, D138) cut nothing over every falls mesh logged: 13 rays a vertex,
+		// 1.5 million a load, 3.7 ms on every frame for minutes (the hitches)
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double, std::milli>(BURY_BUDGET_MS);
 		while (std::chrono::steady_clock::now() < deadline) {
-			if (!buryJob) {
-				// D112: all tested: everything that reads the rock is worked out again
-				if (buryQueue.empty()) {
-					buryDone = true;
-					logger::info("[Fluid Field] Waterfall rock test: {} of {} vertices inside rock ({} under the landscape; {} rays)", buriedCount, buryTested, buriedGround, buryRays);
-					RequestCulling();
-					return;
-				}
-				RE::NiPointer<RE::BSGeometry> geometry = buryQueue.back();
-				buryQueue.pop_back();
-				const auto base = geometry ? vertexClipBase.find(geometry.get()) : vertexClipBase.end();
-				auto* triShape = geometry ? geometry->AsTriShape() : nullptr;
-				auto* renderer = geometry ? geometry->GetGeometryRuntimeData().rendererData : nullptr;
-				if (base == vertexClipBase.end() || !triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
-					continue;
-				const auto& counts = triShape->GetTrishapeRuntimeData();
-				if (base->second + counts.vertexCount > vertexCuts.size())
-					continue;
-				const uint32_t stride = renderer->vertexDesc.GetSize();
-				const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-				auto job = std::make_unique<BuryJob>();
-				job->geometry = geometry;
-				job->base = base->second;
-				job->positions.resize(counts.vertexCount);
-				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					float local[3];
-					std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
-					job->positions[v] = geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
-				}
-				// Vanilla's normals (out of the visible face, D109), else the winding's: only a first way to look from, both
-				// sides are tried
-				job->normals = AuthoredNormals(geometry.get());
-				if (job->normals.size() != counts.vertexCount) {
-					job->normals.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
-					for (uint32_t i = 0; i < counts.triangleCount; i++) {
-						const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
-						if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
-							continue;
-						const RE::NiPoint3 face = (job->positions[index[1]] - job->positions[index[0]]).Cross(job->positions[index[2]] - job->positions[index[0]]);
-						for (int k = 0; k < 3; k++)
-							job->normals[index[k]] += face;
-					}
-				}
-				for (auto& n : job->normals) {
-					const float length = n.Length();
-					n = length > 1e-6f ? n / length : RE::NiPoint3(0.0f, 0.0f, 1.0f);
-				}
-				buryJob = std::move(job);
-				continue;
-			}
-			auto* cell = tes->interiorCell ? tes->interiorCell : tes->GetCell(buryJob->geometry->world.translate);
-			auto* bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
-			auto* world = bhkWorld ? bhkWorld->GetWorld1() : nullptr;
-			if (!world)
+			// D112: all tested: everything that reads the rock is worked out again
+			if (buryQueue.empty()) {
+				buryDone = true;
+				logger::info("[Fluid Field] Waterfall rock test: {} of {} vertices under the landscape (from its height, no rays)", buriedCount, buryTested);
+				RequestCulling();
 				return;
-			const auto base = vertexClipBase.find(buryJob->geometry.get());
-			if (base == vertexClipBase.end() || base->second != buryJob->base || buryJob->base + buryJob->positions.size() > vertexCuts.size()) {
-				buryJob.reset();  // Unloaded meanwhile
+			}
+			RE::NiPointer<RE::BSGeometry> geometry = buryQueue.back();
+			buryQueue.pop_back();
+			const auto base = geometry ? vertexClipBase.find(geometry.get()) : vertexClipBase.end();
+			auto* triShape = geometry ? geometry->AsTriShape() : nullptr;
+			auto* renderer = geometry ? geometry->GetGeometryRuntimeData().rendererData : nullptr;
+			if (base == vertexClipBase.end() || !triShape || !renderer || !renderer->rawVertexData)
 				continue;
-			}
-			{
-				const RE::BSReadLockGuard lock(bhkWorld->worldLock);
-				for (int rays = 0; buryJob->next < buryJob->positions.size() && rays < 64; buryJob->next++) {
-					const std::size_t v = buryJob->next;
-					const RE::NiPoint3& p = buryJob->positions[v];
-					VertexCut& parts = vertexCuts[buryJob->base + v];
-					// D126: the landscape is a heightfield (no overhangs): a vertex under its surface is buried, cliffs included.
-					// Exact, from the landscape's own collision straight down (D113's height grid smoothed cliffs and was only
-					// trusted on level ground, so the underworld parts survived: SS 983-986)
-					const bool exterior = tes->interiorCell == nullptr;
-					LandProbe probe;
-					parts.ground = exterior ? LandHeightAt(world, p.x, p.y, p.z + LAND_RAY_ABOVE, &probe) : -FLT_MAX;
-					rays++;
-					buryRays++;
-					const bool underGround = parts.ground > -FLT_MAX && p.z < parts.ground - BURY_LAND;
-					// D135: in statics, by the six axes, inside by four of them. D138: each axis decided by the face nearest the vertex
-					// along it, not by the parity of every face out to BURY_REACH: in a gorge a far end sits in the cliff opposite,
-					// its far face is missed, and that axis read inside; three or four such axes made a hole mid-sheet (SS 1027). A
-					// ray from the vertex meeting a face's front first: outside along that axis. A ray from the far end meeting a
-					// face nearer the vertex than anything the vertex's own ray met (Havok misses the faces of a shape seen from
-					// inside it): behind that face, inside. Met from both sides: by which way it turns to the vertex's ray
-					float staticClip = NO_CUT;
-					uint8_t votes = 0;
-					if (!underGround) {
-						static const RE::NiPoint3 axes[6] = { { 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f },
-							{ 0.0f, 0.0f, -1.0f } };
-						int inside = 0, outside = 0;
-						float depth = BURY_REACH;
-						std::vector<StaticHit> out, back;
-						for (const auto& axis : axes) {
-							if (inside >= 5 || outside >= 3)
-								break;
-							out.clear();
-							back.clear();
-							StaticHits(world, p, axis, BURY_REACH, out);
-							StaticHits(world, p + axis * BURY_REACH, -axis, BURY_REACH, back);
-							rays += 2;
-							buryRays += 2;
-							// The vertex's own ray: its first face. The far end's: the face nearest the vertex
-							const StaticHit* mine = out.empty() ? nullptr : &out.front();
-							float theirs = -1.0f;
-							for (const auto& hit : back)
-								theirs = std::max(theirs, hit.distance);  // From the far end: the largest is nearest the vertex
-							const float theirsFromVertex = theirs >= 0.0f ? BURY_REACH - theirs : FLT_MAX;
-							bool behind = false;
-							float nearest = BURY_REACH;
-							if (mine && (theirs < 0.0f || mine->distance <= theirsFromVertex + 2.0f)) {
-								const bool both = theirs >= 0.0f && std::abs(mine->distance - theirsFromVertex) <= 2.0f;
-								// Met by the vertex first: outside, unless it is the back of a face (seen from inside)
-								behind = both && mine->facing > 0.0f;
-								nearest = mine->distance;
-							} else if (theirs >= 0.0f) {
-								behind = true;
-								nearest = theirsFromVertex;
-							}
-							if (behind) {
-								inside++;
-								depth = std::min(depth, nearest);
-							} else {
-								outside++;
-							}
-						}
-						votes = static_cast<uint8_t>(inside);
-						// Cut from BURY_MARGIN inside the face (the nearest one along the inside axes), so a sheet dipping into the
-						// rock it lies on keeps its edge in the rock: the cut line stays hidden there
-						// D143: strong evidence only (the user: "better for it to be a little tolerant than for it to eat away at mesh
-						// parts we actually want"): five axes of six, or four with the cut twice as deep in
-						if (inside >= 5)
-							staticClip = std::clamp(BURY_MARGIN - depth, -CLIP_RANGE, NO_CUT);
-						else if (inside == 4)
-							staticClip = std::clamp(2.0f * BURY_MARGIN - depth, -CLIP_RANGE, NO_CUT);
-					}
-					// D131: both in a.x now (the GPU cuts them): the depth test was to hide them, but seen from under the landscape
-					// (one-sided, not drawn from below) or from inside a mesh, nothing did (SS 993-995)
-					const float landClip = parts.ground > -FLT_MAX ? std::clamp(p.z - (parts.ground - BURY_LAND), -CLIP_RANGE, NO_CUT) : NO_CUT;
-					parts.rock = std::min(landClip, staticClip);
-					// D138: which test cut it, for the culling's log (and its cleanup)
-					parts.rockCause = static_cast<uint8_t>((landClip <= 0.0f ? 1 : 0) | (staticClip <= 0.0f ? 2 : 0));
-					parts.votes = votes;
-					buryJob->landDisagreed += probe.disagreed;
-					const bool buried = parts.rock <= 0.0f;
-					// D131: the samples the log keeps: the lowest vertices over the landscape that were not buried
-					if (!buried && parts.ground > -FLT_MAX) {
-						const float over = p.z - parts.ground;
-						if (buryJob->samples.size() < 4 || over < buryJob->samples.back().over) {
-							buryJob->samples.push_back({ p, parts.ground, over, probe.steps, probe.firstLayer, probe.firstReferenced, probe.firstHeight });
-							std::sort(buryJob->samples.begin(), buryJob->samples.end(), [](const auto& a_a, const auto& a_b) { return a_a.over < a_b.over; });
-							if (buryJob->samples.size() > 4)
-								buryJob->samples.pop_back();
-						}
-					}
-					buryJob->landMissing += exterior && parts.ground == -FLT_MAX ? 1 : 0;
-					buryJob->landStepped += probe.steps > 1 ? 1 : 0;
-					parts.buried = buried ? 1 : 0;
-					buriedCount += buried ? 1 : 0;
-					buriedGround += underGround ? 1 : 0;
-					buryTested++;
-				}
-			}
-			if (buryJob->next >= buryJob->positions.size()) {
-				// D131: the landscape test's evidence, per mesh: where no landscape was found, how many rays had to pass something
-				// first, and the lowest vertices it left standing (their height over it, and what the ray met first)
-				logger::info("[Fluid Field]   rock test '{}': {} vertices with no landscape under them, {} whose ray passed something first, {} ground hits passed by (not the engine's landscape height)",
-					buryJob->geometry->name.c_str(), buryJob->landMissing, buryJob->landStepped, buryJob->landDisagreed);
-				for (const auto& sample : buryJob->samples)
-					logger::info("[Fluid Field]     kept at ({:.0f}, {:.0f}, {:.0f}): landscape {:.0f} ({:+.1f} over it), {} ray steps, first hit layer {} {} at {:.0f}", sample.at.x, sample.at.y,
-						sample.at.z, sample.ground, sample.over, sample.steps, sample.firstLayer, sample.firstReferenced ? "with a reference" : "without one", sample.firstHeight);
-				buryJob.reset();
+			const auto& counts = triShape->GetTrishapeRuntimeData();
+			if (base->second + counts.vertexCount > vertexCuts.size())
+				continue;
+			const uint32_t stride = renderer->vertexDesc.GetSize();
+			const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+			const bool exterior = tes->interiorCell == nullptr;
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				float local[3];
+				std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
+				const RE::NiPoint3 p = geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
+				VertexCut& parts = vertexCuts[base->second + v];
+				float ground = -FLT_MAX;
+				if (exterior && landscape && !landscape->SampleHeight(p.x, p.y, ground))
+					ground = -FLT_MAX;
+				parts.ground = ground;
+				// D131: in a.x (the GPU cuts it), from BURY_LAND under the landscape
+				const float landClip = ground > -FLT_MAX ? std::clamp(p.z - (ground - BURY_LAND), -CLIP_RANGE, NO_CUT) : NO_CUT;
+				parts.rock = landClip;
+				parts.rockCause = static_cast<uint8_t>(landClip <= 0.0f ? 1 : 0);
+				parts.votes = 0;
+				parts.buried = landClip <= 0.0f ? 1 : 0;
+				buriedCount += parts.buried;
+				buryTested++;
 			}
 		}
 	}
-
 	FallSites::CullSheet FallSites::BuildCullSheet(RE::BSGeometry* a_geometry, uint32_t a_base)
 	{
 		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
@@ -2310,37 +2381,28 @@ namespace FluidFieldSim
 		return sheet;
 	}
 
-	void FallSites::CullStep()
+	void FallSites::RunCullStages(CullJob& a_job)
 	{
-		if (cullRequested) {
-			// Asked again: from the start, with what is known now (a half-done pass read older cuts)
-			cullRequested = false;
-			cullJob = std::make_unique<CullJob>();
-			cullJob->started = std::chrono::steady_clock::now();
-		}
-		if (!cullJob)
-			return;
+		// D172: stages 1-5 on a worker thread (3.3 ms on every frame for tens of seconds on the render thread). Update holds
+		// back everything else that writes vertexClips, vertexCuts and the pools while it runs (CullWorking)
+		CullJob& job = a_job;
 		const auto begin = std::chrono::steady_clock::now();
-		const auto deadline = begin + std::chrono::duration<double, std::milli>(CLIP_BUDGET_MS);
-		CullJob& job = *cullJob;
 		constexpr int DONE = 6;
-		while (job.stage < DONE && std::chrono::steady_clock::now() < deadline) {
-			// Stage 0: the sheets, one a step (each one OrientSheet)
-			if (job.stage == 0) {
-				if (job.sheet >= litMeshList.size()) {
-					job.stage = 1;
-					job.sheet = job.vertex = 0;
-					continue;
-				}
-				auto* geometry = litMeshList[job.sheet++].geometry.get();
-				const auto base = geometry ? vertexClipBase.find(geometry) : vertexClipBase.end();
-				if (base == vertexClipBase.end() || std::any_of(job.sheets.begin(), job.sheets.end(), [&](const CullSheet& a_sheet) { return a_sheet.geometry == geometry; }))
-					continue;
-				auto sheet = BuildCullSheet(geometry, base->second);
+		// Stage 0: the sheets (each one OrientSheet)
+		if (job.stage == 0) {
+			for (const auto& [geometry, base] : job.meshes) {
+				if (job.cancel.load(std::memory_order_relaxed))
+					return;
+				auto sheet = BuildCullSheet(geometry.get(), base);
 				if (sheet.geometry)
 					job.sheets.push_back(std::move(sheet));
-				continue;
 			}
+			job.stage = 1;
+			job.sheet = job.vertex = 0;
+		}
+		while (job.stage < DONE) {
+			if (job.cancel.load(std::memory_order_relaxed))
+				return;
 			// Stages 1-5, a vertex at a time over every sheet: the pools' cut, the inside cut (then a.x), the cleanup (D138: a
 			// sheet a step), the sides, where sheets meet. Each stage reads only what the stages before it finished over all sheets
 			if (job.sheet >= job.sheets.size()) {
@@ -2401,7 +2463,52 @@ namespace FluidFieldSim
 			}
 		}
 		job.busy += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
-		if (job.stage < DONE)
+		job.complete = true;
+	}
+
+	void FallSites::CullStep()
+	{
+		if (cullRequested) {
+			// Asked again: from the start, with what is known now (a half-done pass read older cuts). D172: a running worker is
+			// stopped first
+			if (cullWork.valid()) {
+				cullJob->cancel = true;
+				if (cullWork.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+					return;
+				cullWork.get();
+				cullWork = {};
+			}
+			cullRequested = false;
+			cullJob = std::make_unique<CullJob>();
+			cullJob->started = std::chrono::steady_clock::now();
+		}
+		if (!cullJob)
+			return;
+		CullJob& job = *cullJob;
+		if (cullWork.valid()) {
+			if (cullWork.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+				return;
+			cullWork.get();
+			cullWork = {};
+			if (!job.complete) {
+				cullJob.reset();
+				return;
+			}
+		}
+		if (job.stage == 0) {
+			// D172: the lit meshes as they stand (a sheet took 40-58 ms on the render thread), then every stage on the worker
+			for (const auto& lit : litMeshList) {
+				auto* geometry = lit.geometry.get();
+				const auto base = geometry ? vertexClipBase.find(geometry) : vertexClipBase.end();
+				if (base == vertexClipBase.end() || std::any_of(job.meshes.begin(), job.meshes.end(), [&](const auto& a_mesh) { return a_mesh.first.get() == geometry; }))
+					continue;
+				job.meshes.emplace_back(lit.geometry, base->second);
+			}
+			CullJob* running = cullJob.get();
+			cullWork = std::async(std::launch::async, [this, running]() { RunCullStages(*running); });
+			return;
+		}
+		if (!job.complete)
 			return;
 		// D109: the depth rays' way in (against the outer side), for meshes still loaded where they were
 		for (const auto& sheet : job.sheets) {
@@ -2417,11 +2524,10 @@ namespace FluidFieldSim
 		logger::info("[Fluid Field]   {} vertices under the river's water by its bed, cut; cleanup: {} orphan pieces ({} triangles, {} vertices) cut, {} small enclosed holes ({} vertices) restored",
 			submerged, job.islands, job.islandTriangles, job.islandVertices, job.holes, job.holeVertices);
 		cullJob.reset();
-		// D126: the spray, plunges and lips come only from the shell (BuildPlunges reads VertexInShell)
+		// D126: the spray, plunges and lips come only from the shell (ComputePlunges reads VertexInShell)
 		if (!bakeFields.empty())
-			BuildPlunges();
+			plungesDue = true;  // D172: ComputePlunges on a worker (Update)
 	}
-
 	void FallSites::CleanupSheet(const CullSheet& a_sheet, CullJob& a_job)
 	{
 		const uint32_t holesBefore = a_job.holes, holeVerticesBefore = a_job.holeVertices, orphansBefore = a_job.islands, orphanTrianglesBefore = a_job.islandTriangles;
@@ -2870,13 +2976,14 @@ namespace FluidFieldSim
 		flags = std::fmod(flags, 2.0f) + (turned ? 2.0f : 0.0f) + (hidden ? 4.0f : 0.0f);
 	}
 
-	std::unique_ptr<FallSites::BakeJob> FallSites::StartBake(RE::BSGeometry* a_geometry)
+	std::unique_ptr<FallSites::BakeJob> FallSites::StartBake(RE::BSGeometry* a_geometry) const
 	{
 		auto* triShape = a_geometry ? a_geometry->AsTriShape() : nullptr;
 		auto* renderer = a_geometry ? a_geometry->GetGeometryRuntimeData().rendererData : nullptr;
 		if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || !renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV))
 			return nullptr;
 		const auto& counts = triShape->GetTrishapeRuntimeData();
+		const IndexSpan bakeIndices = BakeIndices(a_geometry);  // D172: the dense copy's untrimmed triangles
 		const uint32_t stride = renderer->vertexDesc.GetSize();
 		const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
 		const uint32_t uvOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
@@ -2902,8 +3009,8 @@ namespace FluidFieldSim
 		}
 		double sum[2]{}, area = 0.0;
 		std::vector<std::array<uint32_t, 3>> triangles;
-		for (uint32_t i = 0; i < counts.triangleCount; i++) {
-			const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+		for (uint32_t i = 0; i < bakeIndices.count; i++) {
+			const uint16_t* index = bakeIndices.data + static_cast<std::size_t>(i) * 3;
 			if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
 				continue;
 			triangles.push_back({ index[0], index[1], index[2] });
@@ -4039,9 +4146,8 @@ namespace FluidFieldSim
 			if (!any)
 				break;
 		}
-		flowBakeVersion++;
+		linkedDue = true;  // D172: flowBakeVersion++ and the plunges on the render thread, once this worker is done (FinishHeavyWork)
 		logger::info("[Fluid Field] Waterfall flow linked: {} meshes, {} fed by the mesh above them", nodes.size(), linked);
-		BuildPlunges();
 		const auto start = std::chrono::steady_clock::now();
 		ComputePushes();
 		logger::info("[Fluid Field]   swell and wobble took {:.1f} ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
@@ -4057,7 +4163,63 @@ namespace FluidFieldSim
 			linkDue = false;
 			logger::info("[Fluid Field] Waterfall flow bakes: {} meshes ({} read from the cache, {} solved), {} texels tested, {} inside rock", bakeFields.size(), bakesCached,
 				bakesSolved, bakedTexels, bakedRockTexels);
-			LinkBakes();
+			// D172: on a worker (1.2 s on one frame); its plunges after it, on the render thread
+			heavyWork = std::async(std::launch::async, [this]() {
+				const auto start = std::chrono::steady_clock::now();
+				LinkBakes();
+				logger::info("[Fluid Field]   linking the bakes took {:.1f} ms (worker)", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+			});
+		}
+	}
+
+	void FallSites::FinishDenseWork()
+	{
+		if (!denseWork.valid() || denseWork.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+			return;
+		denseWork.get();
+		denseWork = {};
+		const auto start = std::chrono::steady_clock::now();
+		uint32_t built = 0;
+		for (auto& job : denseJobs) {
+			if (AttachDense(*job))
+				built++;
+			else if (job->geometry && !denseOf.contains(job->geometry.get()))
+				denseFailed.insert(job->geometry.get());
+		}
+		logger::info("[Fluid Field] Waterfall dense copies: {} of {} lit meshes ({:.0f} ms on a worker, {:.0f} ms attaching)", built, denseJobs.size(),
+			std::chrono::duration<double, std::milli>(start - denseStarted).count(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+		denseJobs.clear();
+		// The grounded set again, with the copies (or the originals that could not have one) in their place
+		RefreshGrounded();
+		RefreshHiddenEffects();
+	}
+
+	void FallSites::FinishHeavyWork()
+	{
+		if (!heavyWork.valid() || heavyWork.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+			return;
+		heavyWork.get();
+		heavyWork = {};
+		if (linkedDue) {
+			linkedDue = false;
+			flowBakeVersion++;
+			plungesDue = true;  // D172: ComputePlunges on a worker (Update)
+		}
+		if (plungeResult) {
+			ApplyPlunges(*plungeResult);
+			plungeResult.reset();
+		}
+		if (poolResult) {
+			for (auto& [key, pools] : *poolResult)
+				sitePools[key] = std::move(pools);
+			poolResult.reset();
+			groundVersion++;
+			// D78: the plunges stand on the pools' water
+			if (!bakeFields.empty())
+				plungesDue = true;
+			// D112: the pools cut the meshes' feet, which the culling reads (once the rock test has run; its end reads them anyway)
+			if (buryDone && !vertexClipBase.empty())
+				RequestCulling();
 		}
 	}
 
@@ -4102,7 +4264,7 @@ namespace FluidFieldSim
 					continue;
 				// D132: the whole mesh is baked again (D126 left the culled texels out of the domain: every edge of the cull became
 				// a rim, and the foam and wake filled whole sheets in bands across the flow, SS 997-1002). The culled parts are
-				// hidden by the cut, and their spray, plunges and lips by BuildPlunges' shell mask
+				// hidden by the cut, and their spray, plunges and lips by ComputePlunges' shell mask
 				GatherSolids(*bakeJob);
 				// D82: baked before (same reference, placement, rock and ground): read back, no rock test or solve
 				bakeJob->cache = BakeCachePath(*bakeJob);
@@ -4238,14 +4400,49 @@ namespace FluidFieldSim
 
 	void FallSites::Update(const WaterSurfaces& a_water)
 	{
-		waterSurfaces = &a_water;
+		// D172: the workers read the water planes (ComputePushes, ComputePlunges): a copy, taken only while none runs
+		if (!Busy() && a_water.GetSignature() != waterCopySignature) {
+			waterCopy = a_water;
+			waterCopySignature = a_water.GetSignature();
+		}
+		waterSurfaces = &waterCopy;
+		FinishHeavyWork();
+		if (!Busy())
+			FinishDenseWork();
+		if (!Busy() && plungesDue) {
+			// D172: the plunges on a worker (up to 150 ms, three to five times a load, on the render thread)
+			plungesDue = false;
+			plungeResult = std::make_unique<PlungeResult>();
+			heavyWork = std::async(std::launch::async, [this, result = plungeResult.get()]() { ComputePlunges(*result); });
+		}
+		if (Busy()) {
+			// D172: a worker has vertexClips, vertexCuts, the pools and the bakes: only polling it meanwhile (the culling's own
+			// step only polls while its worker runs; it starts again once nothing else does)
+			if (CullWorking())
+				CullStep();
+			ProbeScrolls();
+			return;
+		}
+		// D172: the ground captures (their end grounds the meshes again: RefreshGrounded), only while no worker reads them
+		// D172: a step that hands work to a worker ends the update: nothing after it may touch what the worker has (and a
+		// second worker may not start beside it)
 		CaptureStep();
+		if (Busy())
+			return;
 		ClipStep();
+		if (Busy())
+			return;
 		BuryStep();
 		CullStep();  // D113
+		if (Busy())
+			return;
 		DepthStep();
 		BakeStep();
+		if (Busy())
+			return;
 		PollPools();
+		if (Busy())
+			return;
 		ProbeScrolls();
 		if (updatesUntilScan > 0) {
 			updatesUntilScan--;
@@ -4613,7 +4810,7 @@ namespace FluidFieldSim
 	void FallSites::BuildPlungeMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const
 	{
 		// D44, D47: where the falls meet the water below, along their whole line into it: every plunge point (D78: from
-		// the meshes' own sims, BuildPlunges) foams the water round it, harder plunges more, and the simulated flow
+		// the meshes' own sims, ComputePlunges) foams the water round it, harder plunges more, and the simulated flow
 		// carries the foam off downstream
 		a_field.assign(static_cast<std::size_t>(a_size) * a_size, 0.0f);
 		const auto n = static_cast<int32_t>(a_size);
@@ -4640,7 +4837,17 @@ namespace FluidFieldSim
 		}
 	}
 
-	void FallSites::BuildPlunges()
+	void FallSites::ApplyPlunges(PlungeResult& a_result)
+	{
+		plungePoints.swap(a_result.plungePoints);
+		sprayEmitters.swap(a_result.sprayEmitters);
+		emitterVersion++;
+		groundVersion++;  // The plunge map
+		logger::info("[Fluid Field] Waterfall plunges: {} texels meet the water below, {} plunge points ({} where a mesh crosses a water surface); spray emitters: {} at plunges, {} striking rock",
+			a_result.meets, plungePoints.size(), a_result.lips, a_result.kinds[1], a_result.kinds[2]);
+	}
+
+	void FallSites::ComputePlunges(PlungeResult& o_result) const
 	{
 		// D78: from each lit mesh's own sim (its BakeField): where it goes into the water below (texels on its foot at or
 		// under that water, from above it), and where its water strikes rock (the bake's foam). The water's way there is
@@ -4995,21 +5202,18 @@ namespace FluidFieldSim
 				}
 			}
 		}
-		plungePoints.clear();
-		plungePoints.reserve(points.size());
+		o_result.plungePoints.clear();
+		o_result.plungePoints.reserve(points.size());
 		for (const auto& [key, plunge] : points)
-			plungePoints.push_back(plunge);
-		sprayEmitters.clear();
-		sprayEmitters.reserve(chosen.size());
-		uint32_t kinds[3]{};
+			o_result.plungePoints.push_back(plunge);
+		o_result.sprayEmitters.clear();
+		o_result.sprayEmitters.reserve(chosen.size());
 		for (const auto& [key, emitter] : chosen) {
-			sprayEmitters.push_back(emitter);
-			kinds[std::clamp(static_cast<int>(emitter.kind), 0, 2)]++;
+			o_result.sprayEmitters.push_back(emitter);
+			o_result.kinds[std::clamp(static_cast<int>(emitter.kind), 0, 2)]++;
 		}
-		emitterVersion++;
-		groundVersion++;  // The plunge map
-		logger::info("[Fluid Field] Waterfall plunges: {} texels meet the water below, {} plunge points ({} where a mesh crosses a water surface); spray emitters: {} at plunges, {} striking rock", meets,
-			plungePoints.size(), lips, kinds[1], kinds[2]);
+		o_result.meets = meets;
+		o_result.lips = lips;
 	}
 
 	void FallSites::Summarise()

@@ -3830,3 +3830,55 @@ Entry format:
     march, the cubemaps on their own (the reflection was only the messenger),
     which water type or render pass was captured (logged, unchanged at a flip).
 -   References: D129, D159, D160, LEARNINGS (one capture, every slot)
+
+## D172: The falls' setup off the render thread; the dense copies cut under the landscape
+
+-   Date: 2026-10-21
+-   Problem, measured: with Fluid Field on the game felt sluggish. PresentMon over
+    alternating on/off runs: frame time pinned at 16.6 ms either way, but with it on
+    about 50 frames in 19 s over 20 ms (p99 55-69 ms), all CPU-bound; off, none.
+    A timer on every Fluid Field update found the falls' set-up after a load:
+    -   BuryStep: 1 ray down plus up to 12 along the axes per vertex, 1.5 million
+        Havok rays, 3.7 ms on every frame for about four minutes. The statics'
+        rays cut nothing over every falls mesh logged (all of the rock cut was
+        under the landscape).
+    -   CullStep: 3.3 ms on every frame for its run; a sheet built in one step
+        (40-58 ms).
+    -   One-frame passes: the seams (ComputeFades, 1.8 s), the bakes' linking
+        (1.2 s), the dense copies (0.4 s), the plunges (35-150 ms, three to five
+        times), the pools (30-90 ms).
+    -   (The profiler's "RefractiveFalls 45%" was mostly another thing: its depth
+        copy waits for the work before it, which its GPU timer bills to it.
+        PresentMon: the see-through falls cost 0.7 ms of GPU over vanilla's.)
+-   Decision:
+    -   **The dense copies cut under the landscape** (Densify, DENSE_TRIM_UNDER 24
+        under it, the crossing found against the heights by bisection). Every
+        vertex kept, the new ones at the end: the bake reads the untrimmed
+        triangles over the same vertices (BakeIndices, D136), and its own rock,
+        shell and water tests are unchanged (every bake read from the cache).
+    -   **The rock test without rays**: the landscape's height from Fluid Field's
+        cache (SetLandscape) for the leftovers and the culling's ground; the
+        statics' six-axis test dropped.
+    -   **Workers**, one at a time, while Update only polls (Busy): the culling
+        (stages 0-5), the seams, the bakes' linking, the dense copies (attached on
+        the render thread), the plunges and the pools (their results swapped in
+        on the render thread: the spray and the maps read them every frame). The
+        ground captures wait behind them (their end grounds the meshes again), a
+        step that starts a worker ends the update, and the engine's water planes
+        are a copy taken while no worker runs.
+    -   **Havok stays on the render thread**: a worker's hkpWorld::CastRay crashed
+        (its per-thread memory is not set up off the engine's threads).
+-   Results (the same view and save): the worst frame of a load 1.8 s to about
+    25 ms; after the falls load, idle (was 7 ms a frame for minutes); about 40% of
+    the falls' triangles gone (under the ground).
+-   PresentMon, the same on/off protocol as before: built and settled, no frame
+    over 20 ms and p99 16.9 ms, as with Fluid Field off (was 47-56 frames over
+    20 ms in 19 s, p99 55-69 ms); while rebuilding after switching it on, 16 (one
+    of 109 ms). Steady cost: about 2.3 ms of GPU busy (11.7 vs 9.4 ms).
+-   The user's direction: normal gameplay is what is optimised; the build may
+    take its time, and can move offline, to a cache or behind the loading screen.
+-   Left: the depth rays (Havok, about 20 ms a mesh to set up); the sheet-inside-
+    sheet cut as geometry (visibility from many directions), then the trimmed
+    meshes baked and cached (the plan agreed: trim the vanilla geometry, generate
+    ours from it).
+-   References: D112, D113, D126, D131, D135, D136, D138, D171

@@ -856,6 +856,7 @@ void FluidField::Prepass()
 				fallPhase += fallRate * std::clamp(settings.FallSpeed, 0.1f, 5.0f) * std::clamp(deltaTime, 0.0f, 0.25f);
 				fallPhase -= std::floor(fallPhase);
 			}
+			fallSites.SetLandscape(&landscape);  // D172
 			fallSites.Update(water);
 			UpdateFallGround(playerPos);
 		} else {
@@ -2013,9 +2014,7 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 			}
 		}
 	}
-	globals::profiler->BeginPass("FluidField::RefractiveFalls");
 	fallRefraction.Draw(globals::d3d::device, globals::d3d::context, params, draws);
-	globals::profiler->EndPass();
 	for (auto& capture : riverCaptures | std::views::values)
 		capture.ReleaseViews();  // D159: the engine's textures are not held past the falls
 }

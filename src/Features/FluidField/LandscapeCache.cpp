@@ -35,6 +35,21 @@ namespace FluidFieldSim
 		return it != cells.end() ? &it->second : nullptr;
 	}
 
+	LandscapeCache LandscapeCache::Subset(float a_minX, float a_minY, float a_maxX, float a_maxY) const
+	{
+		LandscapeCache out;
+		out.worldSpace = worldSpace;
+		const auto x0 = static_cast<int32_t>(std::floor(a_minX / CELL_UNITS)), x1 = static_cast<int32_t>(std::floor(a_maxX / CELL_UNITS));
+		const auto y0 = static_cast<int32_t>(std::floor(a_minY / CELL_UNITS)), y1 = static_cast<int32_t>(std::floor(a_maxY / CELL_UNITS));
+		for (int32_t y = y0; y <= y1; y++) {
+			for (int32_t x = x0; x <= x1; x++) {
+				if (const Cell* cell = Find(x, y))
+					out.cells.emplace(MakeCellKey(x, y), *cell);
+			}
+		}
+		return out;
+	}
+
 	bool LandscapeCache::SampleHeight(float a_worldX, float a_worldY, float& a_height) const
 	{
 		const int32_t cellX = static_cast<int32_t>(std::floor(a_worldX / CELL_UNITS));

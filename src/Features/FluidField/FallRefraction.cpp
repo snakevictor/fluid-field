@@ -535,9 +535,11 @@ namespace FluidFieldSim
 
 		// What the falls refract: the scene as drawn so far (the falls' own lit pieces are hidden, D91). D123: as it was
 		// before the water, when copied then this frame: the river's surface behind a sheet is not seen through it
+		globals::profiler->BeginPass("FluidField::Falls Copy");
 		a_context->OMSetRenderTargets(0, nullptr, nullptr);
 		if (preWaterFrame != a_params.frame || preWaterSource != a_params.targetTexture)
 			a_context->CopyResource(sceneCopy.get(), a_params.targetTexture);
+		globals::profiler->EndPass();
 
 		a_context->OMSetRenderTargets(1, &a_params.target, a_params.depth);
 		const float factor[4] = {};
@@ -668,6 +670,9 @@ namespace FluidFieldSim
 			}
 		};
 		ID3D11ShaderResourceView* front = nullptr;
+		// D172: its GPU time also holds the wait for the work before it (the depth copy waits for it): PresentMon put the
+		// see-through falls at 0.7 ms over vanilla's where this read 3 ms
+		globals::profiler->BeginPass("FluidField::Falls Front Depth");
 		if (auto* depthShader = EnsureDepthShader(); depthShader && EnsureFrontDepth(a_device, a_params.depth)) {
 			winrt::com_ptr<ID3D11Resource> sceneDepthResource;
 			a_params.depth->GetResource(sceneDepthResource.put());
@@ -683,6 +688,7 @@ namespace FluidFieldSim
 			a_context->PSSetShader(shader, nullptr, 0);
 			front = frontDepthSRV.get();
 		}
+		globals::profiler->EndPass();
 		ID3D11ShaderResourceView* frontViews[1] = { front ? front : a_params.sceneDepth };
 		a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, frontViews);
 		data.hasFront = front ? 1u : 0u;
@@ -719,7 +725,20 @@ namespace FluidFieldSim
 		} else {
 			a_context->VSSetShader(vertexShader.get(), nullptr, 0);
 		}
+		globals::profiler->BeginPass("FluidField::Falls Shade");
 		drawMeshes(true);
+		globals::profiler->EndPass();
+		{
+			// Performance: what a frame draws (logged when it changes)
+			uint32_t indexCount = 0;
+			for (const auto& entry : drawable)
+				indexCount += entry.second->indexCount;
+			static std::pair<size_t, uint32_t> lastCounts{};
+			if (lastCounts != std::pair{ drawable.size(), indexCount }) {
+				lastCounts = { drawable.size(), indexCount };
+				logger::info("[Fluid Field] Falls draw {} pieces, {} triangles, twice (front depth, shading)", drawable.size(), indexCount / 3);
+			}
+		}
 		ID3D11ShaderResourceView* none[1] = { nullptr };
 		a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, none);
 	}

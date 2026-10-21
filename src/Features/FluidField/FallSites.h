@@ -2,14 +2,18 @@
 
 #include "FallCapture.h"
 #include "FallSurfaceRenderer.h"
+#include "LandscapeCache.h"
 #include "ShallowWaterSolver.h"
+#include "WaterSurfaces.h"
 
 #include <array>
+#include <atomic>
 #include <cfloat>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <future>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -19,7 +23,6 @@ struct ImDrawList;
 
 namespace FluidFieldSim
 {
-	class WaterSurfaces;
 
 	/**
 	 * @brief Waterfall sites reconstructed from vanilla's layout (D25, stages S1 to S3 of
@@ -98,6 +101,8 @@ namespace FluidFieldSim
 
 		/** @brief Rescans every few updates; rebuilds the sites when the references or water changed. */
 		void Update(const WaterSurfaces& a_water);
+		/** @brief D172: the landscape's heights (Fluid Field's cache): the dense copies are cut under it, the rock test reads it. */
+		void SetLandscape(const LandscapeCache* a_landscape) { landscape = a_landscape; }
 		void Clear();
 
 		const std::vector<FxRef>& GetRefs() const { return refs; }
@@ -190,7 +195,7 @@ namespace FluidFieldSim
 		 */
 		void BuildGroundMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const;
 
-		/** @brief D30: the falls' spray emitters (D78: from the lit meshes' sims, BuildPlunges); changes with GetSurfaceVersion. */
+		/** @brief D30: the falls' spray emitters (D78: from the lit meshes' sims, ComputePlunges); changes with GetSurfaceVersion. */
 		const std::vector<FallEmitter>& GetSurfaceEmitters() const { return sprayEmitters; }
 
 		/**
@@ -371,7 +376,7 @@ namespace FluidFieldSim
 			float engine = 0.0f;  ///< D138: TES::GetLandHeight where the ray stopped
 			int disagreed = 0;    ///< D138: unreferenced ground-layer hits passed by, the engine's height elsewhere
 		};
-		float LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above, LandProbe* a_probe = nullptr) const;
+		float LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above, LandProbe* a_probe = nullptr, float a_engineHeight = std::numeric_limits<float>::quiet_NaN()) const;
 		/** @brief D131: the distances along a ray at which it meets a static's face (stepping past each), appended to a_hits; a_flip measures them from the ray's far end. */
 		struct StaticHit
 		{
@@ -392,39 +397,30 @@ namespace FluidFieldSim
 		 * test needs rock on both sides of the sheet (D59), so a sheet running into a cliff was never known as hidden.
 		 */
 		void BuryStep();
-		struct BuryJob
-		{
-			RE::NiPointer<RE::BSGeometry> geometry;
-			uint32_t base = 0;
-			std::vector<RE::NiPoint3> positions, normals;  ///< World, at rest; normals unit (vanilla's, else the winding's)
-			std::size_t next = 0;
-			/** @brief D131: a vertex the landscape test left standing, for the log. */
-			struct Sample
-			{
-				RE::NiPoint3 at;
-				float ground = 0.0f, over = 0.0f;
-				int steps = 0;
-				uint32_t firstLayer = 0;
-				bool firstReferenced = false;
-				float firstHeight = 0.0f;
-			};
-			std::vector<Sample> samples;  ///< The lowest four over the landscape
-			uint32_t landMissing = 0, landStepped = 0, landDisagreed = 0;
-		};
 		std::vector<RE::NiPointer<RE::BSGeometry>> buryQueue;
-		std::unique_ptr<BuryJob> buryJob;
-		uint32_t buriedCount = 0, buryTested = 0, buryRays = 0, buriedGround = 0;
-		static constexpr float BURY_REACH = 1000.0f;        ///< D112: how far the burial rays reach from a vertex (D126: 500, was 160; D131: 1000, the parity test's far ends out of the big cliffs)
-		static constexpr float BURY_MARGIN = 24.0f;         ///< D112: rock this near short of the vertex does not bury it (vanilla's sheets dip into the rock they lie on, as BAKE_ROCK_MARGIN)
-		static constexpr float BURY_LAND = 24.0f;           ///< D126: a vertex this far under the landscape's surface is buried (D143: 24, was 8: low runs lying on the ground dip into it; keep, not eat)
-		static constexpr float LAND_AGREE = 16.0f;          ///< D138: a ground hit counts as the landscape only within this of TES::GetLandHeight there
-		static constexpr float LAND_RAY_ABOVE = 4000.0f;    ///< D126: the landscape ray starts this far over the point...
-		static constexpr float LAND_RAY_DROP = 20000.0f;    ///< D126: ...and looks this far down
-		static constexpr float SUBMERGED_DEPTH = 48.0f;     ///< D157: a vertex this far under the river's water (and on its bed) is in the river
-		static constexpr float SUBMERGED_BED = 16.0f;       ///< D157: 16 (was 64)       ///< D126: a vertex at most this far over the landscape, under our pools' water, lies in the river (not the air under a lip)
-		static constexpr float SUBMERGED_COLUMN = 256.0f;   ///< D131: an engine water plane counts for the submerged cut where it stands at most this far over the landscape (a river over its bed)
-		static constexpr float SUBMERGED_OVER_TOP = 96.0f;  ///< D143: ...and at most this far over the sheet's own top (its source, not the river of the drop above)
-		static constexpr float POOL_CUT_DEPTH = 8.0f;       ///< D112: FallGround::POOL_CUT: the shaders cut the foot this far under the pools' surface
+		uint32_t buriedCount = 0, buryTested = 0;
+		static constexpr double BURY_BUDGET_MS = 1.5;  ///< D172: the rock test's share of a frame (the landscape cache now, no rays)
+		const LandscapeCache* landscape = nullptr;     ///< D172: Fluid Field's (SetLandscape)
+		/** @brief D172: a run of triangles (three indices each). */
+		struct IndexSpan
+		{
+			const uint16_t* data = nullptr;
+			uint32_t count = 0;
+		};
+		/** @brief D172: the triangles the bake reads: a dense copy's untrimmed ones (Densify cut it under the landscape), else its own. */
+		IndexSpan BakeIndices(RE::BSGeometry* a_geometry) const;
+		std::unordered_map<const RE::BSGeometry*, std::vector<uint16_t>> untrimmedIndices;  ///< D172: by dense copy
+		static constexpr float BURY_REACH = 1000.0f;                                        ///< D112: how far the burial rays reach from a vertex (D126: 500, was 160; D131: 1000, the parity test's far ends out of the big cliffs)
+		static constexpr float BURY_MARGIN = 24.0f;                                         ///< D112: rock this near short of the vertex does not bury it (vanilla's sheets dip into the rock they lie on, as BAKE_ROCK_MARGIN)
+		static constexpr float BURY_LAND = 24.0f;                                           ///< D126: a vertex this far under the landscape's surface is buried (D143: 24, was 8: low runs lying on the ground dip into it; keep, not eat)
+		static constexpr float LAND_AGREE = 16.0f;                                          ///< D138: a ground hit counts as the landscape only within this of TES::GetLandHeight there
+		static constexpr float LAND_RAY_ABOVE = 4000.0f;                                    ///< D126: the landscape ray starts this far over the point...
+		static constexpr float LAND_RAY_DROP = 20000.0f;                                    ///< D126: ...and looks this far down
+		static constexpr float SUBMERGED_DEPTH = 48.0f;                                     ///< D157: a vertex this far under the river's water (and on its bed) is in the river
+		static constexpr float SUBMERGED_BED = 16.0f;                                       ///< D157: 16 (was 64)       ///< D126: a vertex at most this far over the landscape, under our pools' water, lies in the river (not the air under a lip)
+		static constexpr float SUBMERGED_COLUMN = 256.0f;                                   ///< D131: an engine water plane counts for the submerged cut where it stands at most this far over the landscape (a river over its bed)
+		static constexpr float SUBMERGED_OVER_TOP = 96.0f;                                  ///< D143: ...and at most this far over the sheet's own top (its source, not the river of the drop above)
+		static constexpr float POOL_CUT_DEPTH = 8.0f;                                       ///< D112: FallGround::POOL_CUT: the shaders cut the foot this far under the pools' surface
 		/** @brief D112: a lit mesh as the culling sees it: world positions at rest and as drawn, outer sides, open edges, bins. */
 		struct CullSheet
 		{
@@ -446,7 +442,7 @@ namespace FluidFieldSim
 		 * asked whenever a cut or the rock becomes known (the seams, the rock test, the lead-in cuts, new pools). CullStep
 		 * does the work over several frames (D113: 700 ms on one frame in game), restarting if asked again meanwhile.
 		 */
-		void RequestCulling() { cullRequested = true; }
+		void RequestCulling() { cullRequested = true; }  // D172: atomic: the workers ask too
 		/**
 		 * @brief D113: the culling, a few milliseconds a frame, in order: the sheets (one a step), the pools' cut, the inside
 		 * cut (VolumeCut), a.x, then the sides (SideFlags). The GPU is handed the result once all are done.
@@ -460,10 +456,35 @@ namespace FluidFieldSim
 			uint32_t inside = 0, tested = 0, inward = 0, covered = 0, sideTested = 0, submerged = 0, meeting = 0;
 			uint32_t islands = 0, islandVertices = 0, islandTriangles = 0, holes = 0, holeVertices = 0;  ///< D138: CleanupSheet's
 			std::chrono::steady_clock::time_point started;
-			double busy = 0.0;  ///< Milliseconds of work over its frames
+			double busy = 0.0;                                                       ///< Milliseconds of work over its frames
+			std::vector<std::pair<RE::NiPointer<RE::BSGeometry>, uint32_t>> meshes;  ///< D172: the lit meshes and their bases, for stage 0 on the worker
+			std::atomic<bool> cancel = false;                                        ///< D172: stop the worker
+			std::atomic<bool> complete = false;                                      ///< D172: the worker finished every stage
 		};
 		std::unique_ptr<CullJob> cullJob;
-		bool cullRequested = false;
+		std::future<void> cullWork;  ///< D172: stages 1-5 of cullJob on a worker thread
+		/** @brief D172: whether the culling's worker runs (it has vertexClips, vertexCuts and the pools meanwhile). */
+		bool CullWorking() const { return cullWork.valid(); }
+		std::future<void> heavyWork;  ///< D172: the seams (ComputeFades) or the bakes' linking (LinkBakes) on a worker thread
+		bool linkedDue = false;       ///< D172: LinkBakes finished on its worker: its version and plunges are due on the render thread
+		/** @brief D172: what ComputePlunges leaves for ApplyPlunges. */
+		struct PlungeResult
+		{
+			std::vector<FallPlunge> plungePoints;
+			std::vector<FallEmitter> sprayEmitters;
+			uint32_t meets = 0, lips = 0, kinds[3]{};
+		};
+		std::unique_ptr<PlungeResult> plungeResult;  ///< D172: the plunges' worker's
+		bool plungesDue = false;                     ///< D172: asked for (several asks, one build)
+		void ComputePlunges(PlungeResult& o_result) const;
+		void ApplyPlunges(PlungeResult& a_result);
+		/** @brief D172: whether any worker has vertexClips, vertexCuts, the pools and the bakes. */
+		bool Busy() const { return cullWork.valid() || heavyWork.valid(); }
+		/** @brief D172: takes in a finished heavyWork (and what its job leaves to the render thread). */
+		void FinishHeavyWork();
+		/** @brief D172: the culling's stages 1-5, on the worker. */
+		void RunCullStages(CullJob& a_job);
+		std::atomic<bool> cullRequested = false;
 		bool CullBusy() const { return cullRequested || cullJob != nullptr; }
 		bool buryDone = true;  ///< D112: every queued mesh's rock test is done and the culling has been asked to read it
 		/** @brief D112: VertexCut::pool for one vertex: its foot under the pools' surface, where the shaders cut it. */
@@ -519,7 +540,7 @@ namespace FluidFieldSim
 		static constexpr float LEAD_CUT_DEPTH = 16.0f;         ///< D97: a hidden lead-in vertex this far under the water over it is cut
 		static constexpr float LEAD_WATER_OVER_CREST = 48.0f;  ///< D103: ...by water no higher than this over its column's crest (a plane's bound reaches past its water)
 		std::vector<RE::NiPointer<RE::BSGeometry>> clipQueue;
-		uint64_t vertexClipVersion = 0;
+		std::atomic<uint64_t> vertexClipVersion = 0;  ///< D172: atomic: the workers bump it
 		uint32_t clipTested = 0;
 		static constexpr float SOURCE_CROSSING_BAND = 96.0f;  ///< D141: a water level this near a mesh's top is the water it pours out of: no crossing foam there
 		static constexpr float SOURCE_DEPTH_MOST = 240.0f;    ///< D138: the most a water plane may lie over a falls vertex and still be the water it pours out of
@@ -575,10 +596,33 @@ namespace FluidFieldSim
 		std::unordered_set<const RE::BSGeometry*> denseShapes;
 		bool refreshing = false;
 		static constexpr bool DENSE = true;
-		static constexpr float DENSE_EDGE = 20.0f;  ///< D73: world units the dense copy's edges are at most (when the vertex budget allows; D91: 20, was 40, split only where longer)
-		static constexpr int DENSE_LEVELS = 6;      ///< D73: splitting passes at most (D91: adaptive, so passes only refine what is still long)
+		static constexpr float DENSE_TRIM_UNDER = 24.0f;  ///< D172: the dense copies are cut this far under the landscape (BURY_LAND: the cut line stays in the ground)
+		static constexpr float DENSE_EDGE = 20.0f;        ///< D73: world units the dense copy's edges are at most (when the vertex budget allows; D91: 20, was 40, split only where longer)
+		static constexpr int DENSE_LEVELS = 6;            ///< D73: splitting passes at most (D91: adaptive, so passes only refine what is still long)
 		/** @brief D73: builds and attaches a dense copy of a lit mesh; false where it cannot (no CPU data, or no engine builder). */
-		bool Densify(RE::BSGeometry* a_geometry);
+		/** @brief D172: a dense copy in the making: the original's geometry copied on the render thread, made on a worker. */
+		struct DenseJob
+		{
+			RE::NiPointer<RE::BSGeometry> geometry;
+			std::vector<RE::NiPoint3> positions, normals, tangents, bitangents;
+			std::vector<RE::NiPoint2> uvs;
+			std::vector<RE::NiColorA> colors;
+			std::vector<std::array<uint32_t, 3>> triangles, untrimmed;
+			std::vector<uint16_t> indices;
+			RE::NiTransform world;
+			LandscapeCache land;  ///< The cells round the mesh
+			bool haveColors = false, interior = false, ok = false;
+			uint32_t vertexCount = 0, triangleCount = 0, trimmedAway = 0, trimmedSplit = 0;
+		};
+		bool ReadDense(RE::BSGeometry* a_geometry, DenseJob& o_job) const;
+		static void ComputeDense(DenseJob& a_job);
+		bool AttachDense(DenseJob& a_job);
+		/** @brief D172: attaches the copies a finished worker made, and grounds them. */
+		void FinishDenseWork();
+		std::future<void> denseWork;
+		std::vector<std::unique_ptr<DenseJob>> denseJobs;
+		std::unordered_set<const RE::BSGeometry*> denseFailed;  ///< D172: originals with no copy: drawn as they are
+		std::chrono::steady_clock::time_point denseStarted;
 		/** @brief D73: removes every dense copy and shows the originals again. */
 		void RemoveDense();
 		/** @brief D68: gathers the statics' triangles round a bake job's sheet (main thread). */
@@ -657,7 +701,7 @@ namespace FluidFieldSim
 		/** @brief D83: BakeStep's work: lands finished bakes, then starts or continues the next job. */
 		void BakeWork();
 		bool linkDue = false;  ///< D83: a bake landed since the last link
-		static std::unique_ptr<BakeJob> StartBake(RE::BSGeometry* a_geometry);
+		std::unique_ptr<BakeJob> StartBake(RE::BSGeometry* a_geometry) const;
 		static std::shared_ptr<BakeField> SolveBake(const BakeJob& a_job);
 		std::unordered_set<std::string> loggedParts;  ///< Diagnostics: falling-water mesh parts already logged
 
@@ -667,7 +711,6 @@ namespace FluidFieldSim
 		 * sim's way there and the speed of its fall; and the spray emitters, at the plunges and where its water strikes
 		 * rock (the bake's foam). Run when the bakes are linked, the pools are found, or meshes go.
 		 */
-		void BuildPlunges();
 		static constexpr float PLUNGE_BAND = 14.0f;           ///< A texel this near above the water below, or under it, is in it
 		static constexpr float PLUNGE_HEAD = 40.0f;           ///< Water that has fallen at least this far down its mesh plunges
 		static constexpr float PLUNGE_STEEP = 0.8f;           ///< Water this steep (upward normal) at the water's level plunges whatever its head (D46)
@@ -694,7 +737,9 @@ namespace FluidFieldSim
 		std::vector<FallEmitter> sprayEmitters;
 		std::vector<FallPlunge> plungePoints;
 		uint64_t emitterVersion = 0;
-		const WaterSurfaces* waterSurfaces = nullptr;  ///< Set each update: the engine's water, for the pools' extent (D45)
+		const WaterSurfaces* waterSurfaces = nullptr;  ///< Set each update: the engine's water, for the pools' extent (D45). D172: waterCopy
+		WaterSurfaces waterCopy;                       ///< D172: the engine's water as Update last saw it with no worker running
+		uint64_t waterCopySignature = UINT64_MAX;
 		/** @brief D78: a site's pools on its capture's lattice: per cell the pool's surface, NO_SURFACE where there is none. */
 		struct PoolField
 		{
@@ -705,7 +750,8 @@ namespace FluidFieldSim
 			float top = 0.0f;  ///< The site's top level: the pool the falls come from is cut deeper (D50)
 			std::vector<float> cover;
 		};
-		std::unordered_map<uint64_t, PoolField> sitePools;  ///< By Site::captureKey
+		std::unordered_map<uint64_t, PoolField> sitePools;                        ///< By Site::captureKey
+		std::unique_ptr<std::vector<std::pair<uint64_t, PoolField>>> poolResult;  ///< D172: the pools' worker's, taken in by FinishHeavyWork
 		/** @brief Vanilla's falling-water meshes of a site seen from above on a lattice (NO_SURFACE where none), and the lowest and highest of them along their edges too (D53). */
 		void RasterSurface(const Site& a_site, float a_originX, float a_originY, float a_spacing, int32_t a_width, int32_t a_height, std::vector<float>& a_surface,
 			std::vector<float>* a_lowest = nullptr, std::vector<float>* a_highest = nullptr) const;
@@ -714,7 +760,7 @@ namespace FluidFieldSim
 		 * sampled per cell, kept where the rock lies under it and the falls lie at its level or the bed is shallow, and
 		 * flooded through the basin; a pool's lip and the air under a curtain falling from it are kept out.
 		 */
-		void ComputePools(const Site& a_site, const FallCapture& a_capture);
+		PoolField ComputePools(const Site& a_site, const FallCapture& a_capture) const;  ///< D172: returned (a worker's), taken in by FinishHeavyWork
 		/** @brief D78: works out the pools of newly captured sites. */
 		void PollPools();
 		bool hideEffects = false;
