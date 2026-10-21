@@ -1172,6 +1172,11 @@ void FluidField::DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main)
 	}
 	if (fogDebugMode == FOG_DEBUG_BEFORE_WATER && settings.InteractiveFog && fogReady)
 		DrawGroundFog(a_main, Util::GetCurrentSceneDepthSRV(false));
+	// D123: the scene before the water, for the see-through falls to refract
+	if (RefractiveFallsActive() && globals::game::renderer) {
+		auto& main = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+		fallRefraction.CopyBeforeWater(globals::d3d::device, globals::d3d::context, main.texture, main.RTV, globals::state->frameCount);
+	}
 }
 
 void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderResourceView* a_depth)
@@ -1837,6 +1842,7 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 	FluidFieldSim::FallRefraction::DrawParams params;
 	params.target = a_target;
 	params.targetTexture = a_targetTexture;
+	params.frame = globals::state->frameCount;
 	params.depth = a_depth;
 	params.sceneDepth = a_sceneDepth;
 	params.camera = cameraSnapshot.get();

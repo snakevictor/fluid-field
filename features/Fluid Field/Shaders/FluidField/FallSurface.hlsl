@@ -69,8 +69,9 @@ struct VSOutput
 	float3 Normal: TEXCOORD2;
 	float3 Fade: TEXCOORD3;  // FallGround::Fade: the seam fade, and the height above the water it falls into; z: D98 its foot (VertexClip's a.w)
 	float Clip: SV_ClipDistance0;
-	float Behind: TEXCOORD7;    // D104: baked open water or air behind its outer side, world units
-	float4 Outward: TEXCOORD6;  // D100: the normal turned to the mesh's outer side; D103: w 1 where a sheet lies behind its inner side
+	float Behind: TEXCOORD7;       // D104: baked open water or air behind its outer side, world units
+	float BelowSource: TEXCOORD8;  // D124: how far under the water its fall pours out of (FallGround::NO_WATER: none)
+	float4 Outward: TEXCOORD6;     // D100: the normal turned to the mesh's outer side; D103: w 1 where a sheet lies behind its inner side
 };
 
 #if defined(VSHADER)
@@ -92,6 +93,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 	output.Fade.z = (!FallGround::Enabled || FallGround::VertexBase == FallGround::NO_VERTEX_CLIP) ? 1.0 : fmod(FallGround::VertexClip[FallGround::VertexBase + vertexID].a.w, 2.0);  // D100: +2 marks an inward winding
 	output.Clip = FallGround::ClipDistance(relative, vertexID);
 	output.Behind = FallGround::Behind(vertexID);
+	output.BelowSource = FallGround::BelowSource(vertexID);
 	output.Outward = float4(output.Normal * FallGround::OutwardSign(vertexID), FallGround::InnerCovered(vertexID));  // D103: interpolated as a normal, no sign flipping mid-triangle
 	return output;
 }
@@ -177,6 +179,9 @@ static const float GLINT_WEIGHT = 0.5;
 static const float SCATTER_BRIGHTNESS = 1.5;
 /** D121: world units from a cut line (FallGround::ClipDistance) over which the water foams, and from a mesh behind it (the screen's depth). */
 static const float CUT_FOAM_REACH = 24.0;
+/** D124: world units the foam reaches down from the water a fall pours out of, and up from the water it falls into (was FallGround::PoolFoamHeight, 26). */
+static const float TOP_FOAM_REACH = 120.0;
+static const float FOOT_FOAM_REACH = 100.0;
 static const float CONTACT_FOAM_REACH = 20.0;
 /** D121: how white a seam's overlap and a mesh's contact foam at most. */
 static const float SEAM_FOAM = 0.7;
@@ -267,8 +272,12 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 		const float above = position.z - poolHeight;
 		white = max(white, pool * (above >= 0.0 ? 1.0 - saturate(above / FallGround::PoolFoamHeight) : 1.0 - saturate(-above / FallGround::POOL_CUT)));
 	}
+	// D124: the whole drop's top and foot foam long and dense (the user): down from the water it pours out of, and up from
+	// the water it falls into, sqrt so the bands stay near solid most of their length
 	if (FallGround::Whitening && input.Fade.y < FallGround::NO_WATER * 0.5)
-		white = max(white, 1.0 - saturate(input.Fade.y / FallGround::PoolFoamHeight));
+		white = max(white, sqrt(1.0 - saturate(input.Fade.y / FOOT_FOAM_REACH)));
+	if (FallGround::Whitening && input.BelowSource < FallGround::NO_WATER * 0.5)
+		white = max(white, sqrt(1.0 - saturate(input.BelowSource / TOP_FOAM_REACH)));
 	// D121: where the water breaks: along its cut lines (the lead-in leaving the river above, the foot under the pool or
 	// river below, a sheet cut into another's curl, rock), where it overlaps another sheet at a seam (laid on after the
 	// screen depth below: where it meets rock or any mesh, as the river foams at its shore)

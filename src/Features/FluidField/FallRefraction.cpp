@@ -234,6 +234,15 @@ namespace FluidFieldSim
 		return true;
 	}
 
+	void FallRefraction::CopyBeforeWater(ID3D11Device* a_device, ID3D11DeviceContext* a_context, ID3D11Texture2D* a_source, ID3D11RenderTargetView* a_target, uint32_t a_frame)
+	{
+		if (!a_source || !a_target || !EnsureSceneCopy(a_device, a_source, a_target))
+			return;
+		a_context->CopyResource(sceneCopy.get(), a_source);
+		preWaterSource = a_source;
+		preWaterFrame = a_frame;
+	}
+
 	bool FallRefraction::EnsureSceneCopy(ID3D11Device* a_device, ID3D11Texture2D* a_source, ID3D11RenderTargetView* a_target)
 	{
 		D3D11_TEXTURE2D_DESC source{};
@@ -392,9 +401,11 @@ namespace FluidFieldSim
 
 		SavedState saved(a_context);
 
-		// What the falls refract: the scene as drawn so far (the falls' own lit pieces are hidden, D91)
+		// What the falls refract: the scene as drawn so far (the falls' own lit pieces are hidden, D91). D123: as it was
+		// before the water, when copied then this frame: the river's surface behind a sheet is not seen through it
 		a_context->OMSetRenderTargets(0, nullptr, nullptr);
-		a_context->CopyResource(sceneCopy.get(), a_params.targetTexture);
+		if (preWaterFrame != a_params.frame || preWaterSource != a_params.targetTexture)
+			a_context->CopyResource(sceneCopy.get(), a_params.targetTexture);
 
 		a_context->OMSetRenderTargets(1, &a_params.target, a_params.depth);
 		const float factor[4] = {};

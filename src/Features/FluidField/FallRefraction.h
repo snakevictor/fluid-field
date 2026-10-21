@@ -67,6 +67,7 @@ namespace FluidFieldSim
 			ID3D11ShaderResourceView* vertexClip = nullptr;   ///< FallGround's VertexClip (t123)
 			ID3D11ShaderResourceView* poolHeights = nullptr;  ///< FallGround's Heights (t120)
 			ID3D11ShaderResourceView* environment = nullptr;  ///< A cubemap of the surroundings (Dynamic Cubemaps, once it holds a capture), or null for each water's reflection colour
+			uint32_t frame = 0;                               ///< D123: the rendered frame's number (a pre-water copy of this frame is used)
 			float depthScale = 1.0f;                          ///< D102: how thick the sheet reads (Water Depth): its opacity and depth of colour
 			float refraction = 0.5f;                          ///< How strongly the surface bends what is seen through it
 			float streakFoam = 0.4f;                          ///< How much of vanilla's streak texture reads as white water
@@ -75,6 +76,12 @@ namespace FluidFieldSim
 
 		/** @brief Draws a_meshes; nothing when the shaders failed or nothing is bound. */
 		void Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params, const std::vector<MeshDraw>& a_meshes);
+		/**
+		 * @brief D123: copies the scene before the water draws, for this frame's Draw to refract (when its target is the same
+		 * texture): the river's surface seen through a sheet showed as a plane behind it, cut by the sheet (SS 981).
+		 * @param a_frame The rendered frame's number; Draw uses the copy only within the same frame.
+		 */
+		void CopyBeforeWater(ID3D11Device* a_device, ID3D11DeviceContext* a_context, ID3D11Texture2D* a_source, ID3D11RenderTargetView* a_target, uint32_t a_frame);
 		/** @brief Drops the buffers of every piece not in a_keep (their geometry went away). */
 		void Prune(const std::unordered_set<const RE::BSGeometry*>& a_keep);
 		void Release();
@@ -159,5 +166,7 @@ namespace FluidFieldSim
 		bool shaderFailed = false;
 		bool shadowedShaderFailed = false;  ///< D102: the shadowed variant failed; the plain one is used
 		bool sceneCopyFailed = false;
+		const ID3D11Texture2D* preWaterSource = nullptr;  ///< D123: what the pre-water copy was taken from, and in which frame
+		uint32_t preWaterFrame = UINT32_MAX;
 	};
 }

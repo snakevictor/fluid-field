@@ -1238,6 +1238,9 @@ namespace FluidFieldSim
 			}
 			std::vector<std::array<float, 5>> planes;
 			CollectWaterPlanes(lo[0], lo[1], hi[0], hi[1], planes);
+			// D124: the planes at or over its top are the water it pours out of (the whole drop's top, for its foam)
+			std::vector<std::array<float, 5>> sources;
+			std::copy_if(planes.begin(), planes.end(), std::back_inserter(sources), [&](const auto& a_plane) { return a_plane[4] >= top - 32.0f; });
 			std::erase_if(planes, [&](const auto& a_plane) { return a_plane[4] >= top - 32.0f; });
 			const auto base = static_cast<uint32_t>(vertexClips.size());
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
@@ -1249,12 +1252,20 @@ namespace FluidFieldSim
 						water = std::max(water, plane[4]);
 				}
 				const float above = water > -FLT_MAX ? positions[v].z - water : NO_WATER;
+				// D124: how far under the water it pours out of (none where it starts under another sheet, mid-fall)
+				float source = -FLT_MAX;
+				for (const auto& plane : sources) {
+					if (positions[v].x >= plane[0] - SOURCE_REACH && positions[v].x <= plane[2] + SOURCE_REACH && positions[v].y >= plane[1] - SOURCE_REACH &&
+						positions[v].y <= plane[3] + SOURCE_REACH)
+						source = std::max(source, plane[4]);
+				}
+				const float below = source > -FLT_MAX ? std::max(source - positions[v].z, 0.0f) : NO_WATER;
 				// D70: only near the mesh's foot, where it goes into its water: higher up, a plane whose bound covers
 				// the fall (a pool partway down, a whole cell) cut holes in the middle of the sheet
 				if (water > -FLT_MAX && positions[v].z < bottom + WATER_CUT_BAND)
 					clip = std::min(clip, above + WATER_KEEP);
 				// D71: w marks the mesh's foot, the only place the pools may cut it (the shader's pool cut)
-				vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, CLEAR_REACH, 0.0f, 0.0f, 0.0f });
+				vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, CLEAR_REACH, 0.0f, below, 0.0f });
 				vertexCuts.push_back({ .water = clip });  // D112: a.x's parts, kept apart
 				clipTested++;
 			}

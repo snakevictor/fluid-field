@@ -2896,3 +2896,24 @@ Entry format:
 -   The see-through pass draws every sheet layer; inner layers showing
     through (SS 980) are left to the culling (D113+), per the user.
 -   References: D121, D120
+
+## D123: The falls refract the scene before the water; D124: long, dense foam at the drop's top and foot
+
+-   Date: 2026-10-20
+-   Decision:
+    -   **D123:** the see-through falls refract a copy of the scene taken
+        after the deferred composite and before the water draws
+        (DrawGroundFogBeforeWater), used when the falls' target is the same
+        texture in the same frame; otherwise the copy at the falls' draw as
+        before. The river's surface seen through a sheet showed as a plane
+        behind it, cut by the sheet (SS 981); the user asked to hide it.
+        Things drawn after the deferred stage and behind a sheet (particles,
+        other transparents) no longer show through it.
+    -   **D124:** each vertex keeps how far it lies under the water its fall
+        pours out of (VertexClip d.z: the water planes at or over its mesh's
+        top, within 96 units of their bound; none for a mesh starting
+        mid-fall under another sheet). The foam runs 120 units down from
+        that water and 100 up from the water it falls into (was 26), sqrt
+        so the bands stay near solid: the whole drop's top and foot, not
+        every mesh's (the user: "a lot longer and denser").
+-   References: D91, D105, D121, D122
