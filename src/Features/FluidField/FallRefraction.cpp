@@ -18,10 +18,10 @@ namespace FluidFieldSim
 		constexpr UINT VERTEX_CLIP_SLOT = 123;
 		constexpr UINT BAKE_SLOT = 124;
 		constexpr UINT VERTICES_SLOT = 125;
-		constexpr UINT OWN_FIRST = 100;  // t100 the scene's colour ... t104 the environment (D3D11 has 128 slots)
-		constexpr UINT OWN_COUNT = 5;
+		constexpr UINT OWN_FIRST = 100;  // t100 the scene's colour ... t108 the water type's normal maps (D3D11 has 128 slots)
+		constexpr UINT OWN_COUNT = 9;
 		constexpr UINT SCENE_COLOR_SLOT = 100;
-		constexpr UINT DIFFUSE_SLOT = 102;
+		constexpr UINT DIFFUSE_SLOT = 121;  // D159: t121 diffuse, t122 normal map (were t102-t103, Light Limit Fix's local shadows)
 		constexpr UINT ENVIRONMENT_SLOT = 104;
 		constexpr UINT FRONT_DEPTH_SLOT = 105;     // D125
 		constexpr UINT NOISE_SLOT = 106;           // D129: t106-t108
@@ -597,7 +597,7 @@ namespace FluidFieldSim
 				ID3D11ShaderResourceView* vertices = mesh->verticesSRV.get();
 				a_context->VSSetShaderResources(VERTICES_SLOT, 1, &vertices);
 				a_context->PSSetShaderResources(BAKE_SLOT, 1, &draw->bake);
-				ID3D11ShaderResourceView* textures[2] = { draw->diffuse, draw->normal };  // t102, t103
+				ID3D11ShaderResourceView* textures[2] = { draw->diffuse, draw->normal };  // t121, t122
 				a_context->PSSetShaderResources(DIFFUSE_SLOT, 2, textures);
 				ID3D11ShaderResourceView* const* noise = draw->look.noise;  // D129: t106-t108
 				a_context->PSSetShaderResources(NOISE_SLOT, 3, noise);

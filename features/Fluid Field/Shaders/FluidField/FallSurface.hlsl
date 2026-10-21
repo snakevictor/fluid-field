@@ -23,6 +23,7 @@ SamplerState ClampSampler : register(s1);  // Linear: also what the shadow maps 
 #include "Common/Shading.hlsli"
 #include "Common/SharedData.hlsli"
 #include "FluidField/FallGround.hlsli"
+#include "FluidField/FallShading.hlsli"
 
 cbuffer FallSurfaceCB : register(b7)
 {
@@ -70,8 +71,8 @@ struct FallSurfaceVertex
 StructuredBuffer<FallSurfaceVertex> Vertices : register(t125);
 Texture2D<float4> SceneColor : register(t100);  // The scene as drawn before the falls
 Texture2D<float> SceneDepth : register(t101);
-Texture2D<float4> DiffuseTex : register(t102);  // The piece's own material (vanilla's falls texture)
-Texture2D<float4> NormalTex : register(t103);
+Texture2D<float4> DiffuseTex : register(t121);  // The piece's own material (vanilla's falls texture)
+Texture2D<float4> NormalTex : register(t122);   // D159: t121-t122, off Light Limit Fix's local shadows (t102-t103)
 TextureCube<float4> EnvironmentTex : register(t104);
 Texture2D<float> FrontDepth : register(t105);
 Texture2D<float4> Noise1Tex : register(t106);  // D129: the water type's normal maps
@@ -234,22 +235,13 @@ float PoolWeight(float2 a_position, out float a_height)
 	return smoothstep(0.2, 0.7, total);
 }
 
-/** D125: world units behind the falls' front surface that still count as the front itself. */
-static const float FRONT_EPSILON = 2.0;
-
 /** D127: the cubemap's mip the sheet reads where wholly aerated; mip 0 (the river's mirror) where it runs clear. */
 static const float ENVIRONMENT_MIP = 1.0;
-/** The brightest the pass adds: the scene is HDR, but one runaway value is a square after bloom and the upscalers. */
-static const float MAX_OUTPUT = 64.0;
 
 /** D102: how opaque aerated water is at least (bubbles scatter what lies behind). D127: a floor under the river's own opacity (the fog curve), which leaves a thin sheet nearly clear. */
 static const float AERATION_OPACITY = 0.3;
-/** D127: how far aerated water's colour goes toward the river's foam colour (the river's aeration, FluidField::ApplyAeration, goes 0.15 of the way at most). */
-static const float AERATION_LIFT = 0.06;
 /** D127: how much of the falls' normal map tilts the surface (it is drawn for an opaque, diffuse sheet: high contrast). */
 static const float NORMAL_STRENGTH = 0.8;
-/** D129: world units one repeat of the falls' texture (their flow coordinates) spans, for the water's normal maps' scale. */
-static const float FALLS_UV_WORLD = 512.0;
 /** D129: the water type's ripples on the sheet over the river's (Water.hlsl's amplitude-weighted blend). */
 static const float RIPPLE_STRENGTH = 1.0;
 /** D147: the fine detail ripples: world units per repeat, and how much they tilt the surface. */
@@ -257,17 +249,6 @@ static const float DETAIL_TILE = 160.0;
 static const float DETAIL_STRENGTH = 0.8;
 /** D147: the share of the river's reflection (fresnel) the falls take. */
 static const float FALLS_REFLECTION = 1.0;  // D154: the river's (measured: the falls' depth and water parameters match the river's)
-
-/**
- * D130: the repeats of a texture a_worldScale units across per repeat of the falls' flow coordinates (FALLS_UV_WORLD),
- * a whole number of them along v: the flow's scroll phase wraps at 1, so a fractional count there jumped once a cycle
- * (the texture visibly resetting)
- */
-float2 FlowScale(float a_worldScale)
-{
-	const float repeats = FALLS_UV_WORLD / max(a_worldScale, 1.0);
-	return float2(repeats, max(round(repeats), 1.0));
-}
 
 /** D131: world units per repeat of the foam's bubble pattern, and the drift's period and fastest speed (the river's foam, FluidField::GetFoamCover: 160, 0.6, 120). */
 static const float FOAM_TILE = 160.0;
@@ -312,33 +293,9 @@ float4 Drifted(Texture2D<float4> a_texture, float3 a_position, float3 a_normal, 
 	}
 	return result;
 }
-/** D127: how much of the white water reaches the foam cover: below 1, even the densest bands stay patchy where the pattern is high, as the river's foam (solid bands read as paint). */
-static const float FOAM_DENSITY = 0.7;
 /** D102: pixels of refraction offset per unit of tilt at Refraction 1, as a fraction of the screen height. */
 static const float REFRACTION_SCREEN = 0.06;  // D120: 0.06, was 0.02: at its default a pixel or two, Refraction read as doing nothing
-/** D121: world units from a cut line (FallGround::ClipDistance) over which the water foams, and from a mesh behind it (the screen's depth). */
-static const float CUT_FOAM_REACH = 24.0;
-/** D124: world units the foam reaches down from the water a fall pours out of, and up from the water it falls into (was FallGround::PoolFoamHeight, 26). */
-/** D141: world units of drop below the water a fall pours out of over which its foam grows from nothing to FALL_FOAM, and how white at most. */
-static const float FALL_FOAM_START = 0.45;  // D142: shares of the whole drop (were world units: 24 and 260)
-static const float FALL_FOAM_FULL = 0.85;
-static const float FALL_FOAM = 0.9;
-/** D141: world units below that water over which the sheet fades in: the river runs on into the falling water, no seam. */
-static const float LIP_BLEND = 24.0;
-/** D143: world units below the lip's blend over which the other foam (seams, sheets meeting, rock contact) comes in. */
-static const float LIP_QUIET = 48.0;
-/** D145: seconds of flow on a sheet before its seams, meets, cuts and contacts may foam (twice this to full). */
-static const float CREST_QUIET_SECONDS = 0.3;
-static const float FOOT_FOAM_REACH = 100.0;
-/** D139: the same for the foot band (at 1, short curtains were solid white top to bottom, SS 1031-1032). */
-static const float FOOT_FOAM = 0.8;
-static const float CONTACT_FOAM_REACH = 32.0;  // D147: 32 and 0.45 (were 20 and 0.9): soft as the river's shore, not a line
-/** D121: how white a seam's overlap and a mesh's contact foam at most. */
-static const float SEAM_FOAM = 0.7;
-static const float CONTACT_FOAM = 0.45;
-/** D128: world units from another sheet over which the water foams where two meet, and how white at most. */
-static const float MEET_FOAM_REACH = 64.0;  // D131: 64 (was 40): the user, larger
-static const float MEET_FOAM = 1.0;
+// D159: the white water's and the visibility's constants are in FallShading.hlsli (shared with the river shader's falls)
 
 /**
  * D102: world units of water between the sheet and what lies behind it, along the view ray: the one input the
@@ -399,11 +356,8 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// D125: only the falls' front surface is drawn: a layer behind it is the same body of water (an overlapping mesh's
 	// inner layer or a C's far wall, there in no real water). D126: however far behind: with a 48-unit gap, a C's far wall
 	// hundreds of units back still showed through it (SS 987); the user preferred none
-	if (HasFront) {
-		const float behindFront = SharedData::GetScreenDepth(input.Position.z) - SharedData::GetScreenDepth(FrontDepth.Load(int3(input.Position.xy, 0)));
-		if (behindFront > FRONT_EPSILON)
-			discard;
-	}
+	if (HasFront && FallShading::BehindFront(SharedData::GetScreenDepth(input.Position.z), SharedData::GetScreenDepth(FrontDepth.Load(int3(input.Position.xy, 0)))))
+		discard;
 
 	// The flow, as in the lit pass: the texture coordinates the water reads, its run time, wake and foam
 	// D96: Flow takes the coordinates as the lit pass has them, after vanilla's scroll and zoom (it takes them back out):
@@ -416,7 +370,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// D100: only a sheet's outer side shows: seen from inside its curl (behind it, or another sheet's inner part showing
 	// through), it is not drawn, so crossing and nested sheets read as one body of water. D103: only where another sheet's
 	// outer face lies behind that inner side: a free curtain seen from behind or the lip from upstream still shows
-	if (input.Outward.w > 0.5 && dot(SafeNormalize(input.Outward.xyz, toCamera), toCamera) < -0.05)
+	if (FallShading::HiddenInnerSide(input.Outward, toCamera))
 		discard;
 	// D120: turned to the camera. Flipped by the triangle's winding first (not consistent on these meshes) and then, facing
 	// away, squashed to graze the view, the normal met the eye at under 0.2 over most sheets: fresnel near 1 made each a
@@ -451,59 +405,17 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 
 	// White water (D34, D42, D59): aerated as it runs and falls, foamed at rock, in a rock's wake and where it meets
 	// the water below; with "Foam on the Falls" off, the streaks of vanilla's own texture still whiten it
-	const float aerated = 1.0 - exp(-flow.runTime / FallGround::AERATION_SECONDS);
+	const float aerated = FallShading::Aerated(flow.runTime);
 	// D121: not by aeration (the aerated colour, D120, is the falling water's body; as foam it speckled every sheet)
 	// D145: not the bake's foam and wake: they mark every sheet's rims and crests as rock (a source diagnostic, SS 1040:
 	// the crest foam none of D138-D143 touched). Back with the bake's own aeration
-	float white = 0.0;
-	float poolHeight;
 	// D146: the drop's bands (pool, foot, share of the drop) are off: on a cascade the top river counts as every drop's
-	// source, so the lower crests read as mid-drop and foamed (the user: "we want the GREEN foaming to be gone"). Foam on
-	// the falls is to come from the bake's own aeration
-	const float pool = 0.0;
-	if (pool > 0.0) {
-		const float above = position.z - poolHeight;
-		white = max(white, pool * (above >= 0.0 ? 1.0 - saturate(above / FallGround::PoolFoamHeight) : 1.0 - saturate(-above / FallGround::POOL_CUT)));
-	}
-	// D124: the whole drop's top and foot foam long and dense (the user): down from the water it pours out of, and up from
-	// the water it falls into. D131: 1 - x^2, dense most of the way and easing out (sqrt fell to nothing at once at its
-	// end: a hard straight line across the sheet, SS 998)
-	// D142: the foot band only where the drop's height is not known (below)
-	const bool hasSource = input.BelowSource < 500.0;
-	const bool hasFoot = input.Fade.y < 500.0;
-
-	// D141: as real falls (the user's references): clear and glassy over the lip, foam growing with the drop, thin threads
-	// below the lip to white columns near the foot, on the steep parts only (an incline foams by its rock strikes and
-	// wakes, the bake's). The drop from the water it pours out of; where it has none (a sheet starting mid-fall), its run
-	// time. D124's band at the top was the reverse: most foam where real water has least
-	// D142: by the share of the whole drop fallen (from the water it pours out of to the water it falls into), so every
-	// drop, short or tall, keeps its water look on top and foams from the middle down (the user): a fixed 260-unit ramp
-	// whitened tall falls wholly, and the foot band filled short curtains
-	const float steep = saturate((abs(flow.velocity.z) / max(length(flow.velocity), 1e-3) - 0.4) / 0.4);
-	const float share = hasSource && hasFoot ? input.BelowSource / max(input.BelowSource + input.Fade.y, 1.0) : 0.0;
-	const float fallen = hasSource && hasFoot ? smoothstep(FALL_FOAM_START, FALL_FOAM_FULL, share) : hasSource ? smoothstep(60.0, 300.0, input.BelowSource) :
-	                                                                                                             0.0;
-
-	// D143's "fed by a drop" foam (no source found above: white from the top) is off: whole inclined runs far from any
-	// plane read as fed and went white (SS 1039). The turbulence under a drop is to come from the bake's own aeration
-	// D141: near the lip nothing else foams either (the lead-in's cut line there is under the river). D143: over
-	// LIP_QUIET, and for the seams, the sheets meeting and the rock under the river too (SS 1037 "1", SS 1038)
-	// D145: and near any sheet's own top by its flow's run time: a lower drop's crest meets the sheet above it (no calm
-	// water over it, so the source's quiet did not apply) and its seam and meet lines foamed across it
-	const float lip = (hasSource ? saturate((input.BelowSource - LIP_BLEND) / LIP_QUIET) : 1.0) * saturate((flow.runTime - CREST_QUIET_SECONDS) / CREST_QUIET_SECONDS);
-	// D146: the seam, meet and cut lines only where the water already falls (steep): where a run ends at the next drop's
-	// crest, the run's end meets that drop's sheet and still foamed across every crest (a source diagnostic: those lines)
-	const float lineQuiet = lip * steep;
-	// D121: where the water breaks: along its cut lines (the lead-in leaving the river above, the foot under the pool or
-	// river below, a sheet cut into another's curl, rock), where it overlaps another sheet at a seam (laid on after the
-	// screen depth below: where it meets rock or any mesh, as the river foams at its shore)
-	if (FallGround::Whitening) {
-		white = max(white, (1.0 - saturate(input.Clip / CUT_FOAM_REACH)) * lineQuiet);
-		white = max(white, (1.0 - saturate(input.Fade.x)) * SEAM_FOAM * lineQuiet);
-		// D128: where it meets another sheet (SS 992: the join of two sheets had none, the one behind hidden by the front)
-		white = max(white, (1.0 - saturate(input.ToOtherSheet / MEET_FOAM_REACH)) * MEET_FOAM * lineQuiet);
-	}
-	const float lace = FallGround::Lace(flow);
+	// source, so the lower crests read as mid-drop and foamed. Foam on the falls is to come from the bake's own aeration
+	// D141, D143, D145: near the lip nothing foams (FallShading::Lip); D121, D128, D146: where the water breaks, along its
+	// cut lines, seams and where sheets meet, only where it already falls (FallShading::LineWhite, D159: shared with the
+	// river shader's falls)
+	const float lip = FallShading::Lip(input.BelowSource, flow.runTime);
+	float white = FallShading::LineWhite(flow.velocity, input.Clip, input.Fade.x, input.ToOtherSheet, lip);
 
 	// The sun's shadow on the sheet (Water.hlsl's surfaceShadow): CS's directional shadows (Volumetric Shadows' map when
 	// this variant has them) and the world's (terrain, clouds). The sheet is thin, so the surface's shadow serves throughout
@@ -520,8 +432,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float straightDepth = SharedData::GetScreenDepth(SceneDepth.Load(int3(input.Position.xy, 0)));
 	const float straightBehind = max(straightDepth - sheetDepth, 0.0);
 	// D121: and where it meets rock or any other mesh (the scene's depth just behind it)
-	if (FallGround::Whitening)
-		white = max(white, (1.0 - saturate(straightBehind / CONTACT_FOAM_REACH)) * CONTACT_FOAM * lip);
+	white = max(white, FallShading::ContactWhite(straightBehind, lip));
 	// D120: without Foam on the Falls, none: the streaks' foam is the scene's full light against the water's dim pre-lit
 	// colour, so even 15% of it laid a pale veil over every sheet (SS 971)
 	// D122: covered as the river's foam (FluidField::GetFoamCover): dense foam solidly, thin foam only in the bubbles and
@@ -531,16 +442,8 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// D137: the falls' own normal map again (D127's pattern): the zebra bands it was dropped for were the bake's foam and
 	// wake fields (D136), not the pattern. Two blurred samples, each a whole number of repeats along the scroll, so it
 	// moves exactly with the water and never resets; the lace where there is no normal map
-	float pattern = lace;
-	[branch] if (HasNormal)
-	{
-		const float p0 = length(NormalTex.SampleBias(WrapSampler, flow.uvA, 1.5).xy * 2.0 - 1.0);
-		const float p1 = length(NormalTex.SampleBias(WrapSampler, flow.uvA * float2(0.6, 2.0) + 0.37, 1.5).xy * 2.0 - 1.0);
-		pattern = saturate((p0 + p1) * 0.5 * 1.4);
-	}
-	// D142: dense foam fills in (the pattern only breaks its edges): its dark dashes inside white read as banding (SS 1036)
-	const float threshold = pattern * 0.5 * (1.0 - saturate(white) * 0.7);
-	const float foam = FallGround::Whitening && white > 0.02 ? smoothstep(threshold, threshold + 0.35, white * FOAM_DENSITY) * 0.95 : 0.0;
+	const float pattern = FallShading::FoamPattern(NormalTex, WrapSampler, HasNormal, flow);
+	const float foam = FallShading::FoamCover(white, pattern);
 	const float3 viewNormal = mul((float3x3)FrameBuffer::CameraView, normal - geometric);
 	const float2 offset = viewNormal.xy * float2(1.0, -1.0) * RefractionStrength * REFRACTION_SCREEN * region.y * saturate(straightBehind / 8.0) / max(sheetDepth / 4096.0, 1.0);  // D120: shrinks from 4096 units, was 1024
 	float2 pixel = clamp(input.Position.xy + offset, 0.5, region - 0.5);
@@ -585,7 +488,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// D127: aerated as the river's water (FluidField::ApplyAeration): toward its foam colour, a little (D120's re-saturated
 	// 1.5x colour was the largest mismatch beside the river)
 	const float3 foamColor = FluidField::FoamColor(waterLit, sceneLight);
-	float3 waterColor = lerp(waterLit, foamColor, aerated * AERATION_LIFT);
+	float3 waterColor = lerp(waterLit, foamColor, aerated * FallShading::AERATION_LIFT);
 	if (SharedData::enbSettings.EnableWater) {
 		// Water.hlsl's sun scattered in the water body
 		const float scatter = saturate(dot(normal, lightDirection) * 0.5 + 0.5) * saturate(dot(-toCamera, lightDirection) * 0.5 + 0.5);
@@ -599,7 +502,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float3 reflectionNormal = SafeNormalize(lerp(geometric, normal, ReflectionMagnitude), geometric);
 	const float3 reflected = reflect(-toCamera, reflectionNormal);
 	float3 environment = HasEnvironment ? EnvironmentTex.SampleLevel(ClampSampler, reflected, ENVIRONMENT_MIP * aerated).rgb : WithinLight(ReflectionColor, sceneLight);
-	environment = clamp(environment, 0.0, MAX_OUTPUT);  // NaN or a runaway texel becomes 0 or the cap, never a square
+	environment = clamp(environment, 0.0, FallShading::MAX_OUTPUT);  // NaN or a runaway texel becomes 0 or the cap, never a square
 	// D155: screen-space reflections over the cubemap, as the river's (Water.hlsl's SSR): the reflected ray marched through
 	// the scene's depth, the scene's colour where it meets something. The engine's SSR is made for a level water plane;
 	// the falls' sheets lean every way, so they march their own. Without it they mirrored only the sky (grey-blue)
@@ -641,26 +544,20 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 
 	// White water: D122, the river's foam colour from the same inputs, opaque over the rest (as ApplyFoamBlended)
 	color = lerp(color, foamColor, foam);
-	color = clamp(color, 0.0, MAX_OUTPUT);  // D3D's min and max return the other value for NaN
+	color = clamp(color, 0.0, FallShading::MAX_OUTPUT);  // D3D's min and max return the other value for NaN
 
 	// Faded at seams over a mesh leading it (D67, blended here instead of dithered) and where it meets what lies
 	// behind (no hard line where it enters the rock). D99: foam keeps the contact soft too, only shorter: added to it,
 	// foam made the line where the sheet enters a boulder wholly opaque and white, tracing the faceted intersection of
 	// the sheet's triangles with the rock's as a white sawtooth; and the water fades out toward its cut
-	const float contact = saturate(straightBehind / 4.0);
-	const float alpha = saturate(input.Fade.x) * lerp(contact, sqrt(contact), foam) * FallGround::CutFade(input.Clip) * (hasSource ? smoothstep(0.0, LIP_BLEND, input.BelowSource) : 1.0);  // D141: faded in under the lip
+	const float alpha = FallShading::Alpha(input.Fade.x, straightBehind, foam, input.Clip);
 	if (alpha <= 0.002)
 		discard;
 	// D108: Waterfall Shading debug "Depth Behind": the open water or air behind the sheet. D110: in bands of colour (a grey
 	// ramp read wrong through the tonemap): red under 50 units, yellow to 150, green to 300, blue to 600, magenta at the
 	// reach (nothing hit)
 	if (FallGround::DebugMode == 4) {
-		const float behind = input.Behind;
-		const float3 band = behind >= 599.0 ? float3(1.0, 0.0, 1.0) : behind >= 300.0 ? float3(0.0, 0.2, 1.0) :
-		                                                          behind >= 150.0     ? float3(0.0, 1.0, 0.0) :
-		                                                          behind >= 50.0      ? float3(1.0, 1.0, 0.0) :
-		                                                                                float3(1.0, 0.0, 0.0);
-		return float4(band * 0.5, 1.0);
+		return float4(FallShading::DepthBehindBand(input.Behind) * 0.5, 1.0);
 	}
 	return float4(color * alpha, alpha);  // Premultiplied
 }
@@ -674,7 +571,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 void PSDepth(VSOutput input)
 {
 	const float3 toCamera = SafeNormalize(-input.WorldPosition, float3(0.0, 0.0, 1.0));
-	if (input.Outward.w > 0.5 && dot(SafeNormalize(input.Outward.xyz, toCamera), toCamera) < -0.05)
+	if (FallShading::HiddenInnerSide(input.Outward, toCamera))
 		discard;
 	const float sheetDepth = SharedData::GetScreenDepth(input.Position.z);
 	const float straightBehind = max(SharedData::GetScreenDepth(SceneDepth.Load(int3(input.Position.xy, 0))) - sheetDepth, 0.0);
