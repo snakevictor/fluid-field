@@ -24,6 +24,8 @@ namespace FluidFieldSim
 		constexpr UINT DIFFUSE_SLOT = 121;  // D159: t121 diffuse, t122 normal map (were t102-t103, Light Limit Fix's local shadows)
 		constexpr UINT ENVIRONMENT_SLOT = 104;
 		constexpr UINT FRONT_DEPTH_SLOT = 105;     // D125
+		constexpr UINT BEHIND_DEPTH_SLOT = 112;    // D174: the falls' surface nearest behind their front
+		constexpr UINT FOAM_MAP_SLOT = 113;        // D174: the river's own Normals01, read as the foam's bubbles
 		constexpr UINT NOISE_SLOT = 106;           // D129: t106-t108
 		constexpr UINT REFRACTION_SLOT = 1;        // D159: Water.hlsl's RefractionTex
 		constexpr UINT WATER_DEPTH_SLOT = 7;       // D159: ...and DepthTex
@@ -173,6 +175,12 @@ namespace FluidFieldSim
 		frontDepthSRV = nullptr;
 		frontDepthState = nullptr;
 		frontDepthFailed = false;
+		behindDepth = nullptr;
+		behindDepthDSV = nullptr;
+		behindDepthSRV = nullptr;
+		behindPixelShader = nullptr;
+		behindShaderFailed = false;
+		riverFoamMaps.clear();
 		ReleaseShaders();
 	}
 
@@ -297,6 +305,18 @@ namespace FluidFieldSim
 		return depthPixelShader.get();
 	}
 
+	ID3D11PixelShader* FallRefraction::EnsureBehindShader()
+	{
+		if (behindPixelShader || behindShaderFailed)
+			return behindPixelShader.get();
+		behindPixelShader.attach(reinterpret_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSurface.hlsl", {}, "ps_5_0", "PSBehindDepth")));
+		if (!behindPixelShader) {
+			logger::warn("[Fluid Field] Refractive falls: the second depth layer's shader failed to compile; the foam where sheets meet is off");
+			behindShaderFailed = true;
+		}
+		return behindPixelShader.get();
+	}
+
 	bool FallRefraction::EnsureFrontDepth(ID3D11Device* a_device, ID3D11DepthStencilView* a_sceneDepth)
 	{
 		if (frontDepthFailed || !a_sceneDepth)
@@ -360,6 +380,21 @@ namespace FluidFieldSim
 			logger::warn("[Fluid Field] Refractive falls: no front surface depth (scene depth format {}); every sheet layer is drawn", static_cast<int>(sceneView.Format));
 			frontDepthFailed = true;
 			return false;
+		}
+		// D174: the second layer, the same kind of texture (the foam where sheets meet reads it)
+		behindDepth = nullptr;
+		behindDepthDSV = nullptr;
+		behindDepthSRV = nullptr;
+		if (FAILED(a_device->CreateTexture2D(&desc, nullptr, behindDepth.put())) || FAILED(a_device->CreateDepthStencilView(behindDepth.get(), &dsvDesc, behindDepthDSV.put())) ||
+			FAILED(a_device->CreateShaderResourceView(behindDepth.get(), &srvDesc, behindDepthSRV.put()))) {
+			behindDepth = nullptr;
+			behindDepthDSV = nullptr;
+			behindDepthSRV = nullptr;
+			logger::warn("[Fluid Field] Refractive falls: no second depth layer; the foam where sheets meet is off");
+		} else {
+			Util::SetResourceName(behindDepth.get(), "FluidField::FallBehindDepth");
+			Util::SetResourceName(behindDepthDSV.get(), "FluidField::FallBehindDepth DSV");
+			Util::SetResourceName(behindDepthSRV.get(), "FluidField::FallBehindDepth SRV");
 		}
 		Util::SetResourceName(frontDepth.get(), "FluidField::FallFrontDepth");
 		Util::SetResourceName(frontDepthDSV.get(), "FluidField::FallFrontDepth DSV");
@@ -608,10 +643,23 @@ namespace FluidFieldSim
 					// D171: the water type's own normal maps over Normals01-03 (t4-t6): a flowmap piece of the river binds only
 					// the first, and the falls variant (no flowmap) read nothing from the other two in the frames such a piece
 					// was the one captured: their ripples went flat and tilted, the reflection turned to the ground below
+					// D171: the water type's own normal maps over Normals01-03 (t4-t6): a flowmap piece of the river binds only
+					// the first, and the falls variant (no flowmap) read nothing from the other two in the frames such a piece
+					// was the one captured: their ripples went flat and tilted, the reflection turned to the ground below
 					if (draw->look.noise[0] && draw->look.noise[1] && draw->look.noise[2]) {
 						ID3D11ShaderResourceView* const* normalMaps = draw->look.noise;
 						a_context->PSSetShaderResources(RIVER_NORMALS_SLOT, 3, normalMaps);
 					}
+					// D174: the river's own Normals01 as last captured, for the foam's bubbles (FallShading::FoamPattern, as the
+					// river's foam reads it). The form's maps loaded by path (t4-t6 above) are the engine's 16x16 stand-ins, flat:
+					// the real ones there made the falls' ripples (on their stretched flow coordinates) reflect as shards, SS 1196
+					ID3D11ShaderResourceView* captured[RiverCapture::VIEW_COUNT];
+					state->GetViews(captured);
+					auto& foamMap = riverFoamMaps[state];
+					if (captured[RIVER_NORMALS_SLOT])
+						foamMap.copy_from(captured[RIVER_NORMALS_SLOT]);
+					ID3D11ShaderResourceView* foamView = foamMap ? foamMap.get() : draw->look.noise[0];
+					a_context->PSSetShaderResources(FOAM_MAP_SLOT, 1, &foamView);
 					const bool own = draw->riverVertexShader && draw->riverPixelShader;
 					a_context->VSSetShader(own ? draw->riverVertexShader : a_params.riverVertexShader, nullptr, 0);
 					a_context->PSSetShader(own ? draw->riverPixelShader : a_params.riverPixelShader, nullptr, 0);
@@ -670,6 +718,7 @@ namespace FluidFieldSim
 			}
 		};
 		ID3D11ShaderResourceView* front = nullptr;
+		ID3D11ShaderResourceView* behind = nullptr;  // D174
 		// D172: its GPU time also holds the wait for the work before it (the depth copy waits for it): PresentMon put the
 		// see-through falls at 0.7 ms over vanilla's where this read 3 ms
 		globals::profiler->BeginPass("FluidField::Falls Front Depth");
@@ -683,6 +732,19 @@ namespace FluidFieldSim
 			a_context->VSSetShader(vertexShader.get(), nullptr, 0);
 			a_context->PSSetShader(depthShader, nullptr, 0);
 			drawMeshes(false);
+			// D174: the second layer: the falls' surface nearest behind their front (PSBehindDepth leaves the front out), cleared
+			// to far where there is none: the foam where sheets meet is per pixel from it
+			if (auto* behindShader = EnsureBehindShader(); behindShader && behindDepthDSV) {
+				a_context->OMSetRenderTargets(0, nullptr, behindDepthDSV.get());
+				a_context->ClearDepthStencilView(behindDepthDSV.get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+				ID3D11ShaderResourceView* frontView[1] = { frontDepthSRV.get() };
+				a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, frontView);
+				a_context->PSSetShader(behindShader, nullptr, 0);
+				drawMeshes(false);
+				ID3D11ShaderResourceView* noFront[1] = { nullptr };
+				a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, noFront);
+				behind = behindDepthSRV.get();
+			}
 			a_context->OMSetRenderTargets(1, &a_params.target, a_params.depth);
 			a_context->OMSetDepthStencilState(depthState.get(), 0);
 			a_context->PSSetShader(shader, nullptr, 0);
@@ -691,6 +753,9 @@ namespace FluidFieldSim
 		globals::profiler->EndPass();
 		ID3D11ShaderResourceView* frontViews[1] = { front ? front : a_params.sceneDepth };
 		a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, frontViews);
+		// D174: with no second layer, the scene's depth: the meeting foam then only at what lies behind (as the contact's)
+		ID3D11ShaderResourceView* behindViews[1] = { behind ? behind : a_params.sceneDepth };
+		a_context->PSSetShaderResources(BEHIND_DEPTH_SLOT, 1, behindViews);
 		data.hasFront = front ? 1u : 0u;
 		// D159: the river's state as captured (its textures, shadow maps, lights, samplers and the contents of its constant
 		// buffers), then ours over the slots the falls variant reads: what lies behind (t1, t7: the pre-water scene and the
@@ -705,6 +770,7 @@ namespace FluidFieldSim
 			views[REFRACTION_SLOT] = sceneCopySRV.get();
 			views[WATER_DEPTH_SLOT] = a_params.sceneDepth;
 			views[FRONT_DEPTH_SLOT] = frontViews[0];
+			views[BEHIND_DEPTH_SLOT] = behindViews[0];  // D174
 			views[HEIGHTS_SLOT] = a_params.poolHeights;
 			views[VERTEX_CLIP_SLOT] = a_params.vertexClip;
 			a_context->PSSetShaderResources(0, RiverCapture::VIEW_COUNT, views);
@@ -741,5 +807,6 @@ namespace FluidFieldSim
 		}
 		ID3D11ShaderResourceView* none[1] = { nullptr };
 		a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, none);
+		a_context->PSSetShaderResources(BEHIND_DEPTH_SLOT, 1, none);
 	}
 }

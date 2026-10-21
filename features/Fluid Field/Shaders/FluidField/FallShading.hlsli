@@ -15,24 +15,27 @@ namespace FallShading
 	static const float FRONT_EPSILON = 2.0;
 	/** D129: world units one repeat of the falls' texture (their flow coordinates) spans, for the water's normal maps' scale. */
 	static const float FALLS_UV_WORLD = 512.0;
-	/** D127: how much of the white water reaches the foam cover: below 1, even the densest bands stay patchy where the pattern is high, as the river's foam (solid bands read as paint). */
-	static const float FOAM_DENSITY = 0.7;
-	/** D121: world units from a cut line (FallGround::ClipDistance) over which the water foams. */
-	static const float CUT_FOAM_REACH = 24.0;
+	/** D174: world units over the water below over which the falls foam where they enter it. */
+	static const float WATER_FOAM_REACH = 64.0;
+	/** D174: world units under the water below over which the falls' foam fades out. */
+	static const float WATER_FOAM_SINK = 8.0;
 	/** D141: world units below the water a fall pours out of over which the sheet fades in: the river runs on into the falling water, no seam. */
 	static const float LIP_BLEND = 24.0;
 	/** D143: world units below the lip's blend over which the other foam (seams, sheets meeting, rock contact) comes in. */
 	static const float LIP_QUIET = 48.0;
 	/** D145: seconds of flow on a sheet before its seams, meets, cuts and contacts may foam (twice this to full). */
 	static const float CREST_QUIET_SECONDS = 0.3;
-	/** D147: world units from what lies behind over which the contact foams, soft as the river's shore. */
-	static const float CONTACT_FOAM_REACH = 32.0;
-	/** D121: how white a seam's overlap and a mesh's contact foam at most. */
-	static const float SEAM_FOAM = 0.7;
-	static const float CONTACT_FOAM = 0.45;
-	/** D128: world units from another sheet over which the water foams where two meet, and how white at most. */
-	static const float MEET_FOAM_REACH = 64.0;
-	static const float MEET_FOAM = 1.0;
+	/** D147: world units from what lies behind (rock, ground, any mesh) over which the contact foams, soft as the river's shore. */
+	static const float CONTACT_FOAM_REACH = 64.0;
+	/** D128, D174: world units from the next sheet behind over which the water foams where two meet (their overlap, D173). */
+	static const float MEET_FOAM_REACH = 96.0;
+	/** D174: the river's foam pattern (WaterNormal.hlsli, FluidField::GetFoamCover): world units a tile of it covers, the seconds
+	 * between its two phases' restarts and the fastest it drifts (the river's) */
+	static const float FOAM_TILE = 160.0;
+	static const float FOAM_PERIOD = 0.6;
+	static const float FOAM_MAX_DRIFT = 120.0;
+	/** D174: the fastest the foam's pattern drifts on level water (along the bake's flow, whose texel-to-texel changes it must not open). */
+	static const float FOAM_LEVEL_DRIFT = 40.0;
 	/** D127: how far aerated water's colour goes toward the river's foam colour. */
 	static const float AERATION_LIFT = 0.06;
 	/** The brightest the falls add: the scene is HDR, but one runaway value is a square after bloom and the upscalers. */
@@ -60,6 +63,20 @@ namespace FallShading
 
 	/** D127: how much of the falls' own normal map tilts the surface (it is drawn for an opaque, diffuse sheet: high contrast). */
 	static const float NORMAL_STRENGTH = 0.8;
+
+	/**
+	 * D174: a tangent-space normal (x across the sheet, y down it, z along a_normal) in world axes, the frame from the sheet's
+	 * own normal alone. PerturbNormal's frame, from the screen derivatives of the flow coordinates, is constant over each
+	 * triangle (the coordinates are interpolated linearly) and turned at every edge: the detail normal with it, hard-edged facets
+	 * in the reflection (SS 1203). Along the bake's flow instead, its direction changing from texel to texel did the same.
+	 */
+	float3 SheetNormal(float3 a_normal, float3 a_tangentNormal)
+	{
+		float3 down = float3(0.0, 0.0, -1.0) - a_normal * dot(float3(0.0, 0.0, -1.0), a_normal);
+		down = length(down) > 0.1 ? normalize(down) : float3(0.0, 1.0, 0.0);
+		const float3 across = normalize(cross(a_normal, down));
+		return SafeNormalize(across * a_tangentNormal.x + down * a_tangentNormal.y + a_normal * a_tangentNormal.z, a_normal);
+	}
 
 	/**
 	 * A tangent-space normal (x, y along a_uv's axes, z along a_normal) in world axes, the frame from the screen derivatives
@@ -108,48 +125,79 @@ namespace FallShading
 	}
 
 	/**
-	 * D121, D128, D146: the white water along where the falls break: their cut lines (a_clip), seams over a leading mesh
-	 * (a_seamFade, FallGround::Fade's x) and where two sheets meet (a_toOtherSheet), only where the water already falls
-	 * (steep, from the flow's velocity) and past the lip (a_lip).
+	 * D174: how strongly the falls foam here (0 to 1), wherever they touch something: the next sheet just behind
+	 * (a_sheetGap, world units to the falls' second depth layer), rock, ground or any mesh just behind (a_sceneGap) and the
+	 * water they pour into (a_aboveWater, FallGround::Fade's y). Per pixel: the per-vertex cut, seam and meeting distances
+	 * drew it in the triangles' shape (white wedges, SS 1150-1155). Not on the lip (a_lip: the crest stays glassy, D145).
 	 */
-	float LineWhite(float3 a_velocity, float a_clip, float a_seamFade, float a_toOtherSheet, float a_lip)
+	float ContactStrength(float a_sheetGap, float a_sceneGap, float a_aboveWater, float a_lip)
 	{
 		if (!FallGround::Whitening)
 			return 0.0;
-		const float steep = saturate((abs(a_velocity.z) / max(length(a_velocity), 1e-3) - 0.4) / 0.4);
-		const float quiet = a_lip * steep;
-		float white = (1.0 - saturate(a_clip / CUT_FOAM_REACH)) * quiet;
-		white = max(white, (1.0 - saturate(a_seamFade)) * SEAM_FOAM * quiet);
-		return max(white, (1.0 - saturate(a_toOtherSheet / MEET_FOAM_REACH)) * MEET_FOAM * quiet);
+		float contact = 1.0 - saturate(a_sheetGap / MEET_FOAM_REACH);
+		contact = max(contact, 1.0 - saturate(a_sceneGap / CONTACT_FOAM_REACH));
+		contact = max(contact, 1.0 - saturate(max(a_aboveWater, 0.0) / WATER_FOAM_REACH));
+		// Falling off as the river's simulated foam does, a narrow solid core and a wide tail broken into the pattern's
+		// bubbles: linear over a short reach, it drew a solid white outline
+		// Stops at the water below (a_aboveWater is negative under its surface): seen through the water, foam under it read
+		// as floating behind the surface
+		return contact * contact * a_lip * saturate(1.0 + a_aboveWater / WATER_FOAM_SINK);
 	}
 
-	/** D121, D147: the white water where the sheet meets rock or any mesh (a_behind: world units to the scene behind it). */
-	float ContactWhite(float a_behind, float a_lip)
+	/** D174: the river's foam pattern on one fixed world plane (its axes a_u, a_v), two phases drifting (a_drift, world units a second along them) and restarting. */
+	float FoamPlane(Texture2D<float4> a_tex, SamplerState a_sampler, float3 a_world, float3 a_u, float3 a_v, float2 a_drift, float a_time, float a_mipBias)
 	{
-		return FallGround::Whitening ? (1.0 - saturate(a_behind / CONTACT_FOAM_REACH)) * CONTACT_FOAM * a_lip : 0.0;
+		const float2 p = float2(dot(a_world, a_u), dot(a_world, a_v));
+		// Each patch restarts at its own time (as the river's, D68: one clock pulsed the whole foam)
+		const float2 patch = p / (FOAM_TILE * 2.5);
+		const float2 cell = floor(patch);
+		const float2 f = patch - cell;
+		const float2 s = f * f * (3.0 - 2.0 * f);
+		const float4 corner = frac(sin(float4(dot(cell, float2(127.1, 311.7)), dot(cell + float2(1, 0), float2(127.1, 311.7)), dot(cell + float2(0, 1), float2(127.1, 311.7)),
+									   dot(cell + float2(1, 1), float2(127.1, 311.7)))) *
+								   43758.5453);
+		const float offset = lerp(lerp(corner.x, corner.y, s.x), lerp(corner.z, corner.w, s.x), s.y);
+		const float time = a_time / FOAM_PERIOD + offset * 2.0;
+		const float phase0 = frac(time);
+		const float phase1 = frac(time + 0.5);
+		const float2 drift = a_drift * FOAM_PERIOD / FOAM_TILE;
+		const float2 uv = p / FOAM_TILE;
+		const float p0 = length(a_tex.SampleBias(a_sampler, uv - drift * phase0, a_mipBias).xy * 2.0 - 1.0);
+		const float p1 = length(a_tex.SampleBias(a_sampler, uv - drift * phase1 + 0.37, a_mipBias).xy * 2.0 - 1.0);
+		return saturate(lerp(p0, p1, abs(phase0 * 2.0 - 1.0)) * 1.4);
 	}
 
 	/**
-	 * D122, D127, D137: the foam's bubble pattern: two blurred samples of the falls' own normal map running on the flow, each
-	 * a whole number of repeats along the scroll; FallGround's lace where there is no normal map.
+	 * D174: the river's foam pattern (FluidField::GetFoamCover's look: the water type's normal map read as bubbles and
+	 * streaks, a tile in world units, two phases drifting on the flow and restarting often) on the sheet, from three fixed world
+	 * planes blended by the sheet's normal (a_normal). Fixed axes: laid on the sheet's own axes (from its per-pixel normal) and
+	 * world positions ~1e5 units out, a hundredth of a degree between two triangles' normals moved the pattern tens of units, a
+	 * lattice of the triangles (SS 1172, 1182). The drift: down steep water at FOAM_MAX_DRIFT, along the bake's flow (a_velocity)
+	 * on level water at FOAM_LEVEL_DRIFT at most. Dragged by the bake's velocity at full speed, its small changes from one texel to
+	 * the next opened the pattern into a larger lattice on the bake's grid (SS 1191-1193).
 	 */
-	float FoamPattern(Texture2D<float4> a_normalTex, SamplerState a_sampler, bool a_hasNormal, FallGround::FlowSample a_flow)
+	float FoamPattern(Texture2D<float4> a_tex, SamplerState a_sampler, float3 a_world, float3 a_normal, float3 a_velocity, float a_time, float a_mipBias)
 	{
-		float pattern = FallGround::Lace(a_flow);
-		[branch] if (a_hasNormal)
-		{
-			const float p0 = length(a_normalTex.SampleBias(a_sampler, a_flow.uvA, 1.5).xy * 2.0 - 1.0);
-			const float p1 = length(a_normalTex.SampleBias(a_sampler, a_flow.uvA * float2(0.6, 2.0) + 0.37, 1.5).xy * 2.0 - 1.0);
-			pattern = saturate((p0 + p1) * 0.5 * 1.4);
-		}
+		float3 w = pow(abs(a_normal), 4.0);
+		w /= max(w.x + w.y + w.z, 1e-4);
+		float2 level = a_velocity.xy;
+		level *= min(1.0, FOAM_LEVEL_DRIFT / max(length(level), 1e-3));
+		const float2 fall = float2(0.0, FOAM_MAX_DRIFT);  // along v, down
+		float pattern = 0.0;
+		[branch] if (w.z > 0.01)
+			pattern += w.z * FoamPlane(a_tex, a_sampler, a_world, float3(1, 0, 0), float3(0, 1, 0), level, a_time, a_mipBias);
+		[branch] if (w.x > 0.01)
+			pattern += w.x * FoamPlane(a_tex, a_sampler, a_world + 0.31 * FOAM_TILE, float3(0, 1, 0), float3(0, 0, -1), fall, a_time, a_mipBias);
+		[branch] if (w.y > 0.01)
+			pattern += w.y * FoamPlane(a_tex, a_sampler, a_world + 0.67 * FOAM_TILE, float3(1, 0, 0), float3(0, 0, -1), fall, a_time, a_mipBias);
 		return pattern;
 	}
 
-	/** D122, D142: how much of the pixel the foam covers: dense foam solid, thin foam only where the pattern lets it through. */
-	float FoamCover(float a_white, float a_pattern)
+	/** D174: how much of the pixel the foam covers, as the river's (dense foam solid, thin foam only in the pattern's bubbles). */
+	float FoamCover(float a_contact, float a_pattern)
 	{
-		const float threshold = a_pattern * 0.5 * (1.0 - saturate(a_white) * 0.7);
-		return FallGround::Whitening && a_white > 0.02 ? smoothstep(threshold, threshold + 0.35, a_white * FOAM_DENSITY) * 0.95 : 0.0;
+		const float threshold = a_pattern * 0.5;
+		return a_contact > 0.02 ? smoothstep(threshold, threshold + 0.25, a_contact) * 0.95 : 0.0;
 	}
 
 	/**

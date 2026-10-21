@@ -545,6 +545,7 @@ namespace FluidFieldSim
 		uint32_t clipTested = 0;
 		static constexpr float SOURCE_CROSSING_BAND = 96.0f;  ///< D141: a water level this near a mesh's top is the water it pours out of: no crossing foam there
 		static constexpr float SOURCE_DEPTH_MOST = 240.0f;    ///< D138: the most a water plane may lie over a falls vertex and still be the water it pours out of
+		static constexpr float CREST_RISE = 64.0f;            ///< D174: the most a vertex on a mesh's upper half may stand over the water it pours out of (the crest's bulge)
 		static constexpr float SOURCE_REACH = 96.0f;          ///< D124: world units past a water plane's bound a falls vertex still counts as pouring out of it (the lip leans out over the edge)
 		static constexpr float CLIP_REACH = 240.0f;           ///< D56: world units each ray out of a vertex looks for rock
 		static constexpr float CLIP_MARGIN = 6.0f;            ///< A vertex this far inside rock still shows (water lying on it)

@@ -77,7 +77,8 @@ TextureCube<float4> EnvironmentTex : register(t104);
 Texture2D<float> FrontDepth : register(t105);
 Texture2D<float4> Noise1Tex : register(t106);  // D129: the water type's normal maps
 Texture2D<float4> Noise2Tex : register(t107);
-Texture2D<float4> Noise3Tex : register(t108);  // D125: the scene's depth with the falls' front surface drawn in
+Texture2D<float4> Noise3Tex : register(t108);      // D125: the scene's depth with the falls' front surface drawn in
+Texture2D<float> NextSheetDepth : register(t112);  // D174: the falls' surface nearest behind their front (cleared to far where none)
 
 struct VSOutput
 {
@@ -415,7 +416,6 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// cut lines, seams and where sheets meet, only where it already falls (FallShading::LineWhite, D159: shared with the
 	// river shader's falls)
 	const float lip = FallShading::Lip(input.BelowSource, flow.runTime);
-	float white = FallShading::LineWhite(flow.velocity, input.Clip, input.Fade.x, input.ToOtherSheet, lip);
 
 	// The sun's shadow on the sheet (Water.hlsl's surfaceShadow): CS's directional shadows (Volumetric Shadows' map when
 	// this variant has them) and the world's (terrain, clouds). The sheet is thin, so the surface's shadow serves throughout
@@ -432,7 +432,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float straightDepth = SharedData::GetScreenDepth(SceneDepth.Load(int3(input.Position.xy, 0)));
 	const float straightBehind = max(straightDepth - sheetDepth, 0.0);
 	// D121: and where it meets rock or any other mesh (the scene's depth just behind it)
-	white = max(white, FallShading::ContactWhite(straightBehind, lip));
+	// D174: foam wherever the sheet touches something, per pixel (FallShading::ContactStrength)
+	const float sheetGap = max(SharedData::GetScreenDepth(NextSheetDepth.Load(int3(input.Position.xy, 0))) - sheetDepth, 0.0);
+	const float contact = FallShading::ContactStrength(sheetGap, straightBehind, input.Fade.y, lip);
 	// D120: without Foam on the Falls, none: the streaks' foam is the scene's full light against the water's dim pre-lit
 	// colour, so even 15% of it laid a pale veil over every sheet (SS 971)
 	// D122: covered as the river's foam (FluidField::GetFoamCover): dense foam solidly, thin foam only in the bubbles and
@@ -442,8 +444,16 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// D137: the falls' own normal map again (D127's pattern): the zebra bands it was dropped for were the bake's foam and
 	// wake fields (D136), not the pattern. Two blurred samples, each a whole number of repeats along the scroll, so it
 	// moves exactly with the water and never resets; the lace where there is no normal map
-	const float pattern = FallShading::FoamPattern(NormalTex, WrapSampler, HasNormal, flow);
-	const float foam = FallShading::FoamCover(white, pattern);
+	// D174: the river's foam pattern on the sheet, drifting on the flow (the water type's normal map: Noise1Tex)
+	const float3 sheetNormal = SafeNormalize(input.Normal, float3(0.0, 0.0, 1.0));
+	float foam = 0.0;
+	[branch] if (contact > 0.02)
+	{
+		const float3 world = input.WorldPosition + FrameBuffer::CameraPosAdjust.xyz;
+		const float pattern = HasNoise ? FallShading::FoamPattern(Noise1Tex, WrapSampler, world, sheetNormal, flow.velocity, SharedData::Timer, SharedData::MipBias) :
+		                                 FallShading::FoamPattern(NormalTex, WrapSampler, world, sheetNormal, flow.velocity, SharedData::Timer, SharedData::MipBias);
+		foam = FallShading::FoamCover(contact, pattern);
+	}
 	const float3 viewNormal = mul((float3x3)FrameBuffer::CameraView, normal - geometric);
 	const float2 offset = viewNormal.xy * float2(1.0, -1.0) * RefractionStrength * REFRACTION_SCREEN * region.y * saturate(straightBehind / 8.0) / max(sheetDepth / 4096.0, 1.0);  // D120: shrinks from 4096 units, was 1024
 	float2 pixel = clamp(input.Position.xy + offset, 0.5, region - 0.5);
@@ -578,6 +588,17 @@ void PSDepth(VSOutput input)
 	const float sheetDepth = SharedData::GetScreenDepth(input.Position.z);
 	const float straightBehind = max(SharedData::GetScreenDepth(SceneDepth.Load(int3(input.Position.xy, 0))) - sheetDepth, 0.0);
 	if (saturate(input.Fade.x) * saturate(straightBehind / 4.0) * FallGround::CutFade(input.Clip) < 0.5)
+		discard;
+}
+
+/**
+ * D174: the falls' surface nearest behind their front (the second layer, for the foam where sheets meet): PSDepth's
+ * discards, and the front itself (within FallShading::FRONT_EPSILON of FrontDepth) left out; the depth test keeps the nearest.
+ */
+void PSBehindDepth(VSOutput input)
+{
+	PSDepth(input);
+	if (!FallShading::BehindFront(SharedData::GetScreenDepth(input.Position.z), SharedData::GetScreenDepth(FrontDepth.Load(int3(input.Position.xy, 0)))))
 		discard;
 }
 #endif  // PSHADER

@@ -1300,22 +1300,37 @@ namespace FluidFieldSim
 					if (positions[v].x >= plane[0] && positions[v].x <= plane[2] && positions[v].y >= plane[1] && positions[v].y <= plane[3])
 						water = std::max(water, plane[4]);
 				}
-				// D139: the height above the water it falls into for its foam, per vertex: the highest plane under it from every
-				// plane near the mesh (sources), not only those under its own top. Per mesh, the band stopped on a straight line
-				// where the next mesh up found none (SS 1031, 1032). The cut below keeps the mesh's own planes (D70)
-				float under = -FLT_MAX;
-				for (const auto& plane : sources) {
-					if (positions[v].x >= plane[0] && positions[v].x <= plane[2] && positions[v].y >= plane[1] && positions[v].y <= plane[3] && plane[4] <= positions[v].z + 8.0f)
-						under = std::max(under, plane[4]);
-				}
-				const float above = under > -FLT_MAX ? positions[v].z - under : NO_WATER;
 				// D124: how far under the water it pours out of (none where it starts under another sheet, mid-fall)
+				// D174: on a mesh's upper half, up to CREST_RISE under it: the crest of a vanilla mesh bulges over the river it
+				// pours out of, found no source there (its lip gate open) and took the river for the water it falls into (a rim
+				// of foam along the lip, the seam between the river and the falls)
+				const bool upper = positions[v].z > (top + bottom) * 0.5f;
+				const float rise = upper ? CREST_RISE : 8.0f;
 				float source = FLT_MAX;
 				for (const auto& plane : sources) {
 					if (positions[v].x >= plane[0] - SOURCE_REACH && positions[v].x <= plane[2] + SOURCE_REACH && positions[v].y >= plane[1] - SOURCE_REACH &&
-						positions[v].y <= plane[3] + SOURCE_REACH && plane[4] >= positions[v].z - 8.0f && plane[4] <= positions[v].z + SOURCE_DEPTH_MOST)
+						positions[v].y <= plane[3] + SOURCE_REACH && plane[4] >= positions[v].z - rise && plane[4] <= positions[v].z + SOURCE_DEPTH_MOST)
 						source = std::min(source, plane[4]);
 				}
+				// D174: on the upper half, not the water it pours out of (lower down, a vertex just over its pool finds that as its
+				// source too, and must keep it). D139: the height above the water it falls into for its foam, per vertex: the highest plane under it from every
+				// plane near the mesh (sources), not only those under its own top. Per mesh, the band stopped on a straight line
+				// where the next mesh up found none (SS 1031, 1032). The cut below keeps the mesh's own planes (D70)
+				float under = -FLT_MAX;
+				float over = FLT_MAX;
+				for (const auto& plane : sources) {
+					if (positions[v].x >= plane[0] && positions[v].x <= plane[2] && positions[v].y >= plane[1] && positions[v].y <= plane[3] && (!upper || plane[4] != source)) {
+						if (plane[4] <= positions[v].z + 8.0f)
+							under = std::max(under, plane[4]);
+						else
+							over = std::min(over, plane[4]);
+					}
+				}
+				// D174: under every plane (drawn under the pool's surface), the nearest above, negative: as none (held at 512), the
+				// triangles across the waterline mixed it with their neighbours' few units and drew a lattice of foam
+				if (under == -FLT_MAX && over < FLT_MAX)
+					under = over;
+				const float above = under > -FLT_MAX ? positions[v].z - under : NO_WATER;
 				const float below = source < FLT_MAX ? std::max(source - positions[v].z, 0.0f) : NO_WATER;
 				// D70: only near the mesh's foot, where it goes into its water: higher up, a plane whose bound covers
 				// the fall (a pool partway down, a whole cell) cut holes in the middle of the sheet

@@ -3912,3 +3912,54 @@ Entry format:
     foam is per vertex (its edges take the triangles' shape at any margin): to
     be per pixel, from the depth just behind the sheet (as ContactWhite).
 -   References: D113, D136, D172
+
+## D174: Contact foam per pixel, on fixed axes; the falls' detail normal on the sheet's own axes
+
+-   Date: 2026-10-21
+-   Context: the meeting and cut foam was decided per vertex (VertexClip): its
+    edges took the triangles' shape at any margin (white wedges, SS 1150-1155).
+    The user: no smeary, distorted look from the bake/flow; foam at every
+    contact, driven by the flow; the same look as the shallow water's foam.
+-   Decision:
+    -   **Contact strength per pixel** (FallShading::ContactStrength): the
+        largest of the next sheet just behind (a second falls depth layer,
+        PSBehindDepth: the falls' surface nearest behind their front, t112),
+        rock, ground or any mesh behind (the scene's depth) and the water below
+        (Fade.y), each over its reach (MEET 96, CONTACT 64, WATER 64),
+        squared (a narrow solid core, a wide tail broken into the pattern),
+        gated by the lip (D145). It stops under the water's surface
+        (WATER_FOAM_SINK 8).
+    -   **The river's foam look**: its pattern (the water type's Normals01 read
+        as bubbles, FOAM_TILE 160, two phases restarting every 0.6 s, the
+        river's threshold) and colour. On three fixed world planes blended by
+        the sheet's normal (pow 4): laid on the sheet's own axes, dotted with
+        world positions ~1e5 units out, a hundredth of a degree between two
+        triangles' normals moved the pattern tens of units (a lattice of the
+        triangles, SS 1172, 1182). Drift down steep water at 120 units a
+        second, along the bake's flow on level water at 40 at most: dragged by
+        the bake's velocity per pixel, its changes from texel to texel opened a
+        larger lattice on the bake's grid (SS 1191-1193).
+    -   **The foam's texture is the river's own**, as captured (t113): the
+        form's maps loaded by path (look.noise, bound over t4-t6 since D171)
+        are the engine's 16x16 stand-ins, flat. t4-t6 keep those: the real maps
+        there turned on the falls' water-type ripples, on their stretched flow
+        coordinates (shards in the reflection, SS 1196). Proper ripples on the
+        falls are plans/next-visuals.md step 3.
+    -   **The detail normal on the sheet's own axes** (FallShading::SheetNormal:
+        down the sheet and across it, from its normal alone), not
+        PerturbNormal's frame from the screen derivatives of the flow
+        coordinates: constant over each triangle, it turned the falls' normal
+        map at every edge (hard-edged facets in the reflection, SS 1203, found
+        by removing one layer per screen quarter). Along the bake's flow, its
+        direction changing from texel to texel did the same.
+    -   **Height over the water per vertex** (FallSites): a vertex under every
+        plane takes the nearest above (negative), not none (held at 512, mixed
+        across the waterline's triangles); on a mesh's upper half a vertex finds
+        the water it pours out of up to CREST_RISE 64 under it (the crest's
+        bulge), and that plane is not the water it falls into (a rim of foam
+        along the lip).
+-   Tried and reverted: the falls' own depth test (a sheet weaving under the
+    ground drawing only its foam there); the lattice was not that.
+-   Left: the rim and waterline changes are not yet checked on screen; the falls
+    read about 35% darker than the river across a lip (cause not measured).
+-   References: D121, D128, D145, D147, D171, D173, plans/next-visuals.md

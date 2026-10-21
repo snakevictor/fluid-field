@@ -5,6 +5,7 @@
 #include <d3d11.h>
 #include <winrt/base.h>
 
+#include <array>
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
@@ -125,6 +126,8 @@ namespace FluidFieldSim
 		bool EnsureSceneCopy(ID3D11Device* a_device, ID3D11Texture2D* a_source, ID3D11RenderTargetView* a_target);
 		/** @brief D125: the front surface's depth pass shader (FallSurface.hlsl's PSDepth); null if it fails to compile. */
 		ID3D11PixelShader* EnsureDepthShader();
+		/** @brief D174: FallSurface.hlsl's PSBehindDepth, compiled once (null if it failed). */
+		ID3D11PixelShader* EnsureBehindShader();
 		/** @brief D125: a depth target like the scene's (a_sceneDepth's texture), its depth and shader views and the pass's state. */
 		bool EnsureFrontDepth(ID3D11Device* a_device, ID3D11DepthStencilView* a_sceneDepth);
 
@@ -214,6 +217,13 @@ namespace FluidFieldSim
 		winrt::com_ptr<ID3D11ShaderResourceView> frontDepthSRV;
 		winrt::com_ptr<ID3D11DepthStencilState> frontDepthState;
 		bool frontDepthFailed = false;
+		winrt::com_ptr<ID3D11Texture2D> behindDepth;  ///< D174: the second layer (the falls' surface nearest behind their front)
+		winrt::com_ptr<ID3D11DepthStencilView> behindDepthDSV;
+		winrt::com_ptr<ID3D11ShaderResourceView> behindDepthSRV;
+		winrt::com_ptr<ID3D11PixelShader> behindPixelShader;
+		bool behindShaderFailed = false;
+		/** D174: per captured river state, the last Normals01 (t4) it had bound: the foam's bubbles (FOAM_MAP_SLOT). */
+		std::unordered_map<const RiverCapture*, winrt::com_ptr<ID3D11ShaderResourceView>> riverFoamMaps;
 		bool lastRiverShader = false;                     ///< D159: which shader drew the falls last (logged when it changes)
 		const ID3D11Texture2D* preWaterSource = nullptr;  ///< D123: what the pre-water copy was taken from, and in which frame
 		uint32_t preWaterFrame = UINT32_MAX;

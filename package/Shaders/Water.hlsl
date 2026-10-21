@@ -474,8 +474,10 @@ cbuffer FallSurfaceCB : register(b7)
 	uint FallHasFront : packoffset(c9.x);
 };
 
-Texture2D<float4> FallNormalTex : register(t122);   // The piece's own normal map (vanilla's falls), on its flow
-Texture2D<float4> FallFrontDepth : register(t105);  // D125: the scene's depth with the falls' front surface drawn in
+Texture2D<float4> FallNormalTex : register(t122);    // The piece's own normal map (vanilla's falls), on its flow
+Texture2D<float4> FallFrontDepth : register(t105);   // D125: the scene's depth with the falls' front surface drawn in
+Texture2D<float4> FallBehindDepth : register(t112);  // D174: the falls' surface nearest behind their front (cleared to far where none)
+Texture2D<float4> FallFoamTex : register(t113);      // D174: the river's own Normals01, read as the foam's bubbles
 
 /** D159: the sheet's geometric normal at this pixel, turned to the camera: the falls' "up" wherever the river's is (0, 0, 1). */
 static float3 FallUp = float3(0, 0, 1);
@@ -1223,7 +1225,8 @@ PS_OUTPUT main(PS_INPUT input)
 #			if defined(FLUID_FIELD_FALLS)
 	// D159: what of the sheet shows (FallShading, as FallSurface.hlsl): only the falls' front surface (D125, D126), not an
 	// inner side over another sheet (D100, D103); its normal and plane stand in for the river's up and ReflectPlane
-	if (FallHasFront && FallShading::BehindFront(SharedData::GetScreenDepth(input.HPosition.z), SharedData::GetScreenDepth(FallFrontDepth.Load(int3(input.HPosition.xy, 0)).x)))
+	const float fallDepth = SharedData::GetScreenDepth(input.HPosition.z);
+	if (FallHasFront && FallShading::BehindFront(fallDepth, SharedData::GetScreenDepth(FallFrontDepth.Load(int3(input.HPosition.xy, 0)).x)))
 		discard;
 	if (FallShading::HiddenInnerSide(input.FallOutward, -viewDirection))
 		discard;
@@ -1243,9 +1246,12 @@ PS_OUTPUT main(PS_INPUT input)
 	// The falls' white water and fades (FallShading), from the scene's depth just behind the sheet
 	const float fallAerated = FallShading::Aerated(fallFlow.runTime);
 	const float fallLip = FallShading::Lip(input.FallData.y, fallFlow.runTime);
-	const float fallBehind = max(SharedData::GetScreenDepth(DepthTex.Load(int3(input.HPosition.xy, 0)).x) - SharedData::GetScreenDepth(input.HPosition.z), 0.0);
-	const float fallWhite = max(FallShading::LineWhite(fallFlow.velocity, input.FallClip, input.FallFade.x, input.FallData.z, fallLip), FallShading::ContactWhite(fallBehind, fallLip));
-	const float fallFoam = FallShading::FoamCover(fallWhite, FallShading::FoamPattern(FallNormalTex, Normals01Sampler, FallHasNormal != 0, fallFlow));
+	const float fallBehind = max(SharedData::GetScreenDepth(DepthTex.Load(int3(input.HPosition.xy, 0)).x) - fallDepth, 0.0);
+	// D174: foam wherever the sheet touches something (the next sheet behind, rock and ground, the water below), per pixel,
+	// in the river's foam pattern laid on the sheet and drifting on the flow
+	const float fallSheetGap = max(SharedData::GetScreenDepth(FallBehindDepth.Load(int3(input.HPosition.xy, 0)).x) - fallDepth, 0.0);
+	const float fallContact = FallShading::ContactStrength(fallSheetGap, fallBehind, input.FallFade.y, fallLip);
+	const float fallFoam = fallContact > 0.02 ? FallShading::FoamCover(fallContact, FallShading::FoamPattern(FallFoamTex, Normals01Sampler, input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, FallUp, fallFlow.velocity, SharedData::Timer, SharedData::MipBias)) : 0.0;
 	const float fallAlpha = FallShading::Alpha(input.FallFade.x, fallBehind, fallFoam, input.FallClip);
 	if (fallAlpha <= 0.002)
 		discard;
@@ -1336,7 +1342,7 @@ PS_OUTPUT main(PS_INPUT input)
 			own.xy *= FallShading::NORMAL_STRENGTH;
 			normal = FallShading::SafeNormalize(float3(normal.xy + own.xy, normal.z * max(own.z, 0.1)), normal);
 		}
-		normal = FallShading::PerturbNormal(FallUp, input.WPosition.xyz, fallFlow.uvA, normal);
+		normal = FallShading::SheetNormal(FallUp, normal);  // D174: not PerturbNormal's per-triangle frame
 	}
 #			endif
 
@@ -1685,6 +1691,7 @@ PS_OUTPUT main(PS_INPUT input)
 	// the sheet over what lies behind, its alpha only fades the edges
 	finalColor = clamp(finalColor, 0.0, FallShading::MAX_OUTPUT);  // D3D's min and max return the other value for NaN
 	psout.Lighting = FallGround::DebugMode == 4 ? float4(FallShading::DepthBehindBand(input.FallData.x) * 0.5, 1.0) : float4(finalColor * fallAlpha, fallAlpha);
+
 #			endif
 #		endif
 
