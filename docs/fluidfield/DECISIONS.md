@@ -3617,6 +3617,11 @@ Entry format:
         rays put most sheets 47-218 units off their rock, so the falls went
         clear as soon as the depth job finished: the user saw the murk
         right after a restore, before the job, then lose it.
+    -   **D158, also:** no fade-in under the lip (D141): the front-surface
+        pre-pass (PSDepth, D125) still claimed those pixels and hid what lay
+        behind, so the fade punched holes along the crests showing the rock
+        behind, only with See-Through Falls on (SS 1085 lit, 1086
+        see-through). The lead-in cut handles the part under the river.
 -   References: D120, D126, D148, D154
 
 ## D159: The see-through falls shaded by the river's own water shader (branch feature/fluid-field-falls-water)
@@ -3666,7 +3671,7 @@ Entry format:
         output is unchanged (the define off).
     -   **Shared:** the falls' visibility and white water (FallShading.hlsli)
         is one code for both shaders. D141's lip fade-in is not in it
-        (a0e81760d: PSDepth still claimed those pixels, holes along the
+        (D158: PSDepth still claimed those pixels, holes along the
         crests); what fades a pixel there must also be discarded in PSDepth.
     -   **Draw:** FallRefraction keeps its front-surface pre-pass (D125)
         with FallSurface.hlsl's PSDepth, then binds the captured state, ours

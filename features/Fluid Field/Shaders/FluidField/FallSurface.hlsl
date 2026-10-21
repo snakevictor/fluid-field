@@ -550,6 +550,8 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// behind (no hard line where it enters the rock). D99: foam keeps the contact soft too, only shorter: added to it,
 	// foam made the line where the sheet enters a boulder wholly opaque and white, tracing the faceted intersection of
 	// the sheet's triangles with the rock's as a white sawtooth; and the water fades out toward its cut
+	// D158: no lip fade (D141): the front-surface pre-pass (PSDepth) still claimed those pixels, so the fade punched holes
+	// along the crests (SS 1086); FallShading::Alpha has none
 	const float alpha = FallShading::Alpha(input.Fade.x, straightBehind, foam, input.Clip);
 	if (alpha <= 0.002)
 		discard;

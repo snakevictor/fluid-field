@@ -156,7 +156,7 @@ namespace FallShading
 	 * D67, D99: how much of the pixel shows: faded at seams over a mesh leading it, where it meets what lies behind
 	 * (a_behind; foam keeps that contact soft, only shorter) and toward its cut. The same factors PSDepth discards by (the
 	 * front-surface pre-pass): anything that fades a pixel here must be discarded there too. D141's fade-in under the lip
-	 * is gone (a0e81760d): the pre-pass still claimed those pixels, which punched holes along the crests.
+	 * is gone (D158): the pre-pass still claimed those pixels, which punched holes along the crests.
 	 */
 	float Alpha(float a_seamFade, float a_behind, float a_foam, float a_clip)
 	{
