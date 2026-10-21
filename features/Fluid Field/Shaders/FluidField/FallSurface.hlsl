@@ -156,8 +156,7 @@ float PoolWeight(float2 a_position, out float a_height)
 	return smoothstep(0.2, 0.7, total);
 }
 
-/** D125: world units behind the falls' front surface within which a layer is the same body of water (hidden), and the margin that is still the front itself. */
-static const float BODY_GAP = 48.0;
+/** D125: world units behind the falls' front surface that still count as the front itself. */
 static const float FRONT_EPSILON = 2.0;
 
 /** The cubemap's mip the sheet reads: falling water is broken and foamy, so rougher than the river's mirror (mip 0). */
@@ -239,11 +238,12 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float3 position = input.WorldPosition + FrameBuffer::CameraPosAdjust.xyz;
 	const float3 toCamera = SafeNormalize(-input.WorldPosition, float3(0.0, 0.0, 1.0));
 
-	// D125: a layer just behind the falls' front surface is inside the same body of water (an overlapping mesh's inner
-	// layer, there in no real water): not drawn. A sheet further back (a separate curtain, air between) still shows
+	// D125: only the falls' front surface is drawn: a layer behind it is the same body of water (an overlapping mesh's
+	// inner layer or a C's far wall, there in no real water). D126: however far behind: with a 48-unit gap, a C's far wall
+	// hundreds of units back still showed through it (SS 987); the user preferred none
 	if (HasFront) {
 		const float behindFront = SharedData::GetScreenDepth(input.Position.z) - SharedData::GetScreenDepth(FrontDepth.Load(int3(input.Position.xy, 0)));
-		if (behindFront > FRONT_EPSILON && behindFront < BODY_GAP)
+		if (behindFront > FRONT_EPSILON)
 			discard;
 	}
 

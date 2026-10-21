@@ -2995,3 +2995,13 @@ Entry format:
     Where the two sheets' volumes are only closed by rock on many sides, fewer
     than three axes may leave through the sheet, and nothing is cut.
 -   References: D40, D78, D82, D98, D103, D112
+
+## D126: Only the falls' front surface, however far the layer behind
+
+-   Date: 2026-10-20
+-   Decision: D125's 48-unit gap dropped: every falls layer behind the front
+    surface is hidden. A C's far wall, hundreds of units behind its front,
+    passed as a separate curtain and still showed through (SS 987); with
+    front only, "FUCK yes its gone" (the user). A separate curtain behind a
+    front one is hidden too; with the sheets this opaque it does not read.
+-   References: D125
