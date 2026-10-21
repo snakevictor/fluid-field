@@ -165,3 +165,6 @@ feature's ClearShaderCache, which releases it, so editing the deployed copy and
 clearing reloads it in seconds without a restart. Diagnostics read by eye go in
 colour bands (the tonemap hides values), and wait a few seconds after a reload:
 TAA and exposure carry the previous output for a moment.
+
+-   **"Behind a face" is not "inside a volume"** (2026-10-20, D113). The curl cut (D98) cut only a band behind a leading sheet's face, so crossing C-shaped sheets kept their parts further inside each other (SS 975, 976). For surfaces that together bound a volume, test containment (rays leaving through the other surface's outer side, none entering), not distance to it.
+-   **A ray that starts under the landscape reads as open** (2026-10-20, D113), like one starting inside rock (D105): a sheet under a riverbed was never "buried" by rays alone. Where the height grid is level, `TES::GetLandHeight` answers it.

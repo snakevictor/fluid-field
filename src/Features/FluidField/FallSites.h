@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cfloat>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <future>
@@ -312,7 +313,7 @@ namespace FluidFieldSim
 			double tiltSum = 0.0;
 		};
 		std::vector<RE::NiPointer<RE::BSGeometry>> depthQueue;
-		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> outwardNormals;                 ///< D109: each lit mesh's consistent outward normals, world (ComputeSides)
+		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> outwardNormals;                 ///< D109: each lit mesh's consistent outward normals, world (SideFlags)
 		std::unordered_map<const RE::BSGeometry*, std::vector<std::array<RE::NiPoint3, 3>>> depthRaysShown;  ///< D108: the overlay's rays
 		std::unique_ptr<DepthJob> depthJob;
 		uint32_t depthRays = 0, depthHits = 0;
@@ -327,24 +328,24 @@ namespace FluidFieldSim
 		std::vector<std::array<float, 16>> vertexClips;
 		/**
 		 * @brief D112: why each vertex of vertexClips is hidden, kept apart so each can be worked out again: the cuts a.x
-		 * composes (the water below, the curl, the lead-in), and two the CPU knows but the GPU applies its own way (the
+		 * composes (the water below, inside another sheet, the lead-in), and two the CPU knows but the GPU applies its own way (the
 		 * pools' cut at the foot, per frame in FallGround::ClipDistance; the rock, by the depth test).
 		 */
 		struct VertexCut
 		{
-			float water = NO_CUT;  ///< ClipStep: the engine's water at the mesh's foot (D68)
-			float curl = NO_CUT;   ///< ComputeCurlCuts: inside a leading sheet's curl (D98)
-			float lead = NO_CUT;   ///< ComputePushes: the hidden lead-in under the river (D97)
-			float pool = NO_CUT;   ///< ComputePoolCuts: under our pools at the foot, as the shaders cut it (not in a.x)
-			uint8_t buried = 0;    ///< BuryStep: no ray from outside reaches it: inside rock (not in a.x)
+			float water = NO_CUT;   ///< ClipStep: the engine's water at the mesh's foot (D68)
+			float inside = NO_CUT;  ///< D113: VolumeCut: inside the space another sheet encloses (with the rock), past VOLUME_MARGIN (was D98's curl cut)
+			float lead = NO_CUT;    ///< ComputePushes: the hidden lead-in under the river (D97)
+			float pool = NO_CUT;    ///< ComputePoolCuts: under our pools at the foot, as the shaders cut it (not in a.x)
+			uint8_t buried = 0;     ///< BuryStep: no ray from outside reaches it: inside rock (not in a.x)
 		};
 		std::vector<VertexCut> vertexCuts;      ///< D112: parallel to vertexClips
 		static constexpr float NO_CUT = 38.0f;  ///< D112: a part of VertexCut that hides nothing (CLIP_MARGIN + CLIP_RANGE, ClipStep's "not cut")
-		/** @brief D112: a.x of every vertex again from its parts (the least of the water's, the curl's and the lead-in's). */
+		/** @brief D112: a.x of every vertex again from its parts (the least of the water's, the inside's and the lead-in's). */
 		void ComposeCut(std::size_t a_index);
 		/**
 		 * @brief D112: whether a vertex of the falls is drawn at all, as the GPU draws it: not cut (a.x, and the pools' cut at
-		 * its foot), not inside rock, not faded out at a seam. The one test the depth rays, the curl cut and the inner sides use.
+		 * its foot), not inside rock, not faded out at a seam. The one test the depth rays and the inner sides use.
 		 */
 		bool VertexShown(std::size_t a_index) const;
 		/**
@@ -363,9 +364,11 @@ namespace FluidFieldSim
 		};
 		std::vector<RE::NiPointer<RE::BSGeometry>> buryQueue;
 		std::unique_ptr<BuryJob> buryJob;
-		uint32_t buriedCount = 0, buryTested = 0, buryRays = 0;
+		uint32_t buriedCount = 0, buryTested = 0, buryRays = 0, buriedGround = 0;
 		static constexpr float BURY_REACH = 160.0f;    ///< D112: the rays toward a vertex start this far from it
 		static constexpr float BURY_MARGIN = 24.0f;    ///< D112: rock this near short of the vertex does not bury it (vanilla's sheets dip into the rock they lie on, as BAKE_ROCK_MARGIN)
+		static constexpr float BURY_GROUND = 12.0f;    ///< D113: a vertex this far under level landscape is buried (the rays from under the ground see no face)
+		static constexpr float BURY_LEVEL = 32.0f;     ///< D113: ...where the landscape 64 units round it rises and falls less than this (the height grid smooths cliffs, D82)
 		static constexpr float POOL_CUT_DEPTH = 8.0f;  ///< D112: FallGround::POOL_CUT: the shaders cut the foot this far under the pools' surface
 		/** @brief D112: a lit mesh as the culling sees it: world positions at rest and as drawn, outer sides, open edges, bins. */
 		struct CullSheet
@@ -380,18 +383,47 @@ namespace FluidFieldSim
 			float top = -FLT_MAX, area = 0.0f;
 			std::unordered_map<int64_t, std::vector<uint32_t>> bins;  ///< Its triangles by SEAM_BIN cell (each in every cell its bound touches)
 		};
-		std::vector<CullSheet> BuildCullSheets();
+		/** @brief D112: one lit mesh as the culling sees it (D113: built one mesh a step by CullStep). */
+		CullSheet BuildCullSheet(RE::BSGeometry* a_geometry, uint32_t a_base);
 		/**
-		 * @brief D112: everything that decides which vertices show, worked out again in order from what is known now: the
-		 * pools' cut, the curl cut (reading the leading sheets' own cuts), a.x, then the sides. Run whenever a cut or the
-		 * rock becomes known (the seams, the rock test, the lead-in cuts), so no step reads another's stale state.
+		 * @brief D112, D113: everything that decides which vertices show is to be worked out again from what is known now:
+		 * asked whenever a cut or the rock becomes known (the seams, the rock test, the lead-in cuts, new pools). CullStep
+		 * does the work over several frames (D113: 700 ms on one frame in game), restarting if asked again meanwhile.
 		 */
-		void RefreshCulling();
-		bool buryDone = true;  ///< D112: every queued mesh's rock test is done and RefreshCulling has read it
-		/** @brief D112: VertexCut::pool for each sheet: its foot under the pools' surface, where the shaders cut it. */
-		void ComputePoolCuts(const std::vector<CullSheet>& a_sheets);
-		/** @brief D98, D112: VertexCut::curl: a vertex inside a leading sheet's curl, behind a face of it that is itself shown. */
-		void ComputeCurlCuts(const std::vector<CullSheet>& a_sheets);
+		void RequestCulling() { cullRequested = true; }
+		/**
+		 * @brief D113: the culling, a few milliseconds a frame, in order: the sheets (one a step), the pools' cut, the inside
+		 * cut (VolumeCut), a.x, then the sides (SideFlags). The GPU is handed the result once all are done.
+		 */
+		void CullStep();
+		struct CullJob
+		{
+			std::vector<CullSheet> sheets;
+			int stage = 0;
+			std::size_t sheet = 0, vertex = 0;  ///< Where the current stage is
+			uint32_t inside = 0, tested = 0, inward = 0, covered = 0, sideTested = 0;
+			std::chrono::steady_clock::time_point started;
+			double busy = 0.0;  ///< Milliseconds of work over its frames
+		};
+		std::unique_ptr<CullJob> cullJob;
+		bool cullRequested = false;
+		bool CullBusy() const { return cullRequested || cullJob != nullptr; }
+		bool buryDone = true;  ///< D112: every queued mesh's rock test is done and the culling has been asked to read it
+		/** @brief D112: VertexCut::pool for one vertex: its foot under the pools' surface, where the shaders cut it. */
+		void PoolCut(const CullSheet& a_sheet, uint32_t a_vertex);
+		/**
+		 * @brief D113: VertexCut::inside for one vertex: whether it lies in the space another sheet encloses (the falls body is
+		 * the union of the C-shaped sheets, and only its outer surface should show). Rays from the vertex along the six axes,
+		 * against each other sheet whose bound holds it: none may enter that sheet through its outer face, and at least
+		 * VOLUME_VOTES must leave it through its outer face (the rest open on the rock or the water the sheet is closed by).
+		 * Inside, cut from VOLUME_MARGIN within the other's surface, so the two meet a little past their crossing, sealed.
+		 */
+		void VolumeCut(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job);
+		static constexpr float VOLUME_REACH = 400.0f;  ///< D113: world units each ray looks for the other sheet
+		static constexpr int VOLUME_VOTES = 3;         ///< D113: rays of six that must leave the other sheet through its outer face
+		static constexpr float VOLUME_MARGIN = 20.0f;  ///< D113: a vertex this near the other sheet's surface, inside it, still shows (about one of the dense copy's edges: no opening at the crossing)
+		/** @brief D103, D113: a.w's sides for one vertex: its normal faces in (+2), another shown sheet's outer face covers its inner side (+4). */
+		void SideFlags(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job);
 		static constexpr float GAP_REACH = 40.0f;        ///< D69: an open edge this near another mesh's open edge, and not over it, closes the gap
 		static constexpr float GAP_OVERLAP = 4.0f;       ///< D69: ...each side moving past the middle by this much
 		static constexpr float WATER_KEEP = 6.0f;        ///< D68: falling water is cut this far under the water it falls into (D95: 6, was 24: see-through water showed the sheet under it)
@@ -402,18 +434,10 @@ namespace FluidFieldSim
 		 * (higher, or as high and larger) fade to 0, so that mesh shows through; the rest stay 1.
 		 */
 		void ComputeFades();
-		static constexpr float FADE_REACH = 32.0f;     ///< D67: an open edge's vertex this near another mesh's surface fades
-		static constexpr float SEAM_BIN = 48.0f;       ///< D91: world units per cell of the seams' triangle bins
-		static constexpr float INSIDE_REACH = 45.0f;   ///< D98 (D107: 45, was 70: still eating neighbours, SS 913): a vertex behind a leading mesh's outer face within this is inside its curl, cut (D105: 70, was 150: it cut neighbouring sheets, SS 900/901)...
-		static constexpr float INSIDE_MARGIN = 20.0f;  ///< D98 (D107: 20, was 12): ...past this behind it (one just behind, touching, stays)
-		static constexpr float INSIDE_LATERAL = 2.0f;  ///< D103: ...less this per unit it lies off to the side of the face (beside the leading sheet, not inside it)
-		static constexpr float COVER_NEAR = 6.0f;      ///< D103: a sheet behind a vertex's inner side counts from this far (its own surface is not one)
-		/**
-		 * @brief D103: each tested lit mesh's sides for the see-through pass (VertexClip a.w): whether the normal it reads
-		 * faces into its sheet (+2, its outer side carried over the sheet, OrientSheet), and whether another shown sheet's
-		 * outer face lies behind its inner side within INSIDE_REACH (+4): only there is its inner side hidden (D100).
-		 */
-		void ComputeSides(const std::vector<CullSheet>& a_sheets);
+		static constexpr float FADE_REACH = 32.0f;             ///< D67: an open edge's vertex this near another mesh's surface fades
+		static constexpr float SEAM_BIN = 48.0f;               ///< D91: world units per cell of the seams' triangle bins
+		static constexpr float INSIDE_REACH = 45.0f;           ///< D103: another sheet's outer face this near behind a vertex's inner side covers it (D98-D107's curl cut reach; D113: the curl cut is VolumeCut now)
+		static constexpr float COVER_NEAR = 6.0f;              ///< D103: a sheet behind a vertex's inner side counts from this far (its own surface is not one)
 		static constexpr int EDGE_SMOOTH_PASSES = 80;          ///< D86: rounds smoothing each mesh's open edge as a curve (D92: 80: on the dense copies' 20-unit edges, 10 smoothed only 60 units)...
 		static constexpr float EDGE_SMOOTH_MOST = 60.0f;       ///< D86: ...moving a vertex at most this far (D92: 60)
 		static constexpr float EDGE_BLEND_REACH = 120.0f;      ///< D94: world units the open edge's moves fade into the surface over...

@@ -2934,3 +2934,64 @@ Entry format:
 -   Falls back to drawing every layer if the depth format is not one it
     knows (D24S8, D32, D32S8) or PSDepth fails to compile (logged).
 -   References: D91, D113, D123
+
+## D113: The falls body as a union of volumes: a sheet cut where it enters another; culling over frames; the lead-in in the bed (branch feature/fluid-field-culling-3)
+
+-   Date: 2026-10-20
+-   Context: D112 in game: "Waterfall rock test: 1785 of 80882 vertices
+    inside rock", "culling took 704.4 ms" (one frame). With the see-through
+    pass off (lit falls):
+    -   SS 974 (outside), SS 975 and 976 (camera inside): two C-shaped sheets
+        cross. One has a hole where they meet, but both keep the rest of their
+        inner parts running through each other inside the volume, which makes
+        the translucent shading look wrong. The user wants each mesh to stop at
+        about where it meets the other (a few triangles past it is fine).
+    -   SS 977 (outside), SS 978 (inside): one sheet's crossing line into
+        another is plain to see, and nothing there is cut.
+    -   SS 979 (camera under the upper river): the start of the drop is mostly
+        right, but the top of the mesh curves down into the riverbed and shows
+        under the river.
+-   Causes:
+    1.  D98's curl cut asked only "behind a leading face, within INSIDE_REACH
+        (45 units)": a band behind the leader's face, not the space it
+        encloses. The follower's parts further in were kept (SS 975, 976), and
+        only a band of it was cut, the hole. A follower that is not "led"
+        (lower, or as high and smaller) never cut the leader (SS 978).
+    2.  RefreshCulling (D112) ran every step on one frame.
+    3.  SS 979: BuryStep's rays from under the ground start inside it and read
+        as reaching, so a sheet under the riverbed was never buried; and the
+        lead-in cut took the water over it only up to 48 units over its crest
+        (D103), while the river stands deeper over a submerged crest.
+-   Decision:
+    -   **VolumeCut replaces the curl cut** (VertexCut::inside). The falls body
+        is the union of the sheets' volumes; only its outer surface should
+        show. A vertex lies inside another sheet when, of rays from it along
+        the six axes (400 units), none meets that sheet coming in through its
+        outer face, and at least three leave through it (the rest open on the
+        rock, bed or water closing the sheet). Asked only of sheets whose bound
+        holds the vertex, both ways for every pair (no leading order). Inside,
+        it is cut from VOLUME_MARGIN (20 units, about one edge) within the
+        other's surface, its nearest triangle, held to -CLIP_RANGE: the two
+        meet a little past their crossing line, so no opening. INSIDE_MARGIN
+        and INSIDE_LATERAL are gone; INSIDE_REACH remains the cover test's
+        reach (D103).
+    -   **CullStep**: the culling (the sheets one per step, the pools' cut, the
+        inside cut, a.x, the sides) runs as a job at 3 ms a frame; asking
+        again restarts it. DepthStep waits for it. The GPU gets the result
+        once it is done.
+    -   **Level ground buries**: a vertex 12 units under the landscape, where
+        the height grid 64 units round it rises and falls less than 32 units
+        (no cliff, D82), is buried without rays.
+    -   **The lead-in cut reads our pools with no ceiling** (their water is
+        confirmed over the rock, D40, D78); the engine's planes keep D103's.
+-   Cost: per vertex in another sheet's bound, six rays through that sheet's
+    bins (until the votes are decided), spread over frames with the rest.
+-   Untested: the plugin builds (Release, CommunityShaders target); not run in
+    game.
+-   Risks: a sheet shaped so a ray from inside meets one of its own folds from
+    outside first is read as not enclosing (errs toward shown). A sheet whose
+    bound holds another's foot under a flat run (the water between the run
+    and the bed) cuts that foot: inside the water body, so meant, but new.
+    Where the two sheets' volumes are only closed by rock on many sides, fewer
+    than three axes may leave through the sheet, and nothing is cut.
+-   References: D40, D78, D82, D98, D103, D112
