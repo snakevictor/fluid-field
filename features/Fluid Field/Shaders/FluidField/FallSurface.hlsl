@@ -262,8 +262,6 @@ static const float FALL_FOAM = 0.9;
 static const float LIP_BLEND = 24.0;
 /** D143: world units below the lip's blend over which the other foam (seams, sheets meeting, rock contact) comes in. */
 static const float LIP_QUIET = 48.0;
-/** D143: how white a sheet fed by the drop above it (no calm water over it) is. */
-static const float FED_FOAM = 0.85;
 static const float FOOT_FOAM_REACH = 100.0;
 /** D139: the same for the foot band (at 1, short curtains were solid white top to bottom, SS 1031-1032). */
 static const float FOOT_FOAM = 0.8;
@@ -402,10 +400,8 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	                                                                                                             0.0;
 	if (FallGround::Whitening)
 		white = max(white, fallen * steep * FALL_FOAM);
-	// D143: a sheet with no calm water above it is fed by the drop over it (a fall's lower pieces, the incline under a
-	// violent drop): turbulent from its top, whatever its slope (the user, SS 1037 "2")
-	if (FallGround::Whitening && !hasSource)
-		white = max(white, FED_FOAM);
+	// D143's "fed by a drop" foam (no source found above: white from the top) is off: whole inclined runs far from any
+	// plane read as fed and went white (SS 1039). The turbulence under a drop is to come from the bake's own aeration
 	// D141: near the lip nothing else foams either (the lead-in's cut line there is under the river). D143: over
 	// LIP_QUIET, and for the seams, the sheets meeting and the rock under the river too (SS 1037 "1", SS 1038)
 	const float lip = hasSource ? saturate((input.BelowSource - LIP_BLEND) / LIP_QUIET) : 1.0;

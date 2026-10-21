@@ -3395,7 +3395,7 @@ Entry format:
     -   Over the lip (24 units of fade-in, then 48 more) no seam, sheet-meet
         or contact foam either: sheets meet each other and the rock under
         the river along every crest, and drew thin white scraps there.
-    -   A sheet with no calm water over it (no source) is fed by the drop
+    -   (Withdrawn, SS 1039: runs far from any plane went white.) A sheet with no calm water over it (no source) is fed by the drop
         above it: 0.85 white from its top, whatever its slope. The inclines
         right under a violent drop churn in the references; they read as
         clear water (the fall foam needed both a source and steepness).
