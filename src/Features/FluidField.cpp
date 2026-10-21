@@ -1768,8 +1768,21 @@ namespace
 		look.sunSpecularMagnitude = data.sunSpecularMagnitude;
 		look.reflectionMagnitude = data.reflectionMagnitude;
 		// D129: its normal maps as loaded for the water shader, their scale and amplitude (the river's fine ripples)
+		// D138: the form's loaded textures are empty outside the water shader's own use ("normal maps no no no"), so each is
+		// loaded by its path (as the flowmaps are) and kept alive here
+		static std::unordered_map<std::string, RE::NiPointer<RE::NiTexture>> loaded;
 		for (int k = 0; k < 3; k++) {
-			auto* source = a_water->noiseTextureData[k] ? netimmerse_cast<RE::NiSourceTexture*>(a_water->noiseTextureData[k].get()) : nullptr;
+			RE::NiTexture* texture = a_water->noiseTextureData[k].get();
+			if (!texture && !a_water->noiseTextures[k].textureName.empty()) {
+				std::string path = a_water->noiseTextures[k].textureName.c_str();
+				if (_strnicmp(path.c_str(), "textures\\", 9) != 0 && _strnicmp(path.c_str(), "textures/", 9) != 0)
+					path = "textures\\" + path;
+				auto& slot = loaded[path];
+				if (!slot)
+					RE::BSShaderManager::GetTexture(path.c_str(), true, slot, false);
+				texture = slot.get();
+			}
+			auto* source = texture && texture->GetRTTI() == globals::rtti::NiSourceTextureRTTI.get() ? static_cast<RE::NiSourceTexture*>(texture) : nullptr;
 			look.noise[k] = source && source->rendererTexture ? source->rendererTexture->resourceView : nullptr;
 			look.noiseScale[k] = data.uvScaleA[k];
 			look.noiseAmplitude[k] = data.amplitudeA[k];

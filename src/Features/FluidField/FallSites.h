@@ -495,10 +495,11 @@ namespace FluidFieldSim
 		std::vector<RE::NiPointer<RE::BSGeometry>> clipQueue;
 		uint64_t vertexClipVersion = 0;
 		uint32_t clipTested = 0;
-		static constexpr float SOURCE_REACH = 96.0f;  ///< D124: world units past a water plane's bound a falls vertex still counts as pouring out of it (the lip leans out over the edge)
-		static constexpr float CLIP_REACH = 240.0f;   ///< D56: world units each ray out of a vertex looks for rock
-		static constexpr float CLIP_MARGIN = 6.0f;    ///< A vertex this far inside rock still shows (water lying on it)
-		static constexpr float CLIP_RANGE = 32.0f;    ///< The most a vertex counts as in or out, so the cut stays near the rock's face
+		static constexpr float SOURCE_DEPTH_MOST = 240.0f;  ///< D138: the most a water plane may lie over a falls vertex and still be the water it pours out of
+		static constexpr float SOURCE_REACH = 96.0f;        ///< D124: world units past a water plane's bound a falls vertex still counts as pouring out of it (the lip leans out over the edge)
+		static constexpr float CLIP_REACH = 240.0f;         ///< D56: world units each ray out of a vertex looks for rock
+		static constexpr float CLIP_MARGIN = 6.0f;          ///< A vertex this far inside rock still shows (water lying on it)
+		static constexpr float CLIP_RANGE = 32.0f;          ///< The most a vertex counts as in or out, so the cut stays near the rock's face
 		static constexpr double CLIP_BUDGET_MS = 3.0;
 		static constexpr float BAKE_TEXEL = 10.0f;        ///< D59: world units per texel of a mesh's flow bake
 		static constexpr uint32_t BAKE_MOST_SIDE = 192;   ///< ...and the most texels along a side

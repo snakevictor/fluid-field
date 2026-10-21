@@ -1241,9 +1241,11 @@ namespace FluidFieldSim
 			}
 			std::vector<std::array<float, 5>> planes;
 			CollectWaterPlanes(lo[0], lo[1], hi[0], hi[1], planes);
-			// D124: the planes at or over its top are the water it pours out of (the whole drop's top, for its foam)
+			// D124: the water it pours out of (the whole drop's top, for its foam). D138: every plane near the mesh, each
+			// vertex taking the nearest above it (SOURCE_DEPTH_MOST): chosen per mesh (the planes over its top), one mesh of
+			// a crest found its source and the next did not, and the foam stopped dead along their seam (SS 1016-1018)
 			std::vector<std::array<float, 5>> sources;
-			std::copy_if(planes.begin(), planes.end(), std::back_inserter(sources), [&](const auto& a_plane) { return a_plane[4] >= top - 32.0f; });
+			CollectWaterPlanes(lo[0] - SOURCE_REACH, lo[1] - SOURCE_REACH, hi[0] + SOURCE_REACH, hi[1] + SOURCE_REACH, sources);
 			std::erase_if(planes, [&](const auto& a_plane) { return a_plane[4] >= top - 32.0f; });
 			const auto base = static_cast<uint32_t>(vertexClips.size());
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
@@ -1256,13 +1258,13 @@ namespace FluidFieldSim
 				}
 				const float above = water > -FLT_MAX ? positions[v].z - water : NO_WATER;
 				// D124: how far under the water it pours out of (none where it starts under another sheet, mid-fall)
-				float source = -FLT_MAX;
+				float source = FLT_MAX;
 				for (const auto& plane : sources) {
 					if (positions[v].x >= plane[0] - SOURCE_REACH && positions[v].x <= plane[2] + SOURCE_REACH && positions[v].y >= plane[1] - SOURCE_REACH &&
-						positions[v].y <= plane[3] + SOURCE_REACH)
-						source = std::max(source, plane[4]);
+						positions[v].y <= plane[3] + SOURCE_REACH && plane[4] >= positions[v].z - 8.0f && plane[4] <= positions[v].z + SOURCE_DEPTH_MOST)
+						source = std::min(source, plane[4]);
 				}
-				const float below = source > -FLT_MAX ? std::max(source - positions[v].z, 0.0f) : NO_WATER;
+				const float below = source < FLT_MAX ? std::max(source - positions[v].z, 0.0f) : NO_WATER;
 				// D70: only near the mesh's foot, where it goes into its water: higher up, a plane whose bound covers
 				// the fall (a pool partway down, a whole cell) cut holes in the middle of the sheet
 				if (water > -FLT_MAX && positions[v].z < bottom + WATER_CUT_BAND)

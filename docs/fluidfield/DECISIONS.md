@@ -3249,3 +3249,23 @@ Entry format:
     boundaries: the source water is chosen per mesh, so a neighbour without
     one stops the band dead, and NO_WATER interpolates into a hard line.
     To measure per vertex from the water surface and fade where none.
+
+## D138: The drop's top foam per vertex; the water type's normal maps loaded by path
+
+-   Date: 2026-10-21
+-   Decision:
+    -   Each falls vertex takes as its source the nearest water plane above
+        it (at most 240 units over it, within 96 of the plane's bound), from
+        every plane near the mesh: chosen per mesh (the planes over its top),
+        one mesh of a crest found its source and the next did not, and the
+        top foam stopped dead along their seam (SS 1016-1018).
+    -   The vertex's "none" values (1e4) are held to 512 before
+        interpolation, which drew the band's end as a hard straight line
+        inside a triangle; the top band is at most 0.8 so the bubble pattern
+        breaks it (every crest was a solid patch).
+    -   The water type's normal maps: TESWaterForm::noiseTextureData is empty
+        outside the water shader's use (logged "no no no"), so each is
+        loaded by its path with BSShaderManager::GetTexture (as the
+        flowmaps) and kept alive. The river's ripples (D129, D131) and the
+        Noise1 foam pattern had never been drawn.
+-   References: D124, D129, D134

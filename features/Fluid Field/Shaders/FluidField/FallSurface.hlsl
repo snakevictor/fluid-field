@@ -104,8 +104,10 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 	output.Fade.z = (!FallGround::Enabled || FallGround::VertexBase == FallGround::NO_VERTEX_CLIP) ? 1.0 : fmod(FallGround::VertexClip[FallGround::VertexBase + vertexID].a.w, 2.0);  // D100: +2 marks an inward winding
 	output.Clip = FallGround::ClipDistance(relative, vertexID);
 	output.Behind = FallGround::Behind(vertexID);
-	output.BelowSource = FallGround::BelowSource(vertexID);
-	output.ToOtherSheet = FallGround::ToOtherSheet(vertexID);
+	// D138: the "none" values (FallGround::NO_WATER, 1e4) held to 512 before interpolation: across a triangle from a vertex
+	// with one to a vertex without, 1e4 drew the band's end as a hard straight line inside the triangle (SS 1017)
+	output.BelowSource = min(FallGround::BelowSource(vertexID), 512.0);
+	output.ToOtherSheet = min(FallGround::ToOtherSheet(vertexID), 512.0);
 	output.Outward = float4(output.Normal * FallGround::OutwardSign(vertexID), FallGround::InnerCovered(vertexID));  // D103: interpolated as a normal, no sign flipping mid-triangle
 	return output;
 }
@@ -253,6 +255,8 @@ static const float CUT_FOAM_REACH = 24.0;
 /** D124: world units the foam reaches down from the water a fall pours out of, and up from the water it falls into (was FallGround::PoolFoamHeight, 26). */
 static const float TOP_FOAM_REACH = 120.0;
 static const float FOOT_FOAM_REACH = 100.0;
+/** D138: how white the drop's top band is at most: below 1 the bubble pattern breaks it (at 1 every crest was a solid patch, SS 1016-1018). */
+static const float TOP_FOAM = 0.8;
 static const float CONTACT_FOAM_REACH = 20.0;
 /** D121: how white a seam's overlap and a mesh's contact foam at most. */
 static const float SEAM_FOAM = 0.7;
@@ -372,8 +376,8 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// end: a hard straight line across the sheet, SS 998)
 	if (FallGround::Whitening && input.Fade.y < FallGround::NO_WATER * 0.5)
 		white = max(white, 1.0 - Square(saturate(input.Fade.y / FOOT_FOAM_REACH)));
-	if (FallGround::Whitening && input.BelowSource < FallGround::NO_WATER * 0.5)
-		white = max(white, 1.0 - Square(saturate(input.BelowSource / TOP_FOAM_REACH)));
+	if (FallGround::Whitening)
+		white = max(white, (1.0 - Square(saturate(input.BelowSource / TOP_FOAM_REACH))) * TOP_FOAM);
 	// D121: where the water breaks: along its cut lines (the lead-in leaving the river above, the foot under the pool or
 	// river below, a sheet cut into another's curl, rock), where it overlaps another sheet at a seam (laid on after the
 	// screen depth below: where it meets rock or any mesh, as the river foams at its shore)
@@ -381,8 +385,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 		white = max(white, 1.0 - saturate(input.Clip / CUT_FOAM_REACH));
 		white = max(white, (1.0 - saturate(input.Fade.x)) * SEAM_FOAM);
 		// D128: where it meets another sheet (SS 992: the join of two sheets had none, the one behind hidden by the front)
-		if (input.ToOtherSheet < FallGround::NO_WATER * 0.5)
-			white = max(white, (1.0 - saturate(input.ToOtherSheet / MEET_FOAM_REACH)) * MEET_FOAM);
+		white = max(white, (1.0 - saturate(input.ToOtherSheet / MEET_FOAM_REACH)) * MEET_FOAM);
 	}
 	const float lace = FallGround::Lace(flow);
 
