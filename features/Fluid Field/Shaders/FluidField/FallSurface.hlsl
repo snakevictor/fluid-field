@@ -561,10 +561,12 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// of 120 units painted every sheet deep and dark (petroleum, SS 1050)
 	const float rayScale = length(input.WorldPosition) / max(sheetDepth, 1e-3);
 	const float rayBehind = max(behindDepth - sheetDepth, 0.0) * rayScale;
-	const float curtain = smoothstep(LAYER_GAP * 0.5, LAYER_GAP, input.Behind);
 	// D149: times FALLS_MURK: falling water is turbid (bubbles, stirred sediment), and the thin water over the sheet's rock
 	// stayed under 20% opaque where the river, deep, is murky (SS 1052, an opacity diagnostic)
-	const float path = lerp(min(rayBehind, FogFar), SheetThickness / max(cosine, 0.25), curtain) * DepthScale * FALLS_MURK;
+	// D158: always the view ray's depth, as the river (no curtain rule): D120's "past 48 units behind, air" took the gap
+	// behind most sheets (the depth rays: medians 47-218) for air and cleared them as soon as the depth job finished, where
+	// that gap is the pool's water
+	const float path = min(rayBehind, FogFar) * DepthScale * FALLS_MURK;
 	const float refractionMul = 1.0 - pow(saturate((FogFar - path) / FogRange), FogAmount);
 	const float opacity = max(FluidField::TintedRefractionWeight(refractionMul, path), AERATION_OPACITY * aerated);
 

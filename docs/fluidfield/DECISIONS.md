@@ -3602,3 +3602,19 @@ Entry format:
 -   Open: from above the reflected rays go up to the sky and miss, so the
     cubemap still carries those views.
 -   References: D154
+
+## D157-D158: A stricter submerged cut; the view ray's depth without a curtain rule
+
+-   Date: 2026-10-21
+-   Decision:
+    -   **D157:** the submerged cut only 48 units under the river's water
+        and within 16 of its bed (was 16 and 64): once the landscape heights
+        came in, the second culling pass cut 70,574 vertices of the sheets
+        running through a cascade's pools (8,770 in the first).
+    -   **D158:** the falls' water path is always the view ray's depth to
+        the scene behind, as the river's (D148 kept D120's curtain rule: past
+        48 units of gap behind, a sheet read 8 units of water). The depth
+        rays put most sheets 47-218 units off their rock, so the falls went
+        clear as soon as the depth job finished: the user saw the murk
+        right after a restore, before the job, then lose it.
+-   References: D120, D126, D148, D154

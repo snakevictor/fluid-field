@@ -420,7 +420,8 @@ namespace FluidFieldSim
 		static constexpr float LAND_AGREE = 16.0f;          ///< D138: a ground hit counts as the landscape only within this of TES::GetLandHeight there
 		static constexpr float LAND_RAY_ABOVE = 4000.0f;    ///< D126: the landscape ray starts this far over the point...
 		static constexpr float LAND_RAY_DROP = 20000.0f;    ///< D126: ...and looks this far down
-		static constexpr float SUBMERGED_BED = 64.0f;       ///< D126: a vertex at most this far over the landscape, under our pools' water, lies in the river (not the air under a lip)
+		static constexpr float SUBMERGED_DEPTH = 48.0f;     ///< D157: a vertex this far under the river's water (and on its bed) is in the river
+		static constexpr float SUBMERGED_BED = 16.0f;       ///< D157: 16 (was 64)       ///< D126: a vertex at most this far over the landscape, under our pools' water, lies in the river (not the air under a lip)
 		static constexpr float SUBMERGED_COLUMN = 256.0f;   ///< D131: an engine water plane counts for the submerged cut where it stands at most this far over the landscape (a river over its bed)
 		static constexpr float SUBMERGED_OVER_TOP = 96.0f;  ///< D143: ...and at most this far over the sheet's own top (its source, not the river of the drop above)
 		static constexpr float POOL_CUT_DEPTH = 8.0f;       ///< D112: FallGround::POOL_CUT: the shaders cut the foot this far under the pools' surface

@@ -2380,7 +2380,9 @@ namespace FluidFieldSim
 								level = std::max(level, plane[4]);
 						}
 						if (level > -FLT_MAX) {
-							parts.submerged = std::clamp(at.z - (level - LEAD_CUT_DEPTH), -CLIP_RANGE, NO_CUT);
+							// D157: only deep under it (SUBMERGED_DEPTH, was LEAD_CUT_DEPTH 16): at 16 it ate 70k vertices of the sheets
+							// running through a cascade's pools once the landscape heights came in
+							parts.submerged = std::clamp(at.z - (level - SUBMERGED_DEPTH), -CLIP_RANGE, NO_CUT);
 							job.submerged += parts.submerged < 0.0f ? 1 : 0;
 						}
 					}
