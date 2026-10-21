@@ -162,6 +162,7 @@ struct VS_OUTPUT
 	float3 FallFade: TEXCOORD11;      // ...FallGround::Fade (x the seam fade, y over the water below), z its foot
 	float4 FallData: TEXCOORD12;      // ...x the baked water or air behind, y under the water it pours out of, z to the nearest other sheet
 	float4 FallOutward: TEXCOORD13;   // ...the normal turned to its outer side, w 1 where another sheet lies behind its inner side
+	float3 FallTangent: TEXCOORD14;   // D174: the direction its texture's v runs, world axes (the frame its detail normal is laid on)
 	float FallClip: SV_ClipDistance0;
 #	endif
 };
@@ -206,6 +207,7 @@ struct FallSurfaceVertex
 	float3 Position;  // Model space
 	float2 TexCoord;  // Vanilla's
 	float3 Normal;    // Model space
+	float3 Tangent;   // D174: the direction v runs, model space (FallRefraction::Vertex)
 };
 
 StructuredBuffer<FallSurfaceVertex> FallVertices : register(t125);
@@ -238,6 +240,7 @@ VS_OUTPUT main(uint vertexID : SV_VertexID)
 	vsout.TexCoord2 = float4(NormalsScroll1.xy, worldViewPos.w, 0.0);
 
 	vsout.FallNormal = mul((float3x3)FallWorld, fallVertex.Normal);
+	vsout.FallTangent = mul((float3x3)FallWorld, fallVertex.Tangent);
 	vsout.FallTexCoord = fallVertex.TexCoord;
 	vsout.FallFade.xy = FallGround::Fade(vertexID);
 	vsout.FallFade.y = min(vsout.FallFade.y, 512.0);  // D139: the "none" value held before interpolation
@@ -857,7 +860,13 @@ WaterNormalData GetWaterNormal(PS_INPUT input, float distanceFactor, float norma
 #				else
 	// FLOWMAP NORMALS ENABLED: Blending flow-based normals with base normals
 #					if defined(FLUID_FIELD)
+#						if defined(FLUID_FIELD_FALLS)
+	// D174: the falls take no flowmap normal: the river simulation's weight at their world xy switched it on wherever a sheet
+	// overhangs simulated river
+	float3 finalNormal = normalize(normals1 + float3(0, 0, 1));
+#						else
 	float3 finalNormal = normalize(lerp(normals1 + float3(0, 0, 1), flowmapNormal, distanceFactor * FluidField::FlowmapWeight(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz)));
+#						endif
 #					else
 	float3 finalNormal = normalize(lerp(normals1 + float3(0, 0, 1), flowmapNormal, distanceFactor));
 #					endif
@@ -886,7 +895,11 @@ WaterNormalData GetWaterNormal(PS_INPUT input, float distanceFactor, float norma
 		(1 - normalMul.y) * (normalMul.x * flowmapNormal1.z + (1 - normalMul.x) * flowmapNormal0.z);
 #					if defined(FLUID_FIELD)
 	// Still simulated water keeps vanilla's wind ripples instead of flow normals
+#						if defined(FLUID_FIELD_FALLS)
+	normalBlendFactor = 0.0;  // D174: as above, no flowmap normal on the falls
+#						else
 	normalBlendFactor *= FluidField::FlowmapWeight(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
+#						endif
 #					endif
 	finalNormal = normalize(lerp(normals1 + float3(0, 0, 1), normalize(lerp(finalNormal, flowmapNormal, normalBlendFactor)), distanceFactor));
 #				endif
@@ -984,20 +997,26 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 #			else
 	float3 R = reflect(viewDirection, WaterParams.y * normal + float3(0, 0, 1 - WaterParams.y));
 #			endif
-	float3 reflectionColor = CubeMapTex.SampleLevel(CubeMapSampler, R, 0).xyz;
+#			if defined(FLUID_FIELD_FALLS)
+	// D174: falling water is rough: the sky read blurred
+	const float reflectionMip = FallShading::REFLECTION_BLUR_MIPS;
+#			else
+	const float reflectionMip = 0.0;
+#			endif
+	float3 reflectionColor = CubeMapTex.SampleLevel(CubeMapSampler, R, reflectionMip).xyz;
 
 #			if defined(DYNAMIC_CUBEMAPS)
 	float3 dynamicCubemap;
 	if (SharedData::InInterior) {
-		dynamicCubemap = DynamicCubemaps::EnvTexture.SampleLevel(CubeMapSampler, R, 0).xyz;
+		dynamicCubemap = DynamicCubemaps::EnvTexture.SampleLevel(CubeMapSampler, R, reflectionMip).xyz;
 	} else {
 		float3 specularIrradiance = 1.0;
 		if (skylightingSpecular < 1.0)
-			specularIrradiance = Color::IrradianceToLinear(DynamicCubemaps::EnvTexture.SampleLevel(CubeMapSampler, R, 0).xyz);
+			specularIrradiance = Color::IrradianceToLinear(DynamicCubemaps::EnvTexture.SampleLevel(CubeMapSampler, R, reflectionMip).xyz);
 
 		float3 specularIrradianceReflections = 1.0;
 		if (skylightingSpecular > 0.0)
-			specularIrradianceReflections = Color::IrradianceToLinear(DynamicCubemaps::EnvReflectionsTexture.SampleLevel(CubeMapSampler, R, 0).xyz);
+			specularIrradianceReflections = Color::IrradianceToLinear(DynamicCubemaps::EnvReflectionsTexture.SampleLevel(CubeMapSampler, R, reflectionMip).xyz);
 
 		dynamicCubemap = Color::IrradianceToGamma(lerp(specularIrradiance, specularIrradianceReflections, skylightingSpecular));
 	}
@@ -1249,8 +1268,10 @@ PS_OUTPUT main(PS_INPUT input)
 	const float fallBehind = max(SharedData::GetScreenDepth(DepthTex.Load(int3(input.HPosition.xy, 0)).x) - fallDepth, 0.0);
 	// D174: foam wherever the sheet touches something (the next sheet behind, rock and ground, the water below), per pixel,
 	// in the river's foam pattern laid on the sheet and drifting on the flow
-	const float fallSheetGap = max(SharedData::GetScreenDepth(FallBehindDepth.Load(int3(input.HPosition.xy, 0)).x) - fallDepth, 0.0);
-	const float fallContact = FallShading::ContactStrength(fallSheetGap, fallBehind, input.FallFade.y, fallLip);
+	// D174: and the vertices' own distance to the nearest other sheet (D128): up close, the line where two sheets cross runs
+	// wider than SheetGap's pixels reach (no sheet in the second layer along it, a dark line, the user)
+	const float fallSheetGap = min(FallShading::SheetGap(FallBehindDepth, int2(input.HPosition.xy), fallDepth), input.FallData.z);
+	const float fallContact = FallShading::ContactStrength(fallSheetGap, fallBehind, input.FallFade.y, fallLip, input.FallClip);
 	const float fallFoam = fallContact > 0.02 ? FallShading::FoamCover(fallContact, FallShading::FoamPattern(FallFoamTex, Normals01Sampler, input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, FallUp, fallFlow.velocity, SharedData::Timer, SharedData::MipBias)) : 0.0;
 	const float fallAlpha = FallShading::Alpha(input.FallFade.x, fallBehind, fallFoam, input.FallClip);
 	if (fallAlpha <= 0.002)
@@ -1342,7 +1363,7 @@ PS_OUTPUT main(PS_INPUT input)
 			own.xy *= FallShading::NORMAL_STRENGTH;
 			normal = FallShading::SafeNormalize(float3(normal.xy + own.xy, normal.z * max(own.z, 0.1)), normal);
 		}
-		normal = FallShading::SheetNormal(FallUp, normal);  // D174: not PerturbNormal's per-triangle frame
+		normal = FallShading::SheetNormal(FallUp, input.FallTangent, normal);  // D174: not PerturbNormal's per-triangle frame
 	}
 #			endif
 

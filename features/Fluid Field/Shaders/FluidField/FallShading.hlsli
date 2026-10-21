@@ -13,10 +13,30 @@ namespace FallShading
 {
 	/** D125: world units behind the falls' front surface that still count as the front itself. */
 	static const float FRONT_EPSILON = 2.0;
+	/** D174: world units behind the front a surface must lie to be the next sheet behind (PSBehindDepth). */
+	static const float BEHIND_LAYER_EPSILON = 0.05;
+	/** D174: pixels out the next sheet behind is also read at (SheetGap). */
+	static const int SHEET_GAP_SPREAD = 3;
+
+	/**
+	 * D174: world units from a pixel of the falls (a_depth, linear) to the next sheet behind it (a_behind, the second depth
+	 * layer), the nearest of the pixel's own and its neighbours' a few pixels out: right on the line where two sheets cross, they
+	 * lie at the same depth and the second layer holds neither (a dark line through the meeting foam, SS 1228, 1229)
+	 */
+	float SheetGap(Texture2D<float4> a_behind, int2 a_pixel, float a_depth)
+	{
+		const int2 offsets[5] = { int2(0, 0), int2(SHEET_GAP_SPREAD, 0), int2(-SHEET_GAP_SPREAD, 0), int2(0, SHEET_GAP_SPREAD), int2(0, -SHEET_GAP_SPREAD) };
+		float gap = 1e9;
+		[unroll] for (int k = 0; k < 5; k++)
+			gap = min(gap, abs(SharedData::GetScreenDepth(a_behind.Load(int3(a_pixel + offsets[k], 0)).x) - a_depth));
+		return gap;
+	}
 	/** D129: world units one repeat of the falls' texture (their flow coordinates) spans, for the water's normal maps' scale. */
 	static const float FALLS_UV_WORLD = 512.0;
 	/** D174: world units over the water below over which the falls foam where they enter it. */
 	static const float WATER_FOAM_REACH = 64.0;
+	/** D174: world units from the sheet's cut over which it foams. */
+	static const float CUT_FOAM_REACH = 24.0;
 	/** D174: world units under the water below over which the falls' foam fades out. */
 	static const float WATER_FOAM_SINK = 8.0;
 	/** D141: world units below the water a fall pours out of over which the sheet fades in: the river runs on into the falling water, no seam. */
@@ -61,21 +81,24 @@ namespace FallShading
 		return float2(repeats, max(round(repeats), 1.0));
 	}
 
+	/** D174: mips down the falls read the sky's reflection (rough water: the horizon soft over a curved crest). */
+	static const float REFLECTION_BLUR_MIPS = 4.0;
+
 	/** D127: how much of the falls' own normal map tilts the surface (it is drawn for an opaque, diffuse sheet: high contrast). */
 	static const float NORMAL_STRENGTH = 0.8;
 
 	/**
-	 * D174: a tangent-space normal (x across the sheet, y down it, z along a_normal) in world axes, the frame from the sheet's
-	 * own normal alone. PerturbNormal's frame, from the screen derivatives of the flow coordinates, is constant over each
-	 * triangle (the coordinates are interpolated linearly) and turned at every edge: the detail normal with it, hard-edged facets
-	 * in the reflection (SS 1203). Along the bake's flow instead, its direction changing from texel to texel did the same.
+	 * D174: a tangent-space normal (x along the texture's u, y along its v, z along a_normal) in world axes, the frame from the
+	 * mesh's own tangent (a_tangent, the direction v runs, interpolated per vertex as the normal). PerturbNormal's frame, from the
+	 * screen derivatives of the flow coordinates, is constant over each triangle and turned at every edge (hard-edged facets in
+	 * the reflection, SS 1203); along the bake's flow, its direction changed from texel to texel; down the sheet, it flipped
+	 * across every crest's ridge, where downhill turns from upstream to downstream (patches with hard edges, SS 1214-1221).
 	 */
-	float3 SheetNormal(float3 a_normal, float3 a_tangentNormal)
+	float3 SheetNormal(float3 a_normal, float3 a_tangent, float3 a_tangentNormal)
 	{
-		float3 down = float3(0.0, 0.0, -1.0) - a_normal * dot(float3(0.0, 0.0, -1.0), a_normal);
-		down = length(down) > 0.1 ? normalize(down) : float3(0.0, 1.0, 0.0);
-		const float3 across = normalize(cross(a_normal, down));
-		return SafeNormalize(across * a_tangentNormal.x + down * a_tangentNormal.y + a_normal * a_tangentNormal.z, a_normal);
+		const float3 along = SafeNormalize(a_tangent - a_normal * dot(a_tangent, a_normal), normalize(cross(a_normal, abs(a_normal.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0))));
+		const float3 across = cross(along, a_normal);
+		return SafeNormalize(across * a_tangentNormal.x + along * a_tangentNormal.y + a_normal * a_tangentNormal.z, a_normal);
 	}
 
 	/**
@@ -130,13 +153,16 @@ namespace FallShading
 	 * water they pour into (a_aboveWater, FallGround::Fade's y). Per pixel: the per-vertex cut, seam and meeting distances
 	 * drew it in the triangles' shape (white wedges, SS 1150-1155). Not on the lip (a_lip: the crest stays glassy, D145).
 	 */
-	float ContactStrength(float a_sheetGap, float a_sceneGap, float a_aboveWater, float a_lip)
+	float ContactStrength(float a_sheetGap, float a_sceneGap, float a_aboveWater, float a_lip, float a_clip)
 	{
 		if (!FallGround::Whitening)
 			return 0.0;
 		float contact = 1.0 - saturate(a_sheetGap / MEET_FOAM_REACH);
 		contact = max(contact, 1.0 - saturate(a_sceneGap / CONTACT_FOAM_REACH));
 		contact = max(contact, 1.0 - saturate(max(a_aboveWater, 0.0) / WATER_FOAM_REACH));
+		// The sheet's cut (FallGround::ClipDistance: where it was cut at another sheet, the ground or the water): the foam where two
+		// sheets meet ran short of their cut edges, a strip of bare water there faded out, a dark line (SS 1209, 1228)
+		contact = max(contact, 1.0 - saturate(a_clip / CUT_FOAM_REACH));
 		// Falling off as the river's simulated foam does, a narrow solid core and a wide tail broken into the pattern's
 		// bubbles: linear over a short reach, it drew a solid white outline
 		// Stops at the water below (a_aboveWater is negative under its surface): seen through the water, foam under it read
@@ -208,8 +234,9 @@ namespace FallShading
 	 */
 	float Alpha(float a_seamFade, float a_behind, float a_foam, float a_clip)
 	{
+		// D174: foam opaque to the sheet's edge (faded with the water at its cut and seams, the meeting foam stopped short of it)
 		const float contact = saturate(a_behind / 4.0);
-		return saturate(a_seamFade) * lerp(contact, sqrt(contact), a_foam) * FallGround::CutFade(a_clip);
+		return lerp(saturate(a_seamFade) * contact * FallGround::CutFade(a_clip), 1.0, a_foam);
 	}
 
 	/**
@@ -252,9 +279,12 @@ namespace FallShading
 			const float2 pixel = uv * a_region;
 			const float sceneDepth = SharedData::GetScreenDepth(a_depth.Load(int3(pixel, 0)).x);
 			const float behind = clip.w - sceneDepth;
-			if (behind > 0.0 && behind < SSR_THICKNESS + step) {
+			if (behind > 0.0) {
+				// D174: a ray gone behind the scene took what it went behind, less the further behind it landed: only within the
+				// thickness (and none past it), neighbouring rays split into rock and sky with a hard edge (SS 1210-1215)
 				const float2 edge = min(uv, 1.0 - uv);
-				const float fade = saturate(min(edge.x, edge.y) * 10.0) * (1.0 - float(i) / float(SSR_STEPS));
+				const float within = 1.0 - saturate((behind - SSR_THICKNESS - step) / (SSR_THICKNESS * 3.0 + step));
+				const float fade = saturate(min(edge.x, edge.y) * 10.0) * (1.0 - float(i) / float(SSR_STEPS)) * within;
 				return float4(a_color.SampleLevel(a_sampler, pixel / a_dimensions, 0).rgb, fade);
 			}
 		}

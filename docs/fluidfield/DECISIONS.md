@@ -3963,3 +3963,39 @@ Entry format:
 -   Left: the rim and waterline changes are not yet checked on screen; the falls
     read about 35% darker than the river across a lip (cause not measured).
 -   References: D121, D128, D145, D147, D171, D173, plans/next-visuals.md
+
+## D175: The falls' normal on the mesh's own tangent; the meeting foam closed through the crossing
+
+-   Date: 2026-10-21
+-   Context: after D174, hard-edged patches in the falls' reflection at every
+    crest's most convex part (SS 1207-1221), a white teardrop (SS 1222, 1223)
+    and a dark line through the meeting foam (SS 1209, 1228, 1229, 1233).
+-   Decision:
+    -   **The detail normal on the mesh's own tangent** (FallRefraction::Vertex
+        gains the direction the texture's v runs, from each triangle's
+        texture coordinates, a unit direction weighted by area, summed per
+        vertex; FallShading::SheetNormal). Found with a screen split into the
+        normal's parts (only the final, laid-on-the-sheet normal showed the
+        edges). Every frame from the pixel failed: the screen derivatives are
+        constant per triangle (D174); the bake's flow changes texel to texel;
+        "down the sheet" flips across a crest's ridge, where downhill turns
+        from upstream to downstream. Dividing by the texture area instead gave
+        huge tangents where the coordinates collapse: NaN, the teardrop.
+    -   **No flowmap normal on the falls**: the river simulation's weight at
+        their world xy switched it on where a sheet overhangs river.
+    -   **The sky read 4 mips down** (REFLECTION_BLUR_MIPS) and the reflection
+        march's hit faded with how far behind the scene it landed (no hard
+        rock-to-sky split between neighbouring rays).
+    -   **The meeting foam through the crossing:** where two sheets cross they
+        lie at one depth, and the second depth layer held neither (the
+        diagnostic: the contact only failed on the crossing line itself). The
+        next sheet's gap is the nearest of a cross of pixels 3 out
+        (FallShading::SheetGap) and the vertices' own distance to the nearest
+        other sheet (D128, for close views, where the line runs wider than
+        the pixels reach). PSBehindDepth leaves out only surfaces within 0.05
+        units of the front (2 before). The cut counts as a contact
+        (CUT_FOAM_REACH 24), and foam is opaque to the sheet's edge.
+-   Tried and reverted: the crest blend (D170) merged as is (SS 1206: its look
+    was written for FallSurface's; redo it on the river-shader falls); the
+    falls' own depth test.
+-   References: D128, D170, D173, D174

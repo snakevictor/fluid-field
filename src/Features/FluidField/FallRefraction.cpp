@@ -476,6 +476,7 @@ namespace FluidFieldSim
 			} else {
 				vertices[v].normal[0] = vertices[v].normal[1] = vertices[v].normal[2] = 0.0f;
 			}
+			vertices[v].tangent[0] = vertices[v].tangent[1] = vertices[v].tangent[2] = 0.0f;
 		}
 		std::vector<uint16_t> indices;
 		indices.reserve(static_cast<std::size_t>(counts.triangleCount) * 3);
@@ -484,6 +485,30 @@ namespace FluidFieldSim
 			if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
 				continue;
 			indices.insert(indices.end(), index, index + 3);
+			{
+				// D174: the frame the falls' detail normal is laid on, smooth over the mesh (interpolated as its normal): the
+				// direction v runs, from the triangle's texture coordinates, summed into its vertices (normalised in the shader)
+				const auto& a = vertices[index[0]];
+				const auto& b = vertices[index[1]];
+				const auto& c = vertices[index[2]];
+				const RE::NiPoint3 e1(b.position[0] - a.position[0], b.position[1] - a.position[1], b.position[2] - a.position[2]);
+				const RE::NiPoint3 e2(c.position[0] - a.position[0], c.position[1] - a.position[1], c.position[2] - a.position[2]);
+				const float du1 = b.uv[0] - a.uv[0], dv1 = b.uv[1] - a.uv[1], du2 = c.uv[0] - a.uv[0], dv2 = c.uv[1] - a.uv[1];
+				const float det = du1 * dv2 - du2 * dv1;
+				// Each triangle's direction (unit) weighted by its area: divided by the texture area, a triangle whose coordinates
+				// nearly collapse gave a huge tangent, which overflowed to NaN in the shader (a white blob after bloom)
+				const RE::NiPoint3 along = (e2 * du1 - e1 * du2) * (det < 0.0f ? -1.0f : 1.0f);
+				const float length = along.Length();
+				const float area = e1.Cross(e2).Length();
+				if (std::abs(det) > 1e-12f && std::isfinite(length) && length > 1e-12f && std::isfinite(area)) {
+					const RE::NiPoint3 weighted = along * (area / length);
+					for (int k = 0; k < 3; k++) {
+						vertices[index[k]].tangent[0] += weighted.x;
+						vertices[index[k]].tangent[1] += weighted.y;
+						vertices[index[k]].tangent[2] += weighted.z;
+					}
+				}
+			}
 			if (!haveNormals) {
 				// Face normals summed, normalised in the shader
 				const RE::NiPoint3 p0(vertices[index[0]].position[0], vertices[index[0]].position[1], vertices[index[0]].position[2]);

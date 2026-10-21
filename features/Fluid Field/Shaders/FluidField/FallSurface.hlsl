@@ -66,6 +66,7 @@ struct FallSurfaceVertex
 	float3 Position;  // Model space
 	float2 TexCoord;  // Vanilla's
 	float3 Normal;    // Model space
+	float3 Tangent;   // D174: the direction v runs, model space (FallRefraction::Vertex)
 };
 
 StructuredBuffer<FallSurfaceVertex> Vertices : register(t125);
@@ -77,8 +78,8 @@ TextureCube<float4> EnvironmentTex : register(t104);
 Texture2D<float> FrontDepth : register(t105);
 Texture2D<float4> Noise1Tex : register(t106);  // D129: the water type's normal maps
 Texture2D<float4> Noise2Tex : register(t107);
-Texture2D<float4> Noise3Tex : register(t108);      // D125: the scene's depth with the falls' front surface drawn in
-Texture2D<float> NextSheetDepth : register(t112);  // D174: the falls' surface nearest behind their front (cleared to far where none)
+Texture2D<float4> Noise3Tex : register(t108);       // D125: the scene's depth with the falls' front surface drawn in
+Texture2D<float4> NextSheetDepth : register(t112);  // D174: the falls' surface nearest behind their front (cleared to far where none)
 
 struct VSOutput
 {
@@ -433,8 +434,8 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float straightBehind = max(straightDepth - sheetDepth, 0.0);
 	// D121: and where it meets rock or any other mesh (the scene's depth just behind it)
 	// D174: foam wherever the sheet touches something, per pixel (FallShading::ContactStrength)
-	const float sheetGap = max(SharedData::GetScreenDepth(NextSheetDepth.Load(int3(input.Position.xy, 0))) - sheetDepth, 0.0);
-	const float contact = FallShading::ContactStrength(sheetGap, straightBehind, input.Fade.y, lip);
+	const float sheetGap = min(FallShading::SheetGap(NextSheetDepth, int2(input.Position.xy), sheetDepth), input.ToOtherSheet);  // D174: as Water.hlsl
+	const float contact = FallShading::ContactStrength(sheetGap, straightBehind, input.Fade.y, lip, input.Clip);
 	// D120: without Foam on the Falls, none: the streaks' foam is the scene's full light against the water's dim pre-lit
 	// colour, so even 15% of it laid a pale veil over every sheet (SS 971)
 	// D122: covered as the river's foam (FluidField::GetFoamCover): dense foam solidly, thin foam only in the bubbles and
@@ -598,7 +599,10 @@ void PSDepth(VSOutput input)
 void PSBehindDepth(VSOutput input)
 {
 	PSDepth(input);
-	if (!FallShading::BehindFront(SharedData::GetScreenDepth(input.Position.z), SharedData::GetScreenDepth(FrontDepth.Load(int3(input.Position.xy, 0)))))
+	// Not FallShading::BehindFront's 2 units: where two sheets cross, the other lies within them of the front, and the strip
+	// along the crossing found no sheet behind (no meeting foam, a dark line, SS 1228, 1229). The same vertex shader drew the
+	// front, so the front itself matches its depth exactly
+	if (SharedData::GetScreenDepth(input.Position.z) - SharedData::GetScreenDepth(FrontDepth.Load(int3(input.Position.xy, 0))) <= FallShading::BEHIND_LAYER_EPSILON)
 		discard;
 }
 #endif  // PSHADER

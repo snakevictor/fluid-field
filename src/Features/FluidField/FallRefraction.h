@@ -149,8 +149,9 @@ namespace FluidFieldSim
 			float position[3];
 			float uv[2];
 			float normal[3];
+			float tangent[3];  ///< D174: the direction the texture's v runs (down the mesh's flow), model space, summed over its triangles
 		};
-		static_assert(sizeof(Vertex) == 32);
+		static_assert(sizeof(Vertex) == 44);
 
 		/** @brief Matches FallSurfaceCB in FallSurface.hlsl. */
 		struct alignas(16) Constants
