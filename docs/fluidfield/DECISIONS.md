@@ -3352,3 +3352,23 @@ Entry format:
     visible tail of a mostly buried sheet (under 256 welded vertices, 3%
     of its part) is cut as a scrap.
 -   References: D113, D135, D136
+
+## D141: Foam grows with the drop; a glassy lip that blends into the river
+
+-   Date: 2026-10-21
+-   Decision (the user's references: Victoria and Niagara for vertical
+    falls, rapids from above and the side for inclines):
+    -   No foam over the lip: D124's top band is gone. Real water goes over
+        the edge glassy and breaks up as it falls.
+    -   Foam grows with the drop below the water a fall pours out of
+        (VertexClip d.z): from nothing 24 units down to 0.9 at 260, on the
+        steep parts only (the flow's vertical share 0.4 to 0.8); a sheet
+        with no source (starting mid-fall) by its run time. Inclines foam by
+        the bake's rock strikes and wakes.
+    -   The lip blends into the river: the sheet fades in over its first 24
+        units below the source's surface, and no cut-line foam there (the
+        lead-in's cut lies under the river).
+    -   No crossing foam where a sheet rises out of the water it pours out
+        of (a level within 96 units of the mesh's top): the river foamed
+        along every lip. Plunges into the water below keep theirs.
+-   References: D98, D121, D124, D138

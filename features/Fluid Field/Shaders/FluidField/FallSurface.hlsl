@@ -254,10 +254,13 @@ static const float REFRACTION_SCREEN = 0.06;  // D120: 0.06, was 0.02: at its de
 /** D121: world units from a cut line (FallGround::ClipDistance) over which the water foams, and from a mesh behind it (the screen's depth). */
 static const float CUT_FOAM_REACH = 24.0;
 /** D124: world units the foam reaches down from the water a fall pours out of, and up from the water it falls into (was FallGround::PoolFoamHeight, 26). */
-static const float TOP_FOAM_REACH = 120.0;
+/** D141: world units of drop below the water a fall pours out of over which its foam grows from nothing to FALL_FOAM, and how white at most. */
+static const float FALL_FOAM_START = 24.0;
+static const float FALL_FOAM_FULL = 260.0;
+static const float FALL_FOAM = 0.9;
+/** D141: world units below that water over which the sheet fades in: the river runs on into the falling water, no seam. */
+static const float LIP_BLEND = 24.0;
 static const float FOOT_FOAM_REACH = 100.0;
-/** D138: how white the drop's top band is at most: below 1 the bubble pattern breaks it (at 1 every crest was a solid patch, SS 1016-1018). */
-static const float TOP_FOAM = 0.8;
 /** D139: the same for the foot band (at 1, short curtains were solid white top to bottom, SS 1031-1032). */
 static const float FOOT_FOAM = 0.8;
 static const float CONTACT_FOAM_REACH = 20.0;
@@ -379,13 +382,22 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// end: a hard straight line across the sheet, SS 998)
 	if (FallGround::Whitening)
 		white = max(white, (1.0 - Square(saturate(input.Fade.y / FOOT_FOAM_REACH))) * FOOT_FOAM);
+	// D141: as real falls (the user's references): clear and glassy over the lip, foam growing with the drop, thin threads
+	// below the lip to white columns near the foot, on the steep parts only (an incline foams by its rock strikes and
+	// wakes, the bake's). The drop from the water it pours out of; where it has none (a sheet starting mid-fall), its run
+	// time. D124's band at the top was the reverse: most foam where real water has least
+	const float steep = saturate((abs(flow.velocity.z) / max(length(flow.velocity), 1e-3) - 0.4) / 0.4);
+	const bool hasSource = input.BelowSource < 500.0;
+	const float fallen = hasSource ? smoothstep(FALL_FOAM_START, FALL_FOAM_FULL, input.BelowSource) : aerated;
 	if (FallGround::Whitening)
-		white = max(white, (1.0 - Square(saturate(input.BelowSource / TOP_FOAM_REACH))) * TOP_FOAM);
+		white = max(white, fallen * steep * FALL_FOAM);
+	// D141: near the lip nothing else foams either (the lead-in's cut line there is under the river)
+	const float lip = hasSource ? saturate(input.BelowSource / LIP_BLEND) : 1.0;
 	// D121: where the water breaks: along its cut lines (the lead-in leaving the river above, the foot under the pool or
 	// river below, a sheet cut into another's curl, rock), where it overlaps another sheet at a seam (laid on after the
 	// screen depth below: where it meets rock or any mesh, as the river foams at its shore)
 	if (FallGround::Whitening) {
-		white = max(white, 1.0 - saturate(input.Clip / CUT_FOAM_REACH));
+		white = max(white, (1.0 - saturate(input.Clip / CUT_FOAM_REACH)) * lip);
 		white = max(white, (1.0 - saturate(input.Fade.x)) * SEAM_FOAM);
 		// D128: where it meets another sheet (SS 992: the join of two sheets had none, the one behind hidden by the front)
 		white = max(white, (1.0 - saturate(input.ToOtherSheet / MEET_FOAM_REACH)) * MEET_FOAM);
@@ -503,7 +515,7 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// foam made the line where the sheet enters a boulder wholly opaque and white, tracing the faceted intersection of
 	// the sheet's triangles with the rock's as a white sawtooth; and the water fades out toward its cut
 	const float contact = saturate(straightBehind / 4.0);
-	const float alpha = saturate(input.Fade.x) * lerp(contact, sqrt(contact), foam) * FallGround::CutFade(input.Clip);
+	const float alpha = saturate(input.Fade.x) * lerp(contact, sqrt(contact), foam) * FallGround::CutFade(input.Clip) * smoothstep(0.0, 1.0, lip);  // D141: faded in under the lip
 	if (alpha <= 0.002)
 		discard;
 	// D108: Waterfall Shading debug "Depth Behind": the open water or air behind the sheet. D110: in bands of colour (a grey

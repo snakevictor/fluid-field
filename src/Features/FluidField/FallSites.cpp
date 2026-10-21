@@ -4794,10 +4794,11 @@ namespace FluidFieldSim
 				for (std::size_t i = 0; i < shell.size() && i < shellCovered.size(); i++)
 					shellCovered[i] = shellCovered[i] && shell[i] ? 1 : 0;
 			}
-			float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
+			float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX }, meshTop = -FLT_MAX;
 			for (std::size_t i = 0; i < count; i++) {
 				if (!field->covered[i])
 					continue;
+				meshTop = std::max(meshTop, field->position[i].z);
 				lo[0] = std::min(lo[0], field->position[i].x);
 				lo[1] = std::min(lo[1], field->position[i].y);
 				hi[0] = std::max(hi[0], field->position[i].x);
@@ -4822,6 +4823,9 @@ namespace FluidFieldSim
 						if (levelCount < 8 && a.x >= plane[0] && a.x <= plane[2] && a.y >= plane[1] && a.y <= plane[3])
 							levels[levelCount++] = plane[4];
 					}
+					// D141: not the water the fall pours out of (a level near the mesh's top): the river does not foam where it
+					// goes over the lip (the user's references: glassy there), the sheet fades in from it instead
+					levelCount = static_cast<int>(std::remove_if(levels, levels + levelCount, [&](float a_level) { return a_level >= meshTop - SOURCE_CROSSING_BAND; }) - levels);
 					for (const auto [dx, dy] : { std::pair{ 1, 0 }, std::pair{ 0, 1 } }) {
 						if (x + dx >= w || y + dy >= h)
 							continue;
