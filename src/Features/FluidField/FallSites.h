@@ -414,15 +414,16 @@ namespace FluidFieldSim
 		std::vector<RE::NiPointer<RE::BSGeometry>> buryQueue;
 		std::unique_ptr<BuryJob> buryJob;
 		uint32_t buriedCount = 0, buryTested = 0, buryRays = 0, buriedGround = 0;
-		static constexpr float BURY_REACH = 1000.0f;       ///< D112: how far the burial rays reach from a vertex (D126: 500, was 160; D131: 1000, the parity test's far ends out of the big cliffs)
-		static constexpr float BURY_MARGIN = 24.0f;        ///< D112: rock this near short of the vertex does not bury it (vanilla's sheets dip into the rock they lie on, as BAKE_ROCK_MARGIN)
-		static constexpr float BURY_LAND = 8.0f;           ///< D126: a vertex this far under the landscape's surface is buried (D113's 12 on level ground only, from the height grid)
-		static constexpr float LAND_AGREE = 16.0f;         ///< D138: a ground hit counts as the landscape only within this of TES::GetLandHeight there
-		static constexpr float LAND_RAY_ABOVE = 4000.0f;   ///< D126: the landscape ray starts this far over the point...
-		static constexpr float LAND_RAY_DROP = 20000.0f;   ///< D126: ...and looks this far down
-		static constexpr float SUBMERGED_BED = 64.0f;      ///< D126: a vertex at most this far over the landscape, under our pools' water, lies in the river (not the air under a lip)
-		static constexpr float SUBMERGED_COLUMN = 256.0f;  ///< D131: an engine water plane counts for the submerged cut where it stands at most this far over the landscape (a river over its bed)
-		static constexpr float POOL_CUT_DEPTH = 8.0f;      ///< D112: FallGround::POOL_CUT: the shaders cut the foot this far under the pools' surface
+		static constexpr float BURY_REACH = 1000.0f;        ///< D112: how far the burial rays reach from a vertex (D126: 500, was 160; D131: 1000, the parity test's far ends out of the big cliffs)
+		static constexpr float BURY_MARGIN = 24.0f;         ///< D112: rock this near short of the vertex does not bury it (vanilla's sheets dip into the rock they lie on, as BAKE_ROCK_MARGIN)
+		static constexpr float BURY_LAND = 24.0f;           ///< D126: a vertex this far under the landscape's surface is buried (D143: 24, was 8: low runs lying on the ground dip into it; keep, not eat)
+		static constexpr float LAND_AGREE = 16.0f;          ///< D138: a ground hit counts as the landscape only within this of TES::GetLandHeight there
+		static constexpr float LAND_RAY_ABOVE = 4000.0f;    ///< D126: the landscape ray starts this far over the point...
+		static constexpr float LAND_RAY_DROP = 20000.0f;    ///< D126: ...and looks this far down
+		static constexpr float SUBMERGED_BED = 64.0f;       ///< D126: a vertex at most this far over the landscape, under our pools' water, lies in the river (not the air under a lip)
+		static constexpr float SUBMERGED_COLUMN = 256.0f;   ///< D131: an engine water plane counts for the submerged cut where it stands at most this far over the landscape (a river over its bed)
+		static constexpr float SUBMERGED_OVER_TOP = 96.0f;  ///< D143: ...and at most this far over the sheet's own top (its source, not the river of the drop above)
+		static constexpr float POOL_CUT_DEPTH = 8.0f;       ///< D112: FallGround::POOL_CUT: the shaders cut the foot this far under the pools' surface
 		/** @brief D112: a lit mesh as the culling sees it: world positions at rest and as drawn, outer sides, open edges, bins. */
 		struct CullSheet
 		{
@@ -456,7 +457,7 @@ namespace FluidFieldSim
 			int stage = 0;
 			std::size_t sheet = 0, vertex = 0;  ///< Where the current stage is
 			uint32_t inside = 0, tested = 0, inward = 0, covered = 0, sideTested = 0, submerged = 0, meeting = 0;
-			uint32_t islands = 0, islandVertices = 0, holes = 0, holeVertices = 0;  ///< D138: CleanupSheet's
+			uint32_t islands = 0, islandVertices = 0, islandTriangles = 0, holes = 0, holeVertices = 0;  ///< D138: CleanupSheet's
 			std::chrono::steady_clock::time_point started;
 			double busy = 0.0;  ///< Milliseconds of work over its frames
 		};
@@ -475,7 +476,7 @@ namespace FluidFieldSim
 		 */
 		void VolumeCut(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job);
 		static constexpr float VOLUME_REACH = 400.0f;  ///< D113: world units each ray looks for the other sheet
-		static constexpr int VOLUME_VOTES = 3;         ///< D113: rays of six that must leave the other sheet through its outer face
+		static constexpr int VOLUME_VOTES = 4;         ///< D113: rays of six that must leave the other sheet through its outer face (D143: 4, was 3: clearly inside only)
 		static constexpr float VOLUME_MARGIN = 20.0f;  ///< D113: a vertex this near the other sheet's surface, inside it, still shows (about one of the dense copy's edges: no opening at the crossing)
 		/**
 		 * @brief D138: after every cut, on one sheet's graph (welded by position): small kept pieces cut off its main body are cut
@@ -483,12 +484,12 @@ namespace FluidFieldSim
 		 * Logs what cut its vertices and its largest pieces cut by rock or a sheet.
 		 */
 		void CleanupSheet(const CullSheet& a_sheet, CullJob& a_job);
-		static constexpr std::size_t ISLAND_MOST_VERTICES = 64;  ///< D138: a kept piece off the main body this small (welded vertices) is cut...
-		static constexpr float ISLAND_MOST_FRACTION = 0.01f;     ///< D138: ...or this small a share of the sheet's kept vertices
-		static constexpr std::size_t BODY_SCRAP_VERTICES = 256;  ///< D138: a part's main body this small (welded vertices)...
-		static constexpr float BODY_SCRAP_FRACTION = 0.03f;      ///< D138: ...and this small a share of its part as authored is a scrap the cuts left: cut too
-		static constexpr std::size_t HOLE_MOST_VERTICES = 32;    ///< D138: an enclosed piece cut by rock or a sheet this small is restored...
-		static constexpr float HOLE_MOST_FRACTION = 0.002f;      ///< D138: ...or this small a share of the sheet's kept vertices
+		static constexpr std::size_t ORPHAN_MOST_TRIANGLES = 128;  ///< D143: a kept piece off its part's body this small (drawn triangles) is an orphan, cut...
+		static constexpr float ORPHAN_MOST_FRACTION = 0.01f;       ///< D143: ...or this small a share of its part's drawn triangles
+		static constexpr std::size_t BODY_SCRAP_TRIANGLES = 512;   ///< D138: a part's main body this small (D143: drawn triangles)...
+		static constexpr float BODY_SCRAP_FRACTION = 0.03f;        ///< D138: ...and this small a share of its part as authored is a scrap the cuts left: cut too
+		static constexpr std::size_t HOLE_MOST_VERTICES = 96;      ///< D138: an enclosed piece cut by rock or a sheet this small is restored (D143: 96, was 32: a hole in a kept face is worse than hidden mesh)...
+		static constexpr float HOLE_MOST_FRACTION = 0.005f;        ///< D138: ...or this small a share of the sheet's kept vertices (D143: 0.5%, was 0.2%)
 		/** @brief D126: VertexClip d.w for one vertex: the distance from where it is drawn to the nearest shown surface of another sheet, up to MEET_REACH, else NO_WATER. */
 		void MeetDistance(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job);
 		static constexpr float MEET_REACH = 64.0f;  ///< D126: world units within which another sheet's surface counts as meeting this one
