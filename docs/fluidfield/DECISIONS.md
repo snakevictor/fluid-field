@@ -3244,3 +3244,8 @@ Entry format:
     water, never resets, and needs no water normal maps (not found, D134).
     The lace stays the fallback.
 -   References: D127, D131, D133, D134, D136
+-   Open (SS 1016-1018, the user): the drop's top foam band (D124) lies in
+    big solid patches at every crest with hard straight edges along mesh
+    boundaries: the source water is chosen per mesh, so a neighbour without
+    one stops the band dead, and NO_WATER interpolates into a hard line.
+    To measure per vertex from the water surface and fade where none.
