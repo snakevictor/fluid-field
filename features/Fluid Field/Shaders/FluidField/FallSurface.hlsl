@@ -349,9 +349,17 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	const float alpha = saturate(input.Fade.x) * lerp(contact, sqrt(contact), foam) * FallGround::CutFade(input.Clip);
 	if (alpha <= 0.002)
 		discard;
-	// D108: Waterfall Shading debug "Depth Behind": the open water or air behind the sheet, black at the rock, white at 600
-	if (FallGround::DebugMode == 4)
-		return float4(saturate(input.Behind / 600.0).xxx, 1.0);
+	// D108: Waterfall Shading debug "Depth Behind": the open water or air behind the sheet. D110: in bands of colour (a grey
+	// ramp read wrong through the tonemap): red under 50 units, yellow to 150, green to 300, blue to 600, magenta at the
+	// reach (nothing hit)
+	if (FallGround::DebugMode == 4) {
+		const float behind = input.Behind;
+		const float3 band = behind >= 599.0 ? float3(1.0, 0.0, 1.0) : behind >= 300.0 ? float3(0.0, 0.2, 1.0) :
+		                                                          behind >= 150.0     ? float3(0.0, 1.0, 0.0) :
+		                                                          behind >= 50.0      ? float3(1.0, 1.0, 0.0) :
+		                                                                                float3(1.0, 0.0, 0.0);
+		return float4(band * 0.5, 1.0);
+	}
 	return float4(color * alpha, alpha);  // Premultiplied
 }
 #endif  // PSHADER

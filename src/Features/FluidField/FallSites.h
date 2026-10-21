@@ -313,6 +313,7 @@ namespace FluidFieldSim
 		std::unordered_map<const RE::BSGeometry*, std::vector<std::array<RE::NiPoint3, 3>>> depthRaysShown;  ///< D108: the overlay's rays
 		std::unique_ptr<DepthJob> depthJob;
 		uint32_t depthRays = 0, depthHits = 0;
+		bool depthAudited = true;                     ///< TEMPORARY D110
 		static constexpr float DEPTH_CELL = 30.0f;    ///< D106: world units: one sampled vertex per cell this size
 		static constexpr float DEPTH_START = 40.0f;   ///< D106: the ray starts this far off the other face
 		static constexpr int DEPTH_FILL_PASSES = 60;  ///< D106: rounds spreading the samples to the vertices between

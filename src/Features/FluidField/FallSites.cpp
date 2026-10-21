@@ -977,11 +977,38 @@ namespace FluidFieldSim
 		const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double, std::milli>(CLIP_BUDGET_MS);
 		while (std::chrono::steady_clock::now() < deadline) {
 			if (!depthJob) {
-				if (depthQueue.empty())
+				if (depthQueue.empty()) {
+					// TEMPORARY D110 audit: the depth behind each mesh's shown vertices as the GPU gets it, once all are done
+					if (!depthAudited) {
+						depthAudited = true;
+						for (const auto& [geometry, base] : vertexClipBase) {
+							auto* triShape = geometry ? const_cast<RE::BSGeometry*>(geometry)->AsTriShape() : nullptr;
+							if (!triShape)
+								continue;
+							const uint32_t count = triShape->GetTrishapeRuntimeData().vertexCount;
+							if (base + count > vertexClips.size())
+								continue;
+							std::vector<float> shown;
+							for (uint32_t v = 0; v < count; v++) {
+								const auto& clip = vertexClips[base + v];
+								if (clip[0] > 0.0f && clip[3] < 3.5f)
+									shown.push_back(clip[13]);
+							}
+							if (shown.empty())
+								continue;
+							std::sort(shown.begin(), shown.end());
+							const auto at = [&](float a_q) { return shown[std::min(shown.size() - 1, static_cast<std::size_t>(a_q * static_cast<float>(shown.size())))]; };
+							const auto atReach = std::count_if(shown.begin(), shown.end(), [](float a_d) { return a_d >= CLEAR_REACH - 1.0f; });
+							logger::info("[Fluid Field]   depth audit '{}': {} of {} shown; depth 10% {:.0f}, 50% {:.0f}, 90% {:.0f}; {} at the reach", geometry->name.c_str(), shown.size(), count,
+								at(0.1f), at(0.5f), at(0.9f), atReach);
+						}
+					}
 					return;
+				}
 				// D109: a mesh waits for its consistent outward normals (ComputeSides)
 				RE::NiPointer<RE::BSGeometry> geometry = depthQueue.back();
-				if (geometry && vertexClipBase.contains(geometry.get()) && !outwardNormals.contains(geometry.get()))
+				// D110: and for every cut (the lead-in's comes with the swell, ComputePushes)
+				if (geometry && vertexClipBase.contains(geometry.get()) && (!outwardNormals.contains(geometry.get()) || !vertexPushes.contains(geometry.get())))
 					return;
 				depthQueue.pop_back();
 				const auto base = geometry ? vertexClipBase.find(geometry.get()) : vertexClipBase.end();
@@ -1040,9 +1067,19 @@ namespace FluidFieldSim
 							job->normals[v] = outward->second[v];
 					}
 				}
-				// One vertex per DEPTH_CELL cell
+				// D110: from where the vertex is drawn (its rest place moved by the seams' gap and the swell, ComposeShifts; the
+				// wobble about it aside), so the rays start on the surface seen
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					const auto& clip = vertexClips[job->base + v];
+					job->positions[v] += RE::NiPoint3(clip[4], clip[5], clip[6]);
+				}
+				// One vertex per DEPTH_CELL cell, of those shown (D110: not cut by rock, the water, the curl or the lead-in, nor
+				// hidden behind another sheet: only the outer surface's depth matters, and the buried ones' rays were noise)
 				std::unordered_set<int64_t> cells;
 				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					const auto& clip = vertexClips[job->base + v];
+					if (clip[0] <= 0.0f || clip[3] >= 3.5f)
+						continue;
 					const RE::NiPoint3& p = job->positions[v];
 					const int64_t key = (static_cast<int64_t>(std::floor(p.x / DEPTH_CELL)) & 0x1FFFFF) << 42 | (static_cast<int64_t>(std::floor(p.y / DEPTH_CELL)) & 0x1FFFFF) << 21 |
 					                    (static_cast<int64_t>(std::floor(p.z / DEPTH_CELL)) & 0x1FFFFF);
@@ -1124,6 +1161,7 @@ namespace FluidFieldSim
 				}
 				vertexClipVersion++;
 				depthRaysShown[job.geometry.get()] = std::move(job.rays);
+				depthAudited = false;
 				logger::info("[Fluid Field]   depth behind '{}': {} vertices sampled of {}, {} of {} rays hit rock or ground so far; {} vertices within {:.0f} units of it",
 					job.geometry->name.c_str(), job.samples.size(), count, depthHits, depthRays, shallow, CLEAR_REACH * 0.5f);
 				// TEMPORARY D106 diagnostics

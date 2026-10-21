@@ -1012,7 +1012,7 @@
     "feature.fluid_field.waterfall_debug_depth": "Depth Behind (See-Through Falls)",
     "feature.fluid_field.waterfall_debug_direction": "Flow Direction",
     "feature.fluid_field.waterfall_debug_off": "Off",
-    "feature.fluid_field.waterfall_debug_tooltip": "Paints the falling water with its flow. Mesh Flow Bake: red how the streaks spread, green the run time (a band per second), blue foam, white the wake of rock; dark magenta where a mesh has no bake. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster. Vanilla Texture: the falls without the flow. Depth Behind: with See-Through Falls, each sheet by the open water or air behind it to the first rock or ground, black at the rock, white at 600 units (8.5 m) or more.",
+    "feature.fluid_field.waterfall_debug_tooltip": "Paints the falling water with its flow. Mesh Flow Bake: red how the streaks spread, green the run time (a band per second), blue foam, white the wake of rock; dark magenta where a mesh has no bake. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster. Vanilla Texture: the falls without the flow. Depth Behind: with See-Through Falls, each sheet by the open water or air behind it to the first rock or ground: red under 50 units, yellow to 150, green to 300, blue to 600 (8.5 m), magenta where nothing was hit.",
     "feature.fluid_field.waterfall_debug_vanilla": "Vanilla Texture (No Flow)",
     "feature.fluid_field.waterfall_look": "Water",
     "feature.fluid_field.waterfall_sites": "Sites: %u falls, %u cascades, %u rapids, %u no bottom, %u failed; ground captured for %u of %u",

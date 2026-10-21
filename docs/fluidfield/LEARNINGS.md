@@ -127,3 +127,10 @@ render with older shaders; wait 5 to 10 s before judging a capture.
 -   **Anything the vertex shaders read per frame must be latched per rendered frame** (2026-10-20, D85). The falls' depth pre-pass draws before FluidField::Prepass, the lit pass after; a value Prepass advances (the scroll phase) differs between them. Feeding it into vertex positions failed the lit pass's depth test almost everywhere (flat background, the falls only in cracks). Latch on `globals::state->frameCount` at the first draw of the frame.
 -   **Bumping a feature .ini also loses the deploy folder** (2026-10-20). The .ini is globbed with CONFIGURE_DEPENDS, so a version bump makes `cmake --build --preset=Deploy` reconfigure without the preset's CommunityShadersOutputDir environment, and Deploy reports "Full deployment" while copying nothing. After an .ini change, run `cmake --preset ALL-WITH-AUTO-DEPLOYMENT` before deploying, and check the game folder's DLL time.
 -   **Rename a shadowing local by hand, not with a line-range sed** (2026-10-20, D94). A sed over a guessed line range renamed all but the last use; that line silently bound to the outer variable of the old name (world positions), and the falls stretched across the valley. The compiler cannot catch it once the shadow is gone.
+
+## A grey debug ramp lies through the tonemap (D110)
+
+A 0-1 grey written straight to the scene before the tonemap and bloom reads as
+near white over most of its range: the depth view looked "all 600" while the
+values were 60-250. Use banded false colour for anything read by eye in the
+scene, and check the numbers in the log alongside it.

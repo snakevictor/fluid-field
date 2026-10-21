@@ -2699,3 +2699,33 @@ Entry format:
         Waterfall Overlay and Sites views, Hide Vanilla Waterfall Effects, the
         fog debug modes and the verify/log checks.
 -   References: D97, D98, D102, D104, D105
+
+## D108-D110: One ray per shown vertex, against a consistent outer side; a depth view to check it
+
+-   Date: 2026-10-20
+-   Decision:
+    -   **D108:** a single ray per sampled vertex (no "both ways" fallback:
+        the user's call, the direction must be right, not hedged), and two
+        views to check it: Falls Mesh Debug "Depth Rays" (green to a hit,
+        red to the 600 reach) and Waterfall Shading "Depth Behind".
+    -   **D109:** each sheet's outer side carried across the mesh
+        (OrientSheet) and chosen by the majority of vanilla's authored
+        normals; the rays go against it. Logged: 0 of 372,729 vertices
+        disagree, so vanilla's normals are consistent per sheet (the earlier
+        "inconsistent" reading was a mislabelled counter).
+    -   **D110:** rays only from vertices that are shown: not cut (rock, the
+        water, the curl, the lead-in: VertexClip a.x > 0) and not hidden
+        behind another sheet (a.w < 4). The depth step now also waits for
+        the swell's cuts (ComputePushes), and starts each ray where the
+        vertex is drawn (rest plus the seam gap and swell moves), not its
+        rest place (SS 916's offset). Rays round the buried and hidden parts
+        of the C were noise in the overlay (the user).
+    -   **D110, Depth Behind in bands:** red under 50 units, yellow to 150,
+        green to 300, blue to 600, magenta where nothing was hit. The grey
+        ramp read as nearly all white through the tonemap even with medians
+        of 60 to 250 units (logged), which made the depth look missing.
+    -   Checked in game (Riverwood falls): red rings where a sheet hugs
+        rock, yellow on the sloped runs, green and blue on the open
+        curtains; magenta only in a few patches. Logged per mesh over shown
+        vertices: depth 10% 9-43, median 61-248, 90% 363-600.
+-   References: D104, D106
