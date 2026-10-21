@@ -3249,3 +3249,72 @@ Entry format:
     boundaries: the source water is chosen per mesh, so a neighbour without
     one stops the band dead, and NO_WATER interpolates into a hard line.
     To measure per vertex from the water surface and fade where none.
+
+## D138: Burial decided by the nearest face; the landscape checked against the engine's height; a cleanup of lone pieces and pinholes (branch feature/fluid-field-culling-6)
+
+-   Date: 2026-10-21
+-   Context: after D135-D136 the user found holes in plain, visible sheets
+    (SS 1019: the last fall between Whiterun and Riverwood; SS 1025: at a
+    fall's foot; SS 1027: a large ragged hole mid-sheet, with scattered
+    small ones round it; SS 1028) and kept pieces floating where all round
+    them was cut (SS 1020-1024, 1026, 1029; SS 1021: a lone ragged piece in
+    the rock). SS 1030: the undersides are clean.
+-   Causes (from the code; the new log is to confirm them in game):
+    1.  **D135's static parity counted every face out to 1000 units.** In a
+        gorge the far end of an axis sits inside the cliff opposite; Havok
+        misses that cliff's far face from inside it, so the axis counts one
+        face: odd, "inside". Three or four such axes (both walls, the bed's
+        rocks) were enough for a hole in a sunlit sheet (likely SS 1027).
+    2.  **The landscape ray took any unreferenced hit on the ground layers
+        as the landscape.** If some mesh's collision sits there with no
+        reference, a sheet under it read as under the ground (possible, not
+        confirmed; now guarded and counted).
+    3.  **Every cut is decided per vertex**, so its mistakes are scattered
+        single vertices or small groups: pinholes in a sheet, and scraps
+        kept where everything round them was cut.
+-   Decision:
+    -   **Statics by the nearest face along each axis.** If the vertex's
+        own ray meets a face first, the vertex is outside along that axis
+        (unless Havok reports it as the back of a face). If the far end's
+        ray meets a face nearer the vertex than anything the vertex's ray
+        met (a face Havok hides from inside a shape), the vertex is behind
+        it: inside. Still four of six axes; the cut still starts 24 units
+        inside the nearest such face. Far-away faces no longer vote.
+    -   **The landscape hit must agree with TES::GetLandHeight** (the same
+        heightfield) within 16 units; any other ground-layer hit is passed
+        by and counted ("ground hits passed by").
+    -   **CleanupSheet**, a culling stage after the inside cut, one sheet a
+        step, on the sheet's graph with vertices welded by position:
+        -   Holes first: a cut piece with no open edge and only kept
+            neighbours, cut only by rock or another sheet (never the
+            water, the lead-in, the river or the pools), and at most 32
+            vertices or 0.2% of the sheet's kept ones, is restored (its
+            rock and inside cuts undone).
+        -   Then lone pieces: per part of the mesh as authored, the
+            largest kept piece is its body. Another kept piece that borders
+            a cut vertex and has at most 64 vertices (or 1% of the part's
+            kept ones) is cut (VertexCut::island, in a.x). So is the body
+            itself if it is a scrap: at most 256 vertices and under 3% of
+            its part. Whole pieces switch, so no cut line moves along the
+            kept sheet and no sawtooth appears.
+        -   VertexInShell excludes the cut pieces, so no spray comes from them.
+    -   **The log** says what cut each sheet: under the landscape, in
+        statics, inside another sheet, lead-in, in the river, the water
+        below, the pools, lone pieces. It also gives its two largest pieces
+        cut by rock or a sheet alone (size, centre, the landscape/statics/
+        sheet counts, the mean of the six axes that voted inside, vertices
+        on the open edge), and the cleanup's counts. Per mesh, the rock
+        test also logs ground hits passed by.
+-   Cost: one welded graph and three floods per sheet a step (a few ms to
+    tens of ms on the largest sheets, one frame each); the static test's
+    casts are the same.
+-   Untested: builds; not run in game. Whether Havok reports the back of a
+    face, and with which normal, was not observed; if it never does, the
+    "met by the vertex first" case always reads outside, which errs toward
+    shown. TES::GetLandHeight is called inside the Havok read lock (it is
+    expected to read the land's data, not cast).
+-   Risks: SS 1025's holes at the foot may come from the pools' cut, which
+    the shader makes per frame and the cleanup does not see. A small
+    visible tail of a mostly buried sheet (under 256 welded vertices, 3%
+    of its part) is cut as a scrap.
+-   References: D113, D135, D136
