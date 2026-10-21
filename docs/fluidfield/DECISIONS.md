@@ -2855,3 +2855,24 @@ Entry format:
 -   Open: the pale strip where falls cross the river (the crossing foam,
     D-crossing, its own brightness); foam to be driven by the flow later.
 -   References: D91, D98, D102, D105, D110
+
+## D121: Foam where the falls break, lit like the water; a more opaque sheet
+
+-   Date: 2026-10-20
+-   Decision (See-Through Falls, with Foam on the Falls on):
+    -   Foam along the cut lines (FallGround::ClipDistance within 24 units:
+        the lead-in leaving the river above, the foot under the pool or
+        river, a sheet cut into another's curl, rock), at seam overlaps
+        (0.7), where the sheet meets rock or any mesh (screen depth within
+        20 units, 0.9, as the river foams at its shore), at rock strikes and
+        wakes (the bake), and over the water below (pool and height bands,
+        as before). Broken up by the lace; at most 0.85 cover.
+    -   Not by aeration any more: the aerated colour (D120) is the falling
+        water's body; as foam it speckled every sheet.
+    -   Foam colour: five times the water's lit brightness, 15% of its hue
+        (LEARNINGS: foam lit by the scene's light veiled every sheet).
+    -   Absorption 0.08 per unit (was 0.03): beside the river the falls read
+        too clear (the user: "the river is shallower and more opaque").
+-   Open: the band at a cut line is solid rather than lacy; the user is to
+    judge strength and reach in game.
+-   References: D120, D112
