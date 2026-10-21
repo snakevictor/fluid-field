@@ -3500,3 +3500,18 @@ Entry format:
 -   Open: the falls a little browner than the river's olive; sparkle on
     steep sheets is rare (the sun seldom lines up with them).
 -   References: D127, D129, D131
+
+## D148: The falls' water depth measured as the river measures it
+
+-   Date: 2026-10-21
+-   Decision: the water the view ray crosses is the scene's depth behind
+    the sheet along the ray at the refracted pixel (Water.hlsl's
+    distanceMul), up to the water's fog distance; where the sheet has left
+    its rock (baked depth behind past 24-48 units: a curtain), its own
+    thickness. D147's 120-unit floor painted every sheet deep and dark
+    ("petroleum", SS 1050) where the river shows its bed when shallow and
+    darkens with depth (SS 1049). D106 had dropped the screen depth as
+    noise; with only the front surface drawn (D125) and the opaque pass's
+    depth behind (D105) it reads cleanly.
+-   Open: a bright white blob (also SS 999) on some sheets.
+-   References: D105, D106, D125, D127, D147

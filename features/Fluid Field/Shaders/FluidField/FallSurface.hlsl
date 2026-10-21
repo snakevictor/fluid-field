@@ -197,8 +197,6 @@ static const float DETAIL_TILE = 160.0;
 static const float DETAIL_STRENGTH = 0.8;
 /** D147: the share of the river's reflection (fresnel) the falls take. */
 static const float FALLS_REFLECTION = 0.35;
-/** D147: world units of water the sheet's colour and opacity read at least. */
-static const float BODY_DEPTH = 120.0;
 
 /**
  * D130: the repeats of a texture a_worldScale units across per repeat of the falls' flow coordinates (FALLS_UV_WORLD),
@@ -487,9 +485,14 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// the ray crosses (refractionMul) with Fluid Field's water tint (TintedRefractionWeight), its colour shallow to deep
 	// linearly over the fog's far distance; aerated water at least AERATION_OPACITY opaque. D105-D121's separate
 	// absorption made the falls solid tinted sheets where the river beside them reads clear
-	// D147: at least BODY_DEPTH of water: the river beside the falls reads as a deep, dark body, the sheet as a clear film
-	// over its rock (SS 1046)
-	const float path = max(SheetPath(BehindDepth(input, sheetDepth, behindDepth), cosine), BODY_DEPTH) * DepthScale;
+	// D148: the water the view ray crosses as the river measures it (Water.hlsl's distanceMul: the scene's depth behind the
+	// surface along the ray, at the refracted pixel), so the falls darken with depth and show their bed where shallow as
+	// the river does (SS 1049); where the sheet has left its rock (a curtain, air behind), its own thickness. D147's floor
+	// of 120 units painted every sheet deep and dark (petroleum, SS 1050)
+	const float rayScale = length(input.WorldPosition) / max(sheetDepth, 1e-3);
+	const float rayBehind = max(behindDepth - sheetDepth, 0.0) * rayScale;
+	const float curtain = smoothstep(LAYER_GAP * 0.5, LAYER_GAP, input.Behind);
+	const float path = lerp(min(rayBehind, FogFar), SheetThickness / max(cosine, 0.25), curtain) * DepthScale;
 	const float refractionMul = 1.0 - pow(saturate((FogFar - path) / FogRange), FogAmount);
 	const float opacity = max(FluidField::TintedRefractionWeight(refractionMul, path), AERATION_OPACITY * aerated);
 
