@@ -175,11 +175,6 @@ static const float GLINT_WEIGHT = 0.5;
  * light itself is on another scale (at 0.3 of it the sheets blew out)
  */
 static const float SCATTER_BRIGHTNESS = 1.5;
-/** D102: the foam's most cover. */
-static const float FOAM_MOST = 0.85;  // D121: 0.85 (was 0.6)
-/** D121: the foam's brightness over the river's lit water colour, and how much of the water's hue it keeps. */
-static const float FOAM_BRIGHTNESS = 5.0;
-static const float FOAM_HUE = 0.15;
 /** D121: world units from a cut line (FallGround::ClipDistance) over which the water foams, and from a mesh behind it (the screen's depth). */
 static const float CUT_FOAM_REACH = 24.0;
 static const float CONTACT_FOAM_REACH = 20.0;
@@ -301,9 +296,12 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	if (FallGround::Whitening)
 		white = max(white, (1.0 - saturate(straightBehind / CONTACT_FOAM_REACH)) * CONTACT_FOAM);
 	// D120: without Foam on the Falls, none: the streaks' foam is the scene's full light against the water's dim pre-lit
-	// colour, so even 15% of it laid a pale veil over every sheet (SS 971). D121: the white water broken up by the lace
-	const float cover = white > 0.0 ? saturate(smoothstep(1.0 - white, 1.0 - white * 0.6, lace) + smoothstep(0.75, 1.0, white)) : 0.0;
-	const float foam = FallGround::Whitening ? saturate(cover) * FOAM_MOST : 0.0;
+	// colour, so even 15% of it laid a pale veil over every sheet (SS 971)
+	// D122: covered as the river's foam (FluidField::GetFoamCover): dense foam solidly, thin foam only in the bubbles and
+	// streaks of a pattern, here vanilla's normal map running on the baked flow (the river's runs on its simulated flow)
+	const float pattern = HasNormal ? saturate(length(NormalTex.Sample(WrapSampler, flow.uvA).xy * 2.0 - 1.0) * 1.4) : lace;
+	const float threshold = pattern * 0.5;
+	const float foam = FallGround::Whitening && white > 0.02 ? smoothstep(threshold, threshold + 0.25, white) * 0.95 : 0.0;
 	const float3 viewNormal = mul((float3x3)FrameBuffer::CameraView, normal - geometric);
 	const float2 offset = viewNormal.xy * float2(1.0, -1.0) * RefractionStrength * REFRACTION_SCREEN * region.y * saturate(straightBehind / 8.0) / max(sheetDepth / 4096.0, 1.0);  // D120: shrinks from 4096 units, was 1024
 	float2 pixel = clamp(input.Position.xy + offset, 0.5, region - 0.5);
@@ -373,9 +371,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 
 	// White water: the river's foam colour (FluidField::FoamColor: the lit water colour toward the scene light, the
 	// sun's share shadowed), lifted a little further toward the light; never brighter than the scene's light
-	// D121: scaled from the water's own lit brightness, as the aerated colour (LEARNINGS: the scene's light is on another
-	// scale, and foam lit by it veiled every sheet), a little of the water's hue kept
-	const float3 foamColor = lerp(1.0, hue, FOAM_HUE) * Color::RGBToLuminance(waterLit) * FOAM_BRIGHTNESS;
+	// D122: the river's foam colour, from the same inputs (Water.hlsl: the lit water colour lifted a little toward the
+	// light on the surface): the falls' foam the same white as the river's beside it
+	const float3 foamColor = FluidField::FoamColor(waterLit, sceneLight);
 	color = lerp(color, foamColor, foam);
 	color = clamp(color, 0.0, MAX_OUTPUT);  // D3D's min and max return the other value for NaN
 

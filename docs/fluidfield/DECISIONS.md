@@ -2876,3 +2876,23 @@ Entry format:
 -   Open: the band at a cut line is solid rather than lacy; the user is to
     judge strength and reach in game.
 -   References: D120, D112
+
+## D122: The falls' foam is the river's foam
+
+-   Date: 2026-10-20
+-   Decision: the see-through falls' foam uses the river's colour and
+    cover exactly (the user: match the shallow water's foam in colour and
+    brightness, driven by the baked flow):
+    -   Colour: FluidField::FoamColor(lit water colour, sun times shadow
+        plus ambient), as Water.hlsl calls it (the water colour lifted 10%
+        toward the light). D121's five times the water's brightness, and
+        D102's extra lift toward the light, are gone.
+    -   Cover: as GetFoamCover: dense foam solid, thin foam only where a
+        bubble pattern lets it through (threshold half the pattern, 0.25
+        soft, at most 0.95). The pattern is vanilla's normal map running on
+        the baked flow, as the river's runs on its simulated flow.
+    -   Amount: the bake's foam (rock strikes) and wakes, plus D121's break
+        lines (cut lines, seams, contact with meshes, the water below).
+-   The see-through pass draws every sheet layer; inner layers showing
+    through (SS 980) are left to the culling (D113+), per the user.
+-   References: D121, D120
