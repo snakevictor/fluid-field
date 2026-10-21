@@ -100,6 +100,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 	output.TexCoord = v.TexCoord;
 	output.Normal = mul((float3x3)World, v.Normal);
 	output.Fade.xy = FallGround::Fade(vertexID);
+	output.Fade.y = min(output.Fade.y, 512.0);  // D139: as BelowSource (D138): 1e4 interpolated into a hard line
 	// D98: as the cut (FallGround::ClipDistance, D71), the pools foam a mesh only at its foot
 	output.Fade.z = (!FallGround::Enabled || FallGround::VertexBase == FallGround::NO_VERTEX_CLIP) ? 1.0 : fmod(FallGround::VertexClip[FallGround::VertexBase + vertexID].a.w, 2.0);  // D100: +2 marks an inward winding
 	output.Clip = FallGround::ClipDistance(relative, vertexID);
@@ -257,6 +258,8 @@ static const float TOP_FOAM_REACH = 120.0;
 static const float FOOT_FOAM_REACH = 100.0;
 /** D138: how white the drop's top band is at most: below 1 the bubble pattern breaks it (at 1 every crest was a solid patch, SS 1016-1018). */
 static const float TOP_FOAM = 0.8;
+/** D139: the same for the foot band (at 1, short curtains were solid white top to bottom, SS 1031-1032). */
+static const float FOOT_FOAM = 0.8;
 static const float CONTACT_FOAM_REACH = 20.0;
 /** D121: how white a seam's overlap and a mesh's contact foam at most. */
 static const float SEAM_FOAM = 0.7;
@@ -374,8 +377,8 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// D124: the whole drop's top and foot foam long and dense (the user): down from the water it pours out of, and up from
 	// the water it falls into. D131: 1 - x^2, dense most of the way and easing out (sqrt fell to nothing at once at its
 	// end: a hard straight line across the sheet, SS 998)
-	if (FallGround::Whitening && input.Fade.y < FallGround::NO_WATER * 0.5)
-		white = max(white, 1.0 - Square(saturate(input.Fade.y / FOOT_FOAM_REACH)));
+	if (FallGround::Whitening)
+		white = max(white, (1.0 - Square(saturate(input.Fade.y / FOOT_FOAM_REACH))) * FOOT_FOAM);
 	if (FallGround::Whitening)
 		white = max(white, (1.0 - Square(saturate(input.BelowSource / TOP_FOAM_REACH))) * TOP_FOAM);
 	// D121: where the water breaks: along its cut lines (the lead-in leaving the river above, the foot under the pool or

@@ -3269,3 +3269,17 @@ Entry format:
         flowmaps) and kept alive. The river's ripples (D129, D131) and the
         Noise1 foam pattern had never been drawn.
 -   References: D124, D129, D134
+
+## D139: The foot foam band per vertex, and softer
+
+-   Date: 2026-10-21
+-   Decision: the height above the water a falls vertex falls into (for
+    its foot foam, VertexClip a.z) is the highest water plane under that
+    vertex, from every plane near the mesh, not only the mesh's own. Per
+    mesh, the band stopped on a hard straight line where the next mesh up
+    found no water, and its 100-unit reach at full strength painted short
+    curtains solid white (SS 1031-1032; a band diagnostic showed the foot
+    band alone). The band is at most 0.8, and Fade.y is held to 512 before
+    interpolation, as D138 did for the top band. The cut at the mesh's foot
+    keeps the mesh's own planes (D70).
+-   References: D124, D138

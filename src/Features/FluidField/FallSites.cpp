@@ -1256,7 +1256,15 @@ namespace FluidFieldSim
 					if (positions[v].x >= plane[0] && positions[v].x <= plane[2] && positions[v].y >= plane[1] && positions[v].y <= plane[3])
 						water = std::max(water, plane[4]);
 				}
-				const float above = water > -FLT_MAX ? positions[v].z - water : NO_WATER;
+				// D139: the height above the water it falls into for its foam, per vertex: the highest plane under it from every
+				// plane near the mesh (sources), not only those under its own top. Per mesh, the band stopped on a straight line
+				// where the next mesh up found none (SS 1031, 1032). The cut below keeps the mesh's own planes (D70)
+				float under = -FLT_MAX;
+				for (const auto& plane : sources) {
+					if (positions[v].x >= plane[0] && positions[v].x <= plane[2] && positions[v].y >= plane[1] && positions[v].y <= plane[3] && plane[4] <= positions[v].z + 8.0f)
+						under = std::max(under, plane[4]);
+				}
+				const float above = under > -FLT_MAX ? positions[v].z - under : NO_WATER;
 				// D124: how far under the water it pours out of (none where it starts under another sheet, mid-fall)
 				float source = FLT_MAX;
 				for (const auto& plane : sources) {
@@ -1268,7 +1276,7 @@ namespace FluidFieldSim
 				// D70: only near the mesh's foot, where it goes into its water: higher up, a plane whose bound covers
 				// the fall (a pool partway down, a whole cell) cut holes in the middle of the sheet
 				if (water > -FLT_MAX && positions[v].z < bottom + WATER_CUT_BAND)
-					clip = std::min(clip, above + WATER_KEEP);
+					clip = std::min(clip, positions[v].z - water + WATER_KEEP);
 				// D71: w marks the mesh's foot, the only place the pools may cut it (the shader's pool cut)
 				vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, CLEAR_REACH, 0.0f, below, NO_WATER });  // D126: d.w no other sheet near until CullStep's MeetDistance
 				vertexCuts.push_back({ .water = clip });                                                                                                                                                   // D112: a.x's parts, kept apart
