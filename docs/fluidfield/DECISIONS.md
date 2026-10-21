@@ -2746,3 +2746,81 @@ Entry format:
     -   Logged: rays now point down on about 85-90% of the curtains' samples
         (was 75-80%) and about 90% on the sloped runs.
 -   References: D106, D110
+
+## D112: One test for what is shown; the culling worked out again as the cuts become known (branch feature/fluid-field-culling-2)
+
+-   Date: 2026-10-20
+-   Context: SS 958 with the Depth Rays overlay (CS_2026-10-20_22-02-55_761):
+    a large red fan (rays that hit nothing) from the curtain's foot under the
+    pool, and green rays from the parts of the sheet buried in the overhang.
+    SS 900, 901 and 913 (and 887-899): culling still punches holes where the
+    sheet should show. The user wants the overlapping C-shaped curtains to read
+    as one body of water: what is inside rock, under water or inside another
+    sheet's curl hidden, the visible outer surface whole.
+-   Causes:
+    1.  **The CPU never knew two of the ways a vertex is hidden.** The pools' cut
+        at the foot happens only in the shaders (FallGround::ClipDistance, per
+        frame), so a.x > 0 under the pool; and rock hides by the depth test
+        alone (D70 dropped the per-vertex rock cut; the bake's rock mask needs
+        rock on both sides of the sheet, D59, so a sheet running into a cliff
+        is not in it). DepthStep's "shown" test (a.x > 0, a.w < 4) passed both.
+    2.  **The curl cut ran once, too early** (likely the main cause of the
+        holes, not checked in game): ComputeFades ran it as the seams were done,
+        before the lead-in cuts (ComputePushes, after the bakes), the pools
+        (PollPools runs after the first ClipStep) and the rock were known. A
+        vertex behind a leading face that is itself cut later (the lead-in under
+        the river), under the pool, in rock, or dithered out at a seam was cut
+        with nothing left in front of it: a hole to the cliff. It was never
+        worked out again, and each sheet read its leaders in list order, not
+        after their own curl cut.
+    3.  **The inner-side cover test** (ComputeSides, D103) took a covering sheet
+        as shown on a.x alone: a covering face under the pool or in rock still
+        hid the inner side behind it.
+    4.  DepthStep added the seam and swell moves (b.xyz, in the mesh's own space)
+        to world positions unturned and unscaled.
+-   Decision:
+    -   **VertexCut** (CPU only, parallel to vertexClips): a.x's parts kept apart
+        (the water below, the curl, the lead-in; a.x is their least, ComposeCut),
+        plus the pools' cut as the shaders make it at the foot (PoolCutAt:
+        BuildPoolMap's level less POOL_CUT, at the drawn position) and a buried
+        flag. Each part can be worked out again without the others' mins
+        piling up.
+    -   **VertexShown**, the one test of "drawn at all": a.x > 0, not faded at a
+        seam (a.y >= 0.5), above the pools' cut, not buried. The curl cut's
+        leading faces, the inner-side cover test, DepthStep's samples and its
+        audit all use it. DepthStep keeps two rules of its own: not a.w's +4
+        (inside another sheet's curl, seen only from its hollow, D110) and not
+        the underside (D111).
+    -   **BuryStep** (Havok, 3 ms a frame, after ClipStep): a vertex is buried
+        when rays toward it from 160 units out along its normal, against it,
+        from above and from either side along the sheet (level) all meet rock
+        more than 24 units short of it (BAKE_ROCK_MARGIN's allowance for sheets
+        dipping into the rock they lie on). It stops at the first ray that
+        reaches. A ray starting inside rock sees no face (D105) and counts as
+        reaching, so the test errs toward shown. Only VertexShown reads it: the
+        depth test still does the hiding on screen.
+    -   **RefreshCulling**: the pools' cut, the curl cut, a.x and the sides,
+        in that order, from one set of sheets (BuildCullSheets, one OrientSheet
+        per mesh). Run at the end of the seams (as before), when the rock test
+        ends, after the lead-in cuts (ComputePushes) and when new pools arrive.
+        The curl cut first undoes itself, then runs over the sheets highest
+        first, so a leader's own curl cut is in place before the sheets behind
+        read it; a leading face not shown hides nothing. DepthStep waits for the
+        rock test.
+    -   DepthStep turns and scales the moves into the world.
+-   Cost: about one to two rays per vertex once per load (five for a buried
+    one), at 3 ms a frame before the depth rays start; RefreshCulling a few
+    times per load (one OrientSheet per mesh and the curl and cover tests).
+-   Untested: the plugin builds (Release, CommunityShaders target, no warnings in
+    FallSites); not run in game. The
+    curl cut's thresholds (INSIDE_REACH, INSIDE_MARGIN, INSIDE_LATERAL) are
+    unchanged: the holes are put down to cut faces that hid nothing, not to the
+    reach.
+-   Risks: the rock test's five ways can all be blocked for a sheet that is
+    visible down a narrow slot (rock within 136 units on every side and above);
+    only its depth ray and the faces it covers would be lost, not its drawing.
+    The sort by height only approximates "leads" (as high and larger), so a
+    leader within 8 units of a follower's top may be read before its own curl
+    cut. With Hide Buried Falls off the shaders cut nothing, but the CPU still
+    treats the cuts as made.
+-   References: D59, D67, D70, D71, D97, D98, D103, D105, D110, D111
