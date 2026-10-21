@@ -296,6 +296,11 @@ float BehindDepth(VSOutput a_input, float a_sheetDepth, float a_behindDepth)
 
 /** D149: how much deeper than its depth falling water reads (turbid with bubbles and sediment). */
 static const float FALLS_MURK = 4.0;
+/** D150: world units of water (the path, FALLS_MURK in it) that stay clear, the range over which the murk comes in, and how milky and how dark the bed reads at its fullest. */
+static const float MURK_CLEAR = 8.0;
+static const float MURK_RANGE = 48.0;
+static const float MURK_MILK = 0.45;
+static const float MURK_DARK = 0.75;
 
 /** D120: past this gap behind (world units), the sheet has left the rock: what lies between is air, not water. */
 static const float LAYER_GAP = 48.0;
@@ -550,7 +555,12 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 		glint *= SharedData::enbSettings.WaterSunSpecularMultiplier;
 	color += glint * (1.0 - 0.9 * foam);
 	// D127: over what lies behind by the water's opacity, reflection and glint with it (Water.hlsl's final lerp)
-	color = lerp(behind, color, opacity);
+	// D150: what lies behind seen through the water as the river sees its bed: lifted toward the water's milky foam colour
+	// (Water.hlsl's ApplyAeration on the refraction) and dimmed toward the water's colour with depth, past the first few
+	// tens of units clear (the user: clear for the first 30 cm, then dark, milky and murky; the falls showed their bed)
+	const float murk = saturate((path - MURK_CLEAR) / MURK_RANGE);
+	const float3 behindSeen = lerp(lerp(behind, foamColor, MURK_MILK * murk), waterColor, MURK_DARK * murk);
+	color = lerp(behindSeen, color, opacity);
 
 	// White water: D122, the river's foam colour from the same inputs, opaque over the rest (as ApplyFoamBlended)
 	color = lerp(color, foamColor, foam);

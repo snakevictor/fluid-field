@@ -3527,3 +3527,17 @@ Entry format:
     (SS 1052). Falling water is turbid (bubbles, stirred sediment), so it
     reads deeper than it is. Water Depth still scales it.
 -   References: D148
+
+## D150: The bed seen through the falls goes milky and dark past the first few units
+
+-   Date: 2026-10-21
+-   Decision: what lies behind the sheet is lifted toward the water's foam
+    colour (0.45, the river's aeration of its refraction) and dimmed toward
+    the water's colour (0.75), by the water path (FALLS_MURK in it): clear
+    for 8 units, full over 48 more. Compared with Water.hlsl: the river
+    fogs and aerates its refraction before laying its colour over it;
+    the falls laid their colour over the raw bed, which stayed sharp under
+    every sheet (the user: the river is clear for its first 30 cm, then
+    dark, milky and murky). The weather fog on the refraction is still
+    not ported (needs the fog colours from C++).
+-   References: D148, D149
