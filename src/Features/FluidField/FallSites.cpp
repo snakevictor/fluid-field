@@ -1861,10 +1861,7 @@ namespace FluidFieldSim
 		if (a_index >= vertexClips.size() || a_index >= vertexCuts.size())
 			return;
 		const VertexCut& cut = vertexCuts[a_index];
-		// D165: an outward vertex (open to the outside, OutwardGuard) is never cut by the burial, the inside or the river cuts:
-		// only by the water below, the lead-in, the pools (the shaders') and the orphan cleanup
-		const float guarded = cut.outward ? NO_CUT : std::min({ cut.inside, cut.submerged, cut.rock });
-		vertexClips[a_index][0] = std::min({ cut.water, cut.lead, cut.island, guarded });
+		vertexClips[a_index][0] = std::min({ cut.water, cut.inside, cut.lead, cut.submerged, cut.rock, cut.island });
 	}
 
 	bool FallSites::VertexInShell(std::size_t a_index) const
@@ -1872,7 +1869,7 @@ namespace FluidFieldSim
 		if (a_index >= vertexCuts.size())
 			return true;
 		const VertexCut& cut = vertexCuts[a_index];
-		return (cut.outward || (!cut.buried && cut.inside > 0.0f && cut.submerged > 0.0f)) && cut.lead > 0.0f && cut.island > 0.0f;
+		return !cut.buried && cut.inside > 0.0f && cut.lead > 0.0f && cut.submerged > 0.0f && cut.island > 0.0f;
 	}
 
 	float FallSites::LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above, LandProbe* a_probe) const
@@ -2022,7 +2019,7 @@ namespace FluidFieldSim
 			return true;
 		// The pools' cut at the foot (the shaders', per frame) and the rock (the depth test): neither is in a.x
 		const VertexCut& cut = vertexCuts[a_index];
-		return cut.pool > 0.0f && (!cut.buried || cut.outward);
+		return cut.pool > 0.0f && !cut.buried;
 	}
 
 	bool FallSites::PoolCutAt(float a_x, float a_y, float& a_level) const
@@ -2326,7 +2323,7 @@ namespace FluidFieldSim
 		const auto begin = std::chrono::steady_clock::now();
 		const auto deadline = begin + std::chrono::duration<double, std::milli>(CLIP_BUDGET_MS);
 		CullJob& job = *cullJob;
-		constexpr int DONE = 7;
+		constexpr int DONE = 6;
 		while (job.stage < DONE && std::chrono::steady_clock::now() < deadline) {
 			// Stage 0: the sheets, one a step (each one OrientSheet)
 			if (job.stage == 0) {
@@ -2351,26 +2348,8 @@ namespace FluidFieldSim
 				job.sheet = job.vertex = 0;
 				continue;
 			}
-			// D165: stage 3, the outward guard (Havok rays, under the world's lock), a few vertices a step
 			if (job.stage == 3) {
-				const CullSheet& guardSheet = job.sheets[job.sheet];
-				auto* bhkWorld = WorldFor(guardSheet.geometry);
-				auto* world = bhkWorld ? bhkWorld->GetWorld1() : nullptr;
-				if (world) {
-					const RE::BSReadLockGuard lock(bhkWorld->worldLock);
-					for (int n = 0; n < 16 && job.vertex < guardSheet.positions.size(); n++, job.vertex++)
-						OutwardGuard(job.sheets, job.sheet, static_cast<uint32_t>(job.vertex), job, world);
-				} else {
-					job.vertex = guardSheet.positions.size();  // No collision world: no guard
-				}
-				if (job.vertex >= guardSheet.positions.size()) {
-					job.sheet++;
-					job.vertex = 0;
-				}
-				continue;
-			}
-			if (job.stage == 4) {
-				CleanupSheet(job.sheets, job.sheet, job);
+				CleanupSheet(job.sheets[job.sheet], job);
 				job.sheet++;
 				continue;
 			}
@@ -2410,7 +2389,7 @@ namespace FluidFieldSim
 				} else if (job.stage == 2) {
 					VolumeCut(job.sheets, job.sheet, v, job);
 					ComposeCut(sheet.base + v);
-				} else if (job.stage == 5) {
+				} else if (job.stage == 4) {
 					SideFlags(job.sheets, job.sheet, v, job);
 				} else {
 					MeetDistance(job.sheets, job.sheet, v, job);
@@ -2435,18 +2414,6 @@ namespace FluidFieldSim
 			job.sheets.size(), job.inside, job.tested, job.inward, job.covered, job.sideTested, job.meeting, MEET_REACH, job.busy,
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - job.started).count());
 		const uint32_t submerged = job.submerged;
-		// D165: what the outward guard kept, per mesh and in all
-		uint32_t saved[4]{};
-		for (std::size_t k = 0; k < job.sheets.size() && k < job.guardSaved.size(); k++) {
-			const auto& counts = job.guardSaved[k];
-			for (int c = 0; c < 4; c++)
-				saved[c] += counts[c];
-			if (counts[0] + counts[1] + counts[2] + counts[3] > 0 || job.guardTested[k] > 0)
-				logger::info("[Fluid Field]   outward guard '{}': {} cut vertices tested, {} open to the outside; kept from the landscape {}, statics {}, inside another sheet {}, the river {}",
-					job.sheets[k].geometry->name.c_str(), job.guardTested[k], job.guardOpen[k], counts[0], counts[1], counts[2], counts[3]);
-		}
-		logger::info("[Fluid Field]   outward guard: kept {} from the landscape, {} from statics, {} from inside another sheet, {} from the river ({} Havok rays); orphans kept for being outward: {}; refused: {} vertices under the landscape, {} rays turned level (they leaned down), {} rays closed from their far end",
-			saved[0], saved[1], saved[2], saved[3], job.guardRays, job.orphansOutward, job.guardUnderLand, job.guardClamped, job.guardBackBlocked);
 		logger::info("[Fluid Field]   {} vertices under the river's water by its bed, cut; cleanup: {} orphan pieces ({} triangles, {} vertices) cut, {} small enclosed holes ({} vertices) restored",
 			submerged, job.islands, job.islandTriangles, job.islandVertices, job.holes, job.holeVertices);
 		cullJob.reset();
@@ -2455,147 +2422,8 @@ namespace FluidFieldSim
 			BuildPlunges();
 	}
 
-	RE::bhkWorld* FallSites::WorldFor(const RE::BSGeometry* a_geometry) const
+	void FallSites::CleanupSheet(const CullSheet& a_sheet, CullJob& a_job)
 	{
-		auto* tes = RE::TES::GetSingleton();
-		if (!tes || !a_geometry)
-			return nullptr;
-		auto* cell = tes->interiorCell ? tes->interiorCell : tes->GetCell(a_geometry->world.translate);
-		return cell ? cell->GetbhkWorld() : nullptr;
-	}
-
-	bool FallSites::OpenToOutside(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, RE::hkpWorld* a_world, CullJob& a_job)
-	{
-		// D165: rays out of the vertex's outer side, from where it is drawn: along its outer normal and tilted OUTWARD_TILT toward
-		// up, down and either side; open if one meets no rock (static or landscape) out to OUTWARD_REACH, cast from both ends (a
-		// ray starting inside rock sees no face of it, D105; the far end's sees the face it lies behind), and no shown surface of
-		// another sheet within OUTWARD_SHEET (open water space beyond that). The Havok part is kept per vertex: the rock does
-		// not move, the other sheets' cuts do
-		const CullSheet& sheet = a_sheets[a_sheet];
-		VertexCut& parts = vertexCuts[sheet.base + a_vertex];
-		const RE::NiPoint3& p = sheet.drawn[a_vertex];
-		const RE::NiPoint3& n = sheet.outward[a_vertex];
-		if (n.Length() < 0.5f)
-			return false;
-		// The landscape is a heightfield: under it is solid, whatever the rays say from inside it (the landscape is one-sided
-		// from below: Havok sees no face). Checked first
-		if (parts.ground > -FLT_MAX && p.z < parts.ground - BURY_LAND) {
-			a_job.guardUnderLand++;
-			return false;
-		}
-		RE::NiPoint3 side = n.Cross(RE::NiPoint3(0.0f, 0.0f, 1.0f));
-		side = side.Length() > 1e-3f ? side / side.Length() : RE::NiPoint3(1.0f, 0.0f, 0.0f);
-		const RE::NiPoint3 lift = side.Cross(n);  // Up along the sheet, square to its normal and to the side
-		const float c = std::cos(OUTWARD_TILT), t = std::sin(OUTWARD_TILT);
-		const RE::NiPoint3 ways[5] = { n, n * c + lift * t, n * c - lift * t, n * c + side * t, n * c - side * t };
-		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
-		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
-		std::vector<int64_t> cells;
-		for (int w = 0; w < 5; w++) {
-			// Only the upper hemisphere: a ray leaning down can run into the void under a sheet, or under the landscape where
-			// Havok sees nothing, and read open. Leaning down, it is turned level (an outer normal facing down: its rays level)
-			RE::NiPoint3 raw = ways[w];
-			if (raw.z < 0.0f) {
-				raw.z = 0.0f;
-				if (!(parts.openTested & (1u << w)))
-					a_job.guardClamped++;
-			}
-			const float length = raw.Length();
-			if (length < 1e-3f)
-				continue;
-			const RE::NiPoint3 way = raw / length;
-			const auto bit = static_cast<uint8_t>(1u << w);
-			if (!(parts.openTested & bit)) {
-				parts.openTested |= bit;
-				const RE::NiPoint3 start = p + way * OUTWARD_START;
-				const float reach = OUTWARD_REACH - OUTWARD_START;
-				bool open = RockAlong(a_world, start, way, reach) < 0.0f;
-				a_job.guardRays++;
-				// Confirmed from the far end back to the vertex: a solid the vertex sits inside shows its face from outside
-				if (open) {
-					open = RockAlong(a_world, start + way * reach, -way, reach) < 0.0f;
-					a_job.guardRays++;
-					a_job.guardBackBlocked += open ? 0 : 1;
-				}
-				if (open)
-					parts.openHavok |= bit;
-			}
-			if (!(parts.openHavok & bit))
-				continue;
-			// Another sheet's shown surface near along the way: inside its water, not open
-			const RE::NiPoint3 to = p + way * OUTWARD_SHEET;
-			cells.clear();
-			const int steps = static_cast<int>(std::ceil(OUTWARD_SHEET / (SEAM_BIN * 0.25f)));
-			for (int i = 0; i <= steps; i++) {
-				const RE::NiPoint3 q = p + (to - p) * (static_cast<float>(i) / static_cast<float>(steps));
-				const int64_t key = binKey(cellOf(q.x), cellOf(q.y), cellOf(q.z));
-				if (cells.empty() || cells.back() != key)
-					cells.push_back(key);
-			}
-			const float lo[3] = { std::min(p.x, to.x), std::min(p.y, to.y), std::min(p.z, to.z) };
-			const float hi[3] = { std::max(p.x, to.x), std::max(p.y, to.y), std::max(p.z, to.z) };
-			bool blocked = false;
-			for (std::size_t o = 0; o < a_sheets.size() && !blocked; o++) {
-				const CullSheet& other = a_sheets[o];
-				if (o == a_sheet || lo[0] > other.hi[0] || hi[0] < other.lo[0] || lo[1] > other.hi[1] || hi[1] < other.lo[1] || lo[2] > other.hi[2] || hi[2] < other.lo[2])
-					continue;
-				for (const int64_t key : cells) {
-					const auto it = other.bins.find(key);
-					if (it == other.bins.end())
-						continue;
-					for (const uint32_t tri : it->second) {
-						const auto& corners = other.triangles[tri];
-						if (!VertexShown(other.base + corners[0]) && !VertexShown(other.base + corners[1]) && !VertexShown(other.base + corners[2]))
-							continue;
-						if (RayTriangle(p, way, other.positions[corners[0]], other.positions[corners[1]], other.positions[corners[2]], OUTWARD_SHEET) >= 0.0f) {
-							blocked = true;
-							break;
-						}
-					}
-					if (blocked)
-						break;
-				}
-			}
-			if (!blocked)
-				return true;
-		}
-		return false;
-	}
-
-	void FallSites::OutwardGuard(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job, RE::hkpWorld* a_world)
-	{
-		// D165: the outward shell protected by construction (the user: "culling still needs some work to avoid eating at outward
-		// meshes"): a vertex cut by the burial, the inside or the river cut that is open to the outside keeps its place. Only
-		// the cut ones are asked (the guard changes nothing for the rest)
-		const CullSheet& sheet = a_sheets[a_sheet];
-		const std::size_t index = sheet.base + a_vertex;
-		VertexCut& parts = vertexCuts[index];
-		parts.outward = 0;
-		if (a_job.guardSaved.size() != a_sheets.size()) {
-			a_job.guardSaved.assign(a_sheets.size(), {});
-			a_job.guardTested.assign(a_sheets.size(), 0);
-			a_job.guardOpen.assign(a_sheets.size(), 0);
-		}
-		if (parts.rock > 0.0f && parts.inside > 0.0f && parts.submerged > 0.0f) {
-			ComposeCut(index);
-			return;
-		}
-		a_job.guardTested[a_sheet]++;
-		if (OpenToOutside(a_sheets, a_sheet, a_vertex, a_world, a_job)) {
-			parts.outward = 1;
-			a_job.guardOpen[a_sheet]++;
-			auto& saved = a_job.guardSaved[a_sheet];
-			saved[0] += (parts.rockCause & 1) && parts.rock <= 0.0f ? 1 : 0;
-			saved[1] += (parts.rockCause & 2) && parts.rock <= 0.0f ? 1 : 0;
-			saved[2] += parts.inside <= 0.0f ? 1 : 0;
-			saved[3] += parts.submerged <= 0.0f ? 1 : 0;
-		}
-		ComposeCut(index);
-	}
-
-	void FallSites::CleanupSheet(const std::vector<CullSheet>& a_sheets, std::size_t a_index, CullJob& a_job)
-	{
-		const CullSheet& a_sheet = a_sheets[a_index];
 		const uint32_t holesBefore = a_job.holes, holeVerticesBefore = a_job.holeVertices, orphansBefore = a_job.islands, orphanTrianglesBefore = a_job.islandTriangles;
 		// D138: the cuts are decided vertex by vertex, so their mistakes are small pieces: a few kept vertices left floating in
 		// rock or air where all round them was cut (SS 1020-1024, 1026, 1029), a few cut ones holing a plain sheet (SS 1019,
@@ -2773,30 +2601,7 @@ namespace FluidFieldSim
 			bool split = false;
 			for (const uint32_t t : members)
 				split = split || touchesCut[t];
-			bool orphan = split && (id == body[whole] ? scrap : members.size() <= most);
-			// D165: never a piece that is mostly the outward shell: more than ORPHAN_OUTWARD of its kept vertices open to the
-			// outside (asked here of the kept ones, under the world's lock)
-			if (orphan) {
-				std::vector<uint32_t> pieceNodes;
-				for (const uint32_t t : members) {
-					for (const uint32_t n : corner[t]) {
-						if (kept[n])
-							pieceNodes.push_back(n);
-					}
-				}
-				std::sort(pieceNodes.begin(), pieceNodes.end());
-				pieceNodes.erase(std::unique(pieceNodes.begin(), pieceNodes.end()), pieceNodes.end());
-				uint32_t opened = 0;
-				if (auto* bhkWorld = WorldFor(a_sheet.geometry); bhkWorld && bhkWorld->GetWorld1()) {
-					const RE::BSReadLockGuard lock(bhkWorld->worldLock);
-					for (const uint32_t n : pieceNodes)
-						opened += OpenToOutside(a_sheets, a_index, copies[n].front(), bhkWorld->GetWorld1(), a_job) ? 1 : 0;
-				}
-				if (!pieceNodes.empty() && static_cast<float>(opened) > ORPHAN_OUTWARD * static_cast<float>(pieceNodes.size())) {
-					orphan = false;
-					a_job.orphansOutward++;
-				}
-			}
+			const bool orphan = split && (id == body[whole] ? scrap : members.size() <= most);
 			for (const uint32_t t : members) {
 				for (const uint32_t n : corner[t]) {
 					if (!kept[n])
