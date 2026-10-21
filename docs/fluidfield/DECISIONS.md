@@ -3050,3 +3050,74 @@ Entry format:
         units per repeat, over the falls' own normal map: the river's fine
         sparkle (SS 988-990). Constants grew to 192 bytes; t106-t108.
 -   References: D126, D127
+
+## D126: Only the outer shell survives: exact landscape burial, burial in statics from open air, culling before the bake, emitters from the shell; where sheets meet (branch feature/fluid-field-culling-4)
+
+-   Date: 2026-10-20
+-   Context: round 2 in game ("Waterfall culling: 5 lit meshes; 13499 of 46266
+    vertices tested lie inside another sheet ... 1275.4 ms of work over 5509
+    ms"; "Waterfall rock test: 5270 of 80882 vertices inside rock (3577 under
+    level ground; 113665 rays)"). SS 982 (under the upper river): the arch
+    still curves down into the riverbed and shows. SS 983-985 (under the
+    landscape looking up) and SS 986: parts under the landscape and inside
+    big meshes remain, and they make flow and spawn spray. The user: "we only
+    want the outward shell of the intersection between each waterfall mesh,
+    the landscape mesh and other meshes like boulders, etc to remain. Also
+    culling maybe should come first? Then we don't waste resources baking
+    flow on mesh parts we won't be using." Then SS 992: where two sheets join
+    the line has no foam.
+-   Causes: D113 trusted the landscape only where its height grid is level,
+    so every part under a sloped or cliff landscape survived; D112's static
+    test counted a ray starting inside rock as reaching (from inside, Havok
+    sees no face), so parts deep in cliffs survived; the bake ran on the whole
+    mesh, and every emitter came from the bake's texels.
+-   Decision:
+    -   **Landscape burial, exact** (BuryStep, LandHeightAt): a ray straight
+        down from 4000 units over the vertex, past every hit that is not the
+        landscape's own collision (layer 17 ground or 13 terrain, with no
+        reference: LEARNINGS, landscape rays hit layer 17, never 13; placed
+        meshes on those layers carry a reference, so stepping is used, not a
+        filter). Under it by 8 units: buried, cliffs included. Kept per vertex
+        (VertexCut::ground).
+    -   **Burial in statics, from open air**: sixteen ways (the vertex's
+        normal, against it, the six axes, the eight diagonals), each from 500
+        units out. A way reaches the vertex only if its start is above the
+        landscape (heights cached per 16-unit cell), a ray from the start
+        meets no rock more than 24 units short of the vertex, and a ray from
+        the vertex out to the start meets nothing (a start inside a static is
+        seen from the vertex's side as the face it lies behind). Buried when
+        no way reaches. Stops at the first that does.
+    -   **In the river by its bed** (CullStep, VertexCut::submerged, into
+        a.x): under our pools' water (confirmed over the rock, D40, D78) by
+        LEAD_CUT_DEPTH or more, and at most 64 units over the landscape under
+        it, so the air under a lip (far over the ground) is never cut. For the
+        part of SS 982's arch that is under water and above the bed (the part
+        under the bed is buried above).
+    -   **VertexInShell**: not buried, not inside another sheet, not the
+        lead-in or the river by its bed (the waterline cuts and seam fades
+        aside: the plunges belong at the waterline).
+    -   **Culling before the bake**: a mesh's bake waits for its cut, its rock
+        test and a settled culling job (one ClipStep never reached bakes whole).
+        The texels whose interpolated shell flag is under a half are outside
+        the bake's domain (covered 0: no rock rays, no strands, no foam or
+        spray). The cache key hashes the kept vertices; BAKE_CACHE_VERSION 7.
+    -   **Emitters from the shell**: BuildPlunges masks every field with the
+        shell as it stands now (spray, plunges, lips, crossing foam), and runs
+        again whenever the culling finishes.
+    -   **Where sheets meet** (for the coordinator's foam in FallSurface.hlsl):
+        VertexClip d.w is the distance from the vertex where it is drawn to
+        the nearest shown surface (a triangle with any corner VertexShown) of
+        any other lit sheet, up to 64 units; NO_WATER (1e4) where none, and
+        from ClipStep until the culling's last stage computes it.
+-   Cost: about 3 rays for a vertex that is seen (the landscape ray, two
+    for its first way), up to about 50 for a buried one, at 3 ms a frame; the
+    meeting distance is a fifth culling stage. Bakes start later (after the
+    culling) and test fewer texels.
+-   Untested: the plugin builds (Release, CommunityShaders target); not run
+    in game; the shaders were not touched.
+-   Risks: landscape hidden by a static on purpose (a cave mouth) is still
+    the landscape: a sheet under it would be buried. A vertex seen only
+    through a gap narrower than the sixteen ways would be buried. If the
+    river over SS 982's arch is not in our pools (outside the site's capture)
+    the part above the bed stays.
+-   References: D40, D78, D97, D105, D112, D113, D124

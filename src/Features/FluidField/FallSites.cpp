@@ -453,6 +453,7 @@ namespace FluidFieldSim
 		buryDone = true;
 		cullJob.reset();  // D113
 		cullRequested = false;
+		landCache.clear();  // D126
 		hideEffects = false;
 		RefreshHiddenEffects();
 		// D91: the pieces the refractive pass drew show again (the wish is kept for the next sites)
@@ -1268,8 +1269,8 @@ namespace FluidFieldSim
 				if (water > -FLT_MAX && positions[v].z < bottom + WATER_CUT_BAND)
 					clip = std::min(clip, above + WATER_KEEP);
 				// D71: w marks the mesh's foot, the only place the pools may cut it (the shader's pool cut)
-				vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, CLEAR_REACH, 0.0f, below, 0.0f });
-				vertexCuts.push_back({ .water = clip });  // D112: a.x's parts, kept apart
+				vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, CLEAR_REACH, 0.0f, below, NO_WATER });  // D126: d.w no other sheet near until CullStep's MeetDistance
+				vertexCuts.push_back({ .water = clip });                                                                                                                                                   // D112: a.x's parts, kept apart
 				clipTested++;
 			}
 			vertexClipBase[geometry.get()] = base;
@@ -1851,7 +1852,95 @@ namespace FluidFieldSim
 		if (a_index >= vertexClips.size() || a_index >= vertexCuts.size())
 			return;
 		const VertexCut& cut = vertexCuts[a_index];
-		vertexClips[a_index][0] = std::min({ cut.water, cut.inside, cut.lead });
+		vertexClips[a_index][0] = std::min({ cut.water, cut.inside, cut.lead, cut.submerged });
+	}
+
+	bool FallSites::VertexInShell(std::size_t a_index) const
+	{
+		if (a_index >= vertexCuts.size())
+			return true;
+		const VertexCut& cut = vertexCuts[a_index];
+		return !cut.buried && cut.inside > 0.0f && cut.lead > 0.0f && cut.submerged > 0.0f;
+	}
+
+	float FallSites::LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above) const
+	{
+		// D126: straight down, past every hit that is not the landscape's own collision: layer 17 (ground) or 13 (terrain) with
+		// no reference (placed meshes on those layers carry one). LEARNINGS: landscape rays hit kGround, never kTerrain
+		const float scale = RE::bhkWorld::GetWorldScale();
+		const float bottom = a_above - LAND_RAY_DROP;
+		float z = a_above;
+		for (int step = 0; step < 32 && z > bottom; step++) {
+			RE::hkpWorldRayCastInput input;
+			input.from = RE::hkVector4(a_x * scale, a_y * scale, z * scale, 0.0f);
+			input.to = RE::hkVector4(a_x * scale, a_y * scale, bottom * scale, 0.0f);
+			RE::hkpWorldRayCastOutput output;
+			a_world->CastRay(input, output);
+			if (!output.HasHit() || !output.rootCollidable)
+				return -FLT_MAX;
+			const float hit = z + (bottom - z) * output.hitFraction;
+			const auto layer = output.rootCollidable->GetCollisionLayer();
+			if ((layer == RE::COL_LAYER::kGround || layer == RE::COL_LAYER::kTerrain) && !RE::TESHavokUtilities::FindCollidableRef(*output.rootCollidable))
+				return hit;
+			z = hit - 0.5f;
+		}
+		return -FLT_MAX;
+	}
+
+	std::vector<uint8_t> FallSites::ShellTexels(RE::BSGeometry* a_geometry, uint32_t a_width, uint32_t a_height, const float a_uvMin[2], const float a_uvSize[2], uint64_t* a_hash) const
+	{
+		const auto base = a_geometry ? vertexClipBase.find(a_geometry) : vertexClipBase.end();
+		auto* triShape = a_geometry ? a_geometry->AsTriShape() : nullptr;
+		auto* renderer = a_geometry ? a_geometry->GetGeometryRuntimeData().rendererData : nullptr;
+		if (base == vertexClipBase.end() || !triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || a_width == 0 || a_height == 0 ||
+			a_uvSize[0] <= 0.0f || a_uvSize[1] <= 0.0f || !renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV))
+			return {};
+		const auto& counts = triShape->GetTrishapeRuntimeData();
+		if (base->second + counts.vertexCount > vertexCuts.size())
+			return {};
+		const uint32_t stride = renderer->vertexDesc.GetSize();
+		const uint32_t uvOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
+		std::vector<std::array<float, 2>> uvs(counts.vertexCount);
+		std::vector<float> kept(counts.vertexCount);
+		uint64_t hash = 14695981039346656037ull;
+		for (uint32_t v = 0; v < counts.vertexCount; v++) {
+			const auto* uv = reinterpret_cast<const uint16_t*>(renderer->rawVertexData + static_cast<std::size_t>(v) * stride + uvOffset);
+			uvs[v] = { DirectX::PackedVector::XMConvertHalfToFloat(uv[0]), DirectX::PackedVector::XMConvertHalfToFloat(uv[1]) };
+			kept[v] = VertexInShell(base->second + v) ? 1.0f : 0.0f;
+			hash = (hash ^ (kept[v] > 0.5f ? 0x9Bu : 0x5Au)) * 1099511628211ull;
+		}
+		if (a_hash)
+			*a_hash = hash;
+		// As StartBake lays each triangle into the grid (the same texel centres and weights), the kept flags interpolated
+		std::vector<uint8_t> mask(static_cast<std::size_t>(a_width) * a_height, 1);
+		const auto gx = [&](float a_u) { return (a_u - a_uvMin[0]) / a_uvSize[0] * static_cast<float>(a_width) - 0.5f; };
+		const auto gy = [&](float a_v) { return (a_v - a_uvMin[1]) / a_uvSize[1] * static_cast<float>(a_height) - 0.5f; };
+		for (uint32_t i = 0; i < counts.triangleCount; i++) {
+			const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+			if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+				continue;
+			const float ax = gx(uvs[index[0]][0]), ay = gy(uvs[index[0]][1]), bx = gx(uvs[index[1]][0]), by = gy(uvs[index[1]][1]), cx = gx(uvs[index[2]][0]), cy = gy(uvs[index[2]][1]);
+			const float det = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+			if (std::abs(det) < 1e-6f)
+				continue;
+			const int32_t x0 = std::max(0, static_cast<int32_t>(std::floor(std::min({ ax, bx, cx }))));
+			const int32_t x1 = std::min(static_cast<int32_t>(a_width) - 1, static_cast<int32_t>(std::ceil(std::max({ ax, bx, cx }))));
+			const int32_t y0 = std::max(0, static_cast<int32_t>(std::floor(std::min({ ay, by, cy }))));
+			const int32_t y1 = std::min(static_cast<int32_t>(a_height) - 1, static_cast<int32_t>(std::ceil(std::max({ ay, by, cy }))));
+			for (int32_t y = y0; y <= y1; y++) {
+				for (int32_t x = x0; x <= x1; x++) {
+					const float px = static_cast<float>(x), py = static_cast<float>(y);
+					const float w1 = ((px - ax) * (cy - ay) - (cx - ax) * (py - ay)) / det;
+					const float w2 = ((bx - ax) * (py - ay) - (px - ax) * (by - ay)) / det;
+					const float w0 = 1.0f - w1 - w2;
+					if (w0 < -0.02f || w1 < -0.02f || w2 < -0.02f)
+						continue;
+					const float value = w0 * kept[index[0]] + w1 * kept[index[1]] + w2 * kept[index[2]];
+					mask[static_cast<std::size_t>(y) * a_width + x] = value >= 0.5f ? 1 : 0;
+				}
+			}
+		}
+		return mask;
 	}
 
 	bool FallSites::VertexShown(std::size_t a_index) const
@@ -1902,7 +1991,7 @@ namespace FluidFieldSim
 				// D112: all tested: everything that reads the rock is worked out again
 				if (buryQueue.empty()) {
 					buryDone = true;
-					logger::info("[Fluid Field] Waterfall rock test: {} of {} vertices inside rock ({} under level ground; {} rays)", buriedCount, buryTested, buriedGround, buryRays);
+					logger::info("[Fluid Field] Waterfall rock test: {} of {} vertices inside rock ({} under the landscape; {} rays)", buriedCount, buryTested, buriedGround, buryRays);
 					RequestCulling();
 					return;
 				}
@@ -1964,40 +2053,55 @@ namespace FluidFieldSim
 					const std::size_t v = buryJob->next;
 					const RE::NiPoint3& p = buryJob->positions[v];
 					const RE::NiPoint3& n = buryJob->normals[v];
-					// Out of its face, out of its back, from above, and from either side along the sheet (level): a vertex any of
-					// them reaches can be seen from somewhere. A ray starting inside rock sees no face (D105), so it reads as
-					// reaching: the test errs toward shown, never a hole
-					RE::NiPoint3 across = n.Cross(RE::NiPoint3(0.0f, 0.0f, 1.0f));
-					across = across.Length() > 1e-3f ? across / across.Length() : RE::NiPoint3(1.0f, 0.0f, 0.0f);
-					const RE::NiPoint3 ways[5] = { n, -n, RE::NiPoint3(0.0f, 0.0f, 1.0f), across, -across };
-					// D113: under level landscape (a river's bed): the ray from under the ground starts inside it and reads as
-					// reaching, so the lead-in curving down into the bed showed under the river (SS 979). Only where the
-					// height grid is level round it: on a cliff it smooths the face and buried a third of the falls (D82)
-					bool underGround = false;
-					{
-						float heights[5];
-						const float offsets[5][2] = { { 0.0f, 0.0f }, { 64.0f, 0.0f }, { -64.0f, 0.0f }, { 0.0f, 64.0f }, { 0.0f, -64.0f } };
-						bool level = true;
-						for (int k = 0; k < 5 && level; k++)
-							level = tes->GetLandHeight(RE::NiPoint3(p.x + offsets[k][0], p.y + offsets[k][1], p.z + 1024.0f), heights[k]);
-						if (level) {
-							const auto [lowest, highest] = std::minmax_element(heights, heights + 5);
-							underGround = *highest - *lowest < BURY_LEVEL && p.z < heights[0] - BURY_GROUND;
-						}
-					}
+					VertexCut& parts = vertexCuts[buryJob->base + v];
+					// D126: the landscape is a heightfield (no overhangs): a vertex under its surface is buried, cliffs included.
+					// Exact, from the landscape's own collision straight down (D113's height grid smoothed cliffs and was only
+					// trusted on level ground, so the underworld parts survived: SS 983-986)
+					const bool exterior = tes->interiorCell == nullptr;
+					parts.ground = exterior ? LandHeightAt(world, p.x, p.y, p.z + LAND_RAY_ABOVE) : -FLT_MAX;
+					rays++;
+					buryRays++;
+					const bool underGround = parts.ground > -FLT_MAX && p.z < parts.ground - BURY_LAND;
+					// D126: in statics (boulders, cliffs): rays toward it from open air, BURY_REACH out, along its normal and against it,
+					// then the six axes and the eight diagonals. A way reaches it only if its start is above the landscape, nothing
+					// lies between the start and it (cast from the start), and nothing lies between it and the start (cast from the
+					// vertex: a start inside a static is seen from outside, the face it lies behind; D112 counted a ray starting
+					// inside rock as reaching, and deep parts survived)
 					bool buried = true;
-					for (const auto& way : ways) {
-						if (underGround)
-							break;
-						const float hit = RockAlong(world, p + way * BURY_REACH, -way, BURY_REACH);
-						rays++;
-						buryRays++;
-						if (hit < 0.0f || hit >= BURY_REACH - BURY_MARGIN) {
+					if (!underGround) {
+						static const float DIAGONAL = 0.57735027f;
+						const RE::NiPoint3 ways[16] = { n, -n, { 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f },
+							{ 0.0f, 0.0f, -1.0f }, { DIAGONAL, DIAGONAL, DIAGONAL }, { -DIAGONAL, DIAGONAL, DIAGONAL }, { DIAGONAL, -DIAGONAL, DIAGONAL },
+							{ -DIAGONAL, -DIAGONAL, DIAGONAL }, { DIAGONAL, DIAGONAL, -DIAGONAL }, { -DIAGONAL, DIAGONAL, -DIAGONAL }, { DIAGONAL, -DIAGONAL, -DIAGONAL },
+							{ -DIAGONAL, -DIAGONAL, -DIAGONAL } };
+						for (const auto& way : ways) {
+							const RE::NiPoint3 start = p + way * BURY_REACH;
+							if (exterior) {
+								const auto key = (static_cast<int64_t>(std::floor(start.x / LAND_CACHE_CELL)) << 32) ^ static_cast<uint32_t>(static_cast<int32_t>(std::floor(start.y / LAND_CACHE_CELL)));
+								auto [cached, added] = landCache.try_emplace(key, -FLT_MAX);
+								if (added) {
+									cached->second = LandHeightAt(world, start.x, start.y, std::max(start.z, p.z) + LAND_RAY_ABOVE);
+									rays++;
+									buryRays++;
+								}
+								if (cached->second > -FLT_MAX && start.z < cached->second)
+									continue;  // Starts under the landscape
+							}
+							const float in = RockAlong(world, start, -way, BURY_REACH);
+							rays++;
+							buryRays++;
+							if (in >= 0.0f && in < BURY_REACH - BURY_MARGIN)
+								continue;
+							const float out = RockAlong(world, p + way * BURY_MARGIN, way, BURY_REACH - BURY_MARGIN);
+							rays++;
+							buryRays++;
+							if (out >= 0.0f)
+								continue;
 							buried = false;
 							break;
 						}
 					}
-					vertexCuts[buryJob->base + v].buried = buried ? 1 : 0;
+					parts.buried = buried ? 1 : 0;
 					buriedCount += buried ? 1 : 0;
 					buriedGround += underGround ? 1 : 0;
 					buryTested++;
@@ -2106,7 +2210,7 @@ namespace FluidFieldSim
 		const auto begin = std::chrono::steady_clock::now();
 		const auto deadline = begin + std::chrono::duration<double, std::milli>(CLIP_BUDGET_MS);
 		CullJob& job = *cullJob;
-		constexpr int DONE = 4;
+		constexpr int DONE = 5;
 		while (job.stage < DONE && std::chrono::steady_clock::now() < deadline) {
 			// Stage 0: the sheets, one a step (each one OrientSheet)
 			if (job.stage == 0) {
@@ -2136,11 +2240,24 @@ namespace FluidFieldSim
 				const auto v = static_cast<uint32_t>(job.vertex);
 				if (job.stage == 1) {
 					PoolCut(sheet, v);
+					// D126: in the river over it: under our pools' water (confirmed over the rock, D40, D78) by LEAD_CUT_DEPTH, and
+					// near the landscape under it (the bed), not the air under a lip. The lead-in arch curving down into the
+					// riverbed showed under the river (SS 979, 982) wherever the bake had not called it lead-in (D97)
+					VertexCut& parts = vertexCuts[sheet.base + v];
+					parts.submerged = NO_CUT;
+					const RE::NiPoint3& at = sheet.positions[v];
+					float level = 0.0f;
+					if (parts.ground > -FLT_MAX && at.z - parts.ground <= SUBMERGED_BED && PoolLevelAt(at.x, at.y, level)) {
+						parts.submerged = std::clamp(at.z - (level - LEAD_CUT_DEPTH), -CLIP_RANGE, NO_CUT);
+						job.submerged += parts.submerged < 0.0f ? 1 : 0;
+					}
 				} else if (job.stage == 2) {
 					VolumeCut(job.sheets, job.sheet, v, job);
 					ComposeCut(sheet.base + v);
-				} else {
+				} else if (job.stage == 3) {
 					SideFlags(job.sheets, job.sheet, v, job);
+				} else {
+					MeetDistance(job.sheets, job.sheet, v, job);
 				}
 			}
 			if (job.vertex >= sheet.positions.size()) {
@@ -2158,10 +2275,15 @@ namespace FluidFieldSim
 				outwardNormals[sheet.geometry] = sheet.outward;
 		}
 		vertexClipVersion++;
-		logger::info("[Fluid Field] Waterfall culling: {} lit meshes; {} of {} vertices tested lie inside another sheet; {} turned to face out; {} of {} tested have a sheet in front of their inner side ({:.1f} ms of work over {:.0f} ms)",
-			job.sheets.size(), job.inside, job.tested, job.inward, job.covered, job.sideTested, job.busy,
+		logger::info("[Fluid Field] Waterfall culling: {} lit meshes; {} of {} vertices tested lie inside another sheet; {} turned to face out; {} of {} tested have a sheet in front of their inner side; {} within {:.0f} units of another sheet ({:.1f} ms of work over {:.0f} ms)",
+			job.sheets.size(), job.inside, job.tested, job.inward, job.covered, job.sideTested, job.meeting, MEET_REACH, job.busy,
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - job.started).count());
+		const uint32_t submerged = job.submerged;
 		cullJob.reset();
+		logger::info("[Fluid Field]   {} vertices under the river's water by its bed, cut", submerged);
+		// D126: the spray, plunges and lips come only from the shell (BuildPlunges reads VertexInShell)
+		if (!bakeFields.empty())
+			BuildPlunges();
 	}
 
 	void FallSites::PoolCut(const CullSheet& a_sheet, uint32_t a_vertex)
@@ -2262,6 +2384,50 @@ namespace FluidFieldSim
 		vertexCuts[mesh.base + a_vertex].inside = deepest;
 		a_job.tested += tested ? 1 : 0;
 		a_job.inside += deepest < 0.0f ? 1 : 0;
+	}
+
+	void FallSites::MeetDistance(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job)
+	{
+		// D126: VertexClip d.w: how far the vertex, where it is drawn, lies from the nearest shown surface of any other sheet
+		// (after the inside cut, so the parts of the other hidden there do not count), up to MEET_REACH; NO_WATER beyond. The
+		// see-through pass foams where sheets meet (the user, SS 992: the join line has no foam, and drawing only the front
+		// surface hides it). A triangle counts if any of its corners is shown (it is partly drawn up to its cut)
+		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
+		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
+		const CullSheet& sheet = a_sheets[a_sheet];
+		const RE::NiPoint3& p = sheet.drawn[a_vertex];
+		// The bins hold rest positions; the drawn ones are moved by the seams and the swell, so look a little further
+		const float reach = MEET_REACH + MEET_MOVE;
+		float best = MEET_REACH * MEET_REACH;
+		bool found = false;
+		for (std::size_t o = 0; o < a_sheets.size(); o++) {
+			const CullSheet& other = a_sheets[o];
+			if (o == a_sheet || p.x < other.lo[0] - reach || p.x > other.hi[0] + reach || p.y < other.lo[1] - reach || p.y > other.hi[1] + reach || p.z < other.lo[2] - reach ||
+				p.z > other.hi[2] + reach)
+				continue;
+			const int64_t x0 = cellOf(p.x - reach), x1 = cellOf(p.x + reach), y0 = cellOf(p.y - reach), y1 = cellOf(p.y + reach), z0 = cellOf(p.z - reach), z1 = cellOf(p.z + reach);
+			for (int64_t x = x0; x <= x1; x++) {
+				for (int64_t y = y0; y <= y1; y++) {
+					for (int64_t z = z0; z <= z1; z++) {
+						const auto it = other.bins.find(binKey(x, y, z));
+						if (it == other.bins.end())
+							continue;
+						for (const uint32_t t : it->second) {
+							const auto& tri = other.triangles[t];
+							if (!VertexShown(other.base + tri[0]) && !VertexShown(other.base + tri[1]) && !VertexShown(other.base + tri[2]))
+								continue;
+							const float d = TriangleDistanceSquared(p, other.drawn[tri[0]], other.drawn[tri[1]], other.drawn[tri[2]]);
+							if (d < best) {
+								best = d;
+								found = true;
+							}
+						}
+					}
+				}
+			}
+		}
+		vertexClips[sheet.base + a_vertex][15] = found ? std::sqrt(best) : NO_WATER;
+		a_job.meeting += found ? 1 : 0;
 	}
 
 	void FallSites::SideFlags(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job)
@@ -2788,6 +2954,7 @@ namespace FluidFieldSim
 		mix(quantise(geometry->world.translate.z, 0.1f));
 		mix(quantise(geometry->world.scale, 0.001f));
 		mix(a_job.width);
+		mix(static_cast<int64_t>(a_job.shellHash));  // D126: a bake of another culled domain is another bake
 		mix(a_job.height);
 		for (int k = 0; k < 2; k++) {
 			mix(quantise(a_job.uvMin[k], 1e-4f));
@@ -3550,19 +3717,37 @@ namespace FluidFieldSim
 					});
 				}
 				RE::NiPointer<RE::BSGeometry> geometry = bakeQueue.back();
+				// D126: culled first: a mesh waits for its cut and rock test, and for the culling to settle (the bake's domain is
+				// its shell). One its ClipStep passed by (no collision world) bakes whole
+				if (geometry && grounded.contains(geometry.get())) {
+					const bool clipped = vertexClipBase.contains(geometry.get());
+					const bool clipping = std::any_of(clipQueue.begin(), clipQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == geometry.get(); });
+					if ((!clipped && clipping) || (clipped && (!buryDone || CullBusy())))
+						return;
+				}
 				bakeQueue.pop_back();
 				if (!geometry || !grounded.contains(geometry.get()))
 					continue;
 				bakeJob = StartBake(geometry.get());
 				if (!bakeJob)
 					continue;
+				// D126: culled first: the texels of what the culling hid for good (under the landscape, in statics, inside another
+				// sheet, in the river) are outside the domain: no rock test, no strands, no spray. The user: "culling maybe should come
+				// first? Then we don't waste resources baking flow on mesh parts we won't be using"
+				const auto shell = ShellTexels(geometry.get(), bakeJob->width, bakeJob->height, bakeJob->uvMin, bakeJob->uvSize, &bakeJob->shellHash);
+				for (std::size_t i = 0; i < shell.size() && i < bakeJob->covered.size(); i++) {
+					if (bakeJob->covered[i] && !shell[i]) {
+						bakeJob->covered[i] = 0;
+						bakeJob->culledTexels++;
+					}
+				}
 				GatherSolids(*bakeJob);
 				// D82: baked before (same reference, placement, rock and ground): read back, no rock test or solve
 				bakeJob->cache = BakeCachePath(*bakeJob);
 				std::error_code error;
 				const bool cached = !bakeJob->cache.empty() && std::filesystem::exists(bakeJob->cache, error);
-				logger::info("[Fluid Field]   bake job '{}' ({}x{}): cache {} '{}'", geometry->name.c_str(), bakeJob->width, bakeJob->height, cached ? "hit" : "miss",
-					bakeJob->cache.filename().string());
+				logger::info("[Fluid Field]   bake job '{}' ({}x{}, {} texels culled): cache {} '{}'", geometry->name.c_str(), bakeJob->width, bakeJob->height, bakeJob->culledTexels,
+					cached ? "hit" : "miss", bakeJob->cache.filename().string());
 				if (cached) {
 					auto field = LoadBake(bakeJob->cache);
 					if (!field)
@@ -4129,11 +4314,20 @@ namespace FluidFieldSim
 			const std::size_t count = static_cast<std::size_t>(w) * h;
 			if (field->position.size() != count || field->turn.size() != count || field->normal.size() != count)
 				continue;
+			// D126: only the shell's texels (VertexInShell, as the culling stands now; the bake's own domain was its shell then):
+			// no spray, plunge or lip from parts under the landscape, in statics, inside another sheet or in the river
+			std::vector<uint8_t> shellCovered = field->covered;
+			{
+				const float uvMin[2] = { field->uvMin[0], field->uvMin[1] }, uvSize[2] = { field->uvSize[0], field->uvSize[1] };
+				const auto shell = ShellTexels(const_cast<RE::BSGeometry*>(geometry), field->width, field->height, uvMin, uvSize, nullptr);
+				for (std::size_t i = 0; i < shell.size() && i < shellCovered.size(); i++)
+					shellCovered[i] = shellCovered[i] && shell[i] ? 1 : 0;
+			}
 			const auto index = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * w + a_x; };
-			const auto covered = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < w && a_y < h && field->covered[index(a_x, a_y)]; };
+			const auto covered = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < w && a_y < h && shellCovered[index(a_x, a_y)]; };
 			float top = -FLT_MAX, bottom = FLT_MAX, lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
 			for (std::size_t i = 0; i < count; i++) {
-				if (!field->covered[i])
+				if (!shellCovered[i])
 					continue;
 				const RE::NiPoint3& p = field->position[i];
 				top = std::max(top, p.z);
@@ -4193,7 +4387,7 @@ namespace FluidFieldSim
 				const int32_t band = std::max(1, h / 10);
 				for (int32_t y = 0; y < h; y++) {
 					for (int32_t x = 0; x < w; x++) {
-						if (!field->covered[index(x, y)])
+						if (!shellCovered[index(x, y)])
 							continue;
 						if (y < band) {
 							head += field->position[index(x, y)];
@@ -4223,13 +4417,13 @@ namespace FluidFieldSim
 				input.width = field->width;
 				input.height = field->height;
 				input.position = reinterpret_cast<const float*>(field->position.data());
-				input.covered = field->covered.data();
+				input.covered = shellCovered.data();
 				FallStrands::FindCrests(input, crestRows, hiddenLead);
 			}
 			for (int32_t y = 0; y < h; y++) {
 				for (int32_t x = 0; x < w; x++) {
 					const std::size_t i = index(x, y);
-					if (!field->covered[i] || (!field->rock.empty() && field->rock[i]))
+					if (!shellCovered[i] || (!field->rock.empty() && field->rock[i]))
 						continue;
 					const RE::NiPoint3& here = field->position[i];
 					float level = -FLT_MAX;
@@ -4292,9 +4486,17 @@ namespace FluidFieldSim
 			const std::size_t count = static_cast<std::size_t>(w) * h;
 			if (field->position.size() != count)
 				continue;
+			// D126: the shell's texels only, as above
+			std::vector<uint8_t> shellCovered = field->covered;
+			{
+				const float uvMin[2] = { field->uvMin[0], field->uvMin[1] }, uvSize[2] = { field->uvSize[0], field->uvSize[1] };
+				const auto shell = ShellTexels(const_cast<RE::BSGeometry*>(geometry), field->width, field->height, uvMin, uvSize, nullptr);
+				for (std::size_t i = 0; i < shell.size() && i < shellCovered.size(); i++)
+					shellCovered[i] = shellCovered[i] && shell[i] ? 1 : 0;
+			}
 			float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
 			for (std::size_t i = 0; i < count; i++) {
-				if (!field->covered[i])
+				if (!shellCovered[i])
 					continue;
 				lo[0] = std::min(lo[0], field->position[i].x);
 				lo[1] = std::min(lo[1], field->position[i].y);
@@ -4303,7 +4505,7 @@ namespace FluidFieldSim
 			}
 			std::vector<std::array<float, 5>> crossPlanes;
 			CollectWaterPlanes(lo[0], lo[1], hi[0], hi[1], crossPlanes);
-			const auto water = [&](std::size_t a_i) { return field->covered[a_i] && (field->rock.empty() || !field->rock[a_i]); };
+			const auto water = [&](std::size_t a_i) { return shellCovered[a_i] && (field->rock.empty() || !field->rock[a_i]); };
 			for (int32_t y = 0; y < h; y++) {
 				for (int32_t x = 0; x < w; x++) {
 					const std::size_t i = static_cast<std::size_t>(y) * w + x;

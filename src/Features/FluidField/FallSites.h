@@ -333,11 +333,13 @@ namespace FluidFieldSim
 		 */
 		struct VertexCut
 		{
-			float water = NO_CUT;   ///< ClipStep: the engine's water at the mesh's foot (D68)
-			float inside = NO_CUT;  ///< D113: VolumeCut: inside the space another sheet encloses (with the rock), past VOLUME_MARGIN (was D98's curl cut)
-			float lead = NO_CUT;    ///< ComputePushes: the hidden lead-in under the river (D97)
-			float pool = NO_CUT;    ///< ComputePoolCuts: under our pools at the foot, as the shaders cut it (not in a.x)
-			uint8_t buried = 0;     ///< BuryStep: no ray from outside reaches it: inside rock (not in a.x)
+			float water = NO_CUT;      ///< ClipStep: the engine's water at the mesh's foot (D68)
+			float inside = NO_CUT;     ///< D113: VolumeCut: inside the space another sheet encloses (with the rock), past VOLUME_MARGIN (was D98's curl cut)
+			float lead = NO_CUT;       ///< ComputePushes: the hidden lead-in under the river (D97)
+			float pool = NO_CUT;       ///< ComputePoolCuts: under our pools at the foot, as the shaders cut it (not in a.x)
+			float submerged = NO_CUT;  ///< D126: CullStep: inside our pools' water near the bed (the river over a lead-in): under it by LEAD_CUT_DEPTH or more
+			float ground = -FLT_MAX;   ///< D126: BuryStep: the landscape's height under it (-FLT_MAX: none, or an interior)
+			uint8_t buried = 0;        ///< BuryStep: under the landscape, or no ray from open air reaches it (not in a.x)
 		};
 		std::vector<VertexCut> vertexCuts;      ///< D112: parallel to vertexClips
 		static constexpr float NO_CUT = 38.0f;  ///< D112: a part of VertexCut that hides nothing (CLIP_MARGIN + CLIP_RANGE, ClipStep's "not cut")
@@ -349,10 +351,25 @@ namespace FluidFieldSim
 		 */
 		bool VertexShown(std::size_t a_index) const;
 		/**
-		 * @brief D112: which vertices lie inside rock, a few milliseconds a frame: rays from outside toward the vertex (along its
-		 * normal, against it, from above, and from either side along the sheet); buried when every one meets rock more than
-		 * BURY_MARGIN short of it. ClipStep's rock cut was dropped (D70), and the bake's test needs rock on both sides of the
-		 * sheet (D59), so a sheet running into a cliff was never known as hidden.
+		 * @brief D126: whether a vertex is part of the falls body's outer shell: not buried (landscape, statics), not inside another
+		 * sheet, not the lead-in under the river. Unlike VertexShown it ignores the cuts at the waterline (the plunges and their
+		 * foam belong there) and the seam fade. The bake's domain and every emitter (spray, plunges, lips) keep to it.
+		 */
+		bool VertexInShell(std::size_t a_index) const;
+		/** @brief D126: the landscape's height under a point (its own collision, straight down from a_above, past everything else), or -FLT_MAX. */
+		float LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above) const;
+		std::unordered_map<int64_t, float> landCache;  ///< D126: the landscape's height by LAND_CACHE_CELL cell, for the burial rays' starts
+		/**
+		 * @brief D126: VertexInShell rasterised onto a bake's texel grid (as StartBake lays the triangles in), 1 where kept; empty
+		 * where the mesh has no culling yet. a_hash, if given, gets a hash of the mesh's kept vertices (the bake cache's key).
+		 */
+		std::vector<uint8_t> ShellTexels(RE::BSGeometry* a_geometry, uint32_t a_width, uint32_t a_height, const float a_uvMin[2], const float a_uvSize[2], uint64_t* a_hash) const;
+		/**
+		 * @brief D112: which vertices lie inside rock, a few milliseconds a frame. D126: under the landscape (its collision straight
+		 * down), or reached by no ray from open air (BURY_REACH out along its normal, against it, the axes and the diagonals; a
+		 * way counts only if its start is above the landscape and the segment is clear cast from both ends). ClipStep's rock cut
+		 * was dropped (D70), and the bake's test needs rock on both sides of the sheet (D59), so a sheet running into a cliff
+		 * was never known as hidden.
 		 */
 		void BuryStep();
 		struct BuryJob
@@ -365,11 +382,14 @@ namespace FluidFieldSim
 		std::vector<RE::NiPointer<RE::BSGeometry>> buryQueue;
 		std::unique_ptr<BuryJob> buryJob;
 		uint32_t buriedCount = 0, buryTested = 0, buryRays = 0, buriedGround = 0;
-		static constexpr float BURY_REACH = 160.0f;    ///< D112: the rays toward a vertex start this far from it
-		static constexpr float BURY_MARGIN = 24.0f;    ///< D112: rock this near short of the vertex does not bury it (vanilla's sheets dip into the rock they lie on, as BAKE_ROCK_MARGIN)
-		static constexpr float BURY_GROUND = 12.0f;    ///< D113: a vertex this far under level landscape is buried (the rays from under the ground see no face)
-		static constexpr float BURY_LEVEL = 32.0f;     ///< D113: ...where the landscape 64 units round it rises and falls less than this (the height grid smooths cliffs, D82)
-		static constexpr float POOL_CUT_DEPTH = 8.0f;  ///< D112: FallGround::POOL_CUT: the shaders cut the foot this far under the pools' surface
+		static constexpr float BURY_REACH = 500.0f;       ///< D112: the rays toward a vertex start this far from it (D126: 500, was 160: from open air, past the boulders round it)
+		static constexpr float BURY_MARGIN = 24.0f;       ///< D112: rock this near short of the vertex does not bury it (vanilla's sheets dip into the rock they lie on, as BAKE_ROCK_MARGIN)
+		static constexpr float BURY_LAND = 8.0f;          ///< D126: a vertex this far under the landscape's surface is buried (D113's 12 on level ground only, from the height grid)
+		static constexpr float LAND_RAY_ABOVE = 4000.0f;  ///< D126: the landscape ray starts this far over the point...
+		static constexpr float LAND_RAY_DROP = 20000.0f;  ///< D126: ...and looks this far down
+		static constexpr float LAND_CACHE_CELL = 16.0f;   ///< D126: world units per cell of the landscape heights kept for the rays' starts
+		static constexpr float SUBMERGED_BED = 64.0f;     ///< D126: a vertex at most this far over the landscape, under our pools' water, lies in the river (not the air under a lip)
+		static constexpr float POOL_CUT_DEPTH = 8.0f;     ///< D112: FallGround::POOL_CUT: the shaders cut the foot this far under the pools' surface
 		/** @brief D112: a lit mesh as the culling sees it: world positions at rest and as drawn, outer sides, open edges, bins. */
 		struct CullSheet
 		{
@@ -401,7 +421,7 @@ namespace FluidFieldSim
 			std::vector<CullSheet> sheets;
 			int stage = 0;
 			std::size_t sheet = 0, vertex = 0;  ///< Where the current stage is
-			uint32_t inside = 0, tested = 0, inward = 0, covered = 0, sideTested = 0;
+			uint32_t inside = 0, tested = 0, inward = 0, covered = 0, sideTested = 0, submerged = 0, meeting = 0;
 			std::chrono::steady_clock::time_point started;
 			double busy = 0.0;  ///< Milliseconds of work over its frames
 		};
@@ -422,6 +442,10 @@ namespace FluidFieldSim
 		static constexpr float VOLUME_REACH = 400.0f;  ///< D113: world units each ray looks for the other sheet
 		static constexpr int VOLUME_VOTES = 3;         ///< D113: rays of six that must leave the other sheet through its outer face
 		static constexpr float VOLUME_MARGIN = 20.0f;  ///< D113: a vertex this near the other sheet's surface, inside it, still shows (about one of the dense copy's edges: no opening at the crossing)
+		/** @brief D126: VertexClip d.w for one vertex: the distance from where it is drawn to the nearest shown surface of another sheet, up to MEET_REACH, else NO_WATER. */
+		void MeetDistance(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job);
+		static constexpr float MEET_REACH = 64.0f;  ///< D126: world units within which another sheet's surface counts as meeting this one
+		static constexpr float MEET_MOVE = 32.0f;   ///< D126: how far the drawn positions may lie from the binned rest ones (the seams' and the swell's moves)
 		/** @brief D103, D113: a.w's sides for one vertex: its normal faces in (+2), another shown sheet's outer face covers its inner side (+4). */
 		void SideFlags(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job);
 		static constexpr float GAP_REACH = 40.0f;        ///< D69: an open edge this near another mesh's open edge, and not over it, closes the gap
@@ -472,6 +496,8 @@ namespace FluidFieldSim
 			std::vector<uint8_t> untested;             ///< D83: hidden lead-in texels no strand comes near: the rock test passes them by
 			std::vector<float> clearFront, clearBack;  ///< D104: world units from each texel to the first rock along its normal (front) and against it (back), up to CLEAR_REACH
 			std::filesystem::path cache;               ///< D82: where its finished bake is kept (empty: not kept)
+			uint64_t shellHash = 0;                    ///< D126: which of its vertices the culling kept (the cache's key)
+			uint32_t culledTexels = 0;                 ///< D126: texels left out of the domain, culled
 			std::size_t next = 0;
 			bool worldMissing = false;  ///< Diagnostics: the wait for its cell's collision world logged
 			// D68: the render meshes of the statics round the sheet (boulders, the walls beside it), binned from above
@@ -528,7 +554,7 @@ namespace FluidFieldSim
 			std::vector<float> disturbance;            ///< D85: how stirred the water is there (the wobble's size), softened
 			std::vector<float> clearFront, clearBack;  ///< D104: as BakeJob's: the open water or air on each side of the sheet (its depth behind, once its outer side is known)
 		};
-		static constexpr uint32_t BAKE_CACHE_VERSION = 6;  ///< D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances)
+		static constexpr uint32_t BAKE_CACHE_VERSION = 7;  ///< D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances; D126: 7, the domain is the culled shell, the key also hashes its kept vertices)
 		static constexpr float CLEAR_REACH = 600.0f;       ///< D104: world units the clearance rays look for rock
 		static constexpr float CLEAR_START = 40.0f;        ///< D105: the clearance rays start this far off the other side of the sheet
 		/** @brief D82: where a bake job's finished bake is kept on disk: by its reference, model part, placement, the rock and ground round it, and the version. */
