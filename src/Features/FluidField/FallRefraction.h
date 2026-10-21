@@ -29,16 +29,19 @@ namespace FluidFieldSim
 		 */
 		struct WaterLook
 		{
-			float shallowColor[3]{ 0.25f, 0.33f, 0.3f };    ///< ShallowColor, 0 to 1, times the weather's water multiplier
-			float deepColor[3]{ 0.05f, 0.09f, 0.1f };       ///< DeepColor, the same
-			float reflectionColor[3]{ 0.3f, 0.35f, 0.4f };  ///< ReflectionColor times the reflection amount (VarAmounts.y): the reflection without a cubemap
-			float fogNear = 0.0f;                           ///< Above-water fog distance near (FogParam.z less FogParam.w)
-			float fogFar = 600.0f;                          ///< ...and far (FogParam.z): water this deep is wholly its own colour
-			float fogAmount = 1.0f;                         ///< ...and amount (FogNearColor.w): the curve from seen-through to coloured
-			float fresnel = 0.02f;                          ///< Fresnel amount (FresnelRI.x): reflectance looking straight at the water
-			float sunSpecularPower = 600.0f;                ///< Sun specular power (VarAmounts.x)
-			float sunSpecularMagnitude = 1.0f;              ///< Sun specular magnitude (taken as DeepColor.w: the glint is 1 - exp(-magnitude))
-			float reflectionMagnitude = 1.0f;               ///< Reflection magnitude (WaterParams.y): how much the normal map tilts the reflection
+			float shallowColor[3]{ 0.25f, 0.33f, 0.3f };     ///< ShallowColor, 0 to 1, times the weather's water multiplier
+			float deepColor[3]{ 0.05f, 0.09f, 0.1f };        ///< DeepColor, the same
+			float reflectionColor[3]{ 0.3f, 0.35f, 0.4f };   ///< ReflectionColor times the reflection amount (VarAmounts.y): the reflection without a cubemap
+			float fogNear = 0.0f;                            ///< Above-water fog distance near (FogParam.z less FogParam.w)
+			float fogFar = 600.0f;                           ///< ...and far (FogParam.z): water this deep is wholly its own colour
+			float fogAmount = 1.0f;                          ///< ...and amount (FogNearColor.w): the curve from seen-through to coloured
+			float fresnel = 0.02f;                           ///< Fresnel amount (FresnelRI.x): reflectance looking straight at the water
+			float sunSpecularPower = 600.0f;                 ///< Sun specular power (VarAmounts.x)
+			float sunSpecularMagnitude = 1.0f;               ///< Sun specular magnitude (taken as DeepColor.w: the glint is 1 - exp(-magnitude))
+			float reflectionMagnitude = 1.0f;                ///< Reflection magnitude (WaterParams.y): how much the normal map tilts the reflection
+			ID3D11ShaderResourceView* noise[3]{};            ///< D129: its normal maps (Water.hlsl's Normals01-03), or null
+			float noiseScale[3]{ 1000.0f, 500.0f, 250.0f };  ///< D129: ...world units per repeat of each (NormalsScale)
+			float noiseAmplitude[3]{};                       ///< D129: ...and how much each tilts the surface (NormalsAmplitude)
 		};
 
 		/** @brief One falls piece to draw. */
@@ -67,6 +70,7 @@ namespace FluidFieldSim
 			ID3D11ShaderResourceView* vertexClip = nullptr;   ///< FallGround's VertexClip (t123)
 			ID3D11ShaderResourceView* poolHeights = nullptr;  ///< FallGround's Heights (t120)
 			ID3D11ShaderResourceView* environment = nullptr;  ///< A cubemap of the surroundings (Dynamic Cubemaps, once it holds a capture), or null for each water's reflection colour
+			float time = 0.0f;                                ///< D129: seconds, for the water normal maps' drift
 			uint32_t frame = 0;                               ///< D123: the rendered frame's number (a pre-water copy of this frame is used)
 			float depthScale = 1.0f;                          ///< D102: how thick the sheet reads (Water Depth): its opacity and depth of colour
 			float refraction = 0.5f;                          ///< How strongly the surface bends what is seen through it
@@ -150,8 +154,12 @@ namespace FluidFieldSim
 			uint32_t hasNormal;
 			uint32_t hasFront;  ///< D125: the front surface's depth is bound (t105): a register of its own in the cbuffer
 			uint32_t padding[3];
+			float noiseScale[3];  ///< D129: the water type's normal maps' world units per repeat
+			float noiseTime;      ///< D129: seconds, for the maps' drift along the flow
+			float noiseAmplitude[3];
+			uint32_t hasNoise;
 		};
-		static_assert(sizeof(Constants) == 160);
+		static_assert(sizeof(Constants) == 192);
 
 		std::unordered_map<const RE::BSGeometry*, MeshBuffers> meshes;
 		std::unordered_set<const RE::BSGeometry*> failedMeshes;  ///< No CPU copy: not tried again

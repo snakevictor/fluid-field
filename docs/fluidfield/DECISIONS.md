@@ -3034,3 +3034,19 @@ Entry format:
     the vanilla cubemap, skylighting, terrain and cloud shadows; foam where
     two sheets meet (SS 992, VertexClip d.w from the culling job).
 -   References: D120-D122, D125
+
+## D128: Foam where two sheets meet; D129: the water type's ripples on the falls
+
+-   Date: 2026-10-20
+-   Decision:
+    -   **D128:** foam within 40 units of another shown falls sheet (0.9 at
+        most), from VertexClip d.w (the culling job's distance to the
+        nearest other sheet, D126): the join of two sheets had none, the one
+        behind hidden by the front surface (SS 992).
+    -   **D129:** the falls read their water type's three normal maps
+        (TESWaterForm::noiseTextureData, Water.hlsl's Normals01-03) with its
+        UV scales and amplitudes, blended as the river does (up plus each map
+        times its amplitude), on the sheet's flow coordinates at 512 world
+        units per repeat, over the falls' own normal map: the river's fine
+        sparkle (SS 988-990). Constants grew to 192 bytes; t106-t108.
+-   References: D126, D127

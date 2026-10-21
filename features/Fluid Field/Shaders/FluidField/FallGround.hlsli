@@ -41,7 +41,7 @@ namespace FallGround
 		float4 a;
 		float4 b;  // D69: its move across a seam's gap, D82: and its swell, in its mesh's space; D85: w its streak
 		float4 c;  // D85: its wobble's direction and size (its normal), and its run down the flow
-		float4 d;  // D106: y the open water or air behind its visible face (against its authored normal) to the first rock or ground, world units; D124: z how far under the water it pours out of (NO_WATER: none, it starts mid-fall); xw spare
+		float4 d;  // D106: y the open water or air behind its visible face (against its authored normal) to the first rock or ground, world units; D124: z how far under the water it pours out of (NO_WATER: none, it starts mid-fall); D128: w how far to the nearest other shown sheet (NO_WATER: none within 64); x spare
 	};
 	StructuredBuffer<FallVertex> VertexClip : register(t123);  // D68: and how far it stands above the water it falls into (z)
 	// D59, D67: this mesh's flow, solved on its own texture grid and linked to the mesh above it (FallSites::LinkBakes):
@@ -181,6 +181,14 @@ namespace FallGround
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
 			return NO_WATER;
 		return VertexClip[VertexBase + a_vertex].d.z;
+	}
+
+	/** D128: how far a vertex lies from the nearest other shown falls sheet (where two meet), NO_WATER where none is near. */
+	float ToOtherSheet(uint a_vertex)
+	{
+		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
+			return NO_WATER;
+		return VertexClip[VertexBase + a_vertex].d.w;
 	}
 
 	float Behind(uint a_vertex)

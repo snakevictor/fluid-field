@@ -24,6 +24,7 @@ namespace FluidFieldSim
 		constexpr UINT DIFFUSE_SLOT = 102;
 		constexpr UINT ENVIRONMENT_SLOT = 104;
 		constexpr UINT FRONT_DEPTH_SLOT = 105;     // D125
+		constexpr UINT NOISE_SLOT = 106;           // D129: t106-t108
 		constexpr UINT SAMPLER_COUNT = 2;          // s0 wrap, s1 clamp
 		constexpr UINT SHADOW_MAP_SLOT = 18;       // D102: Volumetric Shadows' map (VolumetricShadows::kSharedShadowMapShaderSlot), read, never set
 		constexpr UINT SHADOW_CASCADES_SLOT = 98;  // ...and the directional light's cascades (Deferred::CopyShadowLightData)
@@ -564,6 +565,13 @@ namespace FluidFieldSim
 				data.sunSpecularPower = std::clamp(finite(look.sunSpecularPower, 600.0f), 1.0f, 10000.0f);
 				data.sunSpecularStrength = 1.0f - std::exp(-std::clamp(finite(look.sunSpecularMagnitude, 1.0f), 0.0f, 50.0f));
 				data.reflectionMagnitude = std::clamp(finite(look.reflectionMagnitude, 1.0f), 0.0f, 1.0f);
+				// D129: the water type's normal maps, as the river reads them
+				data.hasNoise = look.noise[0] || look.noise[1] || look.noise[2] ? 1u : 0u;
+				for (int k = 0; k < 3; k++) {
+					data.noiseScale[k] = std::clamp(finite(look.noiseScale[k], 500.0f), 1.0f, 1.0e5f);
+					data.noiseAmplitude[k] = look.noise[k] ? std::clamp(finite(look.noiseAmplitude[k], 0.0f), 0.0f, 4.0f) : 0.0f;
+				}
+				data.noiseTime = a_params.time;
 				std::copy_n(draw->world, 12, data.world);
 				data.hasDiffuse = draw->diffuse ? 1u : 0u;
 				data.hasNormal = draw->normal ? 1u : 0u;
@@ -582,6 +590,8 @@ namespace FluidFieldSim
 				a_context->PSSetShaderResources(BAKE_SLOT, 1, &draw->bake);
 				ID3D11ShaderResourceView* textures[2] = { draw->diffuse, draw->normal };  // t102, t103
 				a_context->PSSetShaderResources(DIFFUSE_SLOT, 2, textures);
+				ID3D11ShaderResourceView* const* noise = draw->look.noise;  // D129: t106-t108
+				a_context->PSSetShaderResources(NOISE_SLOT, 3, noise);
 				a_context->IASetIndexBuffer(mesh->indices.get(), DXGI_FORMAT_R16_UINT, 0);
 				a_context->DrawIndexed(mesh->indexCount, 0, 0);
 			}

@@ -46,6 +46,11 @@ cbuffer FallSurfaceCB : register(b7)
 	uint HasDiffuse;
 	uint HasNormal;
 	uint HasFront;  // D125: FrontDepth holds the falls' front surface
+	uint3 FrontPadding;
+	float3 NoiseScale;  // D129: the water type's normal maps (Water.hlsl's Normals01-03): world units per repeat
+	float NoiseTime;    // Seconds
+	float3 NoiseAmplitude;
+	uint HasNoise;
 };
 
 struct FallSurfaceVertex
@@ -61,7 +66,10 @@ Texture2D<float> SceneDepth : register(t101);
 Texture2D<float4> DiffuseTex : register(t102);  // The piece's own material (vanilla's falls texture)
 Texture2D<float4> NormalTex : register(t103);
 TextureCube<float4> EnvironmentTex : register(t104);
-Texture2D<float> FrontDepth : register(t105);  // D125: the scene's depth with the falls' front surface drawn in
+Texture2D<float> FrontDepth : register(t105);
+Texture2D<float4> Noise1Tex : register(t106);  // D129: the water type's normal maps
+Texture2D<float4> Noise2Tex : register(t107);
+Texture2D<float4> Noise3Tex : register(t108);  // D125: the scene's depth with the falls' front surface drawn in
 
 struct VSOutput
 {
@@ -71,9 +79,10 @@ struct VSOutput
 	float3 Normal: TEXCOORD2;
 	float3 Fade: TEXCOORD3;  // FallGround::Fade: the seam fade, and the height above the water it falls into; z: D98 its foot (VertexClip's a.w)
 	float Clip: SV_ClipDistance0;
-	float Behind: TEXCOORD7;       // D104: baked open water or air behind its outer side, world units
-	float BelowSource: TEXCOORD8;  // D124: how far under the water its fall pours out of (FallGround::NO_WATER: none)
-	float4 Outward: TEXCOORD6;     // D100: the normal turned to the mesh's outer side; D103: w 1 where a sheet lies behind its inner side
+	float Behind: TEXCOORD7;        // D104: baked open water or air behind its outer side, world units
+	float BelowSource: TEXCOORD8;   // D124: how far under the water its fall pours out of (FallGround::NO_WATER: none)
+	float ToOtherSheet: TEXCOORD9;  // D128: how far to the nearest other shown sheet (FallGround::NO_WATER: none near)
+	float4 Outward: TEXCOORD6;      // D100: the normal turned to the mesh's outer side; D103: w 1 where a sheet lies behind its inner side
 };
 
 #if defined(VSHADER)
@@ -96,6 +105,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 	output.Clip = FallGround::ClipDistance(relative, vertexID);
 	output.Behind = FallGround::Behind(vertexID);
 	output.BelowSource = FallGround::BelowSource(vertexID);
+	output.ToOtherSheet = FallGround::ToOtherSheet(vertexID);
 	output.Outward = float4(output.Normal * FallGround::OutwardSign(vertexID), FallGround::InnerCovered(vertexID));  // D103: interpolated as a normal, no sign flipping mid-triangle
 	return output;
 }
@@ -170,6 +180,10 @@ static const float AERATION_OPACITY = 0.3;
 static const float AERATION_LIFT = 0.06;
 /** D127: how much of the falls' normal map tilts the surface (it is drawn for an opaque, diffuse sheet: high contrast). */
 static const float NORMAL_STRENGTH = 0.8;
+/** D129: world units one repeat of the falls' texture (their flow coordinates) spans, for the water's normal maps' scale. */
+static const float FALLS_UV_WORLD = 512.0;
+/** D129: the water type's ripples on the sheet over the river's (Water.hlsl's amplitude-weighted blend). */
+static const float RIPPLE_STRENGTH = 1.0;
 /** D127: how much of the white water reaches the foam cover: below 1, even the densest bands stay patchy where the pattern is high, as the river's foam (solid bands read as paint). */
 static const float FOAM_DENSITY = 0.7;
 /** D102: pixels of refraction offset per unit of tilt at Refraction 1, as a fraction of the screen height. */
@@ -183,6 +197,9 @@ static const float CONTACT_FOAM_REACH = 20.0;
 /** D121: how white a seam's overlap and a mesh's contact foam at most. */
 static const float SEAM_FOAM = 0.7;
 static const float CONTACT_FOAM = 0.9;
+/** D128: world units from another sheet over which the water foams where two meet, and how white at most. */
+static const float MEET_FOAM_REACH = 40.0;
+static const float MEET_FOAM = 0.9;
 
 /**
  * D102: world units of water between the sheet and what lies behind it, along the view ray: the one input the
@@ -264,6 +281,18 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 		tangentNormal.xy *= NORMAL_STRENGTH;  // D127: 0.3 (was 0.6): nearer the river's gentle ripples
 		normal = PerturbNormal(geometric, input.WorldPosition, flow.uvA, SafeNormalize(tangentNormal, float3(0.0, 0.0, 1.0)));
 	}
+	// D129: the river's fine ripples: its water type's three normal maps blended as Water.hlsl does (up plus each map
+	// times its amplitude), at their own world scale on the sheet's texture (FALLS_UV_WORLD units per repeat), carried
+	// along the flow with it
+	[branch] if (HasNoise)
+	{
+		const float2 worldUV = flow.uvA * FALLS_UV_WORLD;
+		const float3 n1 = Noise1Tex.Sample(WrapSampler, worldUV / NoiseScale.x).xyz * 2.0 - 1.0;
+		const float3 n2 = Noise2Tex.Sample(WrapSampler, worldUV / NoiseScale.y + 0.31).xyz * 2.0 - 1.0;
+		const float3 n3 = Noise3Tex.Sample(WrapSampler, worldUV / NoiseScale.z + 0.67).xyz * 2.0 - 1.0;
+		const float2 ripple = (n1.xy * NoiseAmplitude.x + n2.xy * NoiseAmplitude.y + n3.xy * NoiseAmplitude.z) * RIPPLE_STRENGTH;
+		normal = PerturbNormal(normal, input.WorldPosition, flow.uvA, SafeNormalize(float3(ripple, 1.0), float3(0.0, 0.0, 1.0)));
+	}
 	const float facing = saturate(dot(normal, toCamera));
 	const float cosine = abs(dot(geometric, toCamera));
 
@@ -290,6 +319,9 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	if (FallGround::Whitening) {
 		white = max(white, 1.0 - saturate(input.Clip / CUT_FOAM_REACH));
 		white = max(white, (1.0 - saturate(input.Fade.x)) * SEAM_FOAM);
+		// D128: where it meets another sheet (SS 992: the join of two sheets had none, the one behind hidden by the front)
+		if (input.ToOtherSheet < FallGround::NO_WATER * 0.5)
+			white = max(white, (1.0 - saturate(input.ToOtherSheet / MEET_FOAM_REACH)) * MEET_FOAM);
 	}
 	const float lace = FallGround::Lace(flow);
 

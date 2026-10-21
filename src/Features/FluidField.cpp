@@ -1767,6 +1767,13 @@ namespace
 		look.sunSpecularPower = data.sunSpecularPower;
 		look.sunSpecularMagnitude = data.sunSpecularMagnitude;
 		look.reflectionMagnitude = data.reflectionMagnitude;
+		// D129: its normal maps as loaded for the water shader, their scale and amplitude (the river's fine ripples)
+		for (int k = 0; k < 3; k++) {
+			auto* source = a_water->noiseTextureData[k] ? netimmerse_cast<RE::NiSourceTexture*>(a_water->noiseTextureData[k].get()) : nullptr;
+			look.noise[k] = source && source->rendererTexture ? source->rendererTexture->resourceView : nullptr;
+			look.noiseScale[k] = data.uvScaleA[k];
+			look.noiseAmplitude[k] = data.amplitudeA[k];
+		}
 		return look;
 	}
 }
@@ -1843,6 +1850,7 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 	params.target = a_target;
 	params.targetTexture = a_targetTexture;
 	params.frame = globals::state->frameCount;
+	params.time = fallSurfaceTime;
 	params.depth = a_depth;
 	params.sceneDepth = a_sceneDepth;
 	params.camera = cameraSnapshot.get();
