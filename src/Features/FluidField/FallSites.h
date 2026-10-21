@@ -2,6 +2,7 @@
 
 #include "FallCapture.h"
 #include "FallSurfaceRenderer.h"
+#include "FallVisibility.h"
 #include "LandscapeCache.h"
 #include "ShallowWaterSolver.h"
 #include "WaterSurfaces.h"
@@ -613,7 +614,23 @@ namespace FluidFieldSim
 			LandscapeCache land;  ///< The cells round the mesh
 			bool haveColors = false, interior = false, ok = false;
 			uint32_t vertexCount = 0, triangleCount = 0, trimmedAway = 0, trimmedSplit = 0;
+			uint32_t hiddenAway = 0;  ///< D173: triangles seen from nowhere (TrimHidden)
+			float lo[2]{}, hi[2]{};   ///< D173: its world bounds (x, y)
 		};
+		/** @brief D173: what TrimHidden needs from the render thread: what can hide the batch's sheets. */
+		struct ShellInput
+		{
+			std::vector<FallVisibility::Triangle> occluders;  ///< The statics' and the earlier copies' triangles round the batch
+			LandscapeCache land;                              ///< The landscape as far as the rays reach
+			bool interior = false;
+			double gatherMs = 0.0;
+		};
+		/** @brief D173: the statics' render triangles over an area (not the falls' models) and the dense copies made before. */
+		void GatherOccluders(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<FallVisibility::Triangle>& o_triangles) const;
+		/** @brief D173: on the worker, after the batch's copies are made: their triangles seen from nowhere dropped. */
+		static void TrimHidden(const std::vector<DenseJob*>& a_jobs, const ShellInput& a_shell);
+		static constexpr float OCCLUDER_REACH = 1024.0f;  ///< D173: world units round a batch its statics are gathered
+		static constexpr float SHELL_MARGIN = 64.0f;      ///< D173: world units along a sheet past what is seen that are kept (the sheets overlap where they meet)
 		bool ReadDense(RE::BSGeometry* a_geometry, DenseJob& o_job) const;
 		static void ComputeDense(DenseJob& a_job);
 		bool AttachDense(DenseJob& a_job);

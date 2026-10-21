@@ -906,10 +906,28 @@ namespace FluidFieldSim
 				std::vector<DenseJob*> running;
 				for (auto& job : denseJobs)
 					running.push_back(job.get());
+				// D173: what can hide the copies' sheets (the statics round them, the copies already made, the landscape),
+				// gathered here; the outer shell worked out on the worker once every copy of the batch is made
+				float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
+				for (const auto* job : running) {
+					for (int k = 0; k < 2; k++) {
+						lo[k] = std::min(lo[k], job->lo[k]);
+						hi[k] = std::max(hi[k], job->hi[k]);
+					}
+				}
+				auto shell = std::make_shared<ShellInput>();
+				const auto gatherStart = std::chrono::steady_clock::now();
+				GatherOccluders(lo[0] - OCCLUDER_REACH, lo[1] - OCCLUDER_REACH, hi[0] + OCCLUDER_REACH, hi[1] + OCCLUDER_REACH, shell->occluders);
+				shell->gatherMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - gatherStart).count();
+				auto* tes = RE::TES::GetSingleton();
+				shell->interior = !tes || tes->interiorCell != nullptr || !landscape;
+				if (!shell->interior)
+					shell->land = landscape->Subset(lo[0] - FallVisibility::REACH, lo[1] - FallVisibility::REACH, hi[0] + FallVisibility::REACH, hi[1] + FallVisibility::REACH);
 				denseStarted = std::chrono::steady_clock::now();
-				denseWork = std::async(std::launch::async, [running]() {
+				denseWork = std::async(std::launch::async, [running, shell]() {
 					for (auto* job : running)
 						ComputeDense(*job);
+					TrimHidden(running, *shell);
 				});
 			}
 		}
@@ -1406,6 +1424,10 @@ namespace FluidFieldSim
 			hi[0] = std::max(hi[0], p.x);
 			hi[1] = std::max(hi[1], p.y);
 		}
+		for (int k = 0; k < 2; k++) {
+			o_job.lo[k] = lo[k];
+			o_job.hi[k] = hi[k];
+		}
 		auto* tes = RE::TES::GetSingleton();
 		o_job.interior = !tes || tes->interiorCell != nullptr || !landscape;
 		if (!o_job.interior)
@@ -1692,8 +1714,8 @@ namespace FluidFieldSim
 			for (const uint32_t k : tri)
 				whole.push_back(static_cast<uint16_t>(k));
 		}
-		logger::info("[Fluid Field]   dense copy of '{}': {} to {} vertices, {} to {} triangles ({} under the landscape cut away, {} cut along it)", a_geometry->name.c_str(),
-			counts.vertexCount, positions.size(), counts.triangleCount, triangles.size(), trimmedAway, trimmedSplit);
+		logger::info("[Fluid Field]   dense copy of '{}': {} to {} vertices, {} to {} triangles ({} under the landscape cut away, {} cut along it, {} seen from nowhere)",
+			a_geometry->name.c_str(), counts.vertexCount, positions.size(), counts.triangleCount, triangles.size(), trimmedAway, trimmedSplit, a_job.hiddenAway);
 		return true;
 	}
 
@@ -4172,6 +4194,210 @@ namespace FluidFieldSim
 		}
 	}
 
+	void FallSites::GatherOccluders(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<FallVisibility::Triangle>& o_triangles) const
+	{
+		// D173: as GatherSolids: the statics' render triangles over the area, not the falls' own models (their copies are
+		// added below, those of this batch by TrimHidden)
+		auto* tes = RE::TES::GetSingleton();
+		if (!tes)
+			return;
+		const auto inArea = [&](const RE::NiPoint3& a_p) { return a_p.x >= a_minX && a_p.x <= a_maxX && a_p.y >= a_minY && a_p.y <= a_maxY; };
+		const auto addGeometry = [&](RE::BSGeometry* a_geometry) {
+			auto* triShape = a_geometry ? a_geometry->AsTriShape() : nullptr;
+			auto* renderer = a_geometry ? a_geometry->GetGeometryRuntimeData().rendererData : nullptr;
+			if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_SKINNED))
+				return;
+			const auto& counts = triShape->GetTrishapeRuntimeData();
+			const uint32_t stride = renderer->vertexDesc.GetSize();
+			const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+			if (stride < positionOffset + 12)
+				return;
+			std::vector<RE::NiPoint3> world(counts.vertexCount);
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				float local[3];
+				std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
+				world[v] = a_geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
+			}
+			for (uint32_t i = 0; i < counts.triangleCount; i++) {
+				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
+				if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+					continue;
+				const FallVisibility::Triangle tri = { world[index[0]], world[index[1]], world[index[2]] };
+				if (inArea(tri[0]) || inArea(tri[1]) || inArea(tri[2]))
+					o_triangles.push_back(tri);
+			}
+		};
+		const auto visitCell = [&](RE::TESObjectCELL* a_cell, bool a_requireAttached) {
+			if (!a_cell || (a_requireAttached && !a_cell->IsAttached()))
+				return;
+			a_cell->ForEachReference([&](RE::TESObjectREFR* a_ref) {
+				auto* base = a_ref ? a_ref->GetBaseObject() : nullptr;
+				if (!base || a_ref->IsDisabled() || a_ref->IsDeleted() || (base->GetFormType() != RE::FormType::Static && base->GetFormType() != RE::FormType::MovableStatic))
+					return RE::BSContainer::ForEachResult::kContinue;
+				auto* root = a_ref->Get3D();
+				if (!root)
+					return RE::BSContainer::ForEachResult::kContinue;
+				const auto& bound = root->worldBound;
+				if (bound.center.x + bound.radius < a_minX || bound.center.x - bound.radius > a_maxX || bound.center.y + bound.radius < a_minY || bound.center.y - bound.radius > a_maxY)
+					return RE::BSContainer::ForEachResult::kContinue;
+				const std::string model = Lowercase(ModelOf(base));
+				if (model.find("fxwaterfall") != std::string::npos || model.find("fxrapids") != std::string::npos)
+					return RE::BSContainer::ForEachResult::kContinue;
+				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+					if (netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get()))
+						addGeometry(a_geometry);
+					return RE::BSVisit::BSVisitControl::kContinue;
+				});
+				return RE::BSContainer::ForEachResult::kContinue;
+			});
+		};
+		if (tes->interiorCell) {
+			visitCell(tes->interiorCell, true);
+		} else if (auto* grid = tes->gridCells) {
+			for (uint32_t gx = 0; gx < grid->length; gx++) {
+				for (uint32_t gy = 0; gy < grid->length; gy++)
+					visitCell(GetGridCell(grid, gx, gy), true);
+			}
+		}
+		// The dense copies made before (another batch's sheets hide this one's too)
+		for (const auto& [original, copy] : denseOf)
+			addGeometry(copy.shape.get());
+	}
+
+	void FallSites::TrimHidden(const std::vector<DenseJob*>& a_jobs, const ShellInput& a_shell)
+	{
+		// D173: the outer shell of the batch's sheets, the statics and the landscape: a triangle none of whose vertices can be
+		// seen from outside (FallVisibility) is dropped. One at the edge of what is seen is kept whole (a margin of an edge)
+		const auto start = std::chrono::steady_clock::now();
+		std::vector<std::vector<RE::NiPoint3>> world(a_jobs.size());
+		std::vector<FallVisibility::Sheet> sheets;
+		for (std::size_t j = 0; j < a_jobs.size(); j++) {
+			if (!a_jobs[j]->ok)
+				continue;
+			world[j].resize(a_jobs[j]->positions.size());
+			for (std::size_t v = 0; v < world[j].size(); v++)
+				world[j][v] = a_jobs[j]->world * a_jobs[j]->positions[v];
+		}
+		std::vector<std::size_t> sheetJob;
+		for (std::size_t j = 0; j < a_jobs.size(); j++) {
+			if (!a_jobs[j]->ok)
+				continue;
+			sheets.push_back({ &world[j], &a_jobs[j]->triangles });
+			sheetJob.push_back(j);
+		}
+		uint64_t tested = 0, rays = 0;
+		const auto visible = FallVisibility::Visible(sheets, a_shell.occluders, a_shell.interior ? nullptr : &a_shell.land, &tested, &rays);
+		uint64_t dropped = 0, kept = 0;
+		for (std::size_t s = 0; s < sheets.size(); s++) {
+			DenseJob& job = *a_jobs[sheetJob[s]];
+			// The margin: a vertex within SHELL_MARGIN of one seen, along its own sheet, is kept too (cut at the triangles, the
+			// meeting edges of two sheets stopped short of each other: the ground showed between them, SS 1147-1149)
+			const std::size_t count = world[sheetJob[s]].size();
+			std::vector<std::vector<std::pair<uint32_t, float>>> links(count);
+			for (const auto& tri : job.triangles) {
+				for (int k = 0; k < 3; k++) {
+					const uint32_t a = tri[k], b = tri[(k + 1) % 3];
+					const float length = (world[sheetJob[s]][a] - world[sheetJob[s]][b]).Length();
+					links[a].emplace_back(b, length);
+					links[b].emplace_back(a, length);
+				}
+			}
+			std::vector<float> reach(count, FLT_MAX);
+			using Entry = std::pair<float, uint32_t>;
+			std::priority_queue<Entry, std::vector<Entry>, std::greater<>> open;
+			for (uint32_t v = 0; v < count; v++) {
+				if (visible[s][v] && !links[v].empty()) {
+					reach[v] = 0.0f;
+					open.emplace(0.0f, v);
+				}
+			}
+			while (!open.empty()) {
+				const auto [distance, v] = open.top();
+				open.pop();
+				if (distance > reach[v])
+					continue;
+				for (const auto& [w, length] : links[v]) {
+					const float through = distance + length;
+					if (through < reach[w] && through <= SHELL_MARGIN) {
+						reach[w] = through;
+						open.emplace(through, w);
+					}
+				}
+			}
+			// Cut along the margin's edge, not at whole triangles (their staircase drew the meeting foam as white wedges, SS
+			// 1150): kept where SHELL_MARGIN - reach is positive, a triangle crossing it split where it crosses (as the landscape
+			// cut, Densify), the new vertices at the end (the bake reads the untrimmed triangles over the same vertices)
+			std::vector<float> keep(count);
+			for (std::size_t v = 0; v < count; v++)
+				keep[v] = std::clamp(SHELL_MARGIN - reach[v], -SHELL_MARGIN, SHELL_MARGIN);
+			std::map<std::pair<uint32_t, uint32_t>, uint32_t> crossings;
+			const auto crossing = [&](uint32_t a_in, uint32_t a_out) {
+				const auto key = std::make_pair(a_in, a_out);
+				if (const auto it = crossings.find(key); it != crossings.end())
+					return it->second;
+				const float f = std::clamp(keep[a_in] / std::max(keep[a_in] - keep[a_out], 1e-4f), 0.0f, 1.0f);
+				const auto lerp3 = [f](const RE::NiPoint3& a_a, const RE::NiPoint3& a_b) { return a_a + (a_b - a_a) * f; };
+				const auto unit = [](const RE::NiPoint3& a_v) { const float l = a_v.Length(); return l > 1e-6f ? a_v / l : RE::NiPoint3(0.0f, 0.0f, 1.0f); };
+				job.positions.push_back(lerp3(job.positions[a_in], job.positions[a_out]));
+				job.normals.push_back(unit(lerp3(job.normals[a_in], job.normals[a_out])));
+				job.tangents.push_back(unit(lerp3(job.tangents[a_in], job.tangents[a_out])));
+				job.bitangents.push_back(unit(lerp3(job.bitangents[a_in], job.bitangents[a_out])));
+				job.uvs.push_back(RE::NiPoint2(job.uvs[a_in].x + (job.uvs[a_out].x - job.uvs[a_in].x) * f, job.uvs[a_in].y + (job.uvs[a_out].y - job.uvs[a_in].y) * f));
+				const RE::NiColorA& c0 = job.colors[a_in];
+				const RE::NiColorA& c1 = job.colors[a_out];
+				job.colors.push_back(RE::NiColorA(c0.red + (c1.red - c0.red) * f, c0.green + (c1.green - c0.green) * f, c0.blue + (c1.blue - c0.blue) * f, c0.alpha + (c1.alpha - c0.alpha) * f));
+				const auto index = static_cast<uint32_t>(job.positions.size() - 1);
+				crossings[key] = index;
+				return index;
+			};
+			std::vector<std::array<uint32_t, 3>> shell;
+			shell.reserve(job.triangles.size());
+			for (const auto& tri : job.triangles) {
+				const bool in[3] = { keep[tri[0]] >= 0.0f, keep[tri[1]] >= 0.0f, keep[tri[2]] >= 0.0f };
+				const int ins = (in[0] ? 1 : 0) + (in[1] ? 1 : 0) + (in[2] ? 1 : 0);
+				if (ins == 3) {
+					shell.push_back(tri);
+				} else if (ins == 1) {
+					const int k = in[0] ? 0 : (in[1] ? 1 : 2);
+					const uint32_t a = tri[k], b = tri[(k + 1) % 3], c = tri[(k + 2) % 3];
+					shell.push_back({ a, crossing(a, b), crossing(a, c) });
+				} else if (ins == 2) {
+					const int k = !in[0] ? 2 : (!in[1] ? 0 : 1);
+					const uint32_t a = tri[k], b = tri[(k + 1) % 3], c = tri[(k + 2) % 3];
+					const uint32_t bc = crossing(b, c), ac = crossing(a, c);
+					shell.push_back({ a, b, bc });
+					shell.push_back({ a, bc, ac });
+				}
+			}
+			if (job.positions.size() > 65535) {
+				// Too many for 16-bit indices: the whole-triangle cut instead (a staircase, but drawn)
+				job.positions.resize(count);
+				job.normals.resize(count);
+				job.tangents.resize(count);
+				job.bitangents.resize(count);
+				job.uvs.resize(count);
+				job.colors.resize(count);
+				shell.clear();
+				for (const auto& tri : job.triangles) {
+					if (keep[tri[0]] >= 0.0f || keep[tri[1]] >= 0.0f || keep[tri[2]] >= 0.0f)
+						shell.push_back(tri);
+				}
+			}
+			job.hiddenAway = job.triangles.size() > shell.size() ? static_cast<uint32_t>(job.triangles.size() - shell.size()) : 0;
+			dropped += job.hiddenAway;
+			kept += shell.size();
+			job.triangles.swap(shell);
+			job.indices.clear();
+			job.indices.reserve(job.triangles.size() * 3);
+			for (const auto& tri : job.triangles) {
+				for (const uint32_t k : tri)
+					job.indices.push_back(static_cast<uint16_t>(k));
+			}
+		}
+		logger::info("[Fluid Field] Waterfall outer shell: {} of {} triangles seen from nowhere cut away ({} vertices tested, {} rays, {} occluding triangles gathered in {:.0f} ms; {:.0f} ms)",
+			dropped, dropped + kept, tested, rays, a_shell.occluders.size(), a_shell.gatherMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+	}
+
 	void FallSites::FinishDenseWork()
 	{
 		if (!denseWork.valid() || denseWork.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
@@ -4200,6 +4426,9 @@ namespace FluidFieldSim
 			return;
 		heavyWork.get();
 		heavyWork = {};
+		// D172: the GPU's copy of vertexClips again, whole: a worker's bumps of the version mid-way had it uploaded half-written
+		// (the seams' fades and the distances to other sheets, read as foam: SS 1143)
+		vertexClipVersion++;
 		if (linkedDue) {
 			linkedDue = false;
 			flowBakeVersion++;

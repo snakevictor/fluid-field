@@ -3882,3 +3882,33 @@ Entry format:
     meshes baked and cached (the plan agreed: trim the vanilla geometry, generate
     ours from it).
 -   References: D112, D113, D126, D131, D135, D136, D138, D171
+
+## D173: The dense copies cut to the outer shell (seen from outside), with a margin
+
+-   Date: 2026-10-21
+-   Decision: once a batch's dense copies are made (D172, on the worker), their
+    triangles that cannot be seen from outside are cut away
+    (FallSites::TrimHidden, FallVisibility). A vertex is seen when a ray from it
+    along one of 96 directions over the sphere (a Fibonacci lattice, upward
+    first) leaves the area (REACH 2500 round the sheets) meeting no triangle of
+    the batch's sheets, the statics round them (their render triangles,
+    GatherOccluders, OCCLUDER_REACH 1024) or the copies made before, and
+    staying over the landscape (the height cache, LAND_MARGIN 8). CPU rays
+    through a BVH on several threads: 0.3-0.9 s a batch, 1.3-3.7 million rays.
+    -   **A margin, SHELL_MARGIN 64 along the sheet** from the nearest vertex
+        seen (cut at whole triangles with none, the meeting edges of two
+        sheets stopped short of each other: the ground showed between them,
+        SS 1147-1149).
+    -   **Cut along the margin's edge**, a triangle crossing it split where it
+        crosses (as the landscape cut), not at whole triangles (their
+        staircase drew the meeting foam as white wedges, SS 1150).
+    -   The bake still reads the untrimmed triangles (BakeIndices, D136).
+    -   The GPU's copy of vertexClips is uploaded again when a worker finishes
+        (its bumps of the version mid-way could leave it half-written).
+-   Results: the per-vertex inside cut (D113) found 16 vertices where it found
+    3132; the falls draw 318,810 triangles a pass (737,897 this morning, 389,282
+    after the landscape cut).
+-   Left (the user, SS 1153-1155: "the logic is there"): the meeting and cut
+    foam is per vertex (its edges take the triangles' shape at any margin): to
+    be per pixel, from the depth just behind the sheet (as ContactWhite).
+-   References: D113, D136, D172
