@@ -4034,3 +4034,22 @@ Entry format:
 -   Tried and reverted: a skirt of geometry at each mesh's foot (it was cut
     away again under the ground; the sheets already run under the water).
 -   References: D44, D47, D68, D145, D174, D175
+
+## D177: The falls write their depth; the pool's foam reaches the walls
+
+-   Date: 2026-10-21
+-   Decision:
+    -   **The see-through falls write depth** (FallRefraction's depth state,
+        the scene's writable view): the passes after them (distance fog) read
+        the depth of what lay behind a sheet, a hard line across it where that
+        changed from rock to ground (SS 1268; found with water rendering off:
+        the line stayed, so no water plane drew it).
+    -   **The simulation's foam carried into dry corners**
+        (WaterNormal.hlsli BilinearFlowFoamToWalls): blended toward a wall's
+        zero, the pool's foam stopped a cell short of every rock (SS 1264, 1265).
+-   Tried and reverted: testing the falls against the opaque scene only (a
+    shard, SS 1269); no shore fade and no plane test on the falls (neither was
+    the line); a crest morph from the river's normal maps (the water type's
+    maps tile ~17 m; the river's visible detail near crests is its flowmap's,
+    patch in the scratchpad, morph_attempt.patch).
+-   References: D105, D125, D159, D176

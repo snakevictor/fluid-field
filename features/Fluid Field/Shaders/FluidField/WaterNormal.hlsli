@@ -79,6 +79,29 @@ namespace FluidField
 			lerp(a_tex.Load(int3((c + int2(0, 1)) & mask, 0)), a_tex.Load(int3((c + int2(1, 1)) & mask, 0)), t.x), t.y);
 	}
 
+	/**
+	 * D176: BilinearFlow with the foam (z) carried into the corners that are dry (no water: a wall, a rock, the bank) from the
+	 * wet ones: blended toward a dry corner's zero, the foam faded out a cell short of every wall (a strip of bare water pressed
+	 * against the rock beside a fall, SS 1264, 1265).
+	 */
+	float4 BilinearFlowFoamToWalls(Texture2D<float4> a_flow, Texture2D<float4> a_surface, Level a_level, float2 a_cellPosition)
+	{
+		const int mask = a_level.GridRes - 1;
+		const int2 c = int2(floor(a_cellPosition));
+		const float2 t = a_cellPosition - float2(c);
+		float4 f[4] = { a_flow.Load(int3(c & mask, 0)), a_flow.Load(int3((c + int2(1, 0)) & mask, 0)), a_flow.Load(int3((c + int2(0, 1)) & mask, 0)),
+			a_flow.Load(int3((c + int2(1, 1)) & mask, 0)) };
+		const float4 wet = float4(a_surface.Load(int3(c & mask, 0)).w, a_surface.Load(int3((c + int2(1, 0)) & mask, 0)).w, a_surface.Load(int3((c + int2(0, 1)) & mask, 0)).w,
+			a_surface.Load(int3((c + int2(1, 1)) & mask, 0)).w);
+		float wetFoam = 0.0;
+		[unroll] for (int k = 0; k < 4; k++)
+			wetFoam = max(wetFoam, wet[k] > 0.05 ? f[k].z : 0.0);
+		[unroll] for (int k = 0; k < 4; k++)
+			f[k]
+				.z = lerp(wetFoam, f[k].z, saturate(wet[k] * 4.0));
+		return lerp(lerp(f[0], f[1], t.x), lerp(f[2], f[3], t.x), t.y);
+	}
+
 	/** How much the near level (rather than the far one) decides the water here: 1 inside, 0 past its edge band. */
 	float NearWeight(Level a_near, float2 a_worldXY)
 	{
@@ -117,8 +140,8 @@ namespace FluidField
 		float2 nearCell, farCell;
 		const bool inNear = ToCell(nearLevel, a_worldXY, nearCell);
 		const bool inFar = ToCell(farLevel, a_worldXY, farCell);
-		const float4 nearFlow = inNear ? BilinearFlow(WaterFlowTex, nearLevel, nearCell) : 0;
-		const float4 farFlow = inFar ? BilinearFlow(FarFlowTex, farLevel, farCell) : 0;
+		const float4 nearFlow = inNear ? BilinearFlowFoamToWalls(WaterFlowTex, WaterSurfaceTex, nearLevel, nearCell) : 0;
+		const float4 farFlow = inFar ? BilinearFlowFoamToWalls(FarFlowTex, FarSurfaceTex, farLevel, farCell) : 0;
 		const float weight = inNear ? (inFar ? NearWeight(nearLevel, a_worldXY) : 1.0) : 0.0;
 		return lerp(farFlow, nearFlow, weight) * SharedData::fluidFieldSettings.Fade;
 	}

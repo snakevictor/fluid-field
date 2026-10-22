@@ -1101,7 +1101,9 @@ void FluidField::DrawGroundFogAfterWorld()
 			// D105: what lies behind read from the depth copied after the opaque pre-pass (rock, ground): the live depth's
 			// view read as far everywhere (every sheet saw 600+ units behind it and went opaque)
 			auto* behind = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
-			DrawRefractiveFalls(target.RTV, target.texture, depth.readOnlyViews[0], behind ? behind : depth.depthSRV);
+			// D177: the writable view: the falls write their surface's depth, for the passes after them (distance fog read the
+			// depth of what lay behind a sheet, a hard line across it where that changed from rock to ground, SS 1268)
+			DrawRefractiveFalls(target.RTV, target.texture, depth.views[0] ? depth.views[0] : depth.readOnlyViews[0], behind ? behind : depth.depthSRV);
 		}
 	}
 

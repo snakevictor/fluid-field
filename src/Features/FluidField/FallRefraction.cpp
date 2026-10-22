@@ -246,8 +246,8 @@ namespace FluidFieldSim
 		target.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
 		D3D11_DEPTH_STENCIL_DESC depthDesc{};
 		depthDesc.DepthEnable = TRUE;
-		depthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
-		depthDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;  // Depth runs from 0 near to 1 far
+		depthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;  // D177: the passes after read the falls' surface, not what lies behind it
+		depthDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;      // Depth runs from 0 near to 1 far
 		D3D11_RASTERIZER_DESC rasterDesc{};
 		rasterDesc.FillMode = D3D11_FILL_SOLID;
 		rasterDesc.CullMode = D3D11_CULL_NONE;  // The sheets are seen from both sides
