@@ -142,6 +142,139 @@ namespace FallShading
 		return a_depth - a_frontDepth > FRONT_EPSILON;
 	}
 
+	/** D179: world units the bake's swell of 1 raises the surface (its shape between the vertices, per pixel). */
+	static const float SWELL_HEIGHT = 0.0;  // D180: off until its slope comes from the bake's own field (screen derivatives drew the triangles)
+	/** D179: world units across a bubble cell (two layers, this and 0.45 of it), and how much the bubbles whiten and glint. */
+	static const float BUBBLE_CELL = 6.0;
+	static const float BUBBLE_MILK = 0.0;
+	static const float BUBBLE_GLINT = 0.9;
+	/** D180: how silvery a bubble's rim and how bright its highlight. */
+	static const float BUBBLE_RIM = 0.85;
+	static const float BUBBLE_HIGHLIGHT = 2.0;
+	/** D180: world units of water a falling sheet holds (straight through it): its depth tint, as shallows. */
+	static const float SHEET_DEPTH = 24.0;
+	/** D179: how much aeration makes the water opaque (the bubbles scatter what lies behind). */
+	static const float BUBBLE_OPACITY = 0.0;
+	/** D179: how much aeration foams (the river's foam pattern, as the contact's), as well as bubbling (the user). */
+	static const float AERATION_FOAM = 0.3;
+	/** D179: the bake's disturbance (stirred water: a boulder's wake, piling against rock) over which the water churns with air, and how much. */
+	static const float STIRRED_FROM = 0.15;
+	static const float STIRRED_FULL = 1.0;
+	static const float STIRRED_AERATION = 0.85;
+
+	/**
+	 * D179: a normal raised by a height over the surface (a_height, world units, smooth over the screen), by its screen
+	 * derivatives (Mikkelsen's surface gradient): the bake's swell, so the sheet bulges and piles up between its vertices
+	 */
+	float3 RaiseNormal(float3 a_normal, float3 a_position, float a_height)
+	{
+		const float3 dpdx = ddx(a_position);
+		const float3 dpdy = ddy(a_position);
+		const float3 r1 = cross(dpdy, a_normal);
+		const float3 r2 = cross(a_normal, dpdx);
+		const float det = dot(dpdx, r1);
+		if (abs(det) < 1e-8)
+			return a_normal;
+		const float3 gradient = (ddx(a_height) * r1 + ddy(a_height) * r2) / det;
+		return SafeNormalize(a_normal - gradient, a_normal);
+	}
+
+	float BubbleHash(float2 a_p)
+	{
+		a_p = frac(a_p * float2(0.1031, 0.1030));
+		a_p += dot(a_p, a_p.yx + 33.33);
+		return frac((a_p.x + a_p.y) * a_p.x);
+	}
+
+	/**
+	 * D179: one layer of bubbles (0 to 1 cover) on a lattice of cells, a share of the cells holding one (a_density); a_stretch
+	 * the cells' length along the flow over their width in world units (the flow coordinates run long where the water is
+	 * fast): the bubbles drawn round in the world, not drawn out with them
+	 */
+	float3 BubbleLayer(float2 a_p, float a_density, float2x2 a_toScreen, float a_cellPixels)
+	{
+		const float2 cell = floor(a_p);
+		const float2 f = a_p - cell;
+		float3 best = 0.0;  // cover, and the offset from the bubble's centre over its radius (its sphere's x, y)
+		[unroll] for (int j = -1; j <= 1; j++)
+		{
+			[unroll] for (int i = -1; i <= 1; i++)
+			{
+				const float2 c = cell + float2(i, j);
+				const float present = BubbleHash(c * 1.37 + 11.0);
+				if (present > a_density)
+					continue;
+				const float2 centre = float2(i, j) + float2(BubbleHash(c), BubbleHash(c + 7.3)) * 0.8 + 0.1;
+				const float radius = lerp(0.18, 0.42, BubbleHash(c + 3.1));
+				// D180: round on the screen, facing the camera at any slant of the sheet (on the sheet, they foreshortened into
+				// flat ellipses): the offset from its centre taken to screen pixels, over its radius in pixels (its cell's size
+				// on screen, the layer's world size: not its foreshortened extent)
+				const float2 offset = mul(a_toScreen, f - centre) / max(radius * a_cellPixels, 1e-3);
+				const float cover = 1.0 - smoothstep(0.85, 1.0, length(offset));
+				if (cover > best.x)
+					best = float3(cover, offset);
+			}
+		}
+		return best;
+	}
+
+	/** D179: bubble layers inside the water: their depth under the surface (world units), the deepest; layers get smaller and dimmer down. */
+	static const int BUBBLE_LAYERS = 3;
+	static const float BUBBLE_DEPTH = 9.0;
+	/** D179: how many times denser the bubbles are in aerated water than in the plain flow. */
+	static const float BUBBLE_AERATED_GAIN = 4.0;
+	/** D180: the share of the lattice's cells that hold a bubble, overall (a third of D179's: the user). */
+	static const float BUBBLE_AMOUNT = 1.0 / 3.0;
+
+	/**
+	 * D179: the bubbles carried in aerated water (the user: aeration seen as bubbling, "3d, parallaxed"), on the falls' flow
+	 * coordinates (a_flowUv: they ride the water), in BUBBLE_LAYERS layers at depths under the surface: each read where the
+	 * view ray reaches its depth (a_viewShift: flow coordinates per world unit of depth, from the view across the sheet),
+	 * smaller and dimmer the deeper. 0 to 1 cover; a layer fades to its average where its cells are a few pixels across
+	 */
+	float4 Bubbles(float2 a_flowUv, float2 a_viewShift, float a_aeration, float a_cellPixels)
+	{
+		// x the cover of the nearest bubble (a nearer layer in front of a deeper one), yz the pixel's place on its sphere in screen
+		// axes (-1 to 1, x right, y down), w how deep its layer lies (0 to 1). a_cellPixels: screen pixels a world unit spans here
+		if (a_aeration <= 0.02)
+			return 0.0;
+		// Four times as dense in aerated water as in the plain flow (the user)
+		const float density = saturate(a_aeration * 0.35 * BUBBLE_AMOUNT * lerp(1.0, BUBBLE_AERATED_GAIN, smoothstep(0.3, 0.7, a_aeration)));
+		float4 result = 0.0;
+		[unroll] for (int k = BUBBLE_LAYERS - 1; k >= 0; k--)
+		{
+			const float depthShare = (k + 0.5) / BUBBLE_LAYERS;
+			const float cellSize = BUBBLE_CELL * lerp(1.0, 0.4, depthShare);
+			const float2 uv = a_flowUv + a_viewShift * (BUBBLE_DEPTH * depthShare);
+			const float2 p = uv * FlowScale(cellSize) + float2(0.37, 0.61) * k;
+			// Screen pixels per unit of the lattice, both ways (the lattice to the screen)
+			const float2 dpx = ddx(p), dpy = ddy(p);
+			const float det = dpx.x * dpy.y - dpy.x * dpx.y;
+			const float2x2 toScreen = abs(det) > 1e-12 ? float2x2(dpy.y, -dpy.x, -dpx.y, dpx.x) / det : float2x2(0, 0, 0, 0);
+			const float cellPixels = cellSize * a_cellPixels;
+			const float sharp = smoothstep(1.5, 4.0, cellPixels);
+			const float3 layer = BubbleLayer(p, density, toScreen, cellPixels);
+			const float cover = lerp(density * 0.1, layer.x, sharp) * lerp(1.0, 0.45, depthShare);
+			result = lerp(result, float4(cover, layer.yz * sharp, depthShare), saturate(cover * 2.0));
+		}
+		return result;
+	}
+
+	/**
+	 * D180: a bubble's look, an air sphere in water seen face on: its rim silvery (light reflected inside the water at the edge
+	 * of the air), a highlight off the sun on its curve, and what lies behind lensed through it (refracted toward its centre,
+	 * dimmer). a_sphere its place on the bubble in screen axes (-1 to 1); a_right, a_up, a_toEye the camera's axes in world.
+	 */
+	float3 BubbleColor(float2 a_sphere, float3 a_right, float3 a_up, float3 a_toEye, float3 a_sunDirection, float3 a_sunColor, float3 a_light, float3 a_behind)
+	{
+		const float r2 = saturate(dot(a_sphere, a_sphere));
+		const float3 n = SafeNormalize(a_right * a_sphere.x - a_up * a_sphere.y + a_toEye * sqrt(1.0 - r2), a_toEye);
+		const float rim = pow(r2, 2.5);
+		const float highlight = pow(saturate(dot(reflect(-a_toEye, n), a_sunDirection)), 64.0);
+		const float3 body = a_behind * 0.6;
+		return lerp(body, a_light * 1.4, rim * BUBBLE_RIM) + a_sunColor * highlight * BUBBLE_HIGHLIGHT;
+	}
+
 	/** D59: how aerated the water is after running for a_runTime seconds (0 to 1). */
 	float Aerated(float a_runTime)
 	{

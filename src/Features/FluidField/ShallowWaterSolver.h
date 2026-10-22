@@ -60,6 +60,9 @@ namespace FluidFieldSim
 		float plungeOrigin[2]{};
 		float plungeInverseCell = 0.0f;
 		std::uint32_t plungeSize = 0;
+		/// D170: the falls' lips on the plunge map's lattice (FallSites::BuildLipMap): the way and speed the water is drawn
+		/// toward a lip (xy) and how strongly (z)
+		ID3D11ShaderResourceView* lipMap = nullptr;
 	};
 
 	/** @brief Colour scales for the water debug view: a value of 1/scale maps to full intensity. */
@@ -204,8 +207,10 @@ namespace FluidFieldSim
 			float plungeOrigin[2];
 			float plungeInverseCell;
 			std::uint32_t plungeSize;
+			std::uint32_t lipMapOn;
+			float lipPad[3];
 		};
-		static_assert(sizeof(WaterConstants) == 128);
+		static_assert(sizeof(WaterConstants) == 144);
 
 		// Matches WaterDebugCB in WaterDebugViewCS.hlsl
 		struct alignas(16) DebugConstants
@@ -232,6 +237,7 @@ namespace FluidFieldSim
 
 		std::uint32_t resolution = 0;
 		ID3D11ShaderResourceView* seedFoamSRV = nullptr;
+		ID3D11ShaderResourceView* lipSRV = nullptr;     ///< D170: this step's lip map (not owned)
 		ID3D11ShaderResourceView* plungeSRV = nullptr;  ///< This step's plunge map (not owned)  ///< This step's seed foam (not owned)
 		std::uint32_t mapResolution = 0;
 		float mapSpacing = 64.0f;

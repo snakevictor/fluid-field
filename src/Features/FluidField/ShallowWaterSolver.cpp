@@ -14,8 +14,9 @@ namespace FluidFieldSim
 		constexpr std::uint32_t GROUP_SIZE = 8;  // FLUIDFIELD_GROUP_SIZE in Common.hlsli
 		constexpr std::uint32_t MAX_SRVS = 4;    // t0..t3; the map sits at t4, fine detail at t5, the flowmap at t6
 		constexpr std::uint32_t MAP_SLOT = 4;
-		constexpr std::uint32_t BOUND_SRVS = 8;
-		constexpr std::uint32_t FOAM_SLOT = 7;  // The foam pass reads last step's foam here
+		constexpr std::uint32_t BOUND_SRVS = 11;  // Through the lips' map (D170)
+		constexpr std::uint32_t LIP_SLOT = 10;    // D170: the falls' lips, read by the forces and output passes
+		constexpr std::uint32_t FOAM_SLOT = 7;    // The foam pass reads last step's foam here
 		constexpr std::uint32_t MAX_UAVS = 3;
 
 		ID3D11ShaderResourceView* const NULL_SRVS[BOUND_SRVS] = {};
@@ -264,8 +265,11 @@ namespace FluidFieldSim
 			.seedCellSize = params.seedCellSize,
 			.plungeOrigin = { params.plungeOrigin[0], params.plungeOrigin[1] },
 			.plungeInverseCell = params.plungeInverseCell,
-			.plungeSize = params.plungeMap ? params.plungeSize : 0u
+			.plungeSize = params.plungeMap ? params.plungeSize : 0u,
+			.lipMapOn = params.plungeMap && params.lipMap ? 1u : 0u,
+			.lipPad = {}
 		};
+		lipSRV = params.plungeMap ? params.lipMap : nullptr;
 		seedFoamSRV = params.seedFoam;
 		plungeSRV = params.plungeMap;
 		UpdateBuffer(context, waterConstants.get(), &waterData, sizeof(waterData));
@@ -285,6 +289,8 @@ namespace FluidFieldSim
 			ClearObstacles(context);
 		ID3D11ShaderResourceView* mapSRVs[] = { map.srv.get(), obstacles.srv.get(), params.flowmap };
 		context->CSSetShaderResources(MAP_SLOT, 3, mapSRVs);
+		ID3D11ShaderResourceView* lip = lipSRV;
+		context->CSSetShaderResources(LIP_SLOT, 1, &lip);
 	}
 
 	void ShallowWaterSolver::EndStep(ID3D11DeviceContext* context)
@@ -368,6 +374,8 @@ namespace FluidFieldSim
 
 		ID3D11Buffer* cbs[] = { gridConstants.get(), waterConstants.get() };
 		context->CSSetConstantBuffers(0, 2, cbs);
+		ID3D11ShaderResourceView* lip = lipSRV;  // D170: the output's flow carries the lips' weight (w)
+		context->CSSetShaderResources(LIP_SLOT, 1, &lip);
 		ID3D11ShaderResourceView* srvs[] = { depth[currentDepth].srv.get(), velocity[currentVelocity].srv.get(), cellMap[currentCellMap].srv.get(), foam[currentFoam].srv.get() };
 		ID3D11UnorderedAccessView* uavs[] = { surface.uav.get(), flow.uav.get() };
 		Dispatch(context, outputCS.get(), srvs, uavs);

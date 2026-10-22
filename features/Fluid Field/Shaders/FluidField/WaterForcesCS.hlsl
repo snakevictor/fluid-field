@@ -91,6 +91,12 @@ static const float STIR_RATE = 0.35;
 /** @brief Stirring acceleration per unit of river speed (1/s), before Turbulence scales it. */
 static const float STIR_STRENGTH = 0.9;
 
+/** @brief D170: per second, how fast the water at a lip takes the lip's way and speed (at its full weight). */
+static const float LIP_PULL = 6.0;
+/** @brief D170: the share of the water's depth drawn down at a lip's brink, and the most in world units. */
+static const float LIP_DRAWDOWN = 0.3;
+static const float LIP_DRAWDOWN_MOST = 16.0;
+
 /**
  * @brief Curl noise: the curl of a smooth, slowly changing stream function, so it swirls water
  * without piling it up anywhere. Real rivers never settle into one flow; this keeps ours moving.
@@ -179,7 +185,26 @@ float2 StirVelocity(float2 worldPos)
 	}
 
 	velocity = lerp(velocity, restVelocity, saturate(CurrentRelax * DeltaTime));
-	depth = lerp(depth, vanillaDepth, saturate(LevelRelax * DeltaTime));
+	// D170: drawn on toward a fall's lip over the last few metres (the drawdown): along the way the falls start, at least
+	// as fast as their texture leaves the crest, harder nearer it. The height pass's continuity thins the water as it speeds up
+	// (continuity: h u holds along the flow), and the level it settles to is drawn down toward the brink (a free overfall
+	// passes its critical depth, about two thirds of the water's depth upstream, just before the edge)
+	float levelDepth = vanillaDepth;
+	if (depth > WetThreshold) {
+		const float4 lip = LipAt(worldPos);
+		if (lip.z > 1e-3) {
+			const float speed = length(lip.xy);
+			const float2 way = lip.xy / max(speed, 1e-3);
+			// D179: the target speed itself rises toward the lip, from the river's own current far off to the lip's at the
+			// brink (pulled toward the lip's speed wherever it reached, at a rate fading with the weight, the whole cascade's
+			// river sped up: every stretch lies near some lip, the user)
+			const float own = max(dot(restVelocity, way), 0.0);
+			const float2 target = way * max(lerp(own, speed, saturate(lip.z)), dot(velocity, way));
+			velocity = lerp(velocity, target, sqrt(saturate(lip.z)) * saturate(LIP_PULL * DeltaTime));
+			levelDepth = vanillaDepth - min(vanillaDepth * LIP_DRAWDOWN, LIP_DRAWDOWN_MOST) * saturate(lip.z);
+		}
+	}
+	depth = lerp(depth, levelDepth, saturate(LevelRelax * DeltaTime));
 
 	// Absorbing border: the pull toward calm vanilla water grows quadratically toward the edge and is
 	// a per-second rate, so waves fade into it instead of bouncing off an abrupt change

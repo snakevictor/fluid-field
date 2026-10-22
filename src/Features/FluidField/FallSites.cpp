@@ -3399,7 +3399,7 @@ namespace FluidFieldSim
 		}
 		blur(foam, 1);
 		std::vector<float> aeration = std::move(strands.aeration);
-		blur(aeration, 1);
+		blur(aeration, 3);  // D179: 1 before, its patches' edges showed
 		std::vector<float> turn = std::move(strands.turn);
 		blur(turn, 1);
 
@@ -4162,12 +4162,20 @@ namespace FluidFieldSim
 			bake.uvMin[1] = field.uvMin[1];
 			bake.uvSize[0] = field.uvSize[0];
 			bake.uvSize[1] = field.uvSize[1];
-			bake.texels.resize(count * 4);
+			// D179: twice the rows: the flow as before, then what the march knows of the water for the shading (FallGround's
+			// BakeFieldsAt): its speed over vanilla's, how high it piles up (swell), how stirred it is, how aerated
+			bake.texels.resize(count * 8);
+			const auto fieldAt = [&](const std::vector<float>& a_values, std::size_t a_i, float a_none) { return a_values.size() == count ? a_values[a_i] : a_none; };
 			for (std::size_t i = 0; i < count; i++) {
 				bake.texels[i * 4] = a_node.across[i];
 				bake.texels[i * 4 + 1] = a_node.along[i];
 				bake.texels[i * 4 + 2] = std::clamp(field.wake[i], 0.0f, 1.0f);
 				bake.texels[i * 4 + 3] = std::clamp(field.foam[i], 0.0f, 1.0f);
+				float* extra = &bake.texels[(count + i) * 4];
+				extra[0] = fieldAt(field.speed, i, 1.0f);
+				extra[1] = 1.0f - std::exp(-std::max(fieldAt(field.swell, i, 0.0f), 0.0f));  // D179: compressed to 0-1 (its raw values saturated over broad areas)
+				extra[2] = fieldAt(field.disturbance, i, 0.0f);
+				extra[3] = std::clamp(fieldAt(field.wake, i, 0.0f), 0.0f, 1.0f);
 			}
 			flowBakes[a_node.geometry] = std::move(bake);
 			a_node.done = true;

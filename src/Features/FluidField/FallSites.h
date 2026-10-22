@@ -181,7 +181,7 @@ namespace FluidFieldSim
 			uint32_t height = 0;
 			float uvMin[2]{};
 			float uvSize[2]{};
-			std::vector<float> texels;  ///< RGBA32F, width x height
+			std::vector<float> texels;  ///< RGBA32F, width x (height x 2): D179, the flow, then the water's fields (speed, swell, disturbance, aeration)
 		};
 		const std::unordered_map<const RE::BSGeometry*, FlowBake>& GetFlowBakes() const { return flowBakes; }
 		/** @brief Changes whenever GetFlowBakes changes. */
@@ -255,6 +255,14 @@ namespace FluidFieldSim
 
 		/** @brief D44: per texel of a ground map's lattice, how strongly the falls plunge into the water there (0 to 1), round the plunge points (D78). */
 		void BuildPlungeMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field, float a_behind = 0.0f, float a_radiusScale = 1.0f) const;
+
+		/**
+		 * @brief D170 (FallLips.cpp): per texel of a ground map's lattice, four floats: the way and speed the river is drawn
+		 * toward a fall's lip there (x, y, world units a second) and how strongly (z, 0 to 1; w spare), from every lip where a
+		 * falls mesh climbs out of the river it pours from (its crest, D79).
+		 */
+		void BuildLipMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
+		mutable std::size_t loggedLips = SIZE_MAX;  ///< D170: the lip count last logged
 
 		/** @brief Prints each cell's summary to the game console too, not only the log. */
 		void SetConsoleSummary(bool a_print) { consoleSummary = a_print; }

@@ -19,6 +19,20 @@ namespace FluidField
 	static const float FLOW_DETAIL_PERIOD = 0.6;
 	/** Fastest the flow-carried detail drifts, world units per second. */
 	static const float FLOW_DETAIL_MAX_DRIFT = 120.0;
+	/**
+	 * D170: the fastest the detail and the foam's pattern drift where a fall's lip draws the water on (the flow's w, the
+	 * solver's lip map): the river's surface visibly speeds up into the drop, and since the drift grows along the flow
+	 * there, each phase stretches along it, as accelerating water does. FallStrands' CREST_SPEED (200) is where the falls'
+	 * texture takes over.
+	 */
+	static const float LIP_MAX_DRIFT = 240.0;
+
+	/** D170: the most the detail and foam may drift at a world position: FLOW_DETAIL_MAX_DRIFT, raised toward a fall's lip. */
+	float MaxDrift(float a_lip)
+	{
+		return lerp(FLOW_DETAIL_MAX_DRIFT, LIP_MAX_DRIFT, saturate(a_lip));
+	}
+
 	/** Flow speed (world units per second) at which the detail reaches full strength. */
 	static const float FLOW_DETAIL_FULL_SPEED = 160.0;
 	/** Fraction of the near level's width over which it hands over to the far level (as WaterOutputCS fades). */
@@ -197,13 +211,13 @@ namespace FluidField
 	 * samples of the vanilla normal texture, each dragged along the flow and restarted half a period
 	 * apart, cross-faded so neither restart shows.
 	 */
-	float3 FlowDetailNormal(float3 a_worldPosition, float2 a_flow)
+	float3 FlowDetailNormal(float3 a_worldPosition, float2 a_flow, float a_maxDrift = FLOW_DETAIL_MAX_DRIFT)
 	{
 		const float time = SharedData::Timer / FLOW_DETAIL_PERIOD;
 		const float phase0 = frac(time);
 		const float phase1 = frac(time + 0.5);
 		const float2 uv = a_worldPosition.xy / FLOW_DETAIL_TILE;
-		const float2 flow = a_flow * min(1.0, FLOW_DETAIL_MAX_DRIFT / max(length(a_flow), 1e-3));
+		const float2 flow = a_flow * min(1.0, a_maxDrift / max(length(a_flow), 1e-3));
 		const float2 drift = flow * FLOW_DETAIL_PERIOD / FLOW_DETAIL_TILE;
 		const float3 n0 = Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase0, SharedData::MipBias).xyz * 2.0 - 1.0;
 		const float3 n1 = Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase1 + 0.5, SharedData::MipBias).xyz * 2.0 - 1.0;
@@ -362,7 +376,7 @@ namespace FluidField
 		const float phase1 = frac(time + 0.5);
 		const float2 uv = a_worldPosition.xy / FOAM_TILE;
 		float2 flow = SampleFlow(a_worldPosition);
-		flow *= min(1.0, FOAM_MAX_DRIFT / max(length(flow), 1e-3));
+		flow *= min(1.0, max(FOAM_MAX_DRIFT, MaxDrift(flowFoam.w)) / max(length(flow), 1e-3));  // D170: faster toward a lip
 		const float2 drift = flow * FOAM_PERIOD / FOAM_TILE;
 		const float p0 = length(Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase0, SharedData::MipBias).xy * 2.0 - 1.0);
 		const float p1 = length(Normals01Tex.SampleBias(Normals01Sampler, uv - drift * phase1 + 0.37, SharedData::MipBias).xy * 2.0 - 1.0);
@@ -443,7 +457,7 @@ namespace FluidField
 			const float speed = length(flow);
 			const float amount = flowDetail * smoothstep(5.0, 40.0, speed) * lerp(0.4, 1.0, smoothstep(0.0, FLOW_DETAIL_FULL_SPEED * 1.5, speed));
 			if (amount > 0.0) {
-				const float3 detail = FlowDetailNormal(a_worldPosition, flow);
+				const float3 detail = FlowDetailNormal(a_worldPosition, flow, MaxDrift(FlowFoamAtWorld(a_worldPosition.xy).w));  // D170
 				const float3 detailNormal = normalize(float3(detail.xy * amount, 1.0));
 				combined = normalize(ReorientNormal(detailNormal, combined));
 			}

@@ -540,7 +540,9 @@ namespace FluidFieldSim::FallStrands
 			const float drop = std::max(sample(height, a_node.x, static_cast<float>(a_row - 1)) - sample(height, x, static_cast<float>(a_row)), 0.0f);
 			a_node.fallen += drop * std::clamp((0.8f - flat) / 0.6f, 0.0f, 1.0f);
 			const float stirred = a_node.aeration * std::exp(-dt / AERATION_FADE) + dt * 1.5f * std::max(a_node.squeeze - 1.5f, 0.0f) + 0.6f * strike / std::max(nextDown, 1.0f);
-			a_node.aeration = std::clamp(std::max(Smoothstep(0.3f * breakup, breakup, a_node.fallen), stirred), 0.0f, 1.0f);
+			// D179: growing with the height fallen down steep faces (drops far more than runs), gradually: a threshold's
+			// smoothstep made it near on or off in broad patches with hard edges
+			a_node.aeration = std::clamp(std::max(1.0f - std::exp(-a_node.fallen / breakup), stirred), 0.0f, 1.0f);
 			// The texture keeps vanilla's speed (its UVs carry the artist's speeding up down the drops; retimed by the
 			// physics it stretched and squeezed), along the strand's own way: a row's worth, more where it runs aslant
 			// (taken a row at a time down, a turning streak's texture sheared instead of turning with it)
@@ -690,7 +692,7 @@ namespace FluidFieldSim::FallStrands
 					fill(nearA ? a : b, 1.0f, lip[order[nearA ? right - 1 : right]] + (px - (nearA ? a.x : b.x)));
 					const float seam = std::abs(px - 0.5f * (a.x + b.x));
 					result.foam[i] = std::max(result.foam[i], std::clamp(1.5f - seam * 0.5f, 0.0f, 1.0f));
-					result.aeration[i] = std::max(result.aeration[i], 0.5f);
+					result.aeration[i] = std::max(result.aeration[i], 0.35f);
 					if (covered[i] && !rock[i])
 						result.openTexels++;
 					continue;

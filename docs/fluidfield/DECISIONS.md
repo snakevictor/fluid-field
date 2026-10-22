@@ -4053,3 +4053,48 @@ Entry format:
     maps tile ~17 m; the river's visible detail near crests is its flowmap's,
     patch in the scratchpad, morph_attempt.patch).
 -   References: D105, D125, D159, D176
+
+## D179: Flow sim v2: the river speeds up toward the lips; the bake's water reaches the shading; bubbles
+
+-   Date: 2026-10-21
+-   Decision:
+    -   **The river is drawn on toward each lip** (D170's solver part,
+        FallLips.cpp and WaterForcesCS, without its falls-side texture changes):
+        within 320 units upstream and 64 to each side, the target speed rising
+        from the river's own current to the lip's at the brink (pulled toward
+        the lip's speed wherever it reached, the whole cascade sped up: the user).
+    -   **The bake carries the water's fields** (a second half of its rows,
+        FallGround::BakeFieldsAt): speed over vanilla's, swell (compressed to
+        0-1), disturbance, aeration. Aeration grows gradually with the height
+        fallen down steep faces (1 - exp(-fallen / breakup); a threshold made it
+        on or off in broad patches), blurred wider.
+    -   **Aeration shows as bubbles and foam** (the user): stirred water (the
+        bake's disturbance: a boulder's wake, piling against rock) aerates too;
+        aerated water foams in the contact foam's pattern (AERATION_FOAM 0.3,
+        not on the lip) and bubbles.
+    -   **Bubbles** (FallShading::Bubbles): three layers at depths under the
+        surface, parallaxed by the view across the sheet, smaller and dimmer
+        the deeper; round on the screen at any slant (camera-facing: on the
+        sheet they foreshortened into flat ellipses); shaded as air spheres in
+        water (a silvery rim, the sun's highlight, what is behind lensed and
+        dimmed); four times as dense in aerated water as in the plain flow, a
+        third of the first try overall (the user).
+-   Tried and set aside: the swell as a normal from screen derivatives (per
+    triangle again: facets; SWELL_HEIGHT 0 until its slope comes from the
+    bake's field); milky tint and opacity from aeration (the sheets went flat
+    grey).
+-   References: D59, D80, D84, D85, D170, D174
+
+## D180: The falls' water is the sheet's own thickness
+
+-   Date: 2026-10-21
+-   Context: the falls read near black, darker than the river they pour from
+    (the user: "we strayed from the look of the shallow water"). Measured with
+    strips of the water shader's parts: refractionMul (the water's opacity) was
+    1 over every sheet and the water's own colour near black.
+-   Decision: on the falls, every depth measure (distanceMul: the vanilla fog
+    and opacity, the Water Tint) is the sheet's own thickness along the view
+    (SHEET_DEPTH 24 over the cosine, at most 4x), not the view ray's path to
+    what lies behind it: mostly air, metres of it, read as deep water. The
+    falls are see-through again, the rock behind showing as in the shallows.
+-   References: D148, D159

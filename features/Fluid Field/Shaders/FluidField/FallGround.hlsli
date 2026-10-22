@@ -250,6 +250,7 @@ namespace FallGround
 		float foam;       // D59: the bake's foam: the rock's rim, the water piling against it and squeezing past it
 		float wake;       // D60: the wake of a rock above, fading down the streaks
 		float runTime;    // D59: seconds the water has run since it came onto this mesh (0 without a bake)
+		float4 fields;    // D179: BakeFieldsAt: speed over vanilla's, swell, disturbance, aeration
 	};
 
 	/**
@@ -257,12 +258,13 @@ namespace FallGround
 	 * along, wake, foam. D80: a cubic B-spline over 4x4 texels, so the coordinates' gradients run on smoothly (bilinear,
 	 * they stepped at every texel: the texture's scale and mip with them, a blocky pattern)
 	 */
-	float4 BakeAt(float2 a_uv)
+	float4 BakeRowsAt(float2 a_uv, uint a_half)
 	{
 		if (!BakeOn)
 			return 0.0;
 		uint width, height;
 		FlowBake.GetDimensions(width, height);
+		height /= 2;  // D179: the flow in the first half of the rows, the water's fields in the second
 		const float2 texel = (a_uv - BakeRect.xy) * BakeRect.zw * float2(width, height) - 0.5;
 		const float2 cell = floor(texel);
 		const float2 t = texel - cell;
@@ -274,11 +276,16 @@ namespace FallGround
 		{
 			float4 row = 0.0;
 			[unroll] for (int i = 0; i < 4; i++)
-				row += weights[i].x * FlowBake.Load(int3(clamp(int2(cell) + int2(i - 1, j - 1), 0, last), 0));
+				row += weights[i].x * FlowBake.Load(int3(clamp(int2(cell) + int2(i - 1, j - 1), 0, last) + int2(0, a_half * height), 0));
 			sum += weights[j].y * row;
 		}
 		return sum;
 	}
+
+	float4 BakeAt(float2 a_uv) { return BakeRowsAt(a_uv, 0); }
+
+	/** D179: the water's fields at a texture coordinate (FallSites' bake, its second half): x its speed over vanilla's, y how high it piles up (swell), z how stirred, w how aerated. */
+	float4 BakeFieldsAt(float2 a_uv) { return BakeOn ? BakeRowsAt(a_uv, 1) : float4(1.0, 0.0, 0.0, 0.0); }
 
 	/**
 	 * D67: a pixel of falling water's texture coordinates: the bake's (its streak across, its run time along)
@@ -295,6 +302,7 @@ namespace FallGround
 		result.foam = baked.w;
 		result.wake = baked.z;
 		result.runTime = BakeOn ? max(baked.y, 0.0) / max(Scroll.y, 1e-3) : 0.0;
+		result.fields = BakeFieldsAt(uvStill);
 		const float2 uvBase = (BakeOn ? baked.xy : uvStill) - float2(0.0, Scroll.x);
 		result.uvA = uvBase;
 		result.velocity = 0.0;

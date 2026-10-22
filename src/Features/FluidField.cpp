@@ -1362,6 +1362,7 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 		params.plungeOrigin[1] = fallGroundOrigin[1];
 		params.plungeInverseCell = 1.0f / FALL_GROUND_CELL;
 		params.plungeSize = FALL_GROUND_SIZE;
+		params.lipMap = fallLipSRV.get();  // D170: on the plunge map's lattice
 	}
 	if (a_near && settings.FarWater && farWater.solver.HasMap() && waterShaderData.FarEnabled) {
 		params.seedFoam = farWater.solver.GetFlowSRV();
@@ -1474,6 +1475,8 @@ void FluidField::ReleaseFallGround()
 	fallBakeVersion = UINT64_MAX;
 	fallPlungeTexture = nullptr;
 	fallPlungeSRV = nullptr;
+	fallLipTexture = nullptr;
+	fallLipSRV = nullptr;
 	fallGroundOn = nullptr;
 	fallGroundOff = nullptr;
 	fallGroundVersion = UINT64_MAX;
@@ -1499,6 +1502,16 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		} else {
 			Util::SetResourceName(fallPlungeTexture.get(), "FluidField::FallPlunge");
 			Util::SetResourceName(fallPlungeSRV.get(), "FluidField::FallPlunge SRV");
+		}
+		// D170: the lips' draw on the river: way and speed (xy), weight (z)
+		D3D11_TEXTURE2D_DESC lipDesc = desc;
+		lipDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		if (FAILED(device->CreateTexture2D(&lipDesc, nullptr, fallLipTexture.put())) || FAILED(device->CreateShaderResourceView(fallLipTexture.get(), nullptr, fallLipSRV.put()))) {
+			fallLipTexture = nullptr;
+			fallLipSRV = nullptr;
+		} else {
+			Util::SetResourceName(fallLipTexture.get(), "FluidField::FallLip");
+			Util::SetResourceName(fallLipSRV.get(), "FluidField::FallLip SRV");
 		}
 		desc.Format = DXGI_FORMAT_R32G32_FLOAT;  // The rock, and the pools' surface (D36)
 		if (FAILED(device->CreateTexture2D(&desc, nullptr, fallGroundTexture.put())) || FAILED(device->CreateShaderResourceView(fallGroundTexture.get(), nullptr, fallGroundSRV.put())) ||
@@ -1541,7 +1554,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		for (const auto& [geometry, bake] : bakes) {
 			if (fallBakeSRVs.contains(geometry))
 				continue;
-			D3D11_TEXTURE2D_DESC bakeDesc{ .Width = bake.width, .Height = bake.height, .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R32G32B32A32_FLOAT, .SampleDesc = { 1, 0 }, .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = 0 };
+			D3D11_TEXTURE2D_DESC bakeDesc{ .Width = bake.width, .Height = bake.texels.size() >= static_cast<std::size_t>(bake.width) * bake.height * 8 ? bake.height * 2 : bake.height, .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R32G32B32A32_FLOAT, .SampleDesc = { 1, 0 }, .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = 0 };
 			const D3D11_SUBRESOURCE_DATA bakeData{ bake.texels.data(), bake.width * 4 * sizeof(float), 0 };
 			winrt::com_ptr<ID3D11Texture2D> texture;
 			winrt::com_ptr<ID3D11ShaderResourceView> view;
@@ -1578,6 +1591,13 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 			for (std::size_t i = 0; i < halves.size(); i++)
 				halves[i] = DirectX::PackedVector::XMConvertFloatToHalf(fallPlungeScratch[i]);
 			context->UpdateSubresource(fallPlungeTexture.get(), 0, nullptr, halves.data(), FALL_GROUND_SIZE * sizeof(uint16_t), 0);
+		}
+		if (fallLipTexture) {
+			fallSites.BuildLipMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallLipScratch);
+			std::vector<uint16_t> halves(fallLipScratch.size());
+			for (std::size_t i = 0; i < halves.size(); i++)
+				halves[i] = DirectX::PackedVector::XMConvertFloatToHalf(fallLipScratch[i]);
+			context->UpdateSubresource(fallLipTexture.get(), 0, nullptr, halves.data(), FALL_GROUND_SIZE * 4 * sizeof(uint16_t), 0);
 		}
 	}
 	fallGroundData = { { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u,

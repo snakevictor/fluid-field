@@ -44,6 +44,8 @@ cbuffer WaterCB : register(b1)
 	float2 PlungeOrigin;      // D44: world position of the plunge map's texel (0, 0)
 	float PlungeInverseCell;  // Its texels per world unit
 	uint PlungeSize;          // Its texels per side (0: none)
+	uint LipMapOn;            // D170: LipMap is bound, on the plunge map's lattice
+	float3 LipPad;
 };
 
 static const float NO_WATER = -1.0e8;
@@ -55,6 +57,22 @@ Texture2D<float4> ObstacleMap : register(t5);
 // intensity mask. B is 255 along the rivers checked, so it is not used (checked against the
 // White River at Riverwood, which flows north-east toward Whiterun, 2026-10-14).
 Texture2D<float4> RiverFlowmap : register(t6);
+// D170: the falls' lips (FallSites::BuildLipMap), on the plunge map's lattice: the way and speed the river is drawn toward a
+// lip (xy, world units a second) and how strongly (z, 0 to 1)
+Texture2D<float4> LipMap : register(t10);
+
+/** @brief D170: the lips' draw on the water at a world position, bilinear; 0 without a map. */
+float4 LipAt(float2 worldXY)
+{
+	if (LipMapOn == 0 || PlungeSize == 0)
+		return 0.0;
+	const float2 texel = (worldXY - PlungeOrigin) * PlungeInverseCell;
+	const int2 c = int2(floor(texel));
+	if (any(c < 0) || any(c + 1 >= int(PlungeSize)))
+		return 0.0;
+	const float2 t = texel - float2(c);
+	return lerp(lerp(LipMap.Load(int3(c, 0)), LipMap.Load(int3(c + int2(1, 0), 0)), t.x), lerp(LipMap.Load(int3(c + int2(0, 1), 0)), LipMap.Load(int3(c + int2(1, 1), 0)), t.x), t.y);
+}
 
 static const float FLOWMAP_TEXELS_PER_CELL = 64.0;
 static const float WORLD_UNITS_PER_CELL = 4096.0;

@@ -399,6 +399,9 @@ private:
 	winrt::com_ptr<ID3D11Texture2D> fallPlungeTexture;  ///< FallSites::BuildPlungeMap, for the water's foam (D44)
 	winrt::com_ptr<ID3D11ShaderResourceView> fallPlungeSRV;
 	std::vector<float> fallPlungeScratch;
+	winrt::com_ptr<ID3D11Texture2D> fallLipTexture;  ///< D170: FallSites::BuildLipMap, the river drawn on toward the falls' lips
+	winrt::com_ptr<ID3D11ShaderResourceView> fallLipSRV;
+	std::vector<float> fallLipScratch;
 	/** @brief Rebuilds the ground, pool and plunge maps when the sites change or the player moves far; uploads the constants. */
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
 	void ReleaseFallGround();

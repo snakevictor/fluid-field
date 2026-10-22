@@ -1150,6 +1150,12 @@ DiffuseOutput GetWaterDiffuseColor(PS_INPUT input, float3 normal, float3 viewDir
 	if (DepthTex.Load(float3(refractionScreenPosition, 0)).x >= HorizonFix::EmptyDepthThreshold)
 		distanceMul = 1.0.xxxx;
 #					endif
+#					if defined(FLUID_FIELD_FALLS)
+	// D180: the water a falling sheet holds is its own thickness along the view, not the path to what lies behind it (mostly
+	// air, metres of it): over FogParam.z, the vanilla fog and opacity below read it as deep water, fully opaque and dark
+	// (the user; measured: refractionMul 1 over every sheet)
+	distanceMul = min(distanceMul, saturate(FallShading::SHEET_DEPTH / max(abs(dot(viewDirection, FallUp)), 0.25) / FogParam.z));
+#					endif
 #				endif
 
 	float2 refractionUV = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(refractionUvRaw);
@@ -1263,7 +1269,26 @@ PS_OUTPUT main(PS_INPUT input)
 	input.TexCoord2.xy += fallFlow.uvA * FallShading::FlowScale(input.NormalsScale.z);
 
 	// The falls' white water and fades (FallShading), from the scene's depth just behind the sheet
-	const float fallAerated = FallShading::Aerated(fallFlow.runTime);
+	// D179: the bake's aeration (impacts, pile-ups, the height fallen: drops far more than runs), as bubbles too
+	// The bake's aeration is near on or off in broad patches: eased, so its edges do not draw lines
+	// And where the water is stirred (the bake's disturbance): behind a boulder, its two streams rejoining, and where it piles
+	// against rock, the water churns full of air (the user, SS 1302-1304)
+	const float fallAerated = max(max(smoothstep(0.0, 1.0, fallFlow.fields.w) * 0.7, FallShading::Aerated(fallFlow.runTime) * 0.3),
+		smoothstep(FallShading::STIRRED_FROM, FallShading::STIRRED_FULL, fallFlow.fields.z) * FallShading::STIRRED_AERATION);
+	// The view across the sheet, in its flow coordinates per world unit of depth (v down the flow, u across it): the bubble
+	// layers' parallax, held back where the view grazes the sheet
+	float2 fallViewShift;
+	{
+		const float3 toEye = -viewDirection;
+		const float3 along = FallShading::SafeNormalize(input.FallTangent - FallUp * dot(input.FallTangent, FallUp), float3(0.0, 0.0, -1.0));
+		const float3 across = cross(along, FallUp);
+		const float facing = max(dot(toEye, FallUp), 0.35);
+		fallViewShift = -float2(dot(toEye, across), dot(toEye, along)) / facing / FallShading::FALLS_UV_WORLD;
+	}
+	// Screen pixels a world unit spans at this pixel (the bubbles' size on screen)
+	const float fallPixelsPerUnit = 1.0 / max(length(fwidth(input.WPosition.xyz)) * 0.7071, 1e-4);
+	const float4 fallBubbleSample = FallShading::Bubbles(fallFlow.uvA, fallViewShift, fallAerated, fallPixelsPerUnit);
+	const float fallBubbles = fallBubbleSample.x;
 	const float fallLip = FallShading::Lip(input.FallData.y, fallFlow.runTime);
 	const float fallBehind = max(SharedData::GetScreenDepth(DepthTex.Load(int3(input.HPosition.xy, 0)).x) - fallDepth, 0.0);
 	// D174: foam wherever the sheet touches something (the next sheet behind, rock and ground, the water below), per pixel,
@@ -1273,7 +1298,9 @@ PS_OUTPUT main(PS_INPUT input)
 	const float fallSheetGap = FallShading::SheetGap(FallBehindDepth, int2(input.HPosition.xy), fallDepth, input.FallData.z);
 	const float fallAboveWater = FallShading::AboveWater(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, input.FallFade.z, input.FallFade.y, input.FallData.y);
 	const float fallContact = FallShading::ContactStrength(fallSheetGap, fallBehind, fallAboveWater, fallLip, input.FallClip);
-	const float fallFoam = fallContact > 0.02 ? FallShading::FoamCover(fallContact, FallShading::FlowFoamPattern(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias)) : 0.0;
+	// D179: aerated water foams as well as bubbling (the user), in the same pattern, not on the lip (the crest stays glassy)
+	const float fallFoamDrive = max(fallContact, fallAerated * FallShading::AERATION_FOAM * fallLip);
+	const float fallFoam = fallFoamDrive > 0.02 ? FallShading::FoamCover(fallFoamDrive, FallShading::FlowFoamPattern(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias)) : 0.0;
 	// D176: under the water below (its plane is flat: the height over it interpolates exactly), only the foam shows, fading as it
 	// does: the water faded more slowly than the foam's cover, a strip of dark water between the falls' foam and the pool's down to
 	// the per-vertex cut, in the triangles' steps (SS 1235, 1236)
@@ -1368,6 +1395,8 @@ PS_OUTPUT main(PS_INPUT input)
 			normal = FallShading::SafeNormalize(float3(normal.xy + own.xy, normal.z * max(own.z, 0.1)), normal);
 		}
 		normal = FallShading::SheetNormal(FallUp, input.FallTangent, normal);  // D174: not PerturbNormal's per-triangle frame
+		// D179: the bake's swell, the sheet bulging and piling up between its vertices
+		normal = FallShading::RaiseNormal(normal, input.WPosition.xyz, fallFlow.fields.y * FallShading::SWELL_HEIGHT);
 	}
 #			endif
 
@@ -1444,6 +1473,9 @@ PS_OUTPUT main(PS_INPUT input)
 	// D159: the falls' aeration by their run time (D127), not the river simulation's at their world xy
 	diffuseOutput.refractionDiffuseColor = lerp(diffuseOutput.refractionDiffuseColor, fluidFoamLight, fallAerated * FallShading::AERATION_LIFT);
 	diffuseOutput.refractionColor = lerp(diffuseOutput.refractionColor, fluidFoamLight, fallAerated * FallShading::AERATION_LIFT * 0.5);
+	// D179: aerated water is milky (the bubbles scatter the light inside it), less see-through, and its bubbles glint
+	diffuseOutput.refractionDiffuseColor = lerp(diffuseOutput.refractionDiffuseColor, fluidFoamLight, saturate(fallAerated * FallShading::BUBBLE_MILK + fallBubbles * 0.2));
+	diffuseOutput.refractionMul = lerp(diffuseOutput.refractionMul, 1.0, saturate(fallAerated * FallShading::BUBBLE_OPACITY));
 #					else
 	{
 		// Bubbles in fast, foamy water make the water body lighter and milkier
@@ -1457,7 +1489,9 @@ PS_OUTPUT main(PS_INPUT input)
 	// depth below the surface over FogParam.z)
 #						if defined(FLUID_FIELD_FALLS)
 	// D159: the falls' water is the view ray's path behind the sheet (D148), not a depth under a level surface
-	diffuseOutput.refractionMul = FluidField::TintedRefractionWeight(diffuseOutput.refractionMul, distanceMul.x * FogParam.z);
+	// D180: the sheet's own thickness along the view (as the river's shallows), not the view ray's path to what lies behind
+	// it (mostly air, metres of it: tinted as deep water, the falls went near black and hid all behind, the user)
+	diffuseOutput.refractionMul = FluidField::TintedRefractionWeight(diffuseOutput.refractionMul, min(distanceMul.x * FogParam.z, FallShading::SHEET_DEPTH / max(abs(dot(viewDirection, FallUp)), 0.25)));
 #						else
 	diffuseOutput.refractionMul = FluidField::TintedRefractionWeight(diffuseOutput.refractionMul, distanceMul.w * FogParam.z);
 #						endif
@@ -1704,6 +1738,21 @@ PS_OUTPUT main(PS_INPUT input)
 	refractionColor = lerp(refractionColor, fogColor, Color::FogAlpha(fogFactor));
 
 	float3 finalColor = lerp(refractionColor, finalColorPreFog, waterOpacity);
+#						if defined(FLUID_FIELD_FALLS)
+	// D180: the bubbles over the result (each layer dimmed by its depth already): blended into what is seen through the water,
+	// the water's own colour hid them
+	{
+		// D180: the bubbles as air spheres in the water, facing the camera: silvery rims, the sun's highlight, what is behind
+		// lensed through them
+		const float3 toEye = -viewDirection;
+		const float3 right = FallShading::SafeNormalize(cross(float3(0.0, 0.0, 1.0), toEye), float3(1.0, 0.0, 0.0));
+		const float3 up = cross(toEye, right);
+		const float3 bubble = FallShading::BubbleColor(fallBubbleSample.yz, right, up, toEye, SharedData::DirLightDirection.xyz,
+			SharedData::DirLightColor.xyz * surfaceShadow, fluidFoamLight, refractionColor);
+		finalColor = lerp(finalColor, bubble, saturate(fallBubbles * FallShading::BUBBLE_GLINT));
+	}
+
+#						endif
 #						if defined(WETNESS_EFFECTS) && defined(DEBUG_WETNESS_EFFECTS)
 	// DEBUG MODE: Override water color with debug visualization
 	float3 debugColor = WetnessEffects::GetDebugWetnessColorStandard(waterData.rippleInfo, 2.0, 3.0);

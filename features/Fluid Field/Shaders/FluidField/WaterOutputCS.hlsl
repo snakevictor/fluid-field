@@ -152,5 +152,6 @@ float Swirl(int2 logical)
 	}
 	// The far level behind this one takes over its foam in the water shader's cross-fade, so the
 	// foam is not faded here as well (that made a dip, a visible seam)
-	FlowOut[id] = float4(flow, SeedRes != 0 ? foam : foam * edgeFade, 0.0);
+	// D170: w how strongly a fall's lip draws the water on here (the water shader lets its detail run faster and stretch)
+	FlowOut[id] = float4(flow, SeedRes != 0 ? foam : foam * edgeFade, wet ? saturate(LipAt(CellWorldPos(logical)).z) : 0.0);
 }
