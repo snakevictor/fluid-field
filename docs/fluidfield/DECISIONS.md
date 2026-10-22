@@ -4098,3 +4098,34 @@ Entry format:
     what lies behind it: mostly air, metres of it, read as deep water. The
     falls are see-through again, the rock behind showing as in the shallows.
 -   References: D148, D159
+
+## D181: The falls as the river's water; a finer bake; spray and mist from the churned water
+
+-   Date: 2026-10-21
+-   Decision:
+    -   **The river's milkiness and depth** (the user: "missing that depth and
+        milkiness"): the falls lifted toward the foam colour by
+        FluidField::ApplyAeration's measure (their aeration and speed, up to
+        MAX_AERATION), the sheet's water SHEET_DEPTH 96 along the view (24 read
+        as glass beside the river) and its tint at least SHEET_TINT_DEPTH 160.
+        Tried 40 / 64: too clear (the user).
+    -   **Foam** slightly see-through everywhere (FOAM_OPACITY 0.8: the river's,
+        the pools', the falls'), broken into clumps by a soft coarse mask
+        (FoamBreakup, the same pattern four mips down, at least 0.75).
+    -   **A finer bake**: BAKE_TEXEL 6 (10), BAKE_MOST_SIDE 320 (192), its foam
+        and aeration blurred wider; cache version 9. Bubbles halved again.
+    -   **Spray and mist from the churned water** (the user): emitters where
+        the bake's aeration is over AERATED_SPRAY 0.55, out of the sheet's open
+        side by the bake's clearances (the travel's side pointed into the cliff
+        on overhangs), thrown mostly up; none past SPRAY_FAR 3000 from the
+        camera (faded from 2000). Mist puffs softer, lit with forward scatter.
+-   Tried and reverted: the foam pattern stretched by the flow coordinates'
+    stretch, from screen derivatives (constant per triangle: it jumped at every
+    edge) and from the bake (scaling the run coordinate, large far down a sheet,
+    by a factor varying across it sheared it into swirls, SS 1315). The bake's
+    stretch stays in its third rows for a scale-based use.
+-   Left (plans/next-visuals.md): far too many spray emitters (19,554 striking:
+    a higher aeration threshold, wider spacing, a cap; spray 24 and mist 3 per
+    emitter meanwhile); mist puffs cut by the water and the falls' depth (the
+    hardware test against them: test against a copy with them instead, softly).
+-   References: D31, D35, D104, D174, D179, D180

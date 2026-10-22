@@ -152,7 +152,9 @@ namespace FallShading
 	static const float BUBBLE_RIM = 0.85;
 	static const float BUBBLE_HIGHLIGHT = 2.0;
 	/** D180: world units of water a falling sheet holds (straight through it): its depth tint, as shallows. */
-	static const float SHEET_DEPTH = 24.0;
+	static const float SHEET_DEPTH = 96.0;  // D181: 24 read as glass beside the river (its view paths run 100-300 units through the water)
+	/** D181: the least depth of water a sheet is tinted as (the river's shallows' look: its tint ramps over 256). */
+	static const float SHEET_TINT_DEPTH = 160.0;
 	/** D179: how much aeration makes the water opaque (the bubbles scatter what lies behind). */
 	static const float BUBBLE_OPACITY = 0.0;
 	/** D179: how much aeration foams (the river's foam pattern, as the contact's), as well as bubbling (the user). */
@@ -224,7 +226,11 @@ namespace FallShading
 	/** D179: how many times denser the bubbles are in aerated water than in the plain flow. */
 	static const float BUBBLE_AERATED_GAIN = 4.0;
 	/** D180: the share of the lattice's cells that hold a bubble, overall (a third of D179's: the user). */
-	static const float BUBBLE_AMOUNT = 1.0 / 3.0;
+	static const float BUBBLE_AMOUNT = 1.0 / 6.0;  // D181: halved again (the user)
+	/** D181: the most the falls' foam covers: slightly see-through, as the river's (WaterNormal.hlsli FOAM_OPACITY). */
+	static const float FOAM_OPACITY = 0.8;
+	/** D181: the least the coarse break-up mask leaves of the foam's strength (its thinned patches). */
+	static const float FOAM_BREAKUP_LEAST = 0.75;
 
 	/**
 	 * D179: the bubbles carried in aerated water (the user: aeration seen as bubbling, "3d, parallaxed"), on the falls' flow
@@ -389,9 +395,11 @@ namespace FallShading
 	 * moves, stretches and bends with the baked water. Not dragged by FlowSample::velocity, the direction v runs from the
 	 * screen derivatives, constant per triangle (a lattice, SS 1191-1193)
 	 */
-	float FlowFoamPattern(Texture2D<float4> a_tex, SamplerState a_sampler, float2 a_flowUv, float a_mipBias)
+	float FlowFoamPattern(Texture2D<float4> a_tex, SamplerState a_sampler, float2 a_flowUv, float a_mipBias, float a_stretch = 1.0)
 	{
-		const float2 uv = a_flowUv * FlowScale(FOAM_TILE);
+		// D181: along the flow by the coordinates' stretch (a_stretch: world units a unit of v spans over a unit of u), so the
+		// bubbles keep round where fast water draws the coordinates out (they were drawn into streaks)
+		const float2 uv = float2(a_flowUv.x, a_flowUv.y * a_stretch) * FlowScale(FOAM_TILE);
 		const float p0 = length(a_tex.SampleBias(a_sampler, uv, a_mipBias).xy * 2.0 - 1.0);
 		const float p1 = length(a_tex.SampleBias(a_sampler, uv * 0.61 + 0.37, a_mipBias).xy * 2.0 - 1.0);
 		return saturate((p0 + p1) * 0.5 * 1.4);
@@ -415,11 +423,23 @@ namespace FallShading
 		return a_vertexAbove;
 	}
 
+	/**
+	 * D181: the foam broken into clumps: the same pattern at a quarter of its frequency (a slow, coarse mask), thinning it in
+	 * patches so dense foam does not read as an even sheet. 0 to 1, a multiplier on the foam's strength.
+	 */
+	float FoamBreakup(Texture2D<float4> a_tex, SamplerState a_sampler, float2 a_flowUv, float a_mipBias, float a_stretch)
+	{
+		const float2 uv = float2(a_flowUv.x, a_flowUv.y * a_stretch) * FlowScale(FOAM_TILE * 4.0) + 0.13;
+		// Read four mips down (a soft, broad mask: the sharp one flickered in shards)
+		const float n = length(a_tex.SampleBias(a_sampler, uv, a_mipBias + 4.0).xy * 2.0 - 1.0) * 1.4;
+		return lerp(FOAM_BREAKUP_LEAST, 1.0, smoothstep(0.1, 0.9, n));
+	}
+
 	/** D174: how much of the pixel the foam covers, as the river's (dense foam solid, thin foam only in the pattern's bubbles). */
 	float FoamCover(float a_contact, float a_pattern)
 	{
 		const float threshold = a_pattern * 0.5;
-		return a_contact > 0.02 ? smoothstep(threshold, threshold + 0.25, a_contact) * 0.95 : 0.0;
+		return a_contact > 0.02 ? smoothstep(threshold, threshold + 0.25, a_contact) * FOAM_OPACITY : 0.0;
 	}
 
 	/**

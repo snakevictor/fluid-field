@@ -181,7 +181,7 @@ namespace FluidFieldSim
 			uint32_t height = 0;
 			float uvMin[2]{};
 			float uvSize[2]{};
-			std::vector<float> texels;  ///< RGBA32F, width x (height x 2): D179, the flow, then the water's fields (speed, swell, disturbance, aeration)
+			std::vector<float> texels;  ///< RGBA32F, width x (height x 3): D179, the flow, then the water's fields (speed, swell, disturbance, aeration); D181, the coordinates' stretch
 		};
 		const std::unordered_map<const RE::BSGeometry*, FlowBake>& GetFlowBakes() const { return flowBakes; }
 		/** @brief Changes whenever GetFlowBakes changes. */
@@ -559,8 +559,8 @@ namespace FluidFieldSim
 		static constexpr float CLIP_MARGIN = 6.0f;            ///< A vertex this far inside rock still shows (water lying on it)
 		static constexpr float CLIP_RANGE = 32.0f;            ///< The most a vertex counts as in or out, so the cut stays near the rock's face
 		static constexpr double CLIP_BUDGET_MS = 3.0;
-		static constexpr float BAKE_TEXEL = 10.0f;        ///< D59: world units per texel of a mesh's flow bake
-		static constexpr uint32_t BAKE_MOST_SIDE = 192;   ///< ...and the most texels along a side
+		static constexpr float BAKE_TEXEL = 6.0f;         ///< D59: world units per texel of a mesh's flow bake (D181: 10 before, its steps showed)
+		static constexpr uint32_t BAKE_MOST_SIDE = 320;   ///< ...and the most texels along a side (D181: 192)
 		static constexpr float BAKE_ROCK_MARGIN = 24.0f;  ///< A texel this far inside rock is still water (vanilla's sheets dip into the rock they lie on)
 		static constexpr double BAKE_BUDGET_MS = 3.0;
 		static constexpr std::size_t BAKE_LEAST_ROCK = 6;  ///< D60: rock islands of this many texels or fewer are specks, taken as water
@@ -673,7 +673,7 @@ namespace FluidFieldSim
 			std::vector<float> disturbance;            ///< D85: how stirred the water is there (the wobble's size), softened
 			std::vector<float> clearFront, clearBack;  ///< D104: as BakeJob's: the open water or air on each side of the sheet (its depth behind, once its outer side is known)
 		};
-		static constexpr uint32_t BAKE_CACHE_VERSION = 8;  ///< D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances; D126: 7, the domain was the culled shell; D132: 8, the whole mesh again)
+		static constexpr uint32_t BAKE_CACHE_VERSION = 9;  ///< D181: 9, finer and smoother; D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances; D126: 7, the domain was the culled shell; D132: 8, the whole mesh again)
 		static constexpr float CLEAR_REACH = 600.0f;       ///< D104: world units the clearance rays look for rock
 		static constexpr float CLEAR_START = 40.0f;        ///< D105: the clearance rays start this far off the other side of the sheet
 		/** @brief D82: where a bake job's finished bake is kept on disk: by its reference, model part, placement, the rock and ground round it, and the version. */
@@ -752,6 +752,8 @@ namespace FluidFieldSim
 		static constexpr int32_t POOL_LIP_REACH = 3;        ///< D53: cells round a pool's cell its falls are looked at: a fall dropping away below the level...
 		static constexpr float POOL_LIP_DROP = 48.0f;       ///< ...this far, with none coming in from above it, is the pool's lip or a curtain under it: not the pool's water
 		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;  ///< World units round each point where the falls meet the water below that it foams (D44, D47)
+		static constexpr float AERATED_SPRAY = 0.55f;       ///< D181: the bake's aeration from which the water throws spray and mist
+		static constexpr float AERATED_SPACING = 40.0f;     ///< D181: world units between those emitters
 		static constexpr float PLUNGE_PUSH_OFFSET = 32.0f;  ///< D56: world units downstream of the falls' line the plunge pushes the water
 		static constexpr float PLUNGE_MARK = 0.001f;        ///< D56: radial speed marking a fall's emitter (its own foam rate) without spreading the water
 		static constexpr float PLUNGE_PULL = 0.2f;          ///< Fraction of the falling water's speed the water below is pulled along at

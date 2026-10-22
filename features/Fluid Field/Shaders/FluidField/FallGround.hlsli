@@ -251,6 +251,7 @@ namespace FallGround
 		float wake;       // D60: the wake of a rock above, fading down the streaks
 		float runTime;    // D59: seconds the water has run since it came onto this mesh (0 without a bake)
 		float4 fields;    // D179: BakeFieldsAt: speed over vanilla's, swell, disturbance, aeration
+		float stretch;    // D181: BakeStretchAt
 	};
 
 	/**
@@ -264,7 +265,7 @@ namespace FallGround
 			return 0.0;
 		uint width, height;
 		FlowBake.GetDimensions(width, height);
-		height /= 2;  // D179: the flow in the first half of the rows, the water's fields in the second
+		height /= 3;  // D179, D181: the flow in the first third of the rows, the water's fields in the second, the stretch in the third
 		const float2 texel = (a_uv - BakeRect.xy) * BakeRect.zw * float2(width, height) - 0.5;
 		const float2 cell = floor(texel);
 		const float2 t = texel - cell;
@@ -287,6 +288,9 @@ namespace FallGround
 	/** D179: the water's fields at a texture coordinate (FallSites' bake, its second half): x its speed over vanilla's, y how high it piles up (swell), z how stirred, w how aerated. */
 	float4 BakeFieldsAt(float2 a_uv) { return BakeOn ? BakeRowsAt(a_uv, 1) : float4(1.0, 0.0, 0.0, 0.0); }
 
+	/** D181: the flow coordinates' stretch: world units a unit of along spans over one of across (1 without a bake). */
+	float BakeStretchAt(float2 a_uv) { return BakeOn ? max(BakeRowsAt(a_uv, 2).x, 0.25) : 1.0; }
+
 	/**
 	 * D67: a pixel of falling water's texture coordinates: the bake's (its streak across, its run time along)
 	 * less the falls' one scroll, integrated on the CPU. The streaks bend round the rock and close behind it,
@@ -303,6 +307,7 @@ namespace FallGround
 		result.wake = baked.z;
 		result.runTime = BakeOn ? max(baked.y, 0.0) / max(Scroll.y, 1e-3) : 0.0;
 		result.fields = BakeFieldsAt(uvStill);
+		result.stretch = BakeStretchAt(uvStill);
 		const float2 uvBase = (BakeOn ? baked.xy : uvStill) - float2(0.0, Scroll.x);
 		result.uvA = uvBase;
 		result.velocity = 0.0;

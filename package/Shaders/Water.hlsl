@@ -1299,8 +1299,12 @@ PS_OUTPUT main(PS_INPUT input)
 	const float fallAboveWater = FallShading::AboveWater(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, input.FallFade.z, input.FallFade.y, input.FallData.y);
 	const float fallContact = FallShading::ContactStrength(fallSheetGap, fallBehind, fallAboveWater, fallLip, input.FallClip);
 	// D179: aerated water foams as well as bubbling (the user), in the same pattern, not on the lip (the crest stays glassy)
-	const float fallFoamDrive = max(fallContact, fallAerated * FallShading::AERATION_FOAM * fallLip);
-	const float fallFoam = fallFoamDrive > 0.02 ? FallShading::FoamCover(fallFoamDrive, FallShading::FlowFoamPattern(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias)) : 0.0;
+	// D181: no stretch on the pattern: the run coordinate is large far down a sheet, and scaled by a stretch varying across it, it
+	// sheared into hair-like swirls (SS 1315). The bake's stretch stays for a later, derivative-based use
+	const float fallFoamStretch = 1.0;
+	const float fallFoamDrive = max(fallContact, fallAerated * FallShading::AERATION_FOAM * fallLip) *
+	                            FallShading::FoamBreakup(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, fallFoamStretch);
+	const float fallFoam = fallFoamDrive > 0.02 ? FallShading::FoamCover(fallFoamDrive, FallShading::FlowFoamPattern(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, fallFoamStretch)) : 0.0;
 	// D176: under the water below (its plane is flat: the height over it interpolates exactly), only the foam shows, fading as it
 	// does: the water faded more slowly than the foam's cover, a strip of dark water between the falls' foam and the pool's down to
 	// the per-vertex cut, in the triangles' steps (SS 1235, 1236)
@@ -1471,8 +1475,13 @@ PS_OUTPUT main(PS_INPUT input)
 	const float3 fluidFoamLight = FluidField::FoamColor(dirColor + ambientColor, ShadowSampling::GetDirectionalLighting() * surfaceShadow + fluidAmbientLight);
 #					if defined(FLUID_FIELD_FALLS)
 	// D159: the falls' aeration by their run time (D127), not the river simulation's at their world xy
-	diffuseOutput.refractionDiffuseColor = lerp(diffuseOutput.refractionDiffuseColor, fluidFoamLight, fallAerated * FallShading::AERATION_LIFT);
-	diffuseOutput.refractionColor = lerp(diffuseOutput.refractionColor, fluidFoamLight, fallAerated * FallShading::AERATION_LIFT * 0.5);
+	{
+		// D181: milky as the river's shallows (FluidField::ApplyAeration's measure: foam and speed, up to MAX_AERATION), from the
+		// falls' own aeration and speed (the bake's, over vanilla's ~300 units a second)
+		const float milk = saturate(fallAerated * 0.6 + fallFlow.fields.x * 300.0 / 600.0) * FluidField::MAX_AERATION;
+		diffuseOutput.refractionDiffuseColor = lerp(diffuseOutput.refractionDiffuseColor, fluidFoamLight, milk);
+		diffuseOutput.refractionColor = lerp(diffuseOutput.refractionColor, fluidFoamLight, milk * 0.5);
+	}
 	// D179: aerated water is milky (the bubbles scatter the light inside it), less see-through, and its bubbles glint
 	diffuseOutput.refractionDiffuseColor = lerp(diffuseOutput.refractionDiffuseColor, fluidFoamLight, saturate(fallAerated * FallShading::BUBBLE_MILK + fallBubbles * 0.2));
 	diffuseOutput.refractionMul = lerp(diffuseOutput.refractionMul, 1.0, saturate(fallAerated * FallShading::BUBBLE_OPACITY));
@@ -1491,7 +1500,8 @@ PS_OUTPUT main(PS_INPUT input)
 	// D159: the falls' water is the view ray's path behind the sheet (D148), not a depth under a level surface
 	// D180: the sheet's own thickness along the view (as the river's shallows), not the view ray's path to what lies behind
 	// it (mostly air, metres of it: tinted as deep water, the falls went near black and hid all behind, the user)
-	diffuseOutput.refractionMul = FluidField::TintedRefractionWeight(diffuseOutput.refractionMul, min(distanceMul.x * FogParam.z, FallShading::SHEET_DEPTH / max(abs(dot(viewDirection, FallUp)), 0.25)));
+	// D181: and a base of the water's own colour, as the river's shallows show (a sheet's 24 units would barely start the tint's ramp)
+	diffuseOutput.refractionMul = FluidField::TintedRefractionWeight(diffuseOutput.refractionMul, max(min(distanceMul.x * FogParam.z, FallShading::SHEET_DEPTH / max(abs(dot(viewDirection, FallUp)), 0.25)), FallShading::SHEET_TINT_DEPTH));
 #						else
 	diffuseOutput.refractionMul = FluidField::TintedRefractionWeight(diffuseOutput.refractionMul, distanceMul.w * FogParam.z);
 #						endif

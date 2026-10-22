@@ -46,8 +46,13 @@ struct VSOutput
 	float Mist: TEXCOORD2;  // 1 for mist, 0 for spray
 	float ViewDepth: TEXCOORD3;
 	float Seed: TEXCOORD4;
-	float Above: TEXCOORD5;  // World units above the water the particle came out of (plunges), fading it there
+	float Above: TEXCOORD5;         // World units above the water the particle came out of (plunges), fading it there
+	float3 WorldOffset: TEXCOORD6;  // D181: its centre, camera-relative
 };
+
+/** D181: world units from the camera over which the falls' spray and mist fade out, and past which none is drawn (about 30 and 43 m). */
+static const float SPRAY_NEAR_FADE = 2000.0;
+static const float SPRAY_FAR = 3000.0;
 
 VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 {
@@ -107,13 +112,22 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 			v0 = flowVelocity * (0.2 + 0.15 * r1) + spread * 25.0 + up * 15.0 * r2;  // D54: shed off the drop, falling close by the sheet, not flung out with it
 		else if (kind == 1)
 			v0 = (up * (0.4 + 0.8 * r2) + spread * (0.3 + 0.5 * r1)) * SpraySpeed * (0.6 + 0.6 * fast) + flat * emitter.Speed * 0.15;  // Thrown up and out
-		else
-			v0 = flowVelocity * 0.15 + (up * 0.8 + spread * 0.4) * min(max(emitter.Speed, 150.0), 400.0) * (0.12 + 0.25 * r2) * (0.6 + 0.4 * fast);  // D54: less carried on  // Kicked up where it strikes, staying near the water
+		else {
+			// D181: thrown upward, out of the sheet's open side (the user: the spray must shoot up; along the sheet's normal alone,
+			// a steep curtain's went sideways)
+			const float3 lift = normalize(up * 0.6 + float3(0.0, 0.0, 1.0));
+			v0 = flowVelocity * 0.1 + (lift * 1.0 + spread * 0.35) * min(max(emitter.Speed, 150.0), 400.0) * (0.2 + 0.3 * r2) * (0.6 + 0.4 * fast);
+		}
 		position += v0 * age + float3(0, 0, -0.5 * Gravity * age * age);
 		motion = v0 + float3(0, 0, -Gravity * age);
 		size = SpraySize * (0.5 + 1.0 * r2);
 		alpha = SprayOpacity * (0.7 + 0.3 * fast) * smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.55, 1.0, t));
 	}
+
+	// D181: only near the camera (the user: every loaded fall's particles cost the GPU): faded out between SPRAY_NEAR_FADE and
+	// SPRAY_FAR world units from it, nothing drawn past
+	const float cameraDistance = length(emitter.Position - FrameBuffer::CameraPosAdjust.xyz);
+	alpha *= 1.0 - smoothstep(SPRAY_NEAR_FADE, SPRAY_FAR, cameraDistance);
 
 	VSOutput output;
 	if (!active || alpha <= 0.001) {
@@ -125,6 +139,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 
 	// A camera-facing quad; a droplet's is stretched along its motion as seen from the camera
 	const float3 relative = position - FrameBuffer::CameraPosAdjust.xyz;
+	output.WorldOffset = relative;
 	alpha *= smoothstep(NEAR_FADE, NEAR_FADE * 4.0, length(relative));  // D48
 	const float3 toCamera = -relative / max(length(relative), 1e-3);
 	float3 right = normalize(float3(FrameBuffer::CameraView[0].x, FrameBuffer::CameraView[0].y, FrameBuffer::CameraView[0].z));
@@ -159,14 +174,17 @@ float4 PSMain(VSOutput input) : SV_Target
 		// Mist (D36): a soft, uneven wisp, not a disc: a falloff broken up by a few drifting waves
 		const float2 c = input.Corner;
 		const float wisp = 0.5 + 0.25 * sin(c.x * 2.3 + input.Seed * 19.0) * sin(c.y * 2.9 + input.Seed * 7.0) + 0.25 * sin((c.x + c.y) * 4.1 + input.Seed * 31.0);
-		shape = pow(saturate(1.0 - radius), 1.6) * saturate(wisp * 1.3);
+		// D181: a soft gaussian puff, not a card: its edge fades long before the quad's (the cards' outlines showed), thinner
+		shape = exp(-radius * radius * 4.5) * saturate(wisp * 1.2) * 0.75;
 	} else {
 		shape = (1.0 - smoothstep(0.35, 1.0, radius)) * (0.75 + 0.25 * sin(input.Seed * 40.0 + input.Corner.x * 5.0) * sin(input.Corner.y * 6.0));
 	}
 	// Soft where it meets anything in front of it, and fading into the water it rose from
 	const float sceneDepth = SharedData::GetScreenDepth(SceneDepth.Load(int3(input.Position.xy, 0)));
 	const float depth = SharedData::GetScreenDepth(input.Position.z);
-	const float soft = saturate((sceneDepth - depth) / (input.Mist > 0.5 ? 150.0 : 6.0)) * saturate(input.Above / (input.Mist > 0.5 ? 40.0 : 4.0));
+	// D181: mist fades far into what it meets and near the camera (a puff in your face is a flat card)
+	const float soft = saturate((sceneDepth - depth) / (input.Mist > 0.5 ? 300.0 : 6.0)) * saturate(input.Above / (input.Mist > 0.5 ? 80.0 : 4.0)) *
+	                   (input.Mist > 0.5 ? smoothstep(60.0, 260.0, depth) : 1.0);
 	const float alpha = saturate(input.Alpha * shape * soft);
 	if (alpha <= 0.002)
 		discard;
@@ -174,6 +192,13 @@ float4 PSMain(VSOutput input) : SV_Target
 	// White water, lit by the light's brightness, not its colour (the sky's blue made it glow blue)
 	// The sun weighs little: it lit the mist in shadow too, and glowed it orange at dusk
 	const float light = Color::RGBToLuminance(ambient) + Color::RGBToLuminance(SharedData::DirLightColor.rgb) * 0.12;
-	const float3 color = float3(0.94, 0.95, 0.96) * light * Brightness * (input.Mist > 0.5 ? 1.6 : 2.2);
+	float3 color = float3(0.94, 0.95, 0.96) * light * Brightness * (input.Mist > 0.5 ? 1.6 : 2.2);
+	if (input.Mist > 0.5) {
+		// D181: mist scatters light forward: brighter looking toward the sun through it, a dimmer grey away from it, and denser at
+		// its heart than its rim (a lit volume, not a flat white card)
+		const float3 toCamera = normalize(-input.WorldOffset);
+		const float forward = pow(saturate(dot(-toCamera, SharedData::DirLightDirection.xyz)), 6.0);
+		color *= lerp(0.75, 1.0, exp(-radius * radius * 3.0)) * (1.0 + forward * 1.5);
+	}
 	return float4(color * alpha, alpha);  // Premultiplied
 }

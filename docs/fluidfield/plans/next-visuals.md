@@ -48,6 +48,14 @@ Replaces the flat white river foam on plunge pools.
     -   A boil ring where the water wells up.
 -   **The outflow:** foam streaks and ripples spreading from the impact, fed into the river simulation (plans/waterfalls.md's emitter, radial current and foam rate).
 
+## Open from D181 (next session)
+
+-   **Mist puffs need improvement** (the user): they read as cards cutting through the water and the falls. Turn off the hard depth test for mist and fade it softly against a depth copy that includes the water planes and the falls (C++, FallSurfaceRenderer); then their shape and lighting.
+-   **Spray emitter count**: 19,554 striking emitters after the finer bake and the aeration emitters. Raise AERATED_SPRAY, widen the spacing, cap the total; then spray and mist per emitter back up.
+-   **Foam stretch along fast water**: scale the pattern's local frequency from the bake's stretch (its third rows), never the run coordinate itself.
+-   **The swell normal** (SWELL_HEIGHT 0): its slope from the bake's field, not screen derivatives.
+-   **The crest blend** (step 2): the shared parameterization.
+
 ## Later (after 1-6, @Victor)
 
 ### 7. Denser falls near the player

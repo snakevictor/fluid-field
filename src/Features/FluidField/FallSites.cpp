@@ -3397,9 +3397,9 @@ namespace FluidFieldSim
 				foam[i] = std::max(foam[i], rim);
 			}
 		}
-		blur(foam, 1);
+		blur(foam, 2);  // D181: 1 before, low-res steps showed (the user)
 		std::vector<float> aeration = std::move(strands.aeration);
-		blur(aeration, 3);  // D179: 1 before, its patches' edges showed
+		blur(aeration, 4);  // D179: 1 before, its patches' edges showed; D181: 4
 		std::vector<float> turn = std::move(strands.turn);
 		blur(turn, 1);
 
@@ -4162,9 +4162,50 @@ namespace FluidFieldSim
 			bake.uvMin[1] = field.uvMin[1];
 			bake.uvSize[0] = field.uvSize[0];
 			bake.uvSize[1] = field.uvSize[1];
+			// D181: the flow coordinates' stretch per texel: the world length a unit of along spans over a unit of across, from
+			// the texels' own positions (both ways, centred), softened (the foam drawn round on it: from screen derivatives it
+			// was constant per triangle and jumped at every edge)
+			std::vector<float> stretch(count, 1.0f);
+			if (field.position.size() == count) {
+				const auto rate = [&](std::size_t a_i, std::size_t a_j, const std::vector<float>& a_coord) {
+					const float d = std::abs(a_coord[a_j] - a_coord[a_i]);
+					return d > 1e-6f ? (field.position[a_j] - field.position[a_i]).Length() / d : 0.0f;
+				};
+				for (int32_t y = 0; y < static_cast<int32_t>(h); y++) {
+					for (int32_t x = 0; x < w; x++) {
+						const std::size_t i = static_cast<std::size_t>(y) * w + x;
+						const std::size_t right = static_cast<std::size_t>(y) * w + std::min(x + 1, w - 1), left = static_cast<std::size_t>(y) * w + std::max(x - 1, 0);
+						const std::size_t down = static_cast<std::size_t>(std::min(y + 1, static_cast<int32_t>(h) - 1)) * w + x, up = static_cast<std::size_t>(std::max(y - 1, 0)) * w + x;
+						const float perAcross = rate(left, right, a_node.across), perAlong = rate(up, down, a_node.along);
+						if (perAcross > 1e-4f && perAlong > 1e-4f)
+							stretch[i] = std::clamp(perAlong / perAcross, 0.25f, 4.0f);
+					}
+				}
+				std::vector<float> scratch(count);
+				for (int pass = 0; pass < 4; pass++) {
+					for (int32_t y = 0; y < static_cast<int32_t>(h); y++) {
+						for (int32_t x = 0; x < w; x++) {
+							float total = 0.0f, weight = 0.0f;
+							for (int32_t dy = -1; dy <= 1; dy++) {
+								for (int32_t dx = -1; dx <= 1; dx++) {
+									const int32_t nx = x + dx, ny = y + dy;
+									if (nx < 0 || ny < 0 || nx >= w || ny >= static_cast<int32_t>(h))
+										continue;
+									const float k = (dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f);
+									total += stretch[static_cast<std::size_t>(ny) * w + nx] * k;
+									weight += k;
+								}
+							}
+							scratch[static_cast<std::size_t>(y) * w + x] = total / weight;
+						}
+					}
+					stretch.swap(scratch);
+				}
+			}
 			// D179: twice the rows: the flow as before, then what the march knows of the water for the shading (FallGround's
-			// BakeFieldsAt): its speed over vanilla's, how high it piles up (swell), how stirred it is, how aerated
-			bake.texels.resize(count * 8);
+			// BakeFieldsAt): its speed over vanilla's, how high it piles up (swell), how stirred it is, how aerated. D181: a
+			// third, the coordinates' stretch (x; yzw spare)
+			bake.texels.resize(count * 12);
 			const auto fieldAt = [&](const std::vector<float>& a_values, std::size_t a_i, float a_none) { return a_values.size() == count ? a_values[a_i] : a_none; };
 			for (std::size_t i = 0; i < count; i++) {
 				bake.texels[i * 4] = a_node.across[i];
@@ -4176,6 +4217,9 @@ namespace FluidFieldSim
 				extra[1] = 1.0f - std::exp(-std::max(fieldAt(field.swell, i, 0.0f), 0.0f));  // D179: compressed to 0-1 (its raw values saturated over broad areas)
 				extra[2] = fieldAt(field.disturbance, i, 0.0f);
 				extra[3] = std::clamp(fieldAt(field.wake, i, 0.0f), 0.0f, 1.0f);
+				float* third = &bake.texels[(count * 2 + i) * 4];
+				third[0] = stretch[i];
+				third[1] = third[2] = third[3] = 0.0f;
 			}
 			flowBakes[a_node.geometry] = std::move(bake);
 			a_node.done = true;
@@ -5233,6 +5277,14 @@ namespace FluidFieldSim
 			}
 			const auto outward = [&](std::size_t a_i) {
 				const RE::NiPoint3& n = field->normal[a_i];
+				// D181: toward the open side by the bake's clearances (the open water or air in front of the normal and behind it,
+				// D104), where they differ: the travel's side pointed into the cliff on overhangs, and spray left into the rock
+				// or the water (the user)
+				if (field->clearFront.size() == count && field->clearBack.size() == count) {
+					const float front = field->clearFront[a_i], back = field->clearBack[a_i];
+					if (std::abs(front - back) > 16.0f)
+						return front >= back ? n : -n;
+				}
 				return n.Dot(travel) < 0.0f ? -n : n;
 			};
 			std::vector<int32_t> crestRows;
@@ -5257,6 +5309,12 @@ namespace FluidFieldSim
 					// engine's planes stay foot-only, their bounds reach over the falls: D70)
 					float ownPool = -FLT_MAX;
 					const bool water = (foot && waterAt(here, level)) || (PoolLevelAt(here.x, here.y, ownPool) && ownPool < top - 32.0f && (level = ownPool, true));
+					// D181: where the water is churned full of air (the bake's aeration: steep drops, a boulder's wake), spray and
+					// mist (the user: driven from the aerated, foaming water), above the water below
+					if (field->wake.size() == count && field->wake[i] >= AERATED_SPRAY && !hiddenLead[i] && !(water && here.z < level + PLUNGE_BAND)) {
+						const float strength = 0.25f + 0.55f * std::clamp((field->wake[i] - AERATED_SPRAY) / (1.0f - AERATED_SPRAY), 0.0f, 1.0f);
+						offer(here, outward(i), flowAt(x, y), speedAt(here.z), strength, FallEmitterKind::Strike, AERATED_SPACING);
+					}
 					// Where the water strikes rock (the bake's foam), above the water below
 					if (field->foam[i] >= OBSTACLE_FOAM && !hiddenLead[i] && !(water && here.z < level - POOL_COVER)) {
 						float pool;

@@ -1554,7 +1554,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		for (const auto& [geometry, bake] : bakes) {
 			if (fallBakeSRVs.contains(geometry))
 				continue;
-			D3D11_TEXTURE2D_DESC bakeDesc{ .Width = bake.width, .Height = bake.texels.size() >= static_cast<std::size_t>(bake.width) * bake.height * 8 ? bake.height * 2 : bake.height, .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R32G32B32A32_FLOAT, .SampleDesc = { 1, 0 }, .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = 0 };
+			D3D11_TEXTURE2D_DESC bakeDesc{ .Width = bake.width, .Height = bake.height * static_cast<UINT>(bake.texels.size() / (static_cast<std::size_t>(bake.width) * bake.height * 4)), .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R32G32B32A32_FLOAT, .SampleDesc = { 1, 0 }, .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = 0 };
 			const D3D11_SUBRESOURCE_DATA bakeData{ bake.texels.data(), bake.width * 4 * sizeof(float), 0 };
 			winrt::com_ptr<ID3D11Texture2D> texture;
 			winrt::com_ptr<ID3D11ShaderResourceView> view;

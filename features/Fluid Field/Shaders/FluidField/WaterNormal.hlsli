@@ -342,6 +342,8 @@ namespace FluidField
 	}
 
 	/** World units one tile of the foam's bubbly breakup pattern covers. */
+	/** D181: the most the foam covers (the river's, the falls' and the pools'): slightly see-through (the user; 0.95 before). */
+	static const float FOAM_OPACITY = 0.8;
 	static const float FOAM_TILE = 160.0;
 	/** Seconds between restarts of each of the foam pattern's two phases: short, so it never stretches far. */
 	static const float FOAM_PERIOD = 0.6;
@@ -383,7 +385,7 @@ namespace FluidField
 		const float pattern = saturate(lerp(p0, p1, abs(phase0 * 2.0 - 1.0)) * 1.4);
 		// Dense foam covers solidly; thin foam only shows in the pattern's bubbles and streaks
 		const float threshold = pattern * 0.5;
-		return smoothstep(threshold, threshold + 0.25, foam) * 0.95;
+		return smoothstep(threshold, threshold + 0.25, foam) * FOAM_OPACITY;
 	}
 
 	/**
