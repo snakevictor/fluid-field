@@ -4212,3 +4212,32 @@ Entry format:
 -   Left: bake and bake-load times, nearest falls first (the user); the crest
     blend; the foam's relief; a volumetric or parallaxed mist (the user's idea).
 -   References: D70, D79, D126, D170, D183
+
+## D185: The falls' load measured, and made three times faster cold, seven times warm
+
+-   Date: 2026-10-23
+-   Measured (the user: time it instead of assuming): cold starts with every cache cleared (shader cache, bakes, dumps), the
+    falls save, three runs each, from the first site to a new "Falls settled" log line (every capture, copy, bake, culling,
+    link and plunge done, nothing new for SETTLE_SECONDS), with each stage's render-thread and worker time; one run under
+    WPR for the functions (an elevated prompt).
+    -   Before: 125.5 s (124.6, 126.2, 125.7). Only 20 s of it render-thread work: the bakes' rock tests (16 s of Havok rays at
+        3 ms a frame) paced the whole load, and stopped whenever a worker ran; culling ran 11 times (37 s on one thread), each
+        new site or bake asking again; CommonLib's NiPoint3 operators cost 17 s of calls (its library is out of the
+        optimiser's reach); a capture in a cell with no physics world never finished and held the load open.
+    -   After: 41.1 s cold (40.9, 41.3, 41.2), 12.0 s warm (82 s before). The rest of a cold start is the shader cache's
+        recompile (about 4 minutes, not the falls').
+-   Decision:
+    -   **The rays go on while workers run**: the captures' and the bakes' rock tests touch nothing the workers have; only
+        landing their results (RefreshGrounded, bakeFields) waits (CaptureStep's finish, LandBakes).
+    -   **Captures** nearest the camera first, a capture that cannot cast (no physics world) passed by, CAPTURE*BUDGET_MS 3
+        (1), and kept on disk (FluidFieldBakes/ground*\*.bin, by its layout and the statics' triangles round it).
+    -   **Culling** waits (at most CULL_DEFER_MOST) while captures, dense copies or rock tests that would ask again are coming
+        (11 passes to 2), and its inside cut, sides and meets run over every sheet's vertices on several threads; the meets
+        skip triangles whose box lies further than the best so far.
+    -   **Inline vector maths** (V3) in TriangleDistanceSquared and RayTriangle.
+    -   **The rock test on every other texel first**: the texels between take their tested neighbours' answer where those
+        agree (all rock, or all open with clearances within CLEAR_AGREE), tested only at the rock's edges (52% of the rays;
+        rock texels 39,103 against 38,955 all tested). BAKE_BUDGET_MS 5 (3); cache version 11.
+-   Left: the rock tests (9 s of rays at 5 ms a frame), the solves (14 s of CPU on workers), the seams (4-6 s), and a warm
+    load's dense copies, seams, culling and linking (2-3 s each).
+-   References: D82, D112, D113, D126, D172, D173

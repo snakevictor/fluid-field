@@ -55,6 +55,15 @@ namespace FluidFieldSim
 		complete = false;
 	}
 
+	bool FallCapture::Castable() const
+	{
+		auto* tes = RE::TES::GetSingleton();
+		const RE::NiPoint3 centre(originX + 0.5f * width * CELL, originY + 0.5f * height * CELL, bottom);
+		auto* cell = tes ? (tes->interiorCell ? tes->interiorCell : tes->GetCell(centre)) : nullptr;
+		auto* bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
+		return bhkWorld && bhkWorld->GetWorld1();
+	}
+
 	bool FallCapture::Cast(double a_budgetMs)
 	{
 		if (complete)
@@ -191,6 +200,27 @@ namespace FluidFieldSim
 				text += std::format(" {}={}", layer, layerHits[layer]);
 		}
 		return text;
+	}
+
+	bool FallCapture::Load(const std::string& a_path)
+	{
+		std::ifstream file(a_path, std::ios::binary);
+		if (!file)
+			return false;
+		uint32_t size[2]{};
+		float placement[3]{};
+		file.read(reinterpret_cast<char*>(size), sizeof(size));
+		file.read(reinterpret_cast<char*>(placement), sizeof(placement));
+		if (!file || size[0] != width || size[1] != height || placement[0] != originX || placement[1] != originY || placement[2] != CELL)
+			return false;
+		std::vector<float> read(static_cast<std::size_t>(width) * height);
+		file.read(reinterpret_cast<char*>(read.data()), static_cast<std::streamsize>(read.size() * sizeof(float)));
+		if (!file)
+			return false;
+		heights.swap(read);
+		next = heights.size();
+		complete = true;
+		return true;
 	}
 
 	bool FallCapture::Dump(const std::string& a_path) const

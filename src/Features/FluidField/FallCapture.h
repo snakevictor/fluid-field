@@ -27,6 +27,8 @@ namespace FluidFieldSim
 		void Begin(const float a_min[2], const float a_max[2], float a_top, float a_bottom);
 		/** @brief Casts rays until a_budgetMs is used; cleans up once all are cast. True when complete. */
 		bool Cast(double a_budgetMs);
+		/** @brief D185: whether its rays can be cast now (its cell's physics world is loaded). */
+		bool Castable() const;
 		bool IsComplete() const { return complete; }
 		float GetProgress() const { return heights.empty() ? 0.0f : static_cast<float>(next) / static_cast<float>(heights.size()); }
 
@@ -43,6 +45,11 @@ namespace FluidFieldSim
 		std::string DescribeRays() const;
 		/** @brief Diagnostics: writes the heights (after cleanup) to a_path: width, height (uint32), origin x, y, cell (float), then the heights row by row. */
 		bool Dump(const std::string& a_path) const;
+		/** @brief D185: reads heights Dump wrote, if they match this capture's layout (Begin's); complete then. */
+		bool Load(const std::string& a_path);
+
+		bool reported = false;  ///< D185: its completion handled (logged, the meshes grounded again, kept on disk)
+		std::string cachePath;  ///< D185: where it is kept on disk (empty: not kept)
 
 	private:
 		void CleanUp();

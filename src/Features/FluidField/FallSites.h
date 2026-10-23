@@ -274,14 +274,17 @@ namespace FluidFieldSim
 		static constexpr float NEAR_LEVEL_ABOVE = 64.0f;  ///< How far above its falling water's top a plane may lie and still pair
 		static constexpr float LEVEL_TOLERANCE = 16.0f;
 		static constexpr float RAPIDS_THRESHOLD = 64.0f;
-		static constexpr double CAPTURE_BUDGET_MS = 1.0;  ///< Ray casting per update
+		static constexpr double CAPTURE_BUDGET_MS = 3.0;     ///< Ray casting per update (D185: 3, was 1: site captures took 20 s)
+		static constexpr int64_t CAPTURE_CACHE_VERSION = 1;  ///< D185: bump whenever a capture would come out different
+		/** @brief D185: where a capture is kept on disk: its layout and the statics' triangles round it, hashed. */
+		std::string CaptureCachePath(const FallCapture& a_capture, uint64_t a_key) const;
 
 	private:
 		static constexpr uint32_t SCAN_INTERVAL = 60;
 
 		void Rebuild(const WaterSurfaces& a_water);
 		void Summarise();
-		void CaptureStep();
+		void CaptureStep(bool a_canFinish);
 		/** @brief Collects the geometry of the falling-water meshes at sites with captured ground. */
 		void RefreshGrounded();
 
@@ -461,8 +464,9 @@ namespace FluidFieldSim
 		{
 			std::vector<CullSheet> sheets;
 			int stage = 0;
-			std::size_t sheet = 0, vertex = 0;  ///< Where the current stage is
-			uint32_t inside = 0, tested = 0, inward = 0, covered = 0, sideTested = 0, submerged = 0, meeting = 0;
+			std::size_t sheet = 0, vertex = 0;                                                                   ///< Where the current stage is
+			std::atomic<uint32_t> inside = 0, tested = 0, inward = 0, covered = 0, sideTested = 0, meeting = 0;  ///< D185: atomic: its stages run on several threads
+			uint32_t submerged = 0;
 			uint32_t islands = 0, islandVertices = 0, islandTriangles = 0, holes = 0, holeVertices = 0;  ///< D138: CleanupSheet's
 			std::chrono::steady_clock::time_point started;
 			double busy = 0.0;                                                       ///< Milliseconds of work over its frames
@@ -488,8 +492,58 @@ namespace FluidFieldSim
 			uint32_t crestColumns = 0, lipColumns = 0, dropColumns = 0, submergedDrops = 0, footColumns = 0;  ///< D184: the emitters' stages, for the log
 		};
 		std::unique_ptr<PlungeResult> plungeResult;  ///< D172: the plunges' worker's
-		bool plungesDue = false;                     ///< D172: asked for (several asks, one build)
+		/** @brief D185: where a load's time goes: each Update step's render-thread time, each worker's, and when the falls settle. */
+		enum class LoadStage : uint8_t
+		{
+			Scan,
+			Capture,
+			Clip,
+			Bury,
+			Cull,
+			Depth,
+			Bake,
+			Pools,
+			Finish,
+			Count
+		};
+		enum class LoadWork : uint8_t
+		{
+			Pools,
+			Dense,
+			Seams,
+			Cull,
+			Link,
+			Plunges,
+			Solve,
+			Count
+		};
+		struct LoadTiming
+		{
+			double mainMs[static_cast<std::size_t>(LoadStage::Count)]{};
+			uint32_t mainFrames[static_cast<std::size_t>(LoadStage::Count)]{};
+			std::atomic<int64_t> workerUs[static_cast<std::size_t>(LoadWork::Count)]{};
+			std::atomic<uint32_t> workerRuns[static_cast<std::size_t>(LoadWork::Count)]{};
+			std::chrono::steady_clock::time_point firstActive, lastActive;
+			bool active = false;
+			uint32_t reports = 0;
+			void AddWorker(LoadWork a_work, std::chrono::steady_clock::time_point a_start)
+			{
+				const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - a_start).count();
+				workerUs[static_cast<std::size_t>(a_work)] += us;
+				workerRuns[static_cast<std::size_t>(a_work)]++;
+			}
+		};
+		LoadTiming loadTiming;
+		static constexpr double SETTLE_SECONDS = 10.0;  ///< D185: nothing to do for this long: the falls have settled
+		/** @brief D185: whether any of the falls' work is running or queued (captures, copies, culling, bakes, links, plunges). */
+		bool LoadIdle() const;
+		/** @brief D185: notes activity, and logs the settled line once the falls have been idle SETTLE_SECONDS after it. */
+		void TrackLoad();
+		bool plungesDue = false;  ///< D172: asked for (several asks, one build)
 		void ComputePlunges(PlungeResult& o_result) const;
+		/** @brief D185: BakeWork's halves: the finished solves into bakeFields (only while no worker runs), and the bakes' rays (any time). */
+		void LandBakes();
+		void BakeRays();
 		void ApplyPlunges(PlungeResult& a_result);
 		/** @brief D172: whether any worker has vertexClips, vertexCuts, the pools and the bakes. */
 		bool Busy() const { return cullWork.valid() || heavyWork.valid(); }
@@ -527,8 +581,12 @@ namespace FluidFieldSim
 		static constexpr float HOLE_MOST_FRACTION = 0.005f;        ///< D138: ...or this small a share of the sheet's kept vertices (D143: 0.5%, was 0.2%)
 		/** @brief D126: VertexClip d.w for one vertex: the distance from where it is drawn to the nearest shown surface of another sheet, up to MEET_REACH, else NO_WATER. */
 		void MeetDistance(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job);
-		static constexpr float MEET_REACH = 64.0f;  ///< D126: world units within which another sheet's surface counts as meeting this one
-		static constexpr float MEET_MOVE = 32.0f;   ///< D126: how far the drawn positions may lie from the binned rest ones (the seams' and the swell's moves)
+		static constexpr float MEET_REACH = 64.0f;          ///< D126: world units within which another sheet's surface counts as meeting this one
+		static constexpr std::size_t CULL_CHUNK = 256;      ///< D185: vertices a culling thread takes at a time
+		static constexpr double CULL_DEFER_MOST = 20.0;     ///< D185: seconds a culling pass may wait for the captures, copies and rock tests that would ask for another
+		std::chrono::steady_clock::time_point cullAskedAt;  ///< D185: when the waiting pass was first asked for
+		bool cullWaiting = false;
+		static constexpr float MEET_MOVE = 32.0f;  ///< D126: how far the drawn positions may lie from the binned rest ones (the seams' and the swell's moves)
 		/** @brief D103, D113: a.w's sides for one vertex: its normal faces in (+2), another shown sheet's outer face covers its inner side (+4). */
 		void SideFlags(const std::vector<CullSheet>& a_sheets, std::size_t a_sheet, uint32_t a_vertex, CullJob& a_job);
 		static constexpr float GAP_REACH = 40.0f;        ///< D69: an open edge this near another mesh's open edge, and not over it, closes the gap
@@ -563,10 +621,11 @@ namespace FluidFieldSim
 		static constexpr float CLIP_MARGIN = 6.0f;            ///< A vertex this far inside rock still shows (water lying on it)
 		static constexpr float CLIP_RANGE = 32.0f;            ///< The most a vertex counts as in or out, so the cut stays near the rock's face
 		static constexpr double CLIP_BUDGET_MS = 3.0;
-		static constexpr float BAKE_TEXEL = 8.0f;         ///< D59: world units per texel of a mesh's flow bake (D181: 6, 10 before, its steps showed; D183: 8, 6 cost too much)
-		static constexpr uint32_t BAKE_MOST_SIDE = 256;   ///< ...and the most texels along a side (D181: 320, 192 before; D183: 256)
-		static constexpr float BAKE_ROCK_MARGIN = 24.0f;  ///< A texel this far inside rock is still water (vanilla's sheets dip into the rock they lie on)
-		static constexpr double BAKE_BUDGET_MS = 3.0;
+		static constexpr float BAKE_TEXEL = 8.0f;          ///< D59: world units per texel of a mesh's flow bake (D181: 6, 10 before, its steps showed; D183: 8, 6 cost too much)
+		static constexpr uint32_t BAKE_MOST_SIDE = 256;    ///< ...and the most texels along a side (D181: 320, 192 before; D183: 256)
+		static constexpr float BAKE_ROCK_MARGIN = 24.0f;   ///< A texel this far inside rock is still water (vanilla's sheets dip into the rock they lie on)
+		static constexpr double BAKE_BUDGET_MS = 5.0;      ///< D185: 5, was 3 (its rock tests set the pace of a cold load)
+		static constexpr float CLEAR_AGREE = 16.0f;        ///< D185: tested neighbours' clearances this close agree: the texels between take their mean
 		static constexpr std::size_t BAKE_LEAST_ROCK = 6;  ///< D60: rock islands of this many texels or fewer are specks, taken as water
 		static constexpr float SIM_GRAVITY = 686.0f;       ///< D74: world units per second squared (Skyrim's)
 		static constexpr float SIM_INFLOW = 250.0f;        ///< D74: world units per second the water comes onto a mesh's top at
@@ -583,6 +642,7 @@ namespace FluidFieldSim
 			std::vector<float> clearFront, clearBack;  ///< D104: world units from each texel to the first rock along its normal (front) and against it (back), up to CLEAR_REACH
 			std::filesystem::path cache;               ///< D82: where its finished bake is kept (empty: not kept)
 			std::size_t next = 0;
+			int pass = 0;               ///< D185: 0 every other texel each way, 1 the rest
 			bool worldMissing = false;  ///< Diagnostics: the wait for its cell's collision world logged
 			// D68: the render meshes of the statics round the sheet (boulders, the walls beside it), binned from above
 			std::vector<std::array<RE::NiPoint3, 3>> solids;
@@ -677,7 +737,7 @@ namespace FluidFieldSim
 			std::vector<float> disturbance;            ///< D85: how stirred the water is there (the wobble's size), softened
 			std::vector<float> clearFront, clearBack;  ///< D104: as BakeJob's: the open water or air on each side of the sheet (its depth behind, once its outer side is known)
 		};
-		static constexpr uint32_t BAKE_CACHE_VERSION = 10;  ///< D183: 10, 8 units a texel; D181: 9, finer and smoother; D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances; D126: 7, the domain was the culled shell; D132: 8, the whole mesh again)
+		static constexpr uint32_t BAKE_CACHE_VERSION = 11;  ///< D185: 11, the rock tested on every other texel first; D183: 10, 8 units a texel; D181: 9, finer and smoother; D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances; D126: 7, the domain was the culled shell; D132: 8, the whole mesh again)
 		static constexpr float CLEAR_REACH = 600.0f;        ///< D104: world units the clearance rays look for rock
 		static constexpr float CLEAR_START = 40.0f;         ///< D105: the clearance rays start this far off the other side of the sheet
 		/** @brief D82: where a bake job's finished bake is kept on disk: by its reference, model part, placement, the rock and ground round it, and the version. */
@@ -725,7 +785,7 @@ namespace FluidFieldSim
 		static constexpr int32_t LINK_ROWS = 10;    ///< D67: texel rows up from a mesh's bottom edge that may feed the next
 		std::unordered_map<const RE::BSGeometry*, FlowBake> flowBakes;
 		uint64_t flowBakeVersion = 0;
-		uint32_t bakedRockTexels = 0, bakedTexels = 0;
+		uint32_t bakedRockTexels = 0, bakedTexels = 0, bakedFilled = 0;
 		/** @brief D59: rasterises the next queued mesh, tests its texels against the rock, then solves it off the main thread. */
 		void BakeStep();
 		/** @brief D83: BakeStep's work: lands finished bakes, then starts or continues the next job. */

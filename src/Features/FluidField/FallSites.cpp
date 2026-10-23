@@ -17,10 +17,12 @@
 #include <cstring>
 #include <format>
 #include <fstream>
+#include <future>
 #include <map>
 #include <numeric>
 #include <queue>
 #include <set>
+#include <thread>
 #include <tuple>
 #include <unordered_set>
 
@@ -29,21 +31,38 @@ namespace FluidFieldSim
 	namespace
 	{
 		/** @brief D67: the squared distance from a point to a triangle (Ericson, Real-Time Collision Detection 5.1.5). */
-		float TriangleDistanceSquared(const RE::NiPoint3& a_p, const RE::NiPoint3& a_a, const RE::NiPoint3& a_b, const RE::NiPoint3& a_c)
+
+		// D185: the vector maths inline (CommonLib's NiPoint3 operators are calls into its library, which the optimiser cannot see
+		// into: about 17 s of a cold load's CPU in these loops, run 4's trace)
+		struct V3
 		{
-			const RE::NiPoint3 ab = a_b - a_a, ac = a_c - a_a, ap = a_p - a_a;
-			const auto squared = [](const RE::NiPoint3& a_v) { return a_v.Dot(a_v); };
+			float x, y, z;
+			V3(float a_x, float a_y, float a_z) :
+				x(a_x), y(a_y), z(a_z) {}
+			V3(const RE::NiPoint3& a_p) :
+				x(a_p.x), y(a_p.y), z(a_p.z) {}
+			V3 operator-(const V3& a_o) const { return { x - a_o.x, y - a_o.y, z - a_o.z }; }
+			V3 operator*(float a_s) const { return { x * a_s, y * a_s, z * a_s }; }
+			float Dot(const V3& a_o) const { return x * a_o.x + y * a_o.y + z * a_o.z; }
+			V3 Cross(const V3& a_o) const { return { y * a_o.z - z * a_o.y, z * a_o.x - x * a_o.z, x * a_o.y - y * a_o.x }; }
+		};
+
+		float TriangleDistanceSquared(const RE::NiPoint3& a_point, const RE::NiPoint3& a_ta, const RE::NiPoint3& a_tb, const RE::NiPoint3& a_tc)
+		{
+			const V3 a_p(a_point), a_a(a_ta), a_b(a_tb), a_c(a_tc);
+			const V3 ab = a_b - a_a, ac = a_c - a_a, ap = a_p - a_a;
+			const auto squared = [](const V3& a_v) { return a_v.Dot(a_v); };
 			const float d1 = ab.Dot(ap), d2 = ac.Dot(ap);
 			if (d1 <= 0.0f && d2 <= 0.0f)
 				return squared(ap);
-			const RE::NiPoint3 bp = a_p - a_b;
+			const V3 bp = a_p - a_b;
 			const float d3 = ab.Dot(bp), d4 = ac.Dot(bp);
 			if (d3 >= 0.0f && d4 <= d3)
 				return squared(bp);
 			const float vc = d1 * d4 - d3 * d2;
 			if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f)
 				return squared(ap - ab * (d1 / (d1 - d3)));
-			const RE::NiPoint3 cp = a_p - a_c;
+			const V3 cp = a_p - a_c;
 			const float d5 = ab.Dot(cp), d6 = ac.Dot(cp);
 			if (d6 >= 0.0f && d5 <= d6)
 				return squared(cp);
@@ -205,19 +224,20 @@ namespace FluidFieldSim
 		}
 
 		/** @brief D103: where a ray from a_from along a_direction (unit) crosses a triangle, at most a_reach along it, or a negative value (Moller-Trumbore). */
-		float RayTriangle(const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, const RE::NiPoint3& a_a, const RE::NiPoint3& a_b, const RE::NiPoint3& a_c, float a_reach)
+		float RayTriangle(const RE::NiPoint3& a_rayFrom, const RE::NiPoint3& a_rayDirection, const RE::NiPoint3& a_ta, const RE::NiPoint3& a_tb, const RE::NiPoint3& a_tc, float a_reach)
 		{
-			const RE::NiPoint3 e1 = a_b - a_a, e2 = a_c - a_a;
-			const RE::NiPoint3 p = a_direction.Cross(e2);
+			const V3 a_from(a_rayFrom), a_direction(a_rayDirection), a_a(a_ta), a_b(a_tb), a_c(a_tc);
+			const V3 e1 = a_b - a_a, e2 = a_c - a_a;
+			const V3 p = a_direction.Cross(e2);
 			const float det = e1.Dot(p);
 			if (std::abs(det) < 1e-8f)
 				return -1.0f;
 			const float inverse = 1.0f / det;
-			const RE::NiPoint3 s = a_from - a_a;
+			const V3 s = a_from - a_a;
 			const float u = s.Dot(p) * inverse;
 			if (u < 0.0f || u > 1.0f)
 				return -1.0f;
-			const RE::NiPoint3 q = s.Cross(e1);
+			const V3 q = s.Cross(e1);
 			const float v = a_direction.Dot(q) * inverse;
 			if (v < 0.0f || u + v > 1.0f)
 				return -1.0f;
@@ -736,8 +756,10 @@ namespace FluidFieldSim
 			return;
 		poolResult = std::make_unique<std::vector<std::pair<uint64_t, PoolField>>>();
 		heavyWork = std::async(std::launch::async, [this, todo, result = poolResult.get()]() {
+			const auto start = std::chrono::steady_clock::now();
 			for (const auto& [site, capture] : todo)
 				result->emplace_back(site->captureKey, ComputePools(*site, *capture));
+			loadTiming.AddWorker(LoadWork::Pools, start);
 		});
 	}
 
@@ -924,10 +946,12 @@ namespace FluidFieldSim
 				if (!shell->interior)
 					shell->land = landscape->Subset(lo[0] - FallVisibility::REACH, lo[1] - FallVisibility::REACH, hi[0] + FallVisibility::REACH, hi[1] + FallVisibility::REACH);
 				denseStarted = std::chrono::steady_clock::now();
-				denseWork = std::async(std::launch::async, [running, shell]() {
+				denseWork = std::async(std::launch::async, [this, running, shell]() {
+					const auto start = std::chrono::steady_clock::now();
 					for (auto* job : running)
 						ComputeDense(*job);
 					TrimHidden(running, *shell);
+					loadTiming.AddWorker(LoadWork::Dense, start);
 				});
 			}
 		}
@@ -1354,6 +1378,7 @@ namespace FluidFieldSim
 				const auto start = std::chrono::steady_clock::now();
 				ComputeFades();
 				logger::info("[Fluid Field]   seams took {:.1f} ms (worker)", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+				loadTiming.AddWorker(LoadWork::Seams, start);
 			});
 		}
 	}
@@ -2452,6 +2477,49 @@ namespace FluidFieldSim
 				job.sheet++;
 				continue;
 			}
+			if (job.stage == 2 || job.stage == 4 || job.stage == 5) {
+				// D185: the inside cut, the sides and the meets read only what the stages before them finished, and each writes only
+				// its own vertex: every sheet's vertices at once, on several threads (on one, 37 s of a cold load, 11 passes)
+				std::vector<std::pair<uint32_t, uint32_t>> work;
+				for (uint32_t s = 0; s < job.sheets.size(); s++) {
+					for (uint32_t v = 0; v < job.sheets[s].positions.size(); v++)
+						work.emplace_back(s, v);
+				}
+				const int stage = job.stage;
+				std::atomic<std::size_t> next = 0;
+				const auto run = [&]() {
+					for (;;) {
+						if (job.cancel.load(std::memory_order_relaxed))
+							return;
+						const std::size_t from = next.fetch_add(CULL_CHUNK);
+						if (from >= work.size())
+							return;
+						for (std::size_t w = from; w < std::min(work.size(), from + CULL_CHUNK); w++) {
+							const auto [s, v] = work[w];
+							if (stage == 2) {
+								VolumeCut(job.sheets, s, v, job);
+								ComposeCut(job.sheets[s].base + v);
+							} else if (stage == 4) {
+								SideFlags(job.sheets, s, v, job);
+							} else {
+								MeetDistance(job.sheets, s, v, job);
+							}
+						}
+					}
+				};
+				const unsigned threads = std::clamp(std::thread::hardware_concurrency() > 2 ? std::thread::hardware_concurrency() - 2 : 1u, 1u, 12u);
+				std::vector<std::future<void>> parts;
+				for (unsigned t = 1; t < threads; t++)
+					parts.push_back(std::async(std::launch::async, run));
+				run();
+				for (auto& part : parts)
+					part.get();
+				if (job.cancel.load(std::memory_order_relaxed))
+					return;
+				job.stage++;
+				job.sheet = job.vertex = 0;
+				continue;
+			}
 			const CullSheet& sheet = job.sheets[job.sheet];
 			for (int n = 0; n < 32 && job.vertex < sheet.positions.size(); n++, job.vertex++) {
 				const auto v = static_cast<uint32_t>(job.vertex);
@@ -2505,6 +2573,21 @@ namespace FluidFieldSim
 
 	void FallSites::CullStep()
 	{
+		// D185: a pass asked for while captures, dense copies or rock tests are still coming waits for them (each would ask for another:
+		// 11 passes in a cold load), at most CULL_DEFER_MOST
+		if (cullRequested && !cullJob) {
+			bool coming = denseWork.valid() || !clipQueue.empty() || !buryQueue.empty();
+			for (const auto& [key, capture] : captures)
+				coming = coming || (!capture.IsComplete() && capture.Castable()) || (capture.IsComplete() && !capture.reported);
+			const auto now = std::chrono::steady_clock::now();
+			if (!cullWaiting) {
+				cullWaiting = true;
+				cullAskedAt = now;
+			}
+			if (coming && std::chrono::duration<double>(now - cullAskedAt).count() < CULL_DEFER_MOST)
+				return;
+			cullWaiting = false;
+		}
 		if (cullRequested) {
 			// Asked again: from the start, with what is known now (a half-done pass read older cuts). D172: a running worker is
 			// stopped first
@@ -2542,7 +2625,11 @@ namespace FluidFieldSim
 				job.meshes.emplace_back(lit.geometry, base->second);
 			}
 			CullJob* running = cullJob.get();
-			cullWork = std::async(std::launch::async, [this, running]() { RunCullStages(*running); });
+			cullWork = std::async(std::launch::async, [this, running]() {
+				const auto start = std::chrono::steady_clock::now();
+				RunCullStages(*running);
+				loadTiming.AddWorker(LoadWork::Cull, start);
+			});
 			return;
 		}
 		if (!job.complete)
@@ -2555,7 +2642,7 @@ namespace FluidFieldSim
 		}
 		vertexClipVersion++;
 		logger::info("[Fluid Field] Waterfall culling: {} lit meshes; {} of {} vertices tested lie inside another sheet; {} turned to face out; {} of {} tested have a sheet in front of their inner side; {} within {:.0f} units of another sheet ({:.1f} ms of work over {:.0f} ms)",
-			job.sheets.size(), job.inside, job.tested, job.inward, job.covered, job.sideTested, job.meeting, MEET_REACH, job.busy,
+			job.sheets.size(), job.inside.load(), job.tested.load(), job.inward.load(), job.covered.load(), job.sideTested.load(), job.meeting.load(), MEET_REACH, job.busy,
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - job.started).count());
 		const uint32_t submerged = job.submerged;
 		logger::info("[Fluid Field]   {} vertices under the river's water by its bed, cut; cleanup: {} orphan pieces ({} triangles, {} vertices) cut, {} small enclosed holes ({} vertices) restored",
@@ -2935,9 +3022,16 @@ namespace FluidFieldSim
 							continue;
 						for (const uint32_t t : it->second) {
 							const auto& tri = other.triangles[t];
+							const RE::NiPoint3 &a = other.drawn[tri[0]], &b = other.drawn[tri[1]], &c = other.drawn[tri[2]];
+							// D185: its box first: no nearer than the best so far, no need of the exact distance
+							const float bx = std::max({ std::min({ a.x, b.x, c.x }) - p.x, p.x - std::max({ a.x, b.x, c.x }), 0.0f });
+							const float by = std::max({ std::min({ a.y, b.y, c.y }) - p.y, p.y - std::max({ a.y, b.y, c.y }), 0.0f });
+							const float bz = std::max({ std::min({ a.z, b.z, c.z }) - p.z, p.z - std::max({ a.z, b.z, c.z }), 0.0f });
+							if (bx * bx + by * by + bz * bz >= best)
+								continue;
 							if (!VertexShown(other.base + tri[0]) && !VertexShown(other.base + tri[1]) && !VertexShown(other.base + tri[2]))
 								continue;
-							const float d = TriangleDistanceSquared(p, other.drawn[tri[0]], other.drawn[tri[1]], other.drawn[tri[2]]);
+							const float d = TriangleDistanceSquared(p, a, b, c);
 							if (d < best) {
 								best = d;
 								found = true;
@@ -3433,6 +3527,44 @@ namespace FluidFieldSim
 		if (!a_job.cache.empty() && !SaveBake(a_job.cache, *field))
 			logger::warn("[Fluid Field]   bake cache: could not write {}", a_job.cache.string());
 		return field;
+	}
+
+	std::string FallSites::CaptureCachePath(const FallCapture& a_capture, uint64_t a_key) const
+	{
+		const auto directory = logger::log_directory();
+		if (!directory || a_capture.GetWidth() == 0)
+			return {};
+		const float lo[2] = { a_capture.GetOriginX(), a_capture.GetOriginY() };
+		const float hi[2] = { lo[0] + a_capture.GetWidth() * FallCapture::CELL, lo[1] + a_capture.GetHeight() * FallCapture::CELL };
+		std::vector<FallVisibility::Triangle> statics;
+		GatherOccluders(lo[0], lo[1], hi[0], hi[1], statics);
+		uint64_t hash = 14695981039346656037ull;
+		const auto mix = [&](int64_t a_value) {
+			const auto* bytes = reinterpret_cast<const uint8_t*>(&a_value);
+			for (std::size_t i = 0; i < sizeof(a_value); i++)
+				hash = (hash ^ bytes[i]) * 1099511628211ull;
+		};
+		mix(CAPTURE_CACHE_VERSION);
+		mix(static_cast<int64_t>(a_key));
+		mix(std::lround(lo[0]));
+		mix(std::lround(lo[1]));
+		mix(a_capture.GetWidth());
+		mix(a_capture.GetHeight());
+		// The statics' triangles summed in any order (the cells are visited from the player's side)
+		uint64_t sum = 0, crossed = 0;
+		for (const auto& triangle : statics) {
+			uint64_t one = 14695981039346656037ull;
+			for (const auto& corner : triangle) {
+				for (const float c : { corner.x, corner.y, corner.z })
+					one = (one ^ static_cast<uint64_t>(std::llround(c * 2.0f))) * 1099511628211ull;
+			}
+			sum += one;
+			crossed ^= one * 0x9E3779B97F4A7C15ull;
+		}
+		mix(static_cast<int64_t>(sum));
+		mix(static_cast<int64_t>(crossed));
+		mix(static_cast<int64_t>(statics.size()));
+		return (*directory / "FluidFieldBakes" / std::format("ground_{:016X}.bin", hash)).string();
 	}
 
 	std::filesystem::path FallSites::BakeCachePath(const BakeJob& a_job)
@@ -4252,11 +4384,13 @@ namespace FluidFieldSim
 			linkDue = false;
 			logger::info("[Fluid Field] Waterfall flow bakes: {} meshes ({} read from the cache, {} solved), {} texels tested, {} inside rock", bakeFields.size(), bakesCached,
 				bakesSolved, bakedTexels, bakedRockTexels);
+			logger::info("[Fluid Field]   {} more texels took their tested neighbours' answer (D185)", bakedFilled);
 			// D172: on a worker (1.2 s on one frame); its plunges after it, on the render thread
 			heavyWork = std::async(std::launch::async, [this]() {
 				const auto start = std::chrono::steady_clock::now();
 				LinkBakes();
 				logger::info("[Fluid Field]   linking the bakes took {:.1f} ms (worker)", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+				loadTiming.AddWorker(LoadWork::Link, start);
 			});
 		}
 	}
@@ -4521,6 +4655,12 @@ namespace FluidFieldSim
 
 	void FallSites::BakeWork()
 	{
+		LandBakes();
+		BakeRays();
+	}
+
+	void FallSites::LandBakes()
+	{
 		// Finished solves
 		for (auto it = bakesPending.begin(); it != bakesPending.end();) {
 			if (it->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
@@ -4535,6 +4675,12 @@ namespace FluidFieldSim
 			}
 			it = bakesPending.erase(it);
 		}
+	}
+
+	void FallSites::BakeRays()
+	{
+		// D185: the bakes' start (read from the cache, or the statics gathered) and their rock tests touch nothing the workers have:
+		// they go on while a worker runs (they waited out every culling pass, 37 s of a cold load)
 		auto* tes = RE::TES::GetSingleton();
 		if (!tes)
 			return;
@@ -4606,11 +4752,67 @@ namespace FluidFieldSim
 				// Each texel inside rock? A ray from outside it, in along the sheet's facing, crosses rock an odd
 				// number of times to reach a point inside (D57), deeper than a sheet lying on its rock
 				const RE::BSReadLockGuard lock(bhkWorld->worldLock);
+				if (bakeJob->clearFront.size() != bakeJob->covered.size()) {
+					bakeJob->clearFront.assign(bakeJob->covered.size(), CLEAR_REACH);
+					bakeJob->clearBack.assign(bakeJob->covered.size(), CLEAR_REACH);
+				}
+				// D185: every other texel each way first (pass 0); the rest (pass 1) take their tested neighbours' answer where those
+				// agree (all rock, or all open with clearances within CLEAR_AGREE), and are tested only where they differ: the
+				// rock's edges. Three in four texels lie between, most of them in plain water or plain rock (16 s of a cold load's
+				// render thread, every texel tested)
+				const auto w = static_cast<int32_t>(bakeJob->width);
+				const auto testable = [&](std::size_t a_i) { return bakeJob->covered[a_i] && !(a_i < bakeJob->untested.size() && bakeJob->untested[a_i]); };
 				int rays = 0;
-				for (; bakeJob->next < bakeJob->covered.size() && rays < 64; bakeJob->next++) {
+				for (; rays < 64; bakeJob->next++) {
+					if (bakeJob->next >= bakeJob->covered.size()) {
+						if (bakeJob->pass == 0) {
+							bakeJob->pass = 1;
+							bakeJob->next = 0;
+						}
+						if (bakeJob->next >= bakeJob->covered.size())
+							break;
+					}
 					const std::size_t i = bakeJob->next;
-					if (!bakeJob->covered[i] || (i < bakeJob->untested.size() && bakeJob->untested[i]))
+					if (!testable(i))
 						continue;
+					const auto x = static_cast<int32_t>(i % w), y = static_cast<int32_t>(i / w);
+					const bool coarse = x % 2 == 0 && y % 2 == 0;
+					if (coarse != (bakeJob->pass == 0))
+						continue;
+					if (!coarse) {
+						// Its tested neighbours: the coarse texels round it (two along an even row or column, else four)
+						int count = 0, rockCount = 0;
+						float front[2] = { FLT_MAX, -FLT_MAX }, back[2] = { FLT_MAX, -FLT_MAX }, frontSum = 0.0f, backSum = 0.0f;
+						for (const int32_t cy : { y - y % 2, y - y % 2 + 2 }) {
+							for (const int32_t cx : { x - x % 2, x - x % 2 + 2 }) {
+								if ((cx == x - x % 2 + 2 && x % 2 == 0) || (cy == y - y % 2 + 2 && y % 2 == 0))
+									continue;  // (on an even row or column the texel lies between two, not four)
+								if (cx < 0 || cy < 0 || cx >= w || cy >= static_cast<int32_t>(bakeJob->height))
+									continue;
+								const std::size_t c = static_cast<std::size_t>(cy) * w + cx;
+								if (!testable(c))
+									continue;
+								count++;
+								rockCount += bakeJob->rock[c];
+								front[0] = std::min(front[0], bakeJob->clearFront[c]);
+								front[1] = std::max(front[1], bakeJob->clearFront[c]);
+								back[0] = std::min(back[0], bakeJob->clearBack[c]);
+								back[1] = std::max(back[1], bakeJob->clearBack[c]);
+								frontSum += bakeJob->clearFront[c];
+								backSum += bakeJob->clearBack[c];
+							}
+						}
+						const bool allRock = count >= 2 && rockCount == count;
+						const bool allOpen = count >= 2 && rockCount == 0 && front[1] - front[0] <= CLEAR_AGREE && back[1] - back[0] <= CLEAR_AGREE;
+						if (allRock || allOpen) {
+							bakeJob->rock[i] = allRock ? 1 : 0;
+							bakeJob->clearFront[i] = allRock ? 0.0f : frontSum / static_cast<float>(count);
+							bakeJob->clearBack[i] = allRock ? 0.0f : backSum / static_cast<float>(count);
+							bakedFilled++;
+							bakedRockTexels += bakeJob->rock[i];
+							continue;
+						}
+					}
 					rays++;
 					// From both sides of the sheet: a curtain before a cliff has the cliff on one side only (a ray
 					// from that side starts inside the cliff and crosses its face once); a boulder through the
@@ -4628,10 +4830,6 @@ namespace FluidFieldSim
 					bakeJob->rock[i] = inside ? 1 : 0;
 					// D104: how far the rock lies off each side of the sheet (the water's depth behind it, D104's per-vertex
 					// depth): from just off the surface outward, the first rock
-					if (bakeJob->clearFront.size() != bakeJob->covered.size()) {
-						bakeJob->clearFront.assign(bakeJob->covered.size(), CLEAR_REACH);
-						bakeJob->clearBack.assign(bakeJob->covered.size(), CLEAR_REACH);
-					}
 					if (!inside) {
 						for (const float side : { 1.0f, -1.0f }) {
 							// D105: from far off the sheet back toward it, the last rock crossed is the face nearest it (cast
@@ -4650,26 +4848,36 @@ namespace FluidFieldSim
 					bakedRockTexels += bakeJob->rock[i];
 				}
 			}
-			if (bakeJob->next >= bakeJob->covered.size()) {
+			if (bakeJob->pass == 1 && bakeJob->next >= bakeJob->covered.size()) {
 				auto job = std::shared_ptr<BakeJob>(std::move(bakeJob));
 				logger::info("[Fluid Field]   bake job '{}': rock tested, solving", job->geometry->name.c_str());
-				bakesPending.emplace_back(job->geometry, std::async(std::launch::async, [job]() { return SolveBake(*job); }));
+				bakesPending.emplace_back(job->geometry, std::async(std::launch::async, [this, job]() {
+					const auto start = std::chrono::steady_clock::now();
+					auto field = SolveBake(*job);
+					loadTiming.AddWorker(LoadWork::Solve, start);
+					return field;
+				}));
 			}
 		}
 	}
 
-	void FallSites::CaptureStep()
+	void FallSites::CaptureStep(bool a_canFinish)
 	{
-		// One capture at a time, nearest the start of the list: sites are few and each takes seconds
+		// D185: a finished capture is handled (logged, kept on disk, the meshes grounded again) only when no worker has what that
+		// touches; its rays are cast meanwhile
 		for (const auto& site : sites) {
-			if (!site.captureKey)
-				continue;
-			auto it = captures.find(site.captureKey);
-			if (it == captures.end() || it->second.IsComplete())
+			if (!a_canFinish)
+				break;
+			auto it = site.captureKey ? captures.find(site.captureKey) : captures.end();
+			if (it == captures.end() || !it->second.IsComplete() || it->second.reported)
 				continue;
 			auto& capture = it->second;
-			if (!capture.Cast(CAPTURE_BUDGET_MS))
-				return;
+			capture.reported = true;
+			if (!capture.cachePath.empty() && capture.GetProgress() >= 1.0f && !std::filesystem::exists(capture.cachePath)) {
+				std::error_code error;
+				std::filesystem::create_directories(std::filesystem::path(capture.cachePath).parent_path(), error);
+				capture.Dump(capture.cachePath);
+			}
 			uint32_t holes = 0;
 			for (uint32_t y = 0; y < capture.GetHeight(); y++) {
 				for (uint32_t x = 0; x < capture.GetWidth(); x++)
@@ -4687,6 +4895,25 @@ namespace FluidFieldSim
 			RefreshGrounded();
 			return;
 		}
+		// D185: one capture at a time, the one nearest the camera that can make progress (one whose cell has no physics world loaded
+		// waits without holding up the others: it held every later one, and the load never settled)
+		FallCapture* nearest = nullptr;
+		float nearestDistance = FLT_MAX;
+		auto* camera = PlayerCamera();
+		const RE::NiPoint3 eye = camera ? camera->world.translate : RE::NiPoint3(0.0f, 0.0f, 0.0f);
+		for (auto& [key, capture] : captures) {
+			if (capture.IsComplete() || !capture.Castable())
+				continue;
+			const float dx = capture.GetOriginX() + 0.5f * capture.GetWidth() * FallCapture::CELL - eye.x;
+			const float dy = capture.GetOriginY() + 0.5f * capture.GetHeight() * FallCapture::CELL - eye.y;
+			const float distance = dx * dx + dy * dy;
+			if (distance < nearestDistance) {
+				nearestDistance = distance;
+				nearest = &capture;
+			}
+		}
+		if (nearest)
+			nearest->Cast(CAPTURE_BUDGET_MS);
 	}
 
 	uint32_t FallSites::CountKind(Kind a_kind) const
@@ -4694,17 +4921,77 @@ namespace FluidFieldSim
 		return static_cast<uint32_t>(std::count_if(sites.begin(), sites.end(), [&](const Site& a_site) { return a_site.kind == a_kind; }));
 	}
 
+	bool FallSites::LoadIdle() const
+	{
+		// (a capture whose cell has no physics world loaded never makes progress: not pending)
+		bool capturing = false;
+		for (const auto& [key, capture] : captures)
+			capturing = capturing || (!capture.IsComplete() && capture.Castable()) || (capture.IsComplete() && !capture.reported);
+		return !capturing && !Busy() && !CullBusy() && !denseWork.valid() && bakeQueue.empty() && !bakeJob && bakesPending.empty() && clipQueue.empty() && buryQueue.empty() &&
+		       buryDone && !plungesDue && !linkDue;
+	}
+
+	void FallSites::TrackLoad()
+	{
+		const auto now = std::chrono::steady_clock::now();
+		if (!LoadIdle()) {
+			if (!loadTiming.active) {
+				loadTiming.active = true;
+				loadTiming.firstActive = now;
+			}
+			loadTiming.lastActive = now;
+			return;
+		}
+		if (!loadTiming.active || sites.empty() || std::chrono::duration<double>(now - loadTiming.lastActive).count() < SETTLE_SECONDS)
+			return;
+		// D185: settled: when the work ended (wall clock, for the timing script), and where its time went
+		loadTiming.active = false;
+		loadTiming.reports++;
+		const auto endedAt = std::chrono::system_clock::now() - std::chrono::duration_cast<std::chrono::system_clock::duration>(now - loadTiming.lastActive);
+		const auto startedAt = endedAt - std::chrono::duration_cast<std::chrono::system_clock::duration>(loadTiming.lastActive - loadTiming.firstActive);
+		static constexpr const char* STAGES[] = { "scan", "capture", "clip", "bury", "cull", "depth", "bake", "pools", "finish" };
+		static constexpr const char* WORKS[] = { "pools", "dense", "seams", "cull", "link", "plunges", "solve" };
+		std::string stages, works;
+		double mainTotal = 0.0;
+		for (std::size_t k = 0; k < static_cast<std::size_t>(LoadStage::Count); k++) {
+			mainTotal += loadTiming.mainMs[k];
+			stages += std::format("{}{} {:.0f} ms/{} frames", k ? ", " : "", STAGES[k], loadTiming.mainMs[k], loadTiming.mainFrames[k]);
+		}
+		for (std::size_t k = 0; k < static_cast<std::size_t>(LoadWork::Count); k++)
+			works += std::format("{}{} {:.0f} ms/{} runs", k ? ", " : "", WORKS[k], loadTiming.workerUs[k].load() / 1000.0, loadTiming.workerRuns[k].load());
+		uint32_t complete = 0, total = 0;
+		CountCaptures(complete, total);
+		const auto clock = [](std::chrono::system_clock::time_point a_time) {
+			return std::format("{:%H:%M:%S}", std::chrono::floor<std::chrono::milliseconds>(std::chrono::current_zone()->to_local(a_time)));
+		};
+		logger::info("[Fluid Field] Falls settled (D185) #{}: work {} to {} ({:.1f} s); {} sites, {} captures, {} baked meshes ({} from the cache, {} solved)", loadTiming.reports,
+			clock(startedAt), clock(endedAt), std::chrono::duration<double>(loadTiming.lastActive - loadTiming.firstActive).count(), sites.size(), total, bakeFields.size(),
+			bakesCached, bakesSolved);
+		logger::info("[Fluid Field]   render thread {:.0f} ms: {}", mainTotal, stages);
+		logger::info("[Fluid Field]   workers: {}", works);
+	}
+
 	void FallSites::Update(const WaterSurfaces& a_water)
 	{
+		TrackLoad();
+		// D185: each step's render-thread time
+		const auto timed = [this](LoadStage a_stage, auto&& a_step) {
+			const auto start = std::chrono::steady_clock::now();
+			a_step();
+			loadTiming.mainMs[static_cast<std::size_t>(a_stage)] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+			loadTiming.mainFrames[static_cast<std::size_t>(a_stage)]++;
+		};
 		// D172: the workers read the water planes (ComputePushes, ComputePlunges): a copy, taken only while none runs
 		if (!Busy() && a_water.GetSignature() != waterCopySignature) {
 			waterCopy = a_water;
 			waterCopySignature = a_water.GetSignature();
 		}
 		waterSurfaces = &waterCopy;
-		FinishHeavyWork();
-		if (!Busy())
-			FinishDenseWork();
+		timed(LoadStage::Finish, [&]() {
+			FinishHeavyWork();
+			if (!Busy())
+				FinishDenseWork();
+		});
 		if (!Busy() && plungesDue) {
 			// D172: the plunges on a worker (up to 150 ms, three to five times a load, on the render thread)
 			plungesDue = false;
@@ -4727,34 +5014,41 @@ namespace FluidFieldSim
 					plungeResult->haveLand = true;
 				}
 			}
-			heavyWork = std::async(std::launch::async, [this, result = plungeResult.get()]() { ComputePlunges(*result); });
+			heavyWork = std::async(std::launch::async, [this, result = plungeResult.get()]() {
+				const auto start = std::chrono::steady_clock::now();
+				ComputePlunges(*result);
+				loadTiming.AddWorker(LoadWork::Plunges, start);
+			});
 		}
 		if (Busy()) {
 			// D172: a worker has vertexClips, vertexCuts, the pools and the bakes: only polling it meanwhile (the culling's own
 			// step only polls while its worker runs; it starts again once nothing else does)
 			if (CullWorking())
-				CullStep();
+				timed(LoadStage::Cull, [&]() { CullStep(); });
+			// D185: the captures' and the bakes' rays go on meanwhile (they touch nothing the workers have)
+			timed(LoadStage::Capture, [&]() { CaptureStep(false); });
+			timed(LoadStage::Bake, [&]() { BakeRays(); });
 			ProbeScrolls();
 			return;
 		}
 		// D172: the ground captures (their end grounds the meshes again: RefreshGrounded), only while no worker reads them
 		// D172: a step that hands work to a worker ends the update: nothing after it may touch what the worker has (and a
 		// second worker may not start beside it)
-		CaptureStep();
+		timed(LoadStage::Capture, [&]() { CaptureStep(true); });
 		if (Busy())
 			return;
-		ClipStep();
+		timed(LoadStage::Clip, [&]() { ClipStep(); });
 		if (Busy())
 			return;
-		BuryStep();
-		CullStep();  // D113
+		timed(LoadStage::Bury, [&]() { BuryStep(); });
+		timed(LoadStage::Cull, [&]() { CullStep(); });  // D113
 		if (Busy())
 			return;
-		DepthStep();
-		BakeStep();
+		timed(LoadStage::Depth, [&]() { DepthStep(); });
+		timed(LoadStage::Bake, [&]() { BakeStep(); });
 		if (Busy())
 			return;
-		PollPools();
+		timed(LoadStage::Pools, [&]() { PollPools(); });
 		if (Busy())
 			return;
 		ProbeScrolls();
@@ -4763,6 +5057,11 @@ namespace FluidFieldSim
 			return;
 		}
 		updatesUntilScan = SCAN_INTERVAL;
+		const auto scanStart = std::chrono::steady_clock::now();
+		const auto scanned = [&]() {
+			loadTiming.mainMs[static_cast<std::size_t>(LoadStage::Scan)] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - scanStart).count();
+			loadTiming.mainFrames[static_cast<std::size_t>(LoadStage::Scan)]++;
+		};
 
 		// S1, inventory
 		auto* tes = RE::TES::GetSingleton();
@@ -4821,13 +5120,16 @@ namespace FluidFieldSim
 		uint64_t signature = found.size();
 		for (const auto& ref : found)
 			signature = signature * 1099511628211ull ^ ref.formID;
-		if (signature == refSignature && a_water.GetSignature() == waterSignature)
+		if (signature == refSignature && a_water.GetSignature() == waterSignature) {
+			scanned();
 			return;
+		}
 		refSignature = signature;
 		waterSignature = a_water.GetSignature();
 		refs.swap(found);
 		Rebuild(a_water);
 		Summarise();
+		scanned();
 	}
 
 	void FallSites::Rebuild(const WaterSurfaces& a_water)
@@ -5033,6 +5335,11 @@ namespace FluidFieldSim
 			}
 			auto& capture = kept[key];
 			capture.Begin(site.fallMin, site.fallMax, site.top, site.bottom);
+			// D185: kept on disk by its layout and the statics round it (their render triangles: what its rays see besides the
+			// landscape); read back, no rays
+			capture.cachePath = CaptureCachePath(capture, key);
+			if (!capture.cachePath.empty() && capture.Load(capture.cachePath))
+				logger::info("[Fluid Field] Waterfall site #{} ground read from the cache", site.id);
 		}
 		captures.swap(kept);
 		// Pools of sites that are gone
