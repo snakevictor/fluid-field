@@ -251,6 +251,7 @@ namespace FallGround
 		float wake;       // D60: the wake of a rock above, fading down the streaks
 		float runTime;    // D59: seconds the water has run since it came onto this mesh (0 without a bake)
 		float4 fields;    // D179: BakeFieldsAt: speed over vanilla's, swell, disturbance, aeration
+		float3 frame;     // D186: the way the flow's along coordinate runs, world axes (the normal maps' frame); zero where unknown
 		float stretch;    // D181: BakeStretchAt
 	};
 
@@ -307,7 +308,9 @@ namespace FallGround
 		result.wake = baked.z;
 		result.runTime = BakeOn ? max(baked.y, 0.0) / max(Scroll.y, 1e-3) : 0.0;
 		result.fields = BakeFieldsAt(uvStill);
-		result.stretch = BakeStretchAt(uvStill);
+		const float4 third = BakeOn ? BakeRowsAt(uvStill, 2) : float4(1.0, 0.0, 0.0, 0.0);
+		result.stretch = max(third.x, 0.25);
+		result.frame = third.yzw;
 		const float2 uvBase = (BakeOn ? baked.xy : uvStill) - float2(0.0, Scroll.x);
 		result.uvA = uvBase;
 		result.velocity = 0.0;

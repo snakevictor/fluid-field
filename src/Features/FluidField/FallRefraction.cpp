@@ -33,8 +33,6 @@ namespace FluidFieldSim
 		constexpr UINT SAMPLER_COUNT = 2;          // s0 wrap, s1 clamp
 		constexpr UINT SHADOW_MAP_SLOT = 18;       // D102: Volumetric Shadows' map (VolumetricShadows::kSharedShadowMapShaderSlot), read, never set
 		constexpr UINT SHADOW_CASCADES_SLOT = 98;  // ...and the directional light's cascades (Deferred::CopyShadowLightData)
-		constexpr float DOWNHILL_FROM = 0.15f;     // D186: a sheet sloping this much (its normal's tilt) starts to take its frame downhill...
-		constexpr float DOWNHILL_FULL = 0.45f;     // ...and wholly by this
 
 		/** @brief Everything Draw touches, saved on construction and put back on destruction. */
 		struct SavedState
@@ -448,7 +446,7 @@ namespace FluidFieldSim
 		return true;
 	}
 
-	bool FallRefraction::BuildMesh(ID3D11Device* a_device, RE::BSGeometry* a_geometry, MeshBuffers& o_mesh) const
+	bool FallRefraction::BuildMesh(ID3D11Device* a_device, RE::BSGeometry* a_geometry, MeshBuffers& o_mesh, const std::vector<RE::NiPoint3>* a_normals) const
 	{
 		auto* triShape = a_geometry ? a_geometry->AsTriShape() : nullptr;
 		auto* renderer = a_geometry ? a_geometry->GetGeometryRuntimeData().rendererData : nullptr;
@@ -479,6 +477,12 @@ namespace FluidFieldSim
 				vertices[v].normal[0] = vertices[v].normal[1] = vertices[v].normal[2] = 0.0f;
 			}
 			vertices[v].tangent[0] = vertices[v].tangent[1] = vertices[v].tangent[2] = 0.0f;
+			// D186: the normal of the surface as its pushes leave it, where FallSites has it
+			if (a_normals && a_normals->size() == counts.vertexCount) {
+				vertices[v].normal[0] = (*a_normals)[v].x;
+				vertices[v].normal[1] = (*a_normals)[v].y;
+				vertices[v].normal[2] = (*a_normals)[v].z;
+			}
 		}
 		std::vector<uint16_t> indices;
 		indices.reserve(static_cast<std::size_t>(counts.triangleCount) * 3);
@@ -526,36 +530,6 @@ namespace FluidFieldSim
 		}
 		if (indices.empty())
 			return false;
-		// D186: on sloping water the frame runs downhill on the sheet (the way it falls, and the flow's v: downstream), smooth as
-		// the normal is; from the texture coordinates only where it lies near flat (the user, SS 1412: one way per original
-		// triangle, the normal maps laid on it creased at every one of their edges)
-		for (auto& vertex : vertices) {
-			RE::NiPoint3 n(vertex.normal[0], vertex.normal[1], vertex.normal[2]);
-			const float nLength = n.Length();
-			if (!(nLength > 1e-6f))
-				continue;
-			n = n / nLength;
-			const RE::NiPoint3 down = RE::NiPoint3(0.0f, 0.0f, -1.0f) + n * n.z;  // -z with its part along the normal taken out
-			const float slope = down.Length();
-			RE::NiPoint3 fromUv(vertex.tangent[0], vertex.tangent[1], vertex.tangent[2]);
-			fromUv = fromUv - n * n.Dot(fromUv);
-			const float uvLength = fromUv.Length();
-			RE::NiPoint3 frame = uvLength > 1e-6f ? fromUv / uvLength : RE::NiPoint3(0.0f, 0.0f, 0.0f);
-			if (slope > 1e-4f) {
-				const RE::NiPoint3 downhill = down / slope;
-				if (frame.Dot(downhill) < 0.0f)
-					frame = -frame;
-				const float t = std::clamp((slope - DOWNHILL_FROM) / (DOWNHILL_FULL - DOWNHILL_FROM), 0.0f, 1.0f);
-				const float w = t * t * (3.0f - 2.0f * t);
-				frame = uvLength > 1e-6f ? frame * (1.0f - w) + downhill * w : downhill;
-			}
-			const float frameLength = frame.Length();
-			if (frameLength > 1e-6f) {
-				vertex.tangent[0] = frame.x / frameLength;
-				vertex.tangent[1] = frame.y / frameLength;
-				vertex.tangent[2] = frame.z / frameLength;
-			}
-		}
 		const D3D11_BUFFER_DESC vertexDesc{ .ByteWidth = static_cast<UINT>(vertices.size() * sizeof(Vertex)), .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, .StructureByteStride = sizeof(Vertex) };
 		const D3D11_SUBRESOURCE_DATA vertexData{ vertices.data(), 0, 0 };
 		const D3D11_SHADER_RESOURCE_VIEW_DESC viewDesc{ .Format = DXGI_FORMAT_UNKNOWN, .ViewDimension = D3D11_SRV_DIMENSION_BUFFER, .Buffer = { .FirstElement = 0, .NumElements = static_cast<UINT>(vertices.size()) } };
@@ -587,16 +561,18 @@ namespace FluidFieldSim
 			if (!triShape || !draw.ground || draw.groundSize == 0 || failedMeshes.contains(draw.geometry))
 				continue;
 			auto it = meshes.find(draw.geometry);
-			if (it != meshes.end() && it->second.vertexCount != triShape->GetTrishapeRuntimeData().vertexCount) {
+			// (and again when its pushed normals change, D186)
+			if (it != meshes.end() && (it->second.vertexCount != triShape->GetTrishapeRuntimeData().vertexCount || (draw.normals && it->second.normalsVersion != draw.normalsVersion))) {
 				meshes.erase(it);
 				it = meshes.end();
 			}
 			if (it == meshes.end()) {
 				MeshBuffers built;
-				if (!BuildMesh(a_device, draw.geometry, built)) {
+				if (!BuildMesh(a_device, draw.geometry, built, draw.normals)) {
 					failedMeshes.insert(draw.geometry);
 					continue;
 				}
+				built.normalsVersion = draw.normals ? draw.normalsVersion : 0;
 				it = meshes.emplace(draw.geometry, std::move(built)).first;
 			}
 			drawable.emplace_back(&draw, &it->second);

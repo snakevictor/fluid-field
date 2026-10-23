@@ -670,10 +670,20 @@ namespace FluidFieldSim
 		std::unordered_set<const RE::BSGeometry*> denseShapes;
 		bool refreshing = false;
 		static constexpr bool DENSE = true;
-		static constexpr float DENSE_TRIM_UNDER = 24.0f;  ///< D172: the dense copies are cut this far under the landscape (BURY_LAND: the cut line stays in the ground)
-		static constexpr float DENSE_EDGE = 20.0f;        ///< D73: world units the dense copy's edges are at most (when the vertex budget allows; D91: 20, was 40, split only where longer)
-		static constexpr int DENSE_LEVELS = 6;            ///< D73: splitting passes at most (D91: adaptive, so passes only refine what is still long)
-		static constexpr int DENSE_NORMAL_PASSES = 16;    ///< D186: passes softening the copy's normals over its neighbours (about 80 units)
+		static constexpr float DENSE_TRIM_UNDER = 24.0f;         ///< D172: the dense copies are cut this far under the landscape (BURY_LAND: the cut line stays in the ground)
+		static constexpr float DENSE_EDGE = 20.0f;               ///< D73: world units the dense copy's edges are at most (when the vertex budget allows; D91: 20, was 40, split only where longer)
+		static constexpr float DENSE_EDGE_NEAR = 8.0f;           ///< D186: ...and near a solid (a static, the landscape) at most this (the cut lines round boulders run smooth)
+		static constexpr float DENSE_NEAR_REACH = 40.0f;         ///< D186: world units from a solid an edge's middle counts as near it
+		static constexpr std::size_t DENSE_NEAR_BUDGET = 35000;  ///< D186: no finer splitting near solids once a copy has this many vertices (16-bit indices: 65535 at most, the cut adds more)
+		static constexpr int DENSE_LEVELS = 8;                   ///< D73: splitting passes at most (D91: adaptive, so passes only refine what is still long)
+		static constexpr int DENSE_SHAPE_PASSES = 12;            ///< D186: Taubin pairs smoothing the copy's shape at the end...
+		static constexpr int DENSE_SHAPE_LEVEL_PASSES = 4;       ///< D186: ...and after each round of splitting (its edges' length reaching far)
+		static constexpr float DENSE_SHAPE_IN = 0.5f;            ///< D186: ...its in step
+		static constexpr float DENSE_SHAPE_OUT = -0.53f;         ///< D186: ...and its out step (a little more: no shrinking)
+		static constexpr float DENSE_SHAPE_MOST = 45.0f;         ///< D186: world units a vertex may move so (a curve across an original triangle sags about 20 from its flat)
+		static constexpr int DENSE_NORMAL_PASSES = 16;           ///< D186: passes softening the copy's normals over its neighbours (about 80 units)
+		static constexpr int32_t FRAME_REACH = 4;                ///< D186: texels each way the flow's frame is measured over
+		static constexpr int FRAME_BLUR = 3;                     ///< D186: passes softening it
 		/** @brief D73: builds and attaches a dense copy of a lit mesh; false where it cannot (no CPU data, or no engine builder). */
 		/** @brief D172: a dense copy in the making: the original's geometry copied on the render thread, made on a worker. */
 		struct DenseJob
@@ -706,7 +716,7 @@ namespace FluidFieldSim
 		static constexpr float OCCLUDER_REACH = 1024.0f;  ///< D173: world units round a batch its statics are gathered
 		static constexpr float SHELL_MARGIN = 64.0f;      ///< D173: world units along a sheet past what is seen that are kept (the sheets overlap where they meet)
 		bool ReadDense(RE::BSGeometry* a_geometry, DenseJob& o_job) const;
-		static void ComputeDense(DenseJob& a_job);
+		static void ComputeDense(DenseJob& a_job, const ShellInput* a_solids = nullptr);
 		bool AttachDense(DenseJob& a_job);
 		/** @brief D172: attaches the copies a finished worker made, and grounds them. */
 		void FinishDenseWork();
@@ -738,7 +748,7 @@ namespace FluidFieldSim
 			std::vector<float> disturbance;            ///< D85: how stirred the water is there (the wobble's size), softened
 			std::vector<float> clearFront, clearBack;  ///< D104: as BakeJob's: the open water or air on each side of the sheet (its depth behind, once its outer side is known)
 		};
-		static constexpr uint32_t BAKE_CACHE_VERSION = 14;  ///< D186: 14, the copies' tangents smoothed; 13, the aeration softer; 12, the copies' normals smoothed; D185: 11, the rock tested on every other texel first; D183: 10, 8 units a texel; D181: 9, finer and smoother; D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances; D126: 7, the domain was the culled shell; D132: 8, the whole mesh again)
+		static constexpr uint32_t BAKE_CACHE_VERSION = 16;  ///< D186: 16, the shape smoothed as it is split; 15, the copies' shape smoothed; 14, the copies' tangents smoothed; 13, the aeration softer; 12, the copies' normals smoothed; D185: 11, the rock tested on every other texel first; D183: 10, 8 units a texel; D181: 9, finer and smoother; D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances; D126: 7, the domain was the culled shell; D132: 8, the whole mesh again)
 		static constexpr float CLEAR_REACH = 600.0f;        ///< D104: world units the clearance rays look for rock
 		static constexpr float CLEAR_START = 40.0f;         ///< D105: the clearance rays start this far off the other side of the sheet
 		/** @brief D82: where a bake job's finished bake is kept on disk: by its reference, model part, placement, the rock and ground round it, and the version. */
@@ -762,8 +772,32 @@ namespace FluidFieldSim
 		static constexpr float WOBBLE_EDGE_REACH = 50.0f;  ///< D88: world units in from the mesh's open edges (D89: and from rock) over which the wobble fades in (D90: 50, was 120)
 		static constexpr float WOBBLE_SLOPE = 0.5f;        ///< D99: the wobble's size climbs at most this many units per unit along the mesh...
 		static constexpr float PUSH_SLOPE = 0.5f;          ///< D99: ...and the swell's push likewise (from 0 at open edges and rock: no spikes over one triangle)
+		static constexpr float DENSE_FINE_EDGE = 12.0f;    ///< D186: world units under which a copy's edge is fine (split near a solid, DENSE_EDGE_NEAR)...
+		static constexpr float PUSH_SLOPE_FINE = 0.35f;    ///< D186: ...where the swell's push may climb this steeply (a pile-up against the rock within a few edges)
+		static constexpr float WOBBLE_SLOPE_FINE = 0.35f;  ///< D186: ...and the wobble's size
+		static constexpr float ROCK_REACH = 60.0f;         ///< D186: world units from rock its distance is measured over (the push's ramp off it)
+		static constexpr float ROCK_CONTACT = 6.0f;        ///< D186: world units off rock where neither swell nor wobble moves the sheet...
+		static constexpr float ROCK_RAMP = 30.0f;          ///< D186: ...rising to whole over this far
+		static constexpr int ROCK_FIELD_PASSES = 24;       // D186: 24 (the user: deform in area, SS 1461)
+		static constexpr int WOBBLE_COORD_PASSES = 12;     ///< D186: passes softening the wobble's coordinates      ///< D186: passes softening the push and the wobble's size over the neighbours
 		/** @brief D82: the vertex shifts the shaders read (vertexClips 4-6): the seams' gap shift (D69) and the push together. */
 		void ComposeShifts();
+		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> shiftedNormals;  ///< D186: each mesh's normals as its pushes leave it (model space)
+		std::atomic<uint64_t> shiftedNormalsVersion = 0;
+		static constexpr int SHIFTED_NORMAL_PASSES = 4;  ///< D186: passes softening them
+
+	public:
+		/** @brief D186: a mesh's normals as its seams' moves and swell leave it (model space, per vertex), or null (none, or a worker has them). */
+		const std::vector<RE::NiPoint3>* GetShiftedNormals(const RE::BSGeometry* a_geometry) const
+		{
+			if (Busy())
+				return nullptr;
+			const auto it = shiftedNormals.find(a_geometry);
+			return it != shiftedNormals.end() ? &it->second : nullptr;
+		}
+		uint64_t GetShiftedNormalsVersion() const { return shiftedNormalsVersion; }
+
+	private:
 		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> gapShifts, vertexPushes;
 		/** @brief D82 diagnostics: each fall's own vanilla scroll, measured on its hidden original and on its copy, logged once. */
 		void ProbeScrolls();

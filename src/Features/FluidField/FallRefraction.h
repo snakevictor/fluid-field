@@ -50,17 +50,19 @@ namespace FluidFieldSim
 		/** @brief One falls piece to draw. */
 		struct MeshDraw
 		{
-			WaterLook look;                                   ///< D98: the water it pours out of
-			RE::BSGeometry* geometry = nullptr;               ///< Its buffers are built from this geometry's CPU copy, once
-			float world[12]{};                                ///< Its model to world transform, rows of a 3x4 (rotation times scale, translation)
-			const void* ground = nullptr;                     ///< FallGroundCB's contents for it (b13)
-			uint32_t groundSize = 0;                          ///< ...its size in bytes
-			ID3D11ShaderResourceView* bake = nullptr;         ///< Its flow bake (t124), or null
-			ID3D11ShaderResourceView* diffuse = nullptr;      ///< Its material's diffuse texture, or null
-			ID3D11ShaderResourceView* normal = nullptr;       ///< Its material's normal map, or null
-			const RiverCapture* river = nullptr;              ///< D171: its water type's capture when drawn this frame (its whole state), or null for the frame's
-			ID3D11Buffer* riverMaterial = nullptr;            ///< D171: its water type's PerMaterial (b1) for the river's shader, or null for the frame's
-			ID3D11VertexShader* riverVertexShader = nullptr;  ///< D171: ...and that type's variant of it, or null for the frame's
+			WaterLook look;                                      ///< D98: the water it pours out of
+			RE::BSGeometry* geometry = nullptr;                  ///< Its buffers are built from this geometry's CPU copy, once
+			const std::vector<RE::NiPoint3>* normals = nullptr;  ///< D186: its normals as its pushes leave it (model space), or null: the mesh's own
+			uint64_t normalsVersion = 0;                         ///< D186: ...rebuilt when this changes
+			float world[12]{};                                   ///< Its model to world transform, rows of a 3x4 (rotation times scale, translation)
+			const void* ground = nullptr;                        ///< FallGroundCB's contents for it (b13)
+			uint32_t groundSize = 0;                             ///< ...its size in bytes
+			ID3D11ShaderResourceView* bake = nullptr;            ///< Its flow bake (t124), or null
+			ID3D11ShaderResourceView* diffuse = nullptr;         ///< Its material's diffuse texture, or null
+			ID3D11ShaderResourceView* normal = nullptr;          ///< Its material's normal map, or null
+			const RiverCapture* river = nullptr;                 ///< D171: its water type's capture when drawn this frame (its whole state), or null for the frame's
+			ID3D11Buffer* riverMaterial = nullptr;               ///< D171: its water type's PerMaterial (b1) for the river's shader, or null for the frame's
+			ID3D11VertexShader* riverVertexShader = nullptr;     ///< D171: ...and that type's variant of it, or null for the frame's
 			ID3D11PixelShader* riverPixelShader = nullptr;
 		};
 
@@ -147,9 +149,10 @@ namespace FluidFieldSim
 			winrt::com_ptr<ID3D11Buffer> indices;
 			uint32_t vertexCount = 0;
 			uint32_t indexCount = 0;
+			uint64_t normalsVersion = 0;  ///< D186: the pushed normals it was built with (0: the mesh's own)
 		};
 		/** @brief Builds a piece's buffers from its CPU copy; false where it has none. */
-		bool BuildMesh(ID3D11Device* a_device, RE::BSGeometry* a_geometry, MeshBuffers& o_mesh) const;
+		bool BuildMesh(ID3D11Device* a_device, RE::BSGeometry* a_geometry, MeshBuffers& o_mesh, const std::vector<RE::NiPoint3>* a_normals = nullptr) const;
 
 		/** @brief Matches FallSurfaceVertex in FallSurface.hlsl. */
 		struct Vertex

@@ -486,12 +486,6 @@ Texture2D<float4> FallFoamTex : register(t113);      // D174: the river's own No
 static float3 FallUp = float3(0, 0, 1);
 /** D159: the plane through this pixel of the sheet, as ReflectPlane[0] (camera-relative): the depth behind is measured from it. */
 static float4 FallPlane = float4(0, 0, 1, 0);
-/**
- * D186: the falls' normals split over the screen's four quarters (1 on): the sheet's own (top left), its tangent (top right), the
- * normal maps laid on it (bottom left), and after the swell (bottom right), each as colour; to find which one draws a crease
- */
-static const int FALL_NORMAL_DEBUG = 0;
-static float3 FallDebugNormals[4] = { float3(0, 0, 1), float3(0, 0, 1), float3(0, 0, 1), float3(0, 0, 1) };
 #		endif
 
 /** The surface's plane (camera-relative, n.p + w = 0), from which the water behind it is measured. */
@@ -1288,7 +1282,8 @@ PS_OUTPUT main(PS_INPUT input)
 	float2 fallViewShift;
 	{
 		const float3 toEye = -viewDirection;
-		const float3 along = FallShading::SafeNormalize(input.FallTangent - FallUp * dot(input.FallTangent, FallUp), float3(0.0, 0.0, -1.0));
+		const float3 fallWay = dot(fallFlow.frame, fallFlow.frame) > 0.01 ? fallFlow.frame : input.FallTangent;  // D186: the flow's frame
+		const float3 along = FallShading::SafeNormalize(fallWay - FallUp * dot(fallWay, FallUp), float3(0.0, 0.0, -1.0));
 		const float3 across = cross(along, FallUp);
 		const float facing = max(dot(toEye, FallUp), 0.35);
 		fallViewShift = -float2(dot(toEye, across), dot(toEye, along)) / facing / FallShading::FALLS_UV_WORLD;
@@ -1416,13 +1411,11 @@ PS_OUTPUT main(PS_INPUT input)
 			own.xy *= FallShading::NORMAL_STRENGTH;
 			normal = FallShading::SafeNormalize(float3(normal.xy + own.xy, normal.z * max(own.z, 0.1)), normal);
 		}
-		normal = FallShading::SheetNormal(FallUp, input.FallTangent, normal);  // D174: not PerturbNormal's per-triangle frame
-		FallDebugNormals[0] = FallUp;
-		FallDebugNormals[1] = FallShading::SafeNormalize(input.FallTangent, FallUp);
-		FallDebugNormals[2] = normal;
+		// D186: laid on the flow's own frame (the bake's), smooth over the sheet; the mesh's tangent only where the bake has none
+		const float3 fallFrame = dot(fallFlow.frame, fallFlow.frame) > 0.01 ? fallFlow.frame : input.FallTangent;
+		normal = FallShading::SheetNormal(FallUp, fallFrame, normal);  // D174: not PerturbNormal's per-triangle frame
 		// D179: the bake's swell, the sheet bulging and piling up between its vertices
 		normal = FallShading::RaiseNormal(normal, input.WPosition.xyz, fallFlow.fields.y * FallShading::SWELL_HEIGHT);
-		FallDebugNormals[3] = normal;
 	}
 #			endif
 
@@ -1803,11 +1796,6 @@ PS_OUTPUT main(PS_INPUT input)
 	// the sheet over what lies behind, its alpha only fades the edges
 	finalColor = clamp(finalColor, 0.0, FallShading::MAX_OUTPUT);  // D3D's min and max return the other value for NaN
 	psout.Lighting = FallGround::DebugMode == 4 ? float4(FallShading::DepthBehindBand(input.FallData.x) * 0.5, 1.0) : float4(finalColor * fallAlpha, fallAlpha);
-	if (FALL_NORMAL_DEBUG) {
-		const float2 middle = SharedData::BufferDim.xy * FrameBuffer::DynamicResolutionParams1.xy * 0.5;  // (the render's own size)
-		const uint quarter = (input.HPosition.x >= middle.x ? 1u : 0u) + (input.HPosition.y >= middle.y ? 2u : 0u);
-		psout.Lighting = float4(FallDebugNormals[quarter] * 0.5 + 0.5, 1.0);
-	}
 
 #			endif
 #		endif

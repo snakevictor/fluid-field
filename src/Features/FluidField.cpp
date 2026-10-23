@@ -1935,6 +1935,8 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 		keep.insert(geometry);
 		FluidFieldSim::FallRefraction::MeshDraw draw;
 		draw.geometry = geometry;
+		draw.normals = fallSites.GetShiftedNormals(geometry);  // D186: the light on the surface as its pushes leave it
+		draw.normalsVersion = fallSites.GetShiftedNormalsVersion();
 		PrepareFallGroundData(geometry, property, draw.bake);
 		grounds.push_back(fallGroundData);
 		const auto& world = geometry->world;

@@ -165,7 +165,7 @@ static const float CREST_LONG = 400.0;
 /** D183: how much wider than tall a mist puff is (a low drifting veil, not a glowing ball). */
 static const float MIST_FLAT = 2.2;
 /** D184: every mist's opacity against MistOpacity (the user: 30% more see-through). */
-static const float MIST_SHEER = 0.7;
+static const float MIST_SHEER = 1.0;  // D186: 1.0, was 0.7 (the user: much more visible)
 /** D184: where sheets meet (the user's green): world units a second its mist drifts on along the water's way (grounded, drifting
  * forward a bit), and how much bigger and denser it is than other mist. */
 static const float MEET_DRIFT = 70.0;
@@ -194,17 +194,17 @@ static const float FLOW_BIAS = 0.6;
 /** D186: a mist puff as a volume: its depth against its width, how dense (optical depth across its width), the noise that breaks it
  * into wisps (world units of its finest feature, how much it breaks up, how fast it churns), and how much of the sun gets through it. */
 static const float MIST_DEPTH = 0.8;
-static const float MIST_DENSITY = 0.45;
-static const float MIST_CORE = 3.5;  // how fast it thins from its heart to its edge
+static const float MIST_DENSITY = 0.8;  // D186: 0.8 (the user: much more visible)
+static const float MIST_CORE = 3.5;     // how fast it thins from its heart to its edge
 static const float MIST_GRAIN = 63.0;
 static const float MIST_BREAKUP = 0.75;
 static const float MIST_CHURN = 0.35;
 static const float MIST_SELF_SHADOW = 1.6;  // D186: 1.6, was 0.8
 /** D186: the mist's colour, how much of the sun it scatters straight and forward (toward the sun), and how dark its thickest is. */
-static const float3 MIST_ALBEDO = float3(0.82, 0.84, 0.86);
+static const float3 MIST_ALBEDO = float3(0.9, 0.92, 0.94);
 static const float MIST_SUN = 0.06;
 static const float MIST_GLOW = 0.15;
-static const float MIST_THICK_DARK = 0.6;
+static const float MIST_THICK_DARK = 0.75;
 /** D186: how much of the sky a droplet's rim reflects, and how dark a shaded droplet's body is against a sunlit one. */
 static const float DROP_RIM = 0.5;
 /** D186: a droplet as a lens: how far across its own width it flips the scene behind it, how much of that light gets through, how
@@ -372,7 +372,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	const float cameraDistance = length(emitter.Position - FrameBuffer::CameraPosAdjust.xyz);
 	alpha *= 1.0 - smoothstep(SPRAY_NEAR_FADE, SPRAY_FAR, cameraDistance);
 	if (mist)
-		alpha *= seamDrops ? 0.0 : MIST_SHEER;
+		alpha *= (seamDrops || kind == 2) ? 0.0 : MIST_SHEER;  // D186: mist only where sheets meet (the user: it stacked against the rock)
 	// D183: farther off, fewer and bigger (a fixed share of each emitter's particles, by their own hash: none flicker)
 	const float keep = lerp(1.0, SPRAY_FAR_KEEP, smoothstep(SPRAY_LOD_FROM, SPRAY_NEAR_FADE, cameraDistance));
 	if (Hash(seed + 5u) > keep)

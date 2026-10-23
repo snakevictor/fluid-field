@@ -949,7 +949,7 @@ namespace FluidFieldSim
 				denseWork = std::async(std::launch::async, [this, running, shell]() {
 					const auto start = std::chrono::steady_clock::now();
 					for (auto* job : running)
-						ComputeDense(*job);
+						ComputeDense(*job, shell.get());
 					TrimHidden(running, *shell);
 					loadTiming.AddWorker(LoadWork::Dense, start);
 				});
@@ -1485,7 +1485,7 @@ namespace FluidFieldSim
 		return true;
 	}
 
-	void FallSites::ComputeDense(DenseJob& a_job)
+	void FallSites::ComputeDense(DenseJob& a_job, const ShellInput* a_solids)
 	{
 		// D172: on a worker (the subdivision and the landscape cut: 365 ms on one frame for a cascade's meshes)
 		auto& positions = a_job.positions;
@@ -1499,17 +1499,159 @@ namespace FluidFieldSim
 		};
 		// The world scale, for the edge length
 		const float scale = std::max(a_job.world.scale, 1e-3f);
+		// D186: the solids round the sheet (the statics' triangles, binned in its own space; the landscape) its edges split finer
+		// near (the user: denser where it crosses a boulder)
+		const RE::NiTransform toModel = a_job.world.Invert();
+		std::vector<std::array<RE::NiPoint3, 3>> solids;
+		std::unordered_map<int64_t, std::vector<uint32_t>> solidBins;
+		const float bin = DENSE_NEAR_REACH * 2.0f / scale;
+		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
+		const auto cellOf = [&](float a_v) { return static_cast<int64_t>(std::floor(a_v / bin)); };
+		if (a_solids) {
+			float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+			for (const auto& p : positions) {
+				const float c[3] = { p.x, p.y, p.z };
+				for (int k = 0; k < 3; k++) {
+					lo[k] = std::min(lo[k], c[k]);
+					hi[k] = std::max(hi[k], c[k]);
+				}
+			}
+			const float margin = DENSE_NEAR_REACH / scale;
+			for (const auto& triangle : a_solids->occluders) {
+				std::array<RE::NiPoint3, 3> local;
+				float tlo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, thi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+				for (int k = 0; k < 3; k++) {
+					local[k] = toModel * triangle[k];
+					const float c[3] = { local[k].x, local[k].y, local[k].z };
+					for (int a = 0; a < 3; a++) {
+						tlo[a] = std::min(tlo[a], c[a]);
+						thi[a] = std::max(thi[a], c[a]);
+					}
+				}
+				if (thi[0] < lo[0] - margin || tlo[0] > hi[0] + margin || thi[1] < lo[1] - margin || tlo[1] > hi[1] + margin || thi[2] < lo[2] - margin || tlo[2] > hi[2] + margin)
+					continue;
+				const auto index = static_cast<uint32_t>(solids.size());
+				solids.push_back(local);
+				for (int64_t x = cellOf(tlo[0]); x <= cellOf(thi[0]); x++) {
+					for (int64_t y = cellOf(tlo[1]); y <= cellOf(thi[1]); y++) {
+						for (int64_t z = cellOf(tlo[2]); z <= cellOf(thi[2]); z++)
+							solidBins[binKey(x, y, z)].push_back(index);
+					}
+				}
+			}
+		}
+		const auto nearSolid = [&](const RE::NiPoint3& a_p) {
+			// Not under the landscape (cut away there), nor near it (the sheets run along the ground over most of their length: the
+			// statics only, the boulders and walls it crosses)
+			const RE::NiPoint3 world = a_job.world * a_p;
+			float ground = 0.0f;
+			if (!a_job.interior && a_job.land.SampleHeight(world.x, world.y, ground) && world.z < ground + DENSE_NEAR_REACH)
+				return false;
+			const float reach = DENSE_NEAR_REACH / scale;
+			const int64_t cx = cellOf(a_p.x), cy = cellOf(a_p.y), cz = cellOf(a_p.z);
+			for (int64_t x = cx - 1; x <= cx + 1; x++) {
+				for (int64_t y = cy - 1; y <= cy + 1; y++) {
+					for (int64_t z = cz - 1; z <= cz + 1; z++) {
+						const auto it = solidBins.find(binKey(x, y, z));
+						if (it == solidBins.end())
+							continue;
+						for (const uint32_t t : it->second) {
+							if (TriangleDistanceSquared(a_p, solids[t][0], solids[t][1], solids[t][2]) <= reach * reach)
+								return true;
+						}
+					}
+				}
+			}
+			return false;
+		};
 		// Split until the edges are short (or the budget is spent): each edge's midpoint on the PN triangle's curved
 		// edge, its normal, texture coordinate and colour averaged; split vertices (seams in the texture) share the
 		// position's mean normal, so the curved edges meet. D91: only the edges longer than DENSE_EDGE, each pass
 		// (red-green: a triangle with one, two or three of its edges split becomes two, three or four), so the copy's
 		// triangles come out evenly sized wherever the original's were long, thin or uneven
+		// D186: the copy's shape smoothed (the user, SS 1438, 1440: each original triangle stayed nearly flat, PN's bulge is slight
+		// on these large, gently curved ones, and the light and everything reading the shape stepped from one to the next in broad
+		// bands): Taubin's two steps (in, then a little more out, so it does not shrink), each vertex moved only along its normal (its
+		// texture coordinates stay true), the sheet's open edges held, none moved past DENSE_SHAPE_MOST from where it was made (rest);
+		// then its normals from the faces of the new shape. Run after every round of splitting (its long edges reach far cheaply,
+		// the short ones refine: one pass after all reached only ~110 units, the larger triangles kept their bands)
+		std::vector<RE::NiPoint3> rest = positions;
+		const auto smoothShape = [&](int a_passes) {
+			std::map<std::tuple<int64_t, int64_t, int64_t>, uint32_t> groupAt;
+			std::vector<uint32_t> groupOf(positions.size());
+			for (std::size_t v = 0; v < positions.size(); v++) {
+				const auto key = std::make_tuple(std::llround(positions[v].x * 20.0), std::llround(positions[v].y * 20.0), std::llround(positions[v].z * 20.0));
+				groupOf[v] = groupAt.try_emplace(key, static_cast<uint32_t>(groupAt.size())).first->second;
+			}
+			const std::size_t groups = groupAt.size();
+			std::vector<RE::NiPoint3> place(groups), along(groups, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+			for (std::size_t v = 0; v < positions.size(); v++) {
+				place[groupOf[v]] = positions[v];
+				along[groupOf[v]] += along[groupOf[v]].Dot(normals[v]) < 0.0f ? -normals[v] : normals[v];
+			}
+			for (auto& n : along)
+				n = normalize(n);
+			std::vector<std::vector<uint32_t>> neighbours(groups);
+			std::map<std::pair<uint32_t, uint32_t>, int> edgeUses;
+			for (const auto& tri : triangles) {
+				for (int k = 0; k < 3; k++) {
+					const uint32_t a = groupOf[tri[k]], b = groupOf[tri[(k + 1) % 3]];
+					if (a == b)
+						continue;
+					neighbours[a].push_back(b);
+					neighbours[b].push_back(a);
+					edgeUses[std::make_pair(std::min(a, b), std::max(a, b))]++;
+				}
+			}
+			std::vector<uint8_t> held(groups, 0);
+			for (const auto& [edge, uses] : edgeUses) {
+				if (uses == 1)
+					held[edge.first] = held[edge.second] = 1;  // an open edge (texture seams are welded: no edge there)
+			}
+			std::vector<RE::NiPoint3> start(groups);
+			for (std::size_t v = 0; v < positions.size(); v++)
+				start[groupOf[v]] = rest[v];
+			const float most = DENSE_SHAPE_MOST / scale;
+			std::vector<RE::NiPoint3> next(groups);
+			for (int pass = 0; pass < a_passes * 2; pass++) {
+				const float factor = pass % 2 == 0 ? DENSE_SHAPE_IN : DENSE_SHAPE_OUT;
+				for (std::size_t g = 0; g < groups; g++) {
+					next[g] = place[g];
+					if (held[g] || neighbours[g].empty())
+						continue;
+					RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
+					for (const uint32_t o : neighbours[g])
+						sum += place[o];
+					const RE::NiPoint3 toward = sum / static_cast<float>(neighbours[g].size()) - place[g];
+					const float moved = (place[g] - start[g]).Dot(along[g]) + factor * toward.Dot(along[g]);
+					next[g] = start[g] + along[g] * std::clamp(moved, -most, most);
+				}
+				place.swap(next);
+			}
+			for (std::size_t v = 0; v < positions.size(); v++)
+				positions[v] = place[groupOf[v]];
+			// Its normals from the new shape's faces (by area), each vertex keeping its own side
+			std::vector<RE::NiPoint3> faces(groups, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+			for (const auto& tri : triangles) {
+				RE::NiPoint3 face = (positions[tri[1]] - positions[tri[0]]).Cross(positions[tri[2]] - positions[tri[0]]);
+				for (const uint32_t k : tri) {
+					const uint32_t g = groupOf[k];
+					faces[g] += face.Dot(along[g]) < 0.0f ? -face : face;
+				}
+			}
+			for (std::size_t v = 0; v < positions.size(); v++) {
+				const RE::NiPoint3& face = faces[groupOf[v]];
+				if (face.Length() > 1e-8f)
+					normals[v] = face.Dot(normals[v]) >= 0.0f ? normalize(face) : -normalize(face);
+			}
+		};
 		const auto edgeKey = [](uint32_t a_a, uint32_t a_b) { return std::make_pair(std::min(a_a, a_b), std::max(a_a, a_b)); };
 		for (int level = 0; level < DENSE_LEVELS; level++) {
 			std::set<std::pair<uint32_t, uint32_t>> marked;
 			for (const auto& tri : triangles) {
 				for (int k = 0; k < 3; k++) {
-					if ((positions[tri[k]] - positions[tri[(k + 1) % 3]]).Length() * scale > DENSE_EDGE)
+					const float length = (positions[tri[k]] - positions[tri[(k + 1) % 3]]).Length() * scale;
+					if (length > DENSE_EDGE || (length > DENSE_EDGE_NEAR && positions.size() < DENSE_NEAR_BUDGET && nearSolid((positions[tri[k]] + positions[tri[(k + 1) % 3]]) * 0.5f)))
 						marked.insert(edgeKey(tri[k], tri[(k + 1) % 3]));
 				}
 			}
@@ -1529,6 +1671,7 @@ namespace FluidFieldSim
 				const RE::NiPoint3 b1 = (p0 * 2.0f + p1 - n0 * (p1 - p0).Dot(n0)) / 3.0f;
 				const RE::NiPoint3 b2 = (p1 * 2.0f + p0 - n1 * (p0 - p1).Dot(n1)) / 3.0f;
 				positions.push_back((p0 + b1 * 3.0f + b2 * 3.0f + p1) / 8.0f);
+				rest.push_back(positions.back());
 				normals.push_back(normalize(normals[a_a] + normals[a_b]));
 				uvs.push_back(RE::NiPoint2((uvs[a_a].x + uvs[a_b].x) * 0.5f, (uvs[a_a].y + uvs[a_b].y) * 0.5f));
 				const RE::NiColorA& c0 = colors[a_a];
@@ -1578,9 +1721,11 @@ namespace FluidFieldSim
 				}
 			}
 			triangles.swap(finer);
+			smoothShape(DENSE_SHAPE_LEVEL_PASSES);
 		}
 		if (positions.size() > 65535)
 			return;
+		smoothShape(DENSE_SHAPE_PASSES);
 		// D186: the normals smoothed over the copy (the user, SS 1395: hard straight lines in the water's light along the original's
 		// long edges, where the normal interpolated across each of its triangles turns its gradient, and along its texture seams, where
 		// the split vertices kept their own normals): each position's vertices share one normal, softened over its neighbours
@@ -3847,6 +3992,76 @@ namespace FluidFieldSim
 				value[6] = shift.z;
 			}
 		}
+		// D186: the normals of the surface as the pushes leave it (the seams' moves and the swell), for the see-through falls' light
+		// (the user, SS 1438: the swell bent the drawn surface where the light, on the rest normal, did not follow): each mesh's
+		// faces moved by their vertices' shifts, by area, softened SHIFTED_NORMAL_PASSES times, each vertex keeping its own side
+		for (const auto& [geometry, base] : vertexClipBase) {
+			auto* triShape = geometry ? const_cast<RE::BSGeometry*>(geometry)->AsTriShape() : nullptr;
+			auto* renderer = geometry ? const_cast<RE::BSGeometry*>(geometry)->GetGeometryRuntimeData().rendererData : nullptr;
+			if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || !renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_NORMAL))
+				continue;
+			const auto& counts = triShape->GetTrishapeRuntimeData();
+			if (base + counts.vertexCount > vertexClips.size())
+				continue;
+			auto& desc = renderer->vertexDesc;
+			const uint32_t stride = desc.GetSize();
+			const uint32_t positionOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+			const uint32_t normalOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_NORMAL);
+			std::vector<RE::NiPoint3> moved(counts.vertexCount), rest(counts.vertexCount);
+			std::map<std::tuple<int64_t, int64_t, int64_t>, uint32_t> groupAt;
+			std::vector<uint32_t> groupOf(counts.vertexCount);
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				const uint8_t* data = renderer->rawVertexData + static_cast<std::size_t>(v) * stride;
+				float local[3];
+				std::memcpy(local, data + positionOffset, sizeof(local));
+				const auto& value = vertexClips[base + v];
+				moved[v] = RE::NiPoint3(local[0] + value[4], local[1] + value[5], local[2] + value[6]);
+				const uint8_t* n = data + normalOffset;
+				rest[v] = RE::NiPoint3(n[0] / 255.0f * 2.0f - 1.0f, n[1] / 255.0f * 2.0f - 1.0f, n[2] / 255.0f * 2.0f - 1.0f);
+				const auto key = std::make_tuple(std::llround(local[0] * 20.0), std::llround(local[1] * 20.0), std::llround(local[2] * 20.0));
+				groupOf[v] = groupAt.try_emplace(key, static_cast<uint32_t>(groupAt.size())).first->second;
+			}
+			const std::size_t groups = groupAt.size();
+			std::vector<RE::NiPoint3> sideOf(groups, RE::NiPoint3(0.0f, 0.0f, 0.0f)), current(groups, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+			for (uint32_t v = 0; v < counts.vertexCount; v++)
+				sideOf[groupOf[v]] += sideOf[groupOf[v]].Dot(rest[v]) < 0.0f ? -rest[v] : rest[v];
+			std::vector<std::vector<uint32_t>> neighbours(groups);
+			for (uint32_t t = 0; t < counts.triangleCount; t++) {
+				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(t) * 3;
+				if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
+					continue;
+				const RE::NiPoint3 face = (moved[index[1]] - moved[index[0]]).Cross(moved[index[2]] - moved[index[0]]);
+				for (int k = 0; k < 3; k++) {
+					const uint32_t g = groupOf[index[k]], o = groupOf[index[(k + 1) % 3]];
+					current[g] += face.Dot(sideOf[g]) < 0.0f ? -face : face;
+					if (g != o) {
+						neighbours[g].push_back(o);
+						neighbours[o].push_back(g);
+					}
+				}
+			}
+			const auto unit = [](const RE::NiPoint3& a_v) { const float l = a_v.Length(); return l > 1e-8f ? a_v / l : a_v; };
+			for (auto& n : current)
+				n = unit(n);
+			std::vector<RE::NiPoint3> next(groups);
+			for (int pass = 0; pass < SHIFTED_NORMAL_PASSES; pass++) {
+				for (std::size_t g = 0; g < groups; g++) {
+					RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
+					for (const uint32_t o : neighbours[g])
+						sum += current[o];
+					next[g] = neighbours[g].empty() ? current[g] : unit(current[g] + sum / static_cast<float>(neighbours[g].size()));
+				}
+				current.swap(next);
+			}
+			auto& normals = shiftedNormals[geometry];
+			normals.resize(counts.vertexCount);
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				const RE::NiPoint3& n = current[groupOf[v]];
+				normals[v] = n.Length() > 0.5f ? (n.Dot(rest[v]) >= 0.0f ? n : -n) : rest[v];
+			}
+		}
+		std::erase_if(shiftedNormals, [&](const auto& a_entry) { return !vertexClipBase.contains(a_entry.first); });
+		shiftedNormalsVersion++;
 		vertexClipVersion++;
 		logger::info("[Fluid Field]   vertex moves: largest {:.1f} units; {} broken (not finite or past {:.0f}) left still: {} from the seams, {} from the swell", largest, broken,
 			MOST_SHIFT, badGaps, badPushes);
@@ -3949,7 +4164,9 @@ namespace FluidFieldSim
 			// mesh (each vertex at most its neighbour's value plus a_slope times their edge): no vertex is pushed far past
 			// its neighbours, so a push cannot stand up as a spike over one 20-unit triangle. Zeros (open edges, rock)
 			// stay zero and the push rises from them as a ramp
-			const auto limitSlope = [&](std::vector<float>& a_value, float a_slope) {
+			// D186: on the fine mesh (edges under DENSE_FINE_EDGE: near rock) a_fineSlope: its small triangles carry a steeper rise
+			// without a spike, so the water piles up against the rock and keeps the bake's detail there
+			const auto limitSlope = [&](std::vector<float>& a_value, float a_slope, float a_fineSlope) {
 				using Entry = std::pair<float, uint16_t>;
 				std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> frontier;
 				for (uint32_t v = 0; v < counts.vertexCount; v++)
@@ -3960,8 +4177,9 @@ namespace FluidFieldSim
 					if (value > a_value[v])
 						continue;
 					for (const auto& [n, length] : next[v]) {
-						if (value + a_slope * length < a_value[n]) {
-							a_value[n] = value + a_slope * length;
+						const float rise = (length < DENSE_FINE_EDGE ? a_fineSlope : a_slope) * length;
+						if (value + rise < a_value[n]) {
+							a_value[n] = value + rise;
 							frontier.emplace(a_value[n], n);
 						}
 					}
@@ -3989,6 +4207,30 @@ namespace FluidFieldSim
 						if (distance + length < fromEdge[n]) {
 							fromEdge[n] = distance + length;
 							frontier.emplace(fromEdge[n], n);
+						}
+					}
+				}
+			}
+			// D186: how far each vertex lies from rock, along the mesh, up to ROCK_REACH: the push rises off it by this (the bow wave)
+			std::vector<float> fromRock(counts.vertexCount, FLT_MAX);
+			{
+				using Entry = std::pair<float, uint16_t>;
+				std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> frontier;
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					if (inRock[v]) {
+						fromRock[v] = 0.0f;
+						frontier.emplace(0.0f, static_cast<uint16_t>(v));
+					}
+				}
+				while (!frontier.empty()) {
+					const auto [distance, v] = frontier.top();
+					frontier.pop();
+					if (distance > fromRock[v] || distance > ROCK_REACH)
+						continue;
+					for (const auto& [n, length] : next[v]) {
+						if (distance + length < fromRock[n]) {
+							fromRock[n] = distance + length;
+							frontier.emplace(fromRock[n], n);
 						}
 					}
 				}
@@ -4111,13 +4353,59 @@ namespace FluidFieldSim
 				if (linked != flowBakes.end()) {
 					const float stirred = std::clamp(stirredAt(uvs[v][0], uvs[v][1]) / WOBBLE_STIRRED, 0.0f, 1.0f);
 					const float inland = std::clamp(fromEdge[v] / WOBBLE_EDGE_REACH, 0.0f, 1.0f);
+					// (D186: churning it toward rock spiked the fine mesh there: the flow's coordinates the wobble runs on jump between
+					// neighbours where the strands part round a boulder, SS 1444-1453; it fades out toward rock again, D89)
 					wobbleSize[v] = (WOBBLE_CALM + (WOBBLE_MOST - WOBBLE_CALM) * stirred * stirred * (3.0f - 2.0f * stirred)) * inland * inland * (3.0f - 2.0f * inland);
 				}
 				const float t = std::clamp((swellAt(uvs[v][0], uvs[v][1]) - PUSH_FROM) / (PUSH_FULL - PUSH_FROM), 0.0f, 1.0f);
 				swellPush[v] = PUSH_MOST * t * t * (3.0f - 2.0f * t);
 			}
-			limitSlope(wobbleSize, WOBBLE_SLOPE);
-			limitSlope(swellPush, PUSH_SLOPE);
+			// D186: none in a band along the rock, rising off it by its distance along the mesh (smooth, unlike the rock mask's
+			// in or out per vertex: on the fine mesh each vertex beside a zeroed one stood up, a sawtooth along every contact, SS
+			// 1444-1446), then softened over the neighbours ROCK_FIELD_PASSES times, then held to their slopes
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				const float t = std::clamp((fromRock[v] - ROCK_CONTACT) / ROCK_RAMP, 0.0f, 1.0f);
+				const float ramp = t * t * (3.0f - 2.0f * t);
+				wobbleSize[v] *= ramp;
+				swellPush[v] *= ramp;
+			}
+			// D186: widely (the user, SS 1461: water is smooth however stirred; the deformation in area, not local): many passes, so it
+			// spreads over tens of units on the fine mesh as on the coarse
+			for (int pass = 0; pass < ROCK_FIELD_PASSES; pass++) {
+				for (auto* values : { &wobbleSize, &swellPush }) {
+					std::vector<float> softened = *values;
+					for (uint32_t v = 0; v < counts.vertexCount; v++) {
+						if (open[v] || inRock[v] || next[v].empty())
+							continue;
+						float sum = 0.0f;
+						for (const auto& [n, length] : next[v])
+							sum += (*values)[n];
+						softened[v] = 0.5f * (*values)[v] + 0.5f * sum / static_cast<float>(next[v].size());
+					}
+					values->swap(softened);
+				}
+			}
+			limitSlope(wobbleSize, WOBBLE_SLOPE, WOBBLE_SLOPE_FINE);
+			limitSlope(swellPush, PUSH_SLOPE, PUSH_SLOPE_FINE);
+			// D186: the wobble's coordinates (where it reads its waves) softened over the neighbours too: where the strands part round a
+			// boulder they jump between neighbours, and the fine mesh there wobbled in narrow, out-of-step ridges (SS 1461)
+			std::vector<float> wobbleAcross(counts.vertexCount, 0.0f), wobbleAlong(counts.vertexCount, 0.0f);
+			for (uint32_t v = 0; v < counts.vertexCount; v++)
+				flowAt(uvs[v][0], uvs[v][1], wobbleAcross[v], wobbleAlong[v]);
+			for (int pass = 0; pass < WOBBLE_COORD_PASSES; pass++) {
+				for (auto* values : { &wobbleAcross, &wobbleAlong }) {
+					std::vector<float> softened = *values;
+					for (uint32_t v = 0; v < counts.vertexCount; v++) {
+						if (next[v].empty())
+							continue;
+						float sum = 0.0f;
+						for (const auto& [n, length] : next[v])
+							sum += (*values)[n];
+						softened[v] = 0.5f * (*values)[v] + 0.5f * sum / static_cast<float>(next[v].size());
+					}
+					values->swap(softened);
+				}
+			}
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
 				const float length = normals[v].Length();
 				if (base + v < vertexClips.size()) {
@@ -4125,8 +4413,7 @@ namespace FluidFieldSim
 					value[7] = value[8] = value[9] = value[10] = value[11] = 0.0f;
 					// D106: the depth behind (value[12], [13]) comes from DepthStep's rays from the vertices themselves
 					if (wobbleSize[v] > 0.0f) {
-						float across = 0.0f, along = 0.0f;
-						flowAt(uvs[v][0], uvs[v][1], across, along);
+						const float across = wobbleAcross[v], along = wobbleAlong[v];
 						const RE::NiPoint3 wobble = normals[v] * (wobbleSize[v] / (length * scale));
 						value[7] = across;
 						wobbled++;
@@ -4431,9 +4718,68 @@ namespace FluidFieldSim
 					stretch.swap(scratch);
 				}
 			}
+			// D186: the flow's frame per texel: the world way the along coordinate runs, across held (the normal maps run on the flow
+			// coordinates, so this is their frame), from the coordinates' and the positions' changes over FRAME_REACH texels each way
+			// (wide enough that the original mesh's coarse edges, where its texture mapping turns, do not show), softened; zero where
+			// it cannot be told (the shader keeps the mesh's own tangent there). The user, SS 1412-1417: per triangle it creased the
+			// water, downhill spun round every dome's top
+			std::vector<RE::NiPoint3> frame(count, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+			if (field.position.size() == count && field.covered.size() == count) {
+				const int32_t hh = static_cast<int32_t>(h);
+				const auto coveredAt = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < w && a_y < hh && field.covered[static_cast<std::size_t>(a_y) * w + a_x]; };
+				// How many covered texels in a row there are from one, toward a side, up to FRAME_REACH
+				const auto reach = [&](int32_t a_x, int32_t a_y, int32_t a_dx, int32_t a_dy) {
+					int32_t k = 0;
+					while (k < FRAME_REACH && coveredAt(a_x + a_dx * (k + 1), a_y + a_dy * (k + 1)))
+						k++;
+					return k;
+				};
+				for (int32_t y = 0; y < hh; y++) {
+					for (int32_t x = 0; x < w; x++) {
+						const std::size_t i = static_cast<std::size_t>(y) * w + x;
+						if (!field.covered[i])
+							continue;
+						const int32_t l = reach(x, y, -1, 0), r = reach(x, y, 1, 0), above = reach(x, y, 0, -1), d = reach(x, y, 0, 1);
+						if (l + r == 0 || above + d == 0)
+							continue;
+						const std::size_t il = i - l, ir = i + r, iu = i - static_cast<std::size_t>(above) * w, id = i + static_cast<std::size_t>(d) * w;
+						// Per texel across the grid (x) and down it (y): the positions' change, and the coordinates'
+						const RE::NiPoint3 px = (field.position[ir] - field.position[il]) / static_cast<float>(l + r);
+						const RE::NiPoint3 py = (field.position[id] - field.position[iu]) / static_cast<float>(above + d);
+						const float ax = (a_node.across[ir] - a_node.across[il]) / static_cast<float>(l + r), ay = (a_node.across[id] - a_node.across[iu]) / static_cast<float>(above + d);
+						const float bx = (a_node.along[ir] - a_node.along[il]) / static_cast<float>(l + r), by = (a_node.along[id] - a_node.along[iu]) / static_cast<float>(above + d);
+						// The grid's step that moves along by one with across held: (dx, dy) solving ax dx + ay dy = 0, bx dx + by dy = 1
+						const float det = ax * by - ay * bx;
+						const RE::NiPoint3 way = std::abs(det) > 1e-8f ? px * (-ay / det) + py * (ax / det) : py;
+						const float length = way.Length();
+						if (std::isfinite(length) && length > 1e-6f)
+							frame[i] = way / length;
+					}
+				}
+				std::vector<RE::NiPoint3> scratch(count);
+				for (int pass = 0; pass < FRAME_BLUR; pass++) {
+					for (int32_t y = 0; y < hh; y++) {
+						for (int32_t x = 0; x < w; x++) {
+							const std::size_t i = static_cast<std::size_t>(y) * w + x;
+							RE::NiPoint3 total(0.0f, 0.0f, 0.0f);
+							for (int32_t dy = -1; dy <= 1; dy++) {
+								for (int32_t dx = -1; dx <= 1; dx++) {
+									const int32_t nx = x + dx, ny = y + dy;
+									if (nx < 0 || ny < 0 || nx >= w || ny >= hh)
+										continue;
+									total += frame[static_cast<std::size_t>(ny) * w + nx] * ((dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f));
+								}
+							}
+							const float length = total.Length();
+							scratch[i] = frame[i].Length() > 0.0f && length > 1e-6f ? total / length : frame[i];
+						}
+					}
+					frame.swap(scratch);
+				}
+			}
 			// D179: twice the rows: the flow as before, then what the march knows of the water for the shading (FallGround's
 			// BakeFieldsAt): its speed over vanilla's, how high it piles up (swell), how stirred it is, how aerated. D181: a
-			// third, the coordinates' stretch (x; yzw spare)
+			// third, the coordinates' stretch (x; D186: yzw the flow's frame)
 			bake.texels.resize(count * 12);
 			const auto fieldAt = [&](const std::vector<float>& a_values, std::size_t a_i, float a_none) { return a_values.size() == count ? a_values[a_i] : a_none; };
 			for (std::size_t i = 0; i < count; i++) {
@@ -4448,7 +4794,9 @@ namespace FluidFieldSim
 				extra[3] = std::clamp(fieldAt(field.wake, i, 0.0f), 0.0f, 1.0f);
 				float* third = &bake.texels[(count * 2 + i) * 4];
 				third[0] = stretch[i];
-				third[1] = third[2] = third[3] = 0.0f;
+				third[1] = frame[i].x;  // D186: the flow's frame, world axes (zero: none)
+				third[2] = frame[i].y;
+				third[3] = frame[i].z;
 			}
 			flowBakes[a_node.geometry] = std::move(bake);
 			a_node.done = true;

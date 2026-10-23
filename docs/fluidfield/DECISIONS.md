@@ -4273,3 +4273,31 @@ Entry format:
 -   Left: stronger aeration on vertical plunges and per-texel plunge data in the bake (plunge foam and particles); the
     crest blend.
 -   References: D182-D185
+
+## D187: Smooth falls sheets: the flow's frame, a smoothed and adaptive dense copy, lighting on the pushed surface, wide deformation
+
+-   Date: 2026-10-23
+-   Decision (the user's rounds over SS 1412-1461, diagnosed with temporary split-screen views of the falls' normals and
+    terms in Water.hlsl, since removed):
+    -   **The normal maps' frame is the flow's own**: LinkBakes stores, per texel, the world way the along coordinate runs
+        with across held (over FRAME_REACH texels each way, FRAME_BLUR passes) in the bake texture's third section (yzw);
+        the river shader's falls lay the normal maps and the bubbles' parallax on it. The mesh's tangents (one way per
+        original triangle: the creases, SS 1412) and a downhill frame (singular at every dome's top, SS 1416-1417) are gone.
+    -   **The dense copy's shape smoothed as it is split**: Taubin pairs after every splitting round (DENSE_SHAPE_LEVEL_PASSES)
+        and at the end (DENSE_SHAPE_PASSES), along the normal only, open edges held, at most DENSE_SHAPE_MOST from where
+        each vertex was made; normals from the new faces. PN triangles left each original triangle nearly flat: broad
+        bands in the light and in everything reading the shape (SS 1438, 1440). Bake cache 16.
+    -   **Denser near solids**: edges within DENSE_NEAR_REACH of a static above the ground split to DENSE_EDGE_NEAR, up to
+        DENSE_NEAR_BUDGET vertices a copy (near the landscape too, a sheet overflowed 16-bit indices and vanished).
+    -   **The light follows the pushes**: ComposeShifts works out each mesh's normals as its seam moves and swell leave it;
+        the see-through falls' vertex buffers take them.
+    -   **Near rock**: the push and wobble none within ROCK_CONTACT of rock, rising over ROCK_RAMP, softened ROCK_FIELD_PASSES
+        times, a gentle slope on the fine mesh; the wobble's coordinates softened (they jump where the strands part round a
+        boulder). Churning the wobble toward rock spiked the fine mesh and was reverted (SS 1444-1453); the narrow ridges of
+        SS 1461 asked for the deformation in area, not local.
+    -   **Vertical drops aerate sooner** (FallStrands: up to VERTICAL_AERATION more toward upright faces).
+    -   **Spray**: the mist much more visible (MIST_DENSITY 0.8, MIST_SHEER 1); none from rock strikes (it stacked against
+        the rock), only where sheets meet.
+-   Left: the falls' water texture stretched and magnified on fast water (SS 1466); the light following the wobble; per-texel
+    plunge data in the bake; the dense copies' load time (~17 s on their worker).
+-   References: D73, D82, D99, D174, D179, D185, D186
