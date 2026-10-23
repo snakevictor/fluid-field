@@ -25,7 +25,8 @@ cbuffer FallEffectsCB : register(b7)
 	float EffectsPad;
 	float MapSpacing;  // D183: the water simulation's map (WaterMap): world units between texels, and texels per side
 	uint MapRes;
-	float2 MapPad;
+	uint HasEnvironment;  // D186: EnvironmentTex holds the surroundings
+	float MapPad;
 };
 
 #endif  // FLUID_FIELD_FALL_EFFECTS_HLSLI

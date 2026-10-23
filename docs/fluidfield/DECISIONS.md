@@ -4241,3 +4241,35 @@ Entry format:
 -   Left: the rock tests (9 s of rays at 5 ms a frame), the solves (14 s of CPU on workers), the seams (4-6 s), and a warm
     load's dense copies, seams, culling and linking (2-3 s each).
 -   References: D82, D112, D113, D126, D172, D173
+
+## D186: Volumetric mist, lens droplets in the sun's shadow, seam mist where the water lands, smooth sheet frames
+
+-   Date: 2026-10-23
+-   Decision (the user's rounds over SS 1374-1412):
+    -   **Mist as volumes**: each puff an ellipsoid the view ray is traced through, cut where the scene lies (a soft, true
+        contact: no jagged depth-test line, SS 1374; the particles' hardware depth test is off, the shaders test the depth
+        copy), denser toward its heart (MIST_CORE), broken into wisps by world-space value noise (parallax), self-shadowed
+        toward the sun. It takes light in: a grey albedo, little sun and forward glow, darker the thicker and underneath.
+    -   **Droplets**: tear-shaped, each its own width and length, 50% bigger, 75% opacity, shaded as small bodies (sky light
+        by the way they face, fresnel rim, glint) and as lenses: the frame behind flipped through them (a copy taken just
+        before the spray, the falls in it) and the surroundings' cubemap by fresnel, over their shape at any opacity.
+    -   **The sun's shadow on both**: Volumetric Shadows' map and cascades (as FallRefraction found them bound), terrain and
+        clouds.
+    -   **Crests (pink)**: a narrower V (CREST_FAN 0.18), mostly the flow's way (CREST_FACING), biased toward the river's
+        simulated flow; a nudge up; fading as they fly; the band reaching upstream to near-flat water (CREST_FLAT), the
+        shown lead-in included.
+    -   **Where sheets meet (green)**: the seams' points joined into lines; mist and droplets only on each line's lowest
+        MEET_FOOT_BAND (where its water lands), droplets alone higher up (FallEmitterKind::MeetDrops): stacked mist hung down
+        the tongues (SS 1402) however single points were judged. Grounded mist drifting forward; droplets fanned forward,
+        steeper, carried 50% farther.
+    -   **Rock (blue)**: twice as dense (STRIKE_SPACING 28, STRIKE_FOAM 0.65), fewer droplets each (STRIKE_DROPS), a narrow
+        cone (STRIKE_CONE); the contact foam solid where it is strong (ContactCover: head on, thick and steady, SS 1409).
+    -   **Aeration**: its look eased inward (faint at a patch's rim), less milky (MILK_AERATION, MILK_SPEED), its foam in two
+        parallaxed layers under the surface, the bake's field blurred 10 passes (SS 1405); bubbles 7:3 aerated to plain, 10%
+        fewer.
+    -   **Smooth sheets**: the dense copies' normals shared across texture seams and blurred over ~80 units; the see-through
+        falls' normal-map frame laid downhill (FallRefraction: the texture coordinates gave one way per original triangle,
+        the creases of SS 1395, 1408; found with Water.hlsl's FALL_NORMAL_DEBUG split screen, SS 1412). Bake cache 14.
+-   Left: stronger aeration on vertical plunges and per-texel plunge data in the bake (plunge foam and particles); the
+    crest blend.
+-   References: D182-D185

@@ -485,7 +485,7 @@ namespace FluidFieldSim
 		{
 			std::vector<FallPlunge> plungePoints;
 			std::vector<FallEmitter> sprayEmitters;
-			uint32_t meets = 0, lips = 0, kinds[3]{};
+			uint32_t meets = 0, lips = 0, kinds[4]{};
 			LandscapeCache land;  ///< D182: the landscape round the falls (a copy, read on the worker): no spray from under it
 			bool haveLand = false;
 			uint32_t buried = 0;
@@ -673,6 +673,7 @@ namespace FluidFieldSim
 		static constexpr float DENSE_TRIM_UNDER = 24.0f;  ///< D172: the dense copies are cut this far under the landscape (BURY_LAND: the cut line stays in the ground)
 		static constexpr float DENSE_EDGE = 20.0f;        ///< D73: world units the dense copy's edges are at most (when the vertex budget allows; D91: 20, was 40, split only where longer)
 		static constexpr int DENSE_LEVELS = 6;            ///< D73: splitting passes at most (D91: adaptive, so passes only refine what is still long)
+		static constexpr int DENSE_NORMAL_PASSES = 16;    ///< D186: passes softening the copy's normals over its neighbours (about 80 units)
 		/** @brief D73: builds and attaches a dense copy of a lit mesh; false where it cannot (no CPU data, or no engine builder). */
 		/** @brief D172: a dense copy in the making: the original's geometry copied on the render thread, made on a worker. */
 		struct DenseJob
@@ -737,7 +738,7 @@ namespace FluidFieldSim
 			std::vector<float> disturbance;            ///< D85: how stirred the water is there (the wobble's size), softened
 			std::vector<float> clearFront, clearBack;  ///< D104: as BakeJob's: the open water or air on each side of the sheet (its depth behind, once its outer side is known)
 		};
-		static constexpr uint32_t BAKE_CACHE_VERSION = 11;  ///< D185: 11, the rock tested on every other texel first; D183: 10, 8 units a texel; D181: 9, finer and smoother; D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances; D126: 7, the domain was the culled shell; D132: 8, the whole mesh again)
+		static constexpr uint32_t BAKE_CACHE_VERSION = 14;  ///< D186: 14, the copies' tangents smoothed; 13, the aeration softer; 12, the copies' normals smoothed; D185: 11, the rock tested on every other texel first; D183: 10, 8 units a texel; D181: 9, finer and smoother; D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances; D126: 7, the domain was the culled shell; D132: 8, the whole mesh again)
 		static constexpr float CLEAR_REACH = 600.0f;        ///< D104: world units the clearance rays look for rock
 		static constexpr float CLEAR_START = 40.0f;         ///< D105: the clearance rays start this far off the other side of the sheet
 		/** @brief D82: where a bake job's finished bake is kept on disk: by its reference, model part, placement, the rock and ground round it, and the version. */
@@ -822,17 +823,20 @@ namespace FluidFieldSim
 		static constexpr float EMIT_DEEP = 24.0f;            ///< D184: another sheet's shown water this far over an emitter: it is deep under it, none
 		static constexpr uint32_t SOURCE_LEAST_CRESTS = 4;   ///< D184: a mesh with this many columns' crests at a water's level pours out of it...
 		static constexpr float SOURCE_SHARE = 0.15f;         ///< D184: ...and at least this share of its columns'
-		static constexpr int32_t CREST_BAND_STEP = 4;        ///< D184: texels between the crest band's emitters upstream of a column's turn...
-		static constexpr int32_t CREST_BAND_ROWS = 12;       ///< D184: ...up to this many texels upstream of it
+		static constexpr int32_t CREST_BAND_STEP = 3;        ///< D184: texels between the crest band's emitters upstream of a column's turn...
+		static constexpr int32_t CREST_BAND_ROWS = 24;       ///< D184: ...up to this many texels upstream of it
 		static constexpr float CREST_BAND_STRENGTH = 0.45f;  ///< D184: how much the band's emitters throw (on less often than the turn's)
+		static constexpr float CREST_FLAT = 0.995f;          ///< D186: the crest's band reaches upstream until the water faces this far up (flat)
+		static constexpr float MEET_LINE_CELL = 32.0f;       ///< D186: world units per cell the seams' points are joined into lines over
+		static constexpr float MEET_FOOT_BAND = 48.0f;       ///< D186: world units over a seam line's lowest point its water lands: mist there
 		static constexpr float MEET_CELL = 16.0f;            ///< D184: world units per cell of the shown water's grid (ComputePlunges)
 		static constexpr float MEET_EMIT = 12.0f;            ///< D184: another mesh's shown water this near a texel: the two sheets meet there (mist)
 		static constexpr float MEET_SPACING = 40.0f;         ///< D184: world units between the meeting mist emitters
 		static constexpr float MEET_STRENGTH = 0.85f;        ///< D184: how much a meeting throws
 		static constexpr float CREST_THROW = 300.0f;         ///< D184: world units a second the crests' spray leaves at least
 		static constexpr int32_t HEAD_ON_REACH = 3;          ///< D183: texels downstream rock must lie for the water to strike it head-on
-		static constexpr float STRIKE_FOAM = 0.75f;          ///< D183: the bake's rock foam a head-on strike needs
-		static constexpr float STRIKE_SPACING = 56.0f;       ///< D183: world units between strike emitters
+		static constexpr float STRIKE_FOAM = 0.65f;          // D186: 0.65, was 0.75 (the user: more of them along a face)          ///< D183: the bake's rock foam a head-on strike needs
+		static constexpr float STRIKE_SPACING = 28.0f;       // D186: 28, was 56       ///< D183: world units between strike emitters
 		static constexpr float LIP_TANGENT = 0.94f;          ///< D183: past a crest, the first texel facing less up than this is where the flat water turns to fall (the crest's droplets)
 		static constexpr float SURFACE_CELL = 16.0f;         ///< D183: world units per cell of the meshes' surface grids (ComputePlunges)
 		static constexpr float OTHER_REACH = 400.0f;         ///< D183: world units above a point another mesh's water may lie and still cover it

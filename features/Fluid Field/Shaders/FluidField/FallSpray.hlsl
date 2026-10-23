@@ -5,10 +5,21 @@
 // and fade. Drawn as camera-facing quads after the falls' surface, sharing its constants; droplets
 // are drawn smeared along their motion (D33), as the eye sees fast spray, and lit white.
 
+// D186: the shadow maps (Volumetric Shadows' when FallSurfaceRenderer binds them; terrain and clouds) are read with this
+SamplerState SpraySampler : register(s1);
+#define LinearSampler SpraySampler
+
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/SharedData.hlsli"
 #include "FluidField/FallEffects.hlsli"
+#if defined(PSHADER)
+#	include "Common/ShadowSampling.hlsli"
+#endif
+
+// D186: the frame as it stands (the droplets refract it) and the surroundings (they reflect them), as the falls' surface
+Texture2D<float4> SceneColor : register(t105);
+TextureCube<float4> EnvironmentTex : register(t106);
 
 struct Emitter
 {
@@ -90,6 +101,22 @@ float Hash(uint a_value)
 	return float(a_value & 0xFFFFFF) / 16777216.0;
 }
 
+/** D186: smooth value noise in 3D (0 to 1), from Hash at the lattice's corners. */
+float ValueNoise(float3 a_p)
+{
+	const float3 i = floor(a_p);
+	float3 f = a_p - i;
+	f = f * f * (3.0 - 2.0 * f);
+	const int3 b = int3(i);
+	float v[8];
+	[unroll] for (int k = 0; k < 8; k++)
+	{
+		const int3 c = b + int3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+		v[k] = Hash(uint(c.x) * 73856093u ^ uint(c.y) * 19349663u ^ uint(c.z) * 83492791u);
+	}
+	return lerp(lerp(lerp(v[0], v[1], f.x), lerp(v[2], v[3], f.x), f.y), lerp(lerp(v[4], v[5], f.x), lerp(v[6], v[7], f.x), f.y), f.z);
+}
+
 /** D47: water this fast (world units per second) throws spray at full rate. */
 static const float FAST_WATER = 700.0;
 /** D48: droplets closer to the camera than this vanish (fading in over four times as far). */
@@ -107,6 +134,8 @@ struct VSOutput
 	float3 WorldOffset: TEXCOORD6;  // D181: its centre, camera-relative
 	float3 Right: TEXCOORD7;        // D182: the quad's axes in the world (its corner's x and y), for its shading as a small volume
 	float3 Up: TEXCOORD8;
+	float3 PixelOffset: TEXCOORD9;  // D186: the point on the quad, camera-relative (the view ray through it)
+	float3 Radii: TEXCOORD10;       // D186: a mist puff's half-extents along Right, Up and the view (an ellipsoid)
 };
 
 /** D181: world units from the camera over which the falls' spray and mist fade out, and past which none is drawn (about 30 and 43 m). */
@@ -127,6 +156,9 @@ static const float STRIKE_MIST = 0.6;
 static const float STRIKE_MIST_LIFE = 1.6;
 /** D183: how far a strike's splash leans on the water's way. */
 static const float STRIKE_LEAN = 0.45;
+/** D186: how wide a strike's cone is (against its lift), and the share of its droplet slots thrown (the user: more of them, fewer each). */
+static const float STRIKE_CONE = 0.15;
+static const float STRIKE_DROPS = 0.45;
 /** D183: world units below the crest the short-arc droplets and the falling ones fade out over. */
 static const float CREST_SHORT = 60.0;
 static const float CREST_LONG = 400.0;
@@ -141,6 +173,8 @@ static const float MEET_HEAVY = 1.6;
 /** D184: the share of a meet's droplet slots thrown, and how hard against a strike's. */
 static const float MEET_DROPS = 0.5;
 static const float MEET_SPLASH = 0.7;
+/** D186: how much farther a meet's droplets carry across before they fall (the user: 50% farther). */
+static const float MEET_CARRY = 1.5;
 /** D184: how much harder than the water's speed the crests' spray is thrown out (the user's pink: lots of velocity). */
 static const float CREST_LAUNCH = 1.4;
 /** D184: a droplet's quad at least this many times as long as it is big, and this narrow (the user: tear-like, not round). */
@@ -152,8 +186,33 @@ static const float DROP_BIG = 1.5;
 static const float DROP_OPACITY = 0.75;
 static const float DROP_SHADE = 0.5;
 /** D184: radians a crest's drops fan out to either side of the way it falls (a V), and world units along the crest they leave from. */
-static const float CREST_FAN = 0.3;
+static const float CREST_FAN = 0.18;  // D186: 0.18, was 0.3 (the user: still too divergent)
 static const float CREST_WIDTH = 14.0;
+/** D186: how much a crest's surface facing turns its drops off the flow's way, and how far the river's simulated flow pulls them. */
+static const float CREST_FACING = 0.3;
+static const float FLOW_BIAS = 0.6;
+/** D186: a mist puff as a volume: its depth against its width, how dense (optical depth across its width), the noise that breaks it
+ * into wisps (world units of its finest feature, how much it breaks up, how fast it churns), and how much of the sun gets through it. */
+static const float MIST_DEPTH = 0.8;
+static const float MIST_DENSITY = 0.45;
+static const float MIST_CORE = 3.5;  // how fast it thins from its heart to its edge
+static const float MIST_GRAIN = 63.0;
+static const float MIST_BREAKUP = 0.75;
+static const float MIST_CHURN = 0.35;
+static const float MIST_SELF_SHADOW = 1.6;  // D186: 1.6, was 0.8
+/** D186: the mist's colour, how much of the sun it scatters straight and forward (toward the sun), and how dark its thickest is. */
+static const float3 MIST_ALBEDO = float3(0.82, 0.84, 0.86);
+static const float MIST_SUN = 0.06;
+static const float MIST_GLOW = 0.15;
+static const float MIST_THICK_DARK = 0.6;
+/** D186: how much of the sky a droplet's rim reflects, and how dark a shaded droplet's body is against a sunlit one. */
+static const float DROP_RIM = 0.5;
+/** D186: a droplet as a lens: how far across its own width it flips the scene behind it, how much of that light gets through, how
+ * much of the droplet the refracted and reflected light covers beyond its own white (it shows at low opacity), and the cubemap's mip. */
+static const float DROP_LENS = 0.9;
+static const float DROP_TRANSMIT = 1.15;
+static const float DROP_OPTICS = 0.85;
+static const float DROP_ENVIRONMENT_MIP = 2.0;
 
 VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 {
@@ -164,8 +223,11 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	Emitter emitter = Emitters[min(emitterIndex, EmitterCount - 1)];
 	// D183: its kind, and its own id over it (FallSurfaceRenderer: from where it is; its list's order changes as the camera moves)
 	const uint packed = uint(round(emitter.Kind));
-	const uint kind = packed & 3u;
+	uint kind = packed & 3u;
 	const uint id = packed >> 2;
+	// D186: a steep seam's (FallEmitterKind::MeetDrops): a meet's droplets, without its mist
+	const bool seamDrops = kind == 3u;
+	kind = seamDrops ? 1u : kind;
 	// D184: a crest throws spray only, in its mist slots too (the user: many more of its splashes)
 	const bool mist = slot >= SprayPerEmitter && kind != 0;
 	// D183: a strike's mist lingers (the user's blue: a bit of mist that lasts longer than the plunges')
@@ -183,12 +245,15 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	// D183: its emitter, a fixed point on the water's surface (FallSites: where the falls plunge, cross a surface, or their water
 	// meets rock or land at it), switched on and off over time: each SWITCH_PERIOD, on with a chance rising with the simulated
 	// foam and flow there (without the simulation, its own strength)
+	float2 simFlow = 0.0;  // D186: the river simulation's flow at the emitter (none off it)
 	{
 		float height, foam, coverage;
-		float2 flow;
+		float2 flow = 0.0;
 		float chance = emitter.Strength;
-		if (SampleWater(emitter.Position.xy, height, flow, foam, coverage))
+		if (SampleWater(emitter.Position.xy, height, flow, foam, coverage)) {
+			simFlow = flow;
 			chance = saturate(emitter.Strength * (SWITCH_LEAST + smoothstep(SEED_FOAM_FROM, SEED_FOAM_FULL, foam) + length(flow) / FAST_WATER));
+		}
 		const float birth = Time - age;
 		const uint epoch = uint(floor(birth / SWITCH_PERIOD + Hash(id * 2654435761u + 11u)));
 		const bool on = Hash(id * 2654435761u ^ (epoch * 2246822519u)) < chance;
@@ -222,7 +287,12 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	const float angle = r0 * 6.2831853;
 	const float3 spread = side * cos(angle) + forward * sin(angle);
 	const float3 flowVelocity = emitter.Direction * emitter.Speed;
-	const float3 flat = float3(emitter.Direction.xy, 0.0);
+	float3 flat = float3(emitter.Direction.xy, 0.0);
+	// D186: a crest's way biased toward the river's own flow there (the simulation's flowmap: the user), the more the faster it runs
+	if (kind == 0 && dot(simFlow, simFlow) > 1.0 && dot(flat.xy, flat.xy) > 1e-6) {
+		const float bias = FLOW_BIAS * saturate(length(simFlow) / (0.5 * FAST_WATER));
+		flat = float3(normalize(lerp(normalize(flat.xy), normalize(simFlow), bias)) * length(flat.xy), 0.0);
+	}
 
 	// D35: everything leaves with the water's own motion, then gravity (spray) or drag (mist) takes over
 	float3 position = emitter.Position + spread * (r1 * 8.0);
@@ -257,7 +327,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 			// D184: where the crest turns down, shot out the way its surface faces, level to barely down, fast (the user's pink)
 			float3 shot = float3(up.xy, 0.0);
 			shot = dot(shot, shot) > 1e-4 ? normalize(shot) : flat;
-			shot = dot(shot, flat) < 0.0 ? flat : normalize(shot + flat);
+			shot = dot(shot, flat) < 0.0 ? flat : normalize(shot * CREST_FACING + flat);  // D186: mostly the flow's way
 			// fanned out in a V (the user: not one path): each drop turned across by up to CREST_FAN either way, tipped from a bit
 			// up to well down, and thrown from along the crest beside the emitter
 			const float3 across = normalize(cross(float3(0, 0, 1), shot));
@@ -272,18 +342,22 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 			const float3 across = normalize(cross(float3(0, 0, 1), ahead));
 			const float turn = (r0 * 2.0 - 1.0) * CREST_FAN;
 			v0 = normalize(ahead * cos(turn) + across * sin(turn) + float3(0, 0, lerp(0.6, 1.3, r2))) * SpraySpeed * SPRAY_LAUNCH * MEET_SPLASH * (0.5 + 0.7 * r1);
+			v0.xy *= MEET_CARRY;  // D186: farther out before they fall (as high, the same time aloft)
 			position += across * ((Hash(born + 6u) * 2.0 - 1.0) * CREST_WIDTH);
 		} else {
-			// D183: thrown up off the rock, leaning on the way the water ran into it (the user's blue)
+			// D183: thrown up off the rock, leaning on the way the water ran into it (the user's blue). D186: in a narrow cone round
+			// that (the user: they went every way)
 			const float3 lift = normalize(float3(0.0, 0.0, 1.0) + flat * STRIKE_LEAN);
-			v0 = (lift + spread * 0.3) * SpraySpeed * SPRAY_LAUNCH * (0.45 + 0.55 * r2) * (0.6 + 0.4 * fast);
+			v0 = normalize(lift + spread * STRIKE_CONE * r1) * SpraySpeed * SPRAY_LAUNCH * (0.45 + 0.55 * r2) * (0.6 + 0.4 * fast);
 		}
 		position += v0 * age + float3(0, 0, -0.5 * Gravity * age * age);
 		motion = v0 + float3(0, 0, -Gravity * age);
 		size = SpraySize * DROP_BIG * (0.5 + 1.0 * r2);
 		alpha = SprayOpacity * DROP_OPACITY * (0.7 + 0.3 * fast) * smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.55, 1.0, t)) * (kind == 1 ? (Hash(seed + 7u) < MEET_DROPS ? 1.0 : 0.0) : 1.0);
 		if (kind <= 1)
-			alpha *= 1.0 - smoothstep(0.1, 1.0, t);  // D184: a crest's drops thin out as they fly (the user)
+			alpha *= 1.0 - smoothstep(0.1, 1.0, t);
+		if (kind == 2 && Hash(seed + 7u) >= STRIKE_DROPS)
+			alpha = 0.0;  // D184: a crest's drops thin out as they fly (the user)
 		// D182: gone once it falls back below where it was thrown (a plunge's is the water's surface: it fell on under the water
 		// and the ground, SS 1316); from a sheet it may fall a little further, fading out
 		const float drop = emitter.Position.z - position.z;
@@ -298,7 +372,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	const float cameraDistance = length(emitter.Position - FrameBuffer::CameraPosAdjust.xyz);
 	alpha *= 1.0 - smoothstep(SPRAY_NEAR_FADE, SPRAY_FAR, cameraDistance);
 	if (mist)
-		alpha *= MIST_SHEER;
+		alpha *= seamDrops ? 0.0 : MIST_SHEER;
 	// D183: farther off, fewer and bigger (a fixed share of each emitter's particles, by their own hash: none flicker)
 	const float keep = lerp(1.0, SPRAY_FAR_KEEP, smoothstep(SPRAY_LOD_FROM, SPRAY_NEAR_FADE, cameraDistance));
 	if (Hash(seed + 5u) > keep)
@@ -335,6 +409,8 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	const float3 world = relative + right * corner.x * (size * 0.5 * wide) + viewUp * corner.y * (length2 * 0.5 * tall);
 
 	output.Position = mul(FrameBuffer::CameraViewProj, float4(world, 1.0));
+	output.PixelOffset = world;
+	output.Radii = float3(size * 0.5 * wide, length2 * 0.5 * tall, size * 0.5 * wide * MIST_DEPTH);
 	output.Corner = corner;
 	output.Right = right;
 	output.Up = viewUp;
@@ -346,6 +422,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID)
 	return output;
 }
 
+#if defined(PSHADER)
 float4 PSMain(VSOutput input) : SV_Target
 {
 	if (input.Alpha <= 0.001)
@@ -356,59 +433,130 @@ float4 PSMain(VSOutput input) : SV_Target
 		const float3 colors[3] = { float3(1.0, 0.1, 0.9), float3(0.1, 1.0, 0.2), float3(0.1, 0.3, 1.0) };
 		return float4(colors[clamp(int(round(-input.Mist - 1.0)), 0, 2)] * input.Seed, 1.0);
 	}
-	const float radius = length(input.Corner);
-	float shape;
-	if (input.Mist > 0.5) {
-		// Mist (D36): a soft, uneven wisp, not a disc: a falloff broken up by a few drifting waves
-		const float2 c = input.Corner;
-		const float wisp = 0.5 + 0.25 * sin(c.x * 2.3 + input.Seed * 19.0) * sin(c.y * 2.9 + input.Seed * 7.0) + 0.25 * sin((c.x + c.y) * 4.1 + input.Seed * 31.0);
-		// D181: a soft gaussian puff, not a card: its edge fades long before the quad's (the cards' outlines showed), thinner
-		shape = exp(-radius * radius * 3.0) * saturate(wisp * 1.4 - 0.2) * 0.6;
-	} else {
-		// D184: a tear: a round head ahead (y up the quad is its motion) narrowing to a thin tail behind
-		const float width = lerp(0.18, 1.0, smoothstep(-1.0, 0.45, input.Corner.y));
-		const float tear = length(float2(input.Corner.x / width, input.Corner.y));
-		shape = (1.0 - smoothstep(0.4, 1.0, tear)) * (0.8 + 0.2 * sin(input.Seed * 40.0 + input.Corner.y * 6.0));
-	}
 	// Soft where it meets anything in front of it, and fading into the water it rose from
 	const float sceneDepth = SharedData::GetScreenDepth(SceneDepth.Load(int3(input.Position.xy, 0)));
 	const float depth = SharedData::GetScreenDepth(input.Position.z);
-	// D181: mist fades far into what it meets and near the camera (a puff in your face is a flat card)
-	// D182: over a short reach (the contact's depth holds the water now, D182, which the particles rise from: over 300 the mist
-	// never came clear of it, nor the spray over 6)
-	const float soft = saturate((sceneDepth - depth) / (input.Mist > 0.5 ? 40.0 : 2.0)) * saturate(input.Above / (input.Mist > 0.5 ? 20.0 : 4.0)) *
-	                   (input.Mist > 0.5 ? smoothstep(60.0, 260.0, depth) : 1.0);
+	const bool isMist = input.Mist > 0.5;
+	const float3 toCamera = normalize(-input.WorldOffset);
+
+	// D186: the sun's light as the scene has it (the moon at night), and the shadow over the particle: Volumetric Shadows' map when
+	// bound (VOLUMETRIC_SHADOWS), the terrain's and the clouds' (spray and mist glowed in full sun inside the cliffs' shade)
+	const float3 sun = SharedData::DirLightDirection.xyz;
+	const float3 sunLight = SharedData::InInterior ? 0.0 : ShadowSampling::GetDirectionalLighting();
+	const float3 sunTint = lerp(Color::RGBToLuminance(sunLight).xxx, sunLight, PARTICLE_COLOR);
+
+	if (isMist) {
+		// D186: a puff as a volume, not a card: the view ray through an ellipsoid (its half-extents along the quad's axes and the view),
+		// cut where the scene lies in front of it (a soft, true contact with the water and the rock), dense by its thickness along the
+		// ray (Beer-Lambert), broken into wisps by noise in the world (they keep their place as the camera moves: parallax)
+		const float3 ray = normalize(input.PixelOffset);
+		const float3 forward = normalize(cross(input.Right, input.Up));
+		const float3 radii = max(input.Radii, 1.0);
+		const float3 o = -input.WorldOffset;
+		const float3 ol = float3(dot(o, input.Right), dot(o, input.Up), dot(o, forward)) / radii;
+		const float3 dl = float3(dot(ray, input.Right), dot(ray, input.Up), dot(ray, forward)) / radii;
+		const float qa = dot(dl, dl), qb = dot(ol, dl), qc = dot(ol, ol) - 1.0;
+		const float disc = qb * qb - qa * qc;
+		if (disc <= 0.0)
+			discard;
+		const float root = sqrt(disc);
+		const float rayPerDepth = length(input.PixelOffset) / max(depth, 1e-3);
+		const float t0 = max((-qb - root) / qa, NEAR_FADE);
+		const float t1 = min((-qb + root) / qa, sceneDepth * rayPerDepth);
+		const float thickness = t1 - t0;
+		if (thickness <= 0.0)
+			discard;
+		// The noise at two points along the chord, two octaves each, drifting up and churning with time
+		const float3 drift = float3(input.Seed * 37.0, input.Seed * 53.0, -Time * MIST_CHURN * 40.0);
+		float wisps = 0.0;
+		[unroll] for (int k = 0; k < 2; k++)
+		{
+			const float3 at = ray * (t0 + thickness * (0.25 + 0.5 * k)) + FrameBuffer::CameraPosAdjust.xyz;
+			const float3 q = (at + drift) / MIST_GRAIN;
+			wisps += 0.65 * ValueNoise(q + float3(0.0, 0.0, Time * MIST_CHURN)) + 0.35 * ValueNoise(q * 2.3 - float3(Time * MIST_CHURN, 0.0, 0.0));
+		}
+		wisps *= 0.5;
+		const float density = saturate(lerp(1.0, wisps * 2.0 - 0.35, MIST_BREAKUP));
+		// Denser toward its heart: the ray weighed by how near it passes the centre (an even density read nearly as thick at the
+		// edge as in the middle, a hard rim)
+		const float near2 = max(qc + 1.0 - qb * qb / qa, 0.0);
+		const float optical = MIST_DENSITY * density * thickness / radii.x * exp(-MIST_CORE * near2);
+		// Soft where its front comes near what lies behind it (as D182's contact) and into the water it rose from, and away close
+		// to the camera (a puff in your face is a flat card)
+		const float contact = saturate((sceneDepth * rayPerDepth - t0) / 40.0);
+		const float alpha = saturate(input.Alpha * (1.0 - exp(-optical)) * contact * saturate(input.Above / 20.0) * smoothstep(60.0, 260.0, depth));
+		if (alpha <= 0.002)
+			discard;
+		// Its light: at the chord's middle, the sun through the rest of the puff (how far to its far side toward the sun, as dense),
+		// in the scene's shadow there, scattered forward toward the sun; the sky over it, its underside darker
+		const float3 middle = ray * (0.5 * (t0 + t1));
+		const float3 ml = float3(dot(middle - input.WorldOffset, input.Right), dot(middle - input.WorldOffset, input.Up), dot(middle - input.WorldOffset, forward)) / radii;
+		const float3 sl = float3(dot(sun, input.Right), dot(sun, input.Up), dot(sun, forward)) / radii;
+		const float sa = dot(sl, sl), sb = dot(ml, sl), sc = dot(ml, ml) - 1.0;
+		const float toSun = max((-sb + sqrt(max(sb * sb - sa * sc, 0.0))) / max(sa, 1e-6), 0.0);
+		const float selfShadow = exp(-MIST_SELF_SHADOW * MIST_DENSITY * density * toSun / radii.x);
+		float detailed;
+		const float shadow = ShadowSampling::GetLightingShadow(middle, detailed) * ShadowSampling::GetWorldShadow(middle, FrameBuffer::CameraPosAdjust.xyz);
+		const float3 ambient = max(float3(SharedData::AmbientSHR.x, SharedData::AmbientSHG.x, SharedData::AmbientSHB.x), 0.0) * 0.886;
+		const float3 ambientTint = lerp(Color::RGBToLuminance(ambient).xxx, ambient, PARTICLE_COLOR);
+		const float g = 0.65;  // Henyey-Greenstein: how strongly forward
+		const float cosine = dot(-toCamera, sun);
+		const float phase = (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosine, 1e-3), 1.5) / 12.566;
+		const float lower = saturate(ml.y * 0.5 + 0.5);  // 0 at its underside, 1 at its top
+		// D186: it takes light in rather than giving it off (the user: no shine; volumetric): mostly the sky's, little of the sun's
+		// forward glow, darker the thicker it is (light lost inside it before it gets out) and under it
+		float3 color = MIST_ALBEDO * (ambientTint * lerp(0.55, 0.9, lower) + sunTint * shadow * selfShadow * (MIST_SUN + phase * MIST_GLOW));
+		color *= Brightness * lerp(1.0, MIST_THICK_DARK, saturate(optical)) * lerp(0.8, 1.0, lower);
+		return float4(color * alpha, alpha);  // Premultiplied
+	}
+
+	// A droplet: a tear (a round head ahead, y up the quad being its motion, narrowing to a thin tail behind, D184)
+	const float width = lerp(0.18, 1.0, smoothstep(-1.0, 0.45, input.Corner.y));
+	const float2 c = float2(input.Corner.x / width, input.Corner.y);
+	const float tear = length(c);
+	const float shape = (1.0 - smoothstep(0.4, 1.0, tear)) * (0.8 + 0.2 * sin(input.Seed * 40.0 + input.Corner.y * 6.0));
+	const float soft = saturate((sceneDepth - depth) / 2.0) * saturate(input.Above / 4.0);
 	const float alpha = saturate(input.Alpha * shape * soft);
 	if (alpha <= 0.002)
 		discard;
-	// D182: shaded as a small volume of water in the air (the user: catch the light, have depth): a sphere's normal across the
-	// quad, lit by the sun with a soft wrap (its shade side darker), forward scattering toward the sun (mist far more), and the
-	// sky's and sun's colour taken in part (in full the sky's blue made it glow blue, D50, and the sun orange at dusk)
-	const float3 toCamera = normalize(-input.WorldOffset);
-	const float2 c = input.Corner;
+	// D186: shaded as a small body of water: a normal over the tear, the sky's light from the way it faces (the light's own colour in
+	// part, D182), the sun in the scene's shadow at the droplet (none in the cliffs' shade), its shade side and underside darker
+	// (D184), lit through toward the sun (forward scattering), the sky in its rim (fresnel) and the sun's glint
 	const float r2 = saturate(dot(c, c));
 	const float3 n = normalize(input.Right * c.x + input.Up * c.y + toCamera * sqrt(1.0 - r2));
-	const float3 sun = SharedData::DirLightDirection.xyz;
-	const float3 ambient = max(float3(SharedData::AmbientSHR.x, SharedData::AmbientSHG.x, SharedData::AmbientSHB.x), 0.0) * 0.886;
-	const float3 sunColor = SharedData::DirLightColor.rgb;
-	const float3 ambientTint = lerp(Color::RGBToLuminance(ambient).xxx, ambient, PARTICLE_COLOR);
-	const float3 sunTint = lerp(Color::RGBToLuminance(sunColor).xxx, sunColor, PARTICLE_COLOR);
-	const bool isMist = input.Mist > 0.5;
-	// Thin mist is lit through, so its shade side barely darkens; a droplet is a lens, lit on its sun side
-	const float wrap = isMist ? 0.75 : 0.35;
-	const float diffuse = saturate((dot(n, sun) + wrap) / (1.0 + wrap));
-	const float g = isMist ? 0.65 : 0.8;  // Henyey-Greenstein: how strongly forward
+	float detailed;
+	const float shadow = ShadowSampling::GetLightingShadow(input.WorldOffset, detailed) * ShadowSampling::GetWorldShadow(input.WorldOffset, FrameBuffer::CameraPosAdjust.xyz);
+	const float3 sky = Color::Ambient(max(0.0, SharedData::GetAmbient(n)));
+	const float3 skyTint = lerp(Color::RGBToLuminance(sky).xxx, sky, PARTICLE_COLOR);
+	const float diffuse = saturate((dot(n, sun) + 0.35) / 1.35);
+	const float g = 0.8;
 	const float cosine = dot(-toCamera, sun);
 	const float phase = (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosine, 1e-3), 1.5) / 12.566;
-	// The sun weighs little in the base (it lit the mist in shadow too, D50); its scattering carries the glow toward it
-	float3 color = float3(0.94, 0.95, 0.96) * (ambientTint * lerp(0.7, 1.0, n.z * 0.5 + 0.5) + sunTint * (0.12 * diffuse + phase * (isMist ? 0.45 : 0.5)));
-	color *= Brightness * (isMist ? 1.2 : 2.2);
-	if (isMist)
-		color *= lerp(0.85, 1.0, n.z * 0.5 + 0.5);  // D183: its underside a little darker, no glowing heart
-	else {
-		// D184: a droplet shaded as a small body (the user: like the mist): darker away from the sun and underneath
-		color *= lerp(DROP_SHADE, 1.0, diffuse) * lerp(0.75, 1.0, n.z * 0.5 + 0.5);
-		color += sunTint * pow(saturate(dot(reflect(-toCamera, n), sun)), 40.0) * 0.6 * Brightness;  // a droplet's glint
+	float3 color = float3(0.94, 0.95, 0.96) * (skyTint * lerp(0.75, 1.0, n.z * 0.5 + 0.5) + sunTint * shadow * (0.12 * diffuse + phase * 0.5));
+	color *= Brightness * 2.2 * lerp(DROP_SHADE, 1.0, lerp(diffuse * shadow, 1.0, 0.25));
+	const float rim = pow(1.0 - saturate(dot(n, toCamera)), 4.0);
+	color += skyTint * rim * DROP_RIM * Brightness;
+	color += sunTint * shadow * pow(saturate(dot(reflect(-toCamera, n), sun)), 40.0) * 0.6 * Brightness;  // a droplet's glint
+	// D186: and as a lens (the user: refract and reflect the light, to show at low opacity): the scene behind it flipped through it
+	// (a ball of water turns its image over, the more toward its rim), a little brightened, and the surroundings in it by fresnel; over
+	// the droplet's shape whatever its opacity, under its white
+	float2 dims;
+	SceneColor.GetDimensions(dims.x, dims.y);
+	const float2 dx = ddx(c), dy = ddy(c);
+	const float det = dx.x * dy.y - dx.y * dy.x;
+	float2 shift = 0.0;
+	if (abs(det) > 1e-8) {
+		// the pixel offset that moves the tear's coordinates by -2 c DROP_LENS (the inverse of their screen derivatives)
+		const float2 delta = -2.0 * DROP_LENS * c;
+		shift = float2(dy.y * delta.x - dy.x * delta.y, -dx.y * delta.x + dx.x * delta.y) / det;
 	}
-	return float4(color * alpha, alpha);  // Premultiplied
+	const int2 behind = int2(clamp(input.Position.xy + shift, 0.0, dims - 1.0));
+	const float3 refracted = SceneColor.Load(int3(behind, 0)).rgb * DROP_TRANSMIT;
+	const float3 reflected = HasEnvironment ? EnvironmentTex.SampleLevel(SpraySampler, reflect(-toCamera, n), DROP_ENVIRONMENT_MIP).rgb : sky;
+	const float fresnel = 0.02 + 0.98 * pow(1.0 - saturate(dot(n, toCamera)), 5.0);
+	const float3 optic = lerp(refracted, reflected, fresnel) + sunTint * shadow * pow(saturate(dot(reflect(-toCamera, n), sun)), 60.0) * Brightness;
+	const float life = saturate(input.Alpha / max(SprayOpacity * DROP_OPACITY, 1e-3));
+	const float cover = saturate(life * shape * soft * DROP_OPTICS * (1.0 - alpha));
+	return float4(color * alpha + optic * cover, alpha + cover);  // Premultiplied
 }
+#endif  // PSHADER

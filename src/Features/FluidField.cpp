@@ -1117,6 +1117,7 @@ void FluidField::DrawGroundFogAfterWorld()
 			auto& depth = renderer->GetDepthStencilData().depthStencils[depthIndex];
 			FluidFieldSim::FallSurfaceRenderer::DrawParams params;
 			params.target = renderer->GetRuntimeData().renderTargets[colorIndex].RTV;
+			params.targetTexture = renderer->GetRuntimeData().renderTargets[colorIndex].texture;  // D186: the droplets refract it
 			params.depth = depth.readOnlyViews[0];
 			params.sceneDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
 			params.camera = cameraSnapshot.get();
@@ -1133,6 +1134,15 @@ void FluidField::DrawGroundFogAfterWorld()
 				params.cameraPosition[0] = eye->world.translate.x;
 				params.cameraPosition[1] = eye->world.translate.y;
 				params.cameraPosition[2] = eye->world.translate.z;
+			}
+			params.shadowMap = fallRefraction.GetShadowMap();  // D186: as the falls' surface found them bound this frame
+			params.shadowCascades = fallRefraction.GetShadowCascades();
+			// D186: the droplets reflect the surroundings' cubemap, as the falls' surface does (D98)
+			if (auto& cubemaps = globals::features::dynamicCubemaps; cubemaps.loaded) {
+				if (cubemaps.activeReflections && cubemaps.cubemapValid[1] && cubemaps.envReflectionsTexture)
+					params.environment = cubemaps.envReflectionsTexture->srv.get();
+				else if (cubemaps.cubemapValid[0] && cubemaps.envTexture)
+					params.environment = cubemaps.envTexture->srv.get();
 			}
 			if (waterShaderData.Enabled && nearWater.solver.GetMapSRV()) {  // D183: seeded on the water's foam
 				params.waterSurface = nearWater.solver.GetSurfaceSRV();

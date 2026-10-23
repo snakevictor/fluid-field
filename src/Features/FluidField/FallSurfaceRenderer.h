@@ -23,9 +23,10 @@ namespace FluidFieldSim
 	/** @brief What throws a spray emitter's water (D35), matching FallSpray.hlsl. */
 	enum class FallEmitterKind : uint32_t
 	{
-		Lip = 0,     ///< Where the surface drops away: the water leaves it running on
-		Plunge = 1,  ///< Where falling water meets the water below: thrown up and out
-		Strike = 2   ///< Where the water strikes rock or another piece
+		Lip = 0,       ///< Where the surface drops away: the water leaves it running on
+		Plunge = 1,    ///< Where falling water meets the water below: thrown up and out
+		Strike = 2,    ///< Where the water strikes rock or another piece
+		MeetDrops = 3  ///< D186: along a steep seam between sheets (the water still falling there): droplets, no mist
 	};
 
 	/** @brief Where falling water meets the water below (D35), for its pushes on the simulated water. */
@@ -71,6 +72,12 @@ namespace FluidFieldSim
 			ID3D11ShaderResourceView* waterMap = nullptr;
 			float mapSpacing = 0.0f;
 			uint32_t mapResolution = 0;
+			/// D186: Volumetric Shadows' map and cascades (FallRefraction found them bound this frame): the particles in the sun's shadow
+			ID3D11ShaderResourceView* shadowMap = nullptr;
+			ID3D11ShaderResourceView* shadowCascades = nullptr;
+			/// D186: the frame as it stands (copied for the droplets to refract) and the surroundings' cubemap (as the falls' surface)
+			ID3D11Texture2D* targetTexture = nullptr;
+			ID3D11ShaderResourceView* environment = nullptr;
 		};
 		void Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params);
 
@@ -118,7 +125,8 @@ namespace FluidFieldSim
 			float pad;
 			float mapSpacing;  ///< D183
 			uint32_t mapResolution;
-			float mapPad[2];
+			uint32_t hasEnvironment;  ///< D186: the surroundings' cubemap is bound
+			float mapPad;
 		};
 		static_assert(sizeof(Constants) == 80);
 
@@ -136,10 +144,19 @@ namespace FluidFieldSim
 		winrt::com_ptr<ID3D11Texture2D> depthCopy;
 		winrt::com_ptr<ID3D11ShaderResourceView> depthCopySRV;
 		bool depthCopyFailed = false;
+		/** @brief D186: a copy of the frame as it stands (the falls in it), for the droplets to refract. */
+		bool EnsureSceneCopy(ID3D11Device* a_device, ID3D11Texture2D* a_source);
+		winrt::com_ptr<ID3D11Texture2D> sceneCopy;
+		winrt::com_ptr<ID3D11ShaderResourceView> sceneCopySRV;
+		bool sceneCopyFailed = false;
 
 		winrt::com_ptr<ID3D11Buffer> constants;
 		winrt::com_ptr<ID3D11VertexShader> sprayVertexShader;
 		winrt::com_ptr<ID3D11PixelShader> sprayPixelShader;
+		winrt::com_ptr<ID3D11PixelShader> sprayPixelShaderShadowed;  ///< D186: with VOLUMETRIC_SHADOWS
+		bool shadowedShaderFailed = false;
+		ID3D11PixelShader* activePixelShader = nullptr;    ///< D186: the variant this draw uses
+		winrt::com_ptr<ID3D11SamplerState> linearSampler;  ///< D186: s1, what the shadow maps are read with
 		winrt::com_ptr<ID3D11BlendState> blend;
 		winrt::com_ptr<ID3D11DepthStencilState> depthState;
 		winrt::com_ptr<ID3D11RasterizerState> raster;

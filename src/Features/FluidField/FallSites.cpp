@@ -1581,6 +1581,48 @@ namespace FluidFieldSim
 		}
 		if (positions.size() > 65535)
 			return;
+		// D186: the normals smoothed over the copy (the user, SS 1395: hard straight lines in the water's light along the original's
+		// long edges, where the normal interpolated across each of its triangles turns its gradient, and along its texture seams, where
+		// the split vertices kept their own normals): each position's vertices share one normal, softened over its neighbours
+		// DENSE_NORMAL_PASSES times (about 4 edges' reach each way)
+		{
+			std::map<std::tuple<int64_t, int64_t, int64_t>, uint32_t> groupAt;
+			std::vector<uint32_t> groupOf(positions.size());
+			for (std::size_t v = 0; v < positions.size(); v++) {
+				const auto key = std::make_tuple(std::llround(positions[v].x * 20.0), std::llround(positions[v].y * 20.0), std::llround(positions[v].z * 20.0));
+				groupOf[v] = groupAt.try_emplace(key, static_cast<uint32_t>(groupAt.size())).first->second;
+			}
+			std::vector<RE::NiPoint3> current(groupAt.size(), RE::NiPoint3(0.0f, 0.0f, 0.0f));
+			for (std::size_t v = 0; v < positions.size(); v++)
+				current[groupOf[v]] += normals[v];
+			std::vector<std::vector<uint32_t>> neighbours(groupAt.size());
+			for (const auto& tri : triangles) {
+				for (int k = 0; k < 3; k++) {
+					const uint32_t a = groupOf[tri[k]], b = groupOf[tri[(k + 1) % 3]];
+					if (a != b) {
+						neighbours[a].push_back(b);
+						neighbours[b].push_back(a);
+					}
+				}
+			}
+			for (auto& n : current)
+				n = normalize(n);
+			std::vector<RE::NiPoint3> next(current.size());
+			for (int pass = 0; pass < DENSE_NORMAL_PASSES; pass++) {
+				for (std::size_t g = 0; g < current.size(); g++) {
+					RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
+					for (const uint32_t o : neighbours[g])
+						sum += current[o];
+					next[g] = neighbours[g].empty() ? current[g] : normalize(current[g] + sum / static_cast<float>(neighbours[g].size()));
+				}
+				current.swap(next);
+			}
+			for (std::size_t v = 0; v < positions.size(); v++) {
+				const RE::NiPoint3& n = current[groupOf[v]];
+				// (each vertex keeps its own side: a sheet's two faces may share a position with opposite normals)
+				normals[v] = normals[v].Dot(n) >= 0.0f ? n : -n;
+			}
+		}
 		// D172: the copy's triangles cut away under the landscape (from DENSE_TRIM_UNDER below it: the cut line stays hidden in
 		// the ground), a triangle crossing it cut along where it crosses; the vertices are all kept, the new ones at the end,
 		// so the bake reads the untrimmed triangles over the same vertices (BakeIndices: it needs the whole sheet, D136). The
@@ -1679,6 +1721,61 @@ namespace FluidFieldSim
 				bitangent = -bitangent;
 			tangents[v] = tangent;
 			bitangents[v] = bitangent;
+		}
+		// D186: the tangents smoothed over the copy as its normals (the user, SS 1412: they came from the original's texture
+		// coordinates, one way per original triangle, and the normal maps laid along them creased at every edge): each position's
+		// vertices share one, softened over its neighbours DENSE_NORMAL_PASSES times, kept across the normal
+		{
+			std::map<std::tuple<int64_t, int64_t, int64_t>, uint32_t> groupAt;
+			std::vector<uint32_t> groupOf(positions.size());
+			for (std::size_t v = 0; v < positions.size(); v++) {
+				const auto key = std::make_tuple(std::llround(positions[v].x * 20.0), std::llround(positions[v].y * 20.0), std::llround(positions[v].z * 20.0));
+				groupOf[v] = groupAt.try_emplace(key, static_cast<uint32_t>(groupAt.size())).first->second;
+			}
+			std::vector<RE::NiPoint3> current(groupAt.size(), RE::NiPoint3(0.0f, 0.0f, 0.0f)), across(groupAt.size(), RE::NiPoint3(0.0f, 0.0f, 0.0f));
+			for (std::size_t v = 0; v < positions.size(); v++) {
+				current[groupOf[v]] += tangents[v];
+				across[groupOf[v]] += normals[v];
+			}
+			std::vector<std::vector<uint32_t>> neighbours(groupAt.size());
+			for (const auto& tri : a_job.untrimmed.empty() ? triangles : a_job.untrimmed) {
+				for (int k = 0; k < 3; k++) {
+					const uint32_t a = groupOf[tri[k]], b = groupOf[tri[(k + 1) % 3]];
+					if (a != b) {
+						neighbours[a].push_back(b);
+						neighbours[b].push_back(a);
+					}
+				}
+			}
+			const auto flatten = [&](std::size_t a_g, const RE::NiPoint3& a_t) {
+				const RE::NiPoint3 n = normalize(across[a_g]);
+				const RE::NiPoint3 t = a_t - n * n.Dot(a_t);
+				return t.Length() > 1e-6f ? normalize(t) : current[a_g];
+			};
+			for (std::size_t g = 0; g < current.size(); g++)
+				current[g] = flatten(g, current[g]);
+			std::vector<RE::NiPoint3> next(current.size());
+			for (int pass = 0; pass < DENSE_NORMAL_PASSES; pass++) {
+				for (std::size_t g = 0; g < current.size(); g++) {
+					RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
+					for (const uint32_t o : neighbours[g])
+						sum += current[o];
+					next[g] = neighbours[g].empty() ? current[g] : flatten(g, current[g] + sum / static_cast<float>(neighbours[g].size()));
+				}
+				current.swap(next);
+			}
+			for (std::size_t v = 0; v < positions.size(); v++) {
+				const RE::NiPoint3& n = normals[v];
+				RE::NiPoint3 t = current[groupOf[v]] - n * n.Dot(current[groupOf[v]]);
+				if (t.Length() < 1e-6f)
+					continue;
+				t = normalize(t);
+				RE::NiPoint3 b = n.Cross(t);
+				if (b.Dot(bitangents[v]) < 0.0f)
+					b = -b;
+				tangents[v] = t;
+				bitangents[v] = b;
+			}
 		}
 		std::vector<uint16_t> indices;
 		indices.reserve(triangles.size() * 3);
@@ -3493,7 +3590,7 @@ namespace FluidFieldSim
 		}
 		blur(foam, 2);  // D181: 1 before, low-res steps showed (the user)
 		std::vector<float> aeration = std::move(strands.aeration);
-		blur(aeration, 4);  // D179: 1 before, its patches' edges showed; D181: 4
+		blur(aeration, 10);  // D179: 1 before, its patches' edges showed; D181: 4; D186: 10 (hard-ish edges still, SS 1405)
 		std::vector<float> turn = std::move(strands.turn);
 		blur(turn, 1);
 
@@ -5467,8 +5564,8 @@ namespace FluidFieldSim
 		sprayEmitters.swap(a_result.sprayEmitters);
 		emitterVersion++;
 		groundVersion++;  // The plunge map
-		logger::info("[Fluid Field] Waterfall plunges: {} texels meet the water below, {} plunge points ({} where a mesh crosses a water surface); spray emitters: {} at plunges, {} striking rock, {} past the crests ({} under the landscape left out); crest columns {}, on meshes from a water {}, turning down {} ({} deep under a sheet), sheets meeting {} texels",
-			a_result.meets, plungePoints.size(), a_result.lips, a_result.kinds[1], a_result.kinds[2], a_result.kinds[0], a_result.buried, a_result.crestColumns,
+		logger::info("[Fluid Field] Waterfall plunges: {} texels meet the water below, {} plunge points ({} where a mesh crosses a water surface); spray emitters: {} at plunges, {} droplets-only on steep seams, {} striking rock, {} past the crests ({} under the landscape left out); crest columns {}, on meshes from a water {}, turning down {} ({} deep under a sheet), sheets meeting {} texels",
+			a_result.meets, plungePoints.size(), a_result.lips, a_result.kinds[1], a_result.kinds[3], a_result.kinds[2], a_result.kinds[0], a_result.buried, a_result.crestColumns,
 			a_result.lipColumns, a_result.dropColumns, a_result.submergedDrops, a_result.footColumns);
 	}
 
@@ -5574,6 +5671,12 @@ namespace FluidFieldSim
 			}
 			return false;
 		};
+		struct MeetPoint
+		{
+			RE::NiPoint3 at, way;
+			float speed;
+		};
+		std::vector<MeetPoint> meetPoints;  // D186: where sheets meet, over every mesh
 		std::vector<std::array<float, 5>> planes;
 		uint32_t meets = 0;
 		for (const auto& [geometry, field] : bakeFields) {
@@ -5788,16 +5891,21 @@ namespace FluidFieldSim
 					offer(at, outward(i), flowAt(x, y), std::max(speedAt(field->position[i].z), CREST_THROW), DROP_STRENGTH, FallEmitterKind::Lip, DROP_SPACING);
 					// D184: and weaker ones over the crest's band upstream of it (the user, SS 1370: spread over the whole crest, each
 					// switching on and off with the flow for variety)
+					// D186: as far upstream as the water is still turning, until it lies almost flat (CREST_FLAT up: the user, SS 1376),
+					// shown lead-in included (the rise out of the river is part of the crest), throwing less the further from the drop
 					for (int32_t k = CREST_BAND_STEP; k <= CREST_BAND_ROWS; k += CREST_BAND_STEP) {
 						const int32_t yb = y - k;
 						if (yb < 0 || !covered(x, yb))
 							break;
 						const std::size_t ib = index(x, yb);
-						if ((!field->rock.empty() && field->rock[ib]) || !shellCovered[ib] || hiddenLead[ib])
+						if (upward(ib).z >= CREST_FLAT)
+							break;
+						if ((!field->rock.empty() && field->rock[ib]) || !shellCovered[ib])
 							continue;
 						const RE::NiPoint3 band = drawnAt(ib);
+						const float strength = CREST_BAND_STRENGTH * (1.0f - 0.4f * static_cast<float>(k) / static_cast<float>(CREST_BAND_ROWS));
 						if (!deepUnderSheet(geometry, band))
-							offer(band, outward(ib), flowAt(x, yb), std::max(speedAt(field->position[ib].z), CREST_THROW), CREST_BAND_STRENGTH, FallEmitterKind::Lip, DROP_SPACING);
+							offer(band, outward(ib), flowAt(x, yb), std::max(speedAt(field->position[ib].z), CREST_THROW), strength, FallEmitterKind::Lip, DROP_SPACING);
 					}
 					break;
 				}
@@ -5809,8 +5917,11 @@ namespace FluidFieldSim
 					if (shellCovered[i] && (field->rock.empty() || !field->rock[i]) && !hiddenLead[i] && meetsOther(geometry, field->position[i])) {
 						o_result.footColumns++;
 						const RE::NiPoint3 at = drawnAt(i);
-						if (!underWater(at) && !deepUnderSheet(geometry, at))
-							offer(at, RE::NiPoint3(0.0f, 0.0f, 1.0f), flowAt(x, y), speedAt(field->position[i].z), MEET_STRENGTH, FallEmitterKind::Plunge, MEET_SPACING);
+						if (!underWater(at) && !deepUnderSheet(geometry, at)) {
+							// D186: kept for after every mesh: mist only where each seam's water lands (the lowest of its line), droplets
+							// along the rest
+							meetPoints.push_back({ at, flowAt(x, y), speedAt(field->position[i].z) });
+						}
 					}
 					if (!shellCovered[i] || (!field->rock.empty() && field->rock[i]))
 						continue;
@@ -5863,6 +5974,56 @@ namespace FluidFieldSim
 					plunge.strength = strength;
 				}
 			}
+		}
+		// D186: the seams as lines (their points joined across cells of MEET_LINE_CELL), each line's lowest MEET_FOOT_BAND where its
+		// water lands: mist and droplets there, droplets only higher up the line (the user, SS 1402: mist hung in columns down the
+		// tongues running between the domes, however the points were judged one by one)
+		{
+			const auto lineCell = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / MEET_LINE_CELL)); };
+			const auto lineKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
+			std::unordered_map<int64_t, std::vector<uint32_t>> cells;
+			for (uint32_t k = 0; k < meetPoints.size(); k++) {
+				const RE::NiPoint3& p = meetPoints[k].at;
+				cells[lineKey(lineCell(p.x), lineCell(p.y), lineCell(p.z))].push_back(k);
+			}
+			std::vector<uint32_t> parent(meetPoints.size());
+			for (uint32_t k = 0; k < parent.size(); k++)
+				parent[k] = k;
+			const auto root = [&](uint32_t a_k) {
+				while (parent[a_k] != a_k)
+					a_k = parent[a_k] = parent[parent[a_k]];
+				return a_k;
+			};
+			for (const auto& [key, members] : cells) {
+				const RE::NiPoint3& p = meetPoints[members.front()].at;
+				const int64_t cx = lineCell(p.x), cy = lineCell(p.y), cz = lineCell(p.z);
+				for (int64_t dx = -1; dx <= 1; dx++) {
+					for (int64_t dy = -1; dy <= 1; dy++) {
+						for (int64_t dz = -1; dz <= 1; dz++) {
+							const auto it = cells.find(lineKey(cx + dx, cy + dy, cz + dz));
+							if (it == cells.end())
+								continue;
+							for (const uint32_t o : it->second)
+								parent[root(o)] = root(members.front());
+						}
+					}
+				}
+				for (const uint32_t m : members)
+					parent[root(m)] = root(members.front());
+			}
+			std::unordered_map<uint32_t, float> lowest;
+			for (uint32_t k = 0; k < meetPoints.size(); k++) {
+				const uint32_t r = root(k);
+				const auto [it, added] = lowest.try_emplace(r, meetPoints[k].at.z);
+				if (!added)
+					it->second = std::min(it->second, meetPoints[k].at.z);
+			}
+			for (uint32_t k = 0; k < meetPoints.size(); k++) {
+				const MeetPoint& m = meetPoints[k];
+				const bool landing = m.at.z - lowest[root(k)] <= MEET_FOOT_BAND;
+				offer(m.at, RE::NiPoint3(0.0f, 0.0f, 1.0f), m.way, m.speed, MEET_STRENGTH, landing ? FallEmitterKind::Plunge : FallEmitterKind::MeetDrops, MEET_SPACING);
+			}
+			o_result.footColumns = static_cast<uint32_t>(meetPoints.size());
 		}
 		// D94: and wherever a mesh crosses a water surface (the river it leaves, a pool partway, the pool below): along the
 		// line where its texels pass from one side of the surface to the other, the water there foams and is stirred. Any of
@@ -6029,7 +6190,7 @@ namespace FluidFieldSim
 		o_result.sprayEmitters.reserve(chosen.size());
 		for (const auto& [key, emitter] : chosen) {
 			o_result.sprayEmitters.push_back(emitter);
-			o_result.kinds[std::clamp(static_cast<int>(emitter.kind), 0, 2)]++;
+			o_result.kinds[std::clamp(static_cast<int>(emitter.kind), 0, 3)]++;
 		}
 		o_result.meets = meets;
 		o_result.lips = lips;

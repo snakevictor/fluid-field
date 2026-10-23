@@ -13,7 +13,12 @@ namespace FluidFieldSim
 		constexpr UINT CAMERA_SLOT = 12;
 		constexpr UINT EMITTERS_SLOT = 100;
 		constexpr UINT SCENE_DEPTH_SLOT = 103;
-		constexpr UINT WATER_SLOT = 66;  // D183: the simulation's surface and flow (t66-t67)
+		constexpr UINT SHADOW_MAP_SLOT = 18;       // D186: Volumetric Shadows' map (as FallRefraction)
+		constexpr UINT SHADOW_CASCADES_SLOT = 98;  // ...and the directional light's cascades
+		constexpr UINT LINEAR_SAMPLER_SLOT = 1;    // D186: FallSpray's LinearSampler
+		constexpr UINT SCENE_COLOR_SLOT = 105;     // D186: the frame, for the droplets to refract
+		constexpr UINT ENVIRONMENT_SLOT = 106;     // D186: the surroundings' cubemap, for them to reflect
+		constexpr UINT WATER_SLOT = 66;            // D183: the simulation's surface and flow (t66-t67)
 		constexpr UINT WATER_MAP_SLOT = 104;
 	}
 
@@ -28,11 +33,15 @@ namespace FluidFieldSim
 		blend = nullptr;
 		depthState = nullptr;
 		raster = nullptr;
+		linearSampler = nullptr;
 		allEmitters.clear();
 		refilter = true;
 		depthCopy = nullptr;
 		depthCopySRV = nullptr;
 		depthCopyFailed = false;
+		sceneCopy = nullptr;
+		sceneCopySRV = nullptr;
+		sceneCopyFailed = false;
 		ReleaseShaders();
 	}
 
@@ -40,6 +49,8 @@ namespace FluidFieldSim
 	{
 		sprayVertexShader = nullptr;
 		sprayPixelShader = nullptr;
+		sprayPixelShaderShadowed = nullptr;
+		shadowedShaderFailed = false;
 		shaderFailed = false;
 	}
 
@@ -62,7 +73,7 @@ namespace FluidFieldSim
 
 	bool FallSurfaceRenderer::EnsureStates(ID3D11Device* a_device)
 	{
-		if (blend && depthState && raster && constants)
+		if (blend && depthState && raster && constants && linearSampler)
 			return true;
 		D3D11_BLEND_DESC blendDesc{};
 		auto& target = blendDesc.RenderTarget[0];
@@ -75,7 +86,9 @@ namespace FluidFieldSim
 		target.BlendOpAlpha = D3D11_BLEND_OP_ADD;
 		target.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
 		D3D11_DEPTH_STENCIL_DESC depthDesc{};
-		depthDesc.DepthEnable = TRUE;
+		// D186: no depth test: the shader tests against the depth copy itself, softly (a puff's chord cut where the scene lies; a
+		// droplet faded within 2 units), so mist thins into the water and rock instead of being cut on a hard, jagged line (SS 1374)
+		depthDesc.DepthEnable = FALSE;
 		depthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
 		depthDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;  // Depth runs from 0 near to 1 far (the sky)
 		D3D11_RASTERIZER_DESC rasterDesc{};
@@ -83,8 +96,19 @@ namespace FluidFieldSim
 		rasterDesc.CullMode = D3D11_CULL_NONE;
 		rasterDesc.DepthClipEnable = TRUE;
 		D3D11_BUFFER_DESC cbDesc{ .ByteWidth = sizeof(Constants), .Usage = D3D11_USAGE_DYNAMIC, .BindFlags = D3D11_BIND_CONSTANT_BUFFER, .CPUAccessFlags = D3D11_CPU_ACCESS_WRITE, .MiscFlags = 0, .StructureByteStride = 0 };
+		D3D11_SAMPLER_DESC samplerDesc{};
+		samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+		samplerDesc.AddressU = samplerDesc.AddressV = samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+		samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+		samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+		blend = nullptr;
+		depthState = nullptr;
+		raster = nullptr;
+		constants = nullptr;
+		linearSampler = nullptr;
 		if (FAILED(a_device->CreateBlendState(&blendDesc, blend.put())) || FAILED(a_device->CreateDepthStencilState(&depthDesc, depthState.put())) ||
-			FAILED(a_device->CreateRasterizerState(&rasterDesc, raster.put())) || FAILED(a_device->CreateBuffer(&cbDesc, nullptr, constants.put())))
+			FAILED(a_device->CreateRasterizerState(&rasterDesc, raster.put())) || FAILED(a_device->CreateBuffer(&cbDesc, nullptr, constants.put())) ||
+			FAILED(a_device->CreateSamplerState(&samplerDesc, linearSampler.put())))
 			return false;
 		Util::SetResourceName(constants.get(), "FluidField::FallEffectsConstants");
 		return true;
@@ -171,6 +195,40 @@ namespace FluidFieldSim
 		logger::info("[Fluid Field] Spray: {} of {} emitters near the eye at ({:.0f}, {:.0f}, {:.0f})", count, allEmitters.size(), a_camera[0], a_camera[1], a_camera[2]);
 	}
 
+	bool FallSurfaceRenderer::EnsureSceneCopy(ID3D11Device* a_device, ID3D11Texture2D* a_source)
+	{
+		if (sceneCopyFailed || !a_source)
+			return false;
+		D3D11_TEXTURE2D_DESC source{};
+		a_source->GetDesc(&source);
+		if (sceneCopy) {
+			D3D11_TEXTURE2D_DESC existing{};
+			sceneCopy->GetDesc(&existing);
+			if (existing.Width == source.Width && existing.Height == source.Height && existing.Format == source.Format)
+				return true;
+		}
+		sceneCopy = nullptr;
+		sceneCopySRV = nullptr;
+		D3D11_TEXTURE2D_DESC desc = source;
+		desc.MipLevels = 1;
+		desc.ArraySize = 1;
+		desc.SampleDesc = { 1, 0 };
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		desc.CPUAccessFlags = 0;
+		desc.MiscFlags = 0;
+		if (source.SampleDesc.Count != 1 || source.MipLevels != 1 || FAILED(a_device->CreateTexture2D(&desc, nullptr, sceneCopy.put())) ||
+			FAILED(a_device->CreateShaderResourceView(sceneCopy.get(), nullptr, sceneCopySRV.put()))) {
+			logger::warn("[Fluid Field] Waterfall spray: no copy of the frame (format {}); the droplets do not refract", static_cast<int>(source.Format));
+			sceneCopy = nullptr;
+			sceneCopySRV = nullptr;
+			sceneCopyFailed = true;
+			return false;
+		}
+		Util::SetResourceName(sceneCopy.get(), "FluidField::FallEffectsScene");
+		return true;
+	}
+
 	bool FallSurfaceRenderer::EnsureDepthCopy(ID3D11Device* a_device, ID3D11DepthStencilView* a_depth)
 	{
 		if (depthCopyFailed || !a_depth)
@@ -240,7 +298,7 @@ namespace FluidFieldSim
 
 		const Constants data{ a_params.time, BRIGHTNESS, std::min(emitterCount, MAX_PARTICLES / perEmitter), a_params.sprayPerEmitter,
 			a_params.mistPerEmitter, SPRAY_LIFE, SPRAY_SPEED, a_params.spraySize, SPRAY_STRETCH, a_params.sprayOpacity, MIST_LIFE, MIST_SIZE, MIST_RISE, a_params.mistOpacity,
-			PARTICLE_GRAVITY, 0.0f, a_params.mapSpacing, a_params.mapResolution, { 0.0f, 0.0f } };
+			PARTICLE_GRAVITY, 0.0f, a_params.mapSpacing, a_params.mapResolution, a_params.environment ? 1u : 0u, 0.0f };
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (FAILED(a_context->Map(constants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
 			return;
@@ -279,6 +337,14 @@ namespace FluidFieldSim
 		a_context->VSGetShaderResources(WATER_SLOT, 2, reinterpret_cast<ID3D11ShaderResourceView**>(savedVSWater));
 		a_context->VSGetShaderResources(WATER_MAP_SLOT, 1, savedVSMap.put());
 		a_context->PSGetShaderResources(SCENE_DEPTH_SLOT, 1, savedPSDepth.put());
+		winrt::com_ptr<ID3D11ShaderResourceView> savedShadowMap, savedCascades;
+		a_context->PSGetShaderResources(SHADOW_MAP_SLOT, 1, savedShadowMap.put());
+		a_context->PSGetShaderResources(SHADOW_CASCADES_SLOT, 1, savedCascades.put());
+		winrt::com_ptr<ID3D11SamplerState> savedSampler;
+		a_context->PSGetSamplers(LINEAR_SAMPLER_SLOT, 1, savedSampler.put());
+		winrt::com_ptr<ID3D11ShaderResourceView> savedScene, savedEnvironment;
+		a_context->PSGetShaderResources(SCENE_COLOR_SLOT, 1, savedScene.put());
+		a_context->PSGetShaderResources(ENVIRONMENT_SLOT, 1, savedEnvironment.put());
 
 		// D182: the depth as it is now (the water planes and the falls in it), for the particles' soft contact: against the opaque
 		// scene's alone, mist met the water and the falls on the depth test's hard line (cards cutting through the water, the user)
@@ -289,6 +355,13 @@ namespace FluidFieldSim
 			a_context->OMSetRenderTargets(0, nullptr, nullptr);
 			a_context->CopyResource(depthCopy.get(), live.get());
 			contactDepth = depthCopySRV.get();
+		}
+		// D186: the frame as it stands, for the droplets to refract (the falls in it: a drop before a fall shows the fall)
+		ID3D11ShaderResourceView* scene = nullptr;
+		if (EnsureSceneCopy(a_device, a_params.targetTexture)) {
+			a_context->OMSetRenderTargets(0, nullptr, nullptr);
+			a_context->CopyResource(sceneCopy.get(), a_params.targetTexture);
+			scene = sceneCopySRV.get();
 		}
 
 		// Draw
@@ -305,6 +378,30 @@ namespace FluidFieldSim
 		a_context->VSSetConstantBuffers(CAMERA_SLOT, 1, &a_params.camera);
 		a_context->PSSetConstantBuffers(CAMERA_SLOT, 1, &a_params.camera);
 		a_context->PSSetShaderResources(SCENE_DEPTH_SLOT, 1, &contactDepth);
+		// D186: in the sun's shadow (Volumetric Shadows' map, as the falls' surface reads it) when its maps are known this frame;
+		// terrain and cloud shadows either way
+		activePixelShader = sprayPixelShader.get();
+		if (a_params.shadowMap && a_params.shadowCascades) {
+			if (!sprayPixelShaderShadowed && !shadowedShaderFailed) {
+				sprayPixelShaderShadowed.attach(reinterpret_cast<ID3D11PixelShader*>(
+					Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSpray.hlsl", { { "VOLUMETRIC_SHADOWS", "" } }, "ps_5_0", "PSMain")));
+				shadowedShaderFailed = !sprayPixelShaderShadowed;
+				if (shadowedShaderFailed)
+					logger::warn("[Fluid Field] Waterfall spray: the shadowed shader failed to compile; the spray is drawn without Volumetric Shadows");
+			}
+			if (sprayPixelShaderShadowed) {
+				activePixelShader = sprayPixelShaderShadowed.get();
+				ID3D11ShaderResourceView* shadowMap = a_params.shadowMap;
+				ID3D11ShaderResourceView* cascades = a_params.shadowCascades;
+				a_context->PSSetShaderResources(SHADOW_MAP_SLOT, 1, &shadowMap);
+				a_context->PSSetShaderResources(SHADOW_CASCADES_SLOT, 1, &cascades);
+			}
+		}
+		ID3D11SamplerState* sampler = linearSampler.get();
+		a_context->PSSetSamplers(LINEAR_SAMPLER_SLOT, 1, &sampler);
+		a_context->PSSetShaderResources(SCENE_COLOR_SLOT, 1, &scene);
+		ID3D11ShaderResourceView* environment = a_params.environment;
+		a_context->PSSetShaderResources(ENVIRONMENT_SLOT, 1, &environment);
 		ID3D11ShaderResourceView* water[2] = { a_params.waterSurface, a_params.waterFlow };
 		a_context->VSSetShaderResources(WATER_SLOT, 2, water);
 		a_context->VSSetShaderResources(WATER_MAP_SLOT, 1, &a_params.waterMap);
@@ -338,6 +435,16 @@ namespace FluidFieldSim
 		a_context->VSSetShaderResources(WATER_MAP_SLOT, 1, &vsMap);
 		ID3D11ShaderResourceView* psDepth = savedPSDepth.get();
 		a_context->PSSetShaderResources(SCENE_DEPTH_SLOT, 1, &psDepth);
+		ID3D11ShaderResourceView* psShadow[1] = { savedShadowMap.get() };
+		a_context->PSSetShaderResources(SHADOW_MAP_SLOT, 1, psShadow);
+		ID3D11ShaderResourceView* psCascades[1] = { savedCascades.get() };
+		a_context->PSSetShaderResources(SHADOW_CASCADES_SLOT, 1, psCascades);
+		ID3D11SamplerState* psSampler = savedSampler.get();
+		a_context->PSSetSamplers(LINEAR_SAMPLER_SLOT, 1, &psSampler);
+		ID3D11ShaderResourceView* psScene = savedScene.get();
+		a_context->PSSetShaderResources(SCENE_COLOR_SLOT, 1, &psScene);
+		ID3D11ShaderResourceView* psEnvironment = savedEnvironment.get();
+		a_context->PSSetShaderResources(ENVIRONMENT_SLOT, 1, &psEnvironment);
 	}
 
 	void FallSurfaceRenderer::DrawParticles(ID3D11DeviceContext* a_context, uint32_t a_perEmitter)
@@ -346,7 +453,7 @@ namespace FluidFieldSim
 			return;
 		// The emitters in the vertex shader's slot; six vertices (a quad) per particle
 		a_context->VSSetShader(sprayVertexShader.get(), nullptr, 0);
-		a_context->PSSetShader(sprayPixelShader.get(), nullptr, 0);
+		a_context->PSSetShader(activePixelShader ? activePixelShader : sprayPixelShader.get(), nullptr, 0);
 		ID3D11ShaderResourceView* view = emittersSRV.get();
 		a_context->VSSetShaderResources(EMITTERS_SLOT, 1, &view);
 		a_context->DrawInstanced(6, std::min(emitterCount, MAX_PARTICLES / a_perEmitter) * a_perEmitter, 0, 0);

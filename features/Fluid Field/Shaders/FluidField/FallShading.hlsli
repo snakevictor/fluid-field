@@ -158,7 +158,16 @@ namespace FallShading
 	/** D179: how much aeration makes the water opaque (the bubbles scatter what lies behind). */
 	static const float BUBBLE_OPACITY = 0.0;
 	/** D179: how much aeration foams (the river's foam pattern, as the contact's), as well as bubbling (the user). */
-	static const float AERATION_FOAM = 0.3;
+	static const float AERATION_FOAM = 0.22;  // D186: 0.22, was 0.3 (the user: aerated water read thick)
+	/** D186: world units under the surface the aerated foam's two layers lie (parallaxed: it shows from the side too, not only above). */
+	static const float AERATION_DEPTH_NEAR = 10.0;
+	static const float AERATION_DEPTH_FAR = 26.0;
+	/** D186: how milky aeration and speed make the falls (FluidField::ApplyAeration's measure). */
+	static const float MILK_AERATION = 0.35;
+	static const float MILK_SPEED = 0.2;
+	/** D186: the aeration's look eased inward: from this aeration it starts to show, and is whole by this (the user: subtler). */
+	static const float AERATION_EASE_FROM = 0.15;
+	static const float AERATION_EASE_FULL = 0.85;
 	/** D179: the bake's disturbance (stirred water: a boulder's wake, piling against rock) over which the water churns with air, and how much. */
 	static const float STIRRED_FROM = 0.15;
 	static const float STIRRED_FULL = 1.0;
@@ -224,9 +233,9 @@ namespace FallShading
 	static const int BUBBLE_LAYERS = 3;
 	static const float BUBBLE_DEPTH = 9.0;
 	/** D179: how many times denser the bubbles are in aerated water than in the plain flow. */
-	static const float BUBBLE_AERATED_GAIN = 4.0;
+	static const float BUBBLE_AERATED_GAIN = 7.0 / 3.0;  // D186: 7 to 3, was 4 to 1 (the user)
 	/** D180: the share of the lattice's cells that hold a bubble, overall (a third of D179's: the user). */
-	static const float BUBBLE_AMOUNT = 1.0 / 6.0;  // D181: halved again (the user)
+	static const float BUBBLE_AMOUNT = 0.9 / 6.0;  // D181: halved again (the user); D186: 10% fewer
 	/** D181: the most the falls' foam covers: slightly see-through, as the river's (WaterNormal.hlsli FOAM_OPACITY). */
 	static const float FOAM_OPACITY = 0.8;
 	/** D181: the least the coarse break-up mask leaves of the foam's strength (its thinned patches). */
@@ -460,6 +469,16 @@ namespace FallShading
 		const float threshold = a_pattern * 0.6;
 		// D183: starting late, so it pulls inward from its edges into smaller patches (the user), still a soft ramp
 		return smoothstep(threshold + 0.15, threshold + 0.75, a_aeration) * FOAM_OPACITY;
+	}
+
+	/**
+	 * D186: the contact's foam, solid where the contact is strong (water striking rock or the ground head on: thick and steady, the
+	 * user, SS 1409), broken into the pattern only in its tail
+	 */
+	float ContactCover(float a_contact, float a_pattern)
+	{
+		const float threshold = a_pattern * 0.5 * (1.0 - smoothstep(0.45, 0.85, a_contact));
+		return a_contact > 0.02 ? smoothstep(threshold, threshold + 0.25, a_contact) * FOAM_OPACITY : 0.0;
 	}
 
 	float FoamCover(float a_contact, float a_pattern)
