@@ -64,6 +64,13 @@ namespace FluidFieldSim
 			float spraySize = 1.4f;
 			float sprayOpacity = 0.2f;
 			float mistOpacity = 0.06f;
+			float cameraPosition[3]{};  ///< D182: world, for the emitters near enough to draw
+			/// D183: the water simulation's near level (surface, flow) and its map: the spray and mist are seeded on the foamy water
+			ID3D11ShaderResourceView* waterSurface = nullptr;
+			ID3D11ShaderResourceView* waterFlow = nullptr;
+			ID3D11ShaderResourceView* waterMap = nullptr;
+			float mapSpacing = 0.0f;
+			uint32_t mapResolution = 0;
 		};
 		void Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params);
 
@@ -77,8 +84,13 @@ namespace FluidFieldSim
 		static constexpr float SPRAY_SPEED = 150.0f;    ///< World units per second thrown up and out at full strength
 		static constexpr float MIST_LIFE = 3.0f;
 		static constexpr float MIST_SIZE = 100.0f;
-		static constexpr float MIST_RISE = 40.0f;           ///< World units per second
-		static constexpr float PARTICLE_GRAVITY = 1100.0f;  ///< D50: droplets turn down sooner than free fall (they read as too floaty)
+		static constexpr float MIST_RISE = 40.0f;                    ///< World units per second
+		static constexpr float PARTICLE_GRAVITY = 1100.0f;           ///< D50: droplets turn down sooner than free fall (they read as too floaty)
+		static constexpr float NEAR_REACH = 8200.0f;                 ///< D182: world units from the camera an emitter is drawn within (FallSpray's SPRAY_FAR, and their reach; D183: 8200, was 3200: they went out in plain sight)
+		static constexpr uint32_t EMITTER_ID_MASK = (1u << 21) - 1;  ///< D183: an emitter's id, packed over its kind (kind + 4 id stays exact in a float)
+		static constexpr uint32_t MOST_NEAR = 4096;                  ///< D182: the most emitters drawn, nearest first
+		static constexpr uint32_t SEEDS = 4096;                      ///< D183: the seeds scattered over the water round the camera (FallSpray: SEED_RADIUS)
+		static constexpr float REFILTER_MOVE = 256.0f;               ///< D182: world units the camera moves before the near emitters are chosen again
 
 	private:
 		bool EnsureShaders();
@@ -104,14 +116,26 @@ namespace FluidFieldSim
 			float mistOpacity;
 			float gravity;
 			float pad;
+			float mapSpacing;  ///< D183
+			uint32_t mapResolution;
+			float mapPad[2];
 		};
-		static_assert(sizeof(Constants) == 64);
+		static_assert(sizeof(Constants) == 80);
 
 		winrt::com_ptr<ID3D11Buffer> emitters;
 		winrt::com_ptr<ID3D11ShaderResourceView> emittersSRV;
 		uint32_t emitterCapacity = 0;
 		uint32_t emitterCount = 0;
 		uint64_t uploadedVersion = UINT64_MAX;
+		std::vector<FallEmitter> allEmitters;  ///< D182: every emitter (shuffled); the GPU holds the ones near the camera
+		float filteredAt[3]{ 1e30f, 1e30f, 1e30f };
+		bool refilter = true;
+		void UploadNear(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const float (&a_camera)[3]);
+		/** @brief D182: a copy of the depth with the water planes and the falls in it, for the particles' soft contact. */
+		bool EnsureDepthCopy(ID3D11Device* a_device, ID3D11DepthStencilView* a_depth);
+		winrt::com_ptr<ID3D11Texture2D> depthCopy;
+		winrt::com_ptr<ID3D11ShaderResourceView> depthCopySRV;
+		bool depthCopyFailed = false;
 
 		winrt::com_ptr<ID3D11Buffer> constants;
 		winrt::com_ptr<ID3D11VertexShader> sprayVertexShader;

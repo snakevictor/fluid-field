@@ -395,14 +395,29 @@ namespace FallShading
 	 * moves, stretches and bends with the baked water. Not dragged by FlowSample::velocity, the direction v runs from the
 	 * screen derivatives, constant per triangle (a lattice, SS 1191-1193)
 	 */
+	float FlowFoamOnce(Texture2D<float4> a_tex, SamplerState a_sampler, float2 a_uv, float2 a_dx, float2 a_dy)
+	{
+		const float p0 = length(a_tex.SampleGrad(a_sampler, a_uv, a_dx, a_dy).xy * 2.0 - 1.0);
+		const float p1 = length(a_tex.SampleGrad(a_sampler, a_uv * 0.61 + 0.37, a_dx * 0.61, a_dy * 0.61).xy * 2.0 - 1.0);
+		return saturate((p0 + p1) * 0.5 * 1.4);
+	}
+
 	float FlowFoamPattern(Texture2D<float4> a_tex, SamplerState a_sampler, float2 a_flowUv, float a_mipBias, float a_stretch = 1.0)
 	{
-		// D181: along the flow by the coordinates' stretch (a_stretch: world units a unit of v spans over a unit of u), so the
-		// bubbles keep round where fast water draws the coordinates out (they were drawn into streaks)
-		const float2 uv = float2(a_flowUv.x, a_flowUv.y * a_stretch) * FlowScale(FOAM_TILE);
-		const float p0 = length(a_tex.SampleBias(a_sampler, uv, a_mipBias).xy * 2.0 - 1.0);
-		const float p1 = length(a_tex.SampleBias(a_sampler, uv * 0.61 + 0.37, a_mipBias).xy * 2.0 - 1.0);
-		return saturate((p0 + p1) * 0.5 * 1.4);
+		// D182: along the flow by the coordinates' stretch (a_stretch: the bake's, world units a unit of v spans over a unit of u),
+		// so the bubbles keep round where fast water draws the coordinates out. Not on the run coordinate itself (large far down
+		// a sheet, scaled by a stretch varying across it, it sheared into swirls, SS 1315): on it wrapped into a tile, in two
+		// phases half a tile apart, each faded out where it wraps (the shear stays within a tile)
+		const float2 tiles = a_flowUv * FlowScale(FOAM_TILE);
+		const float phase0 = frac(tiles.y);
+		const float phase1 = frac(tiles.y + 0.5);
+		const float2 uv0 = float2(tiles.x, (phase0 - 0.5) * a_stretch);
+		const float2 uv1 = float2(tiles.x + 0.43, (phase1 - 0.5) * a_stretch + 0.29);
+		// The gradients from the unwrapped coordinates (the wrap's jump would pick the lowest mip along its seam), with the bias
+		const float bias = exp2(a_mipBias);
+		const float2 dx = ddx(tiles) * float2(1.0, a_stretch) * bias, dy = ddy(tiles) * float2(1.0, a_stretch) * bias;
+		const float w = abs(phase0 * 2.0 - 1.0);  // phase0's own weight falls to 0 where it wraps, phase1's where it does
+		return lerp(FlowFoamOnce(a_tex, a_sampler, uv0, dx, dy), FlowFoamOnce(a_tex, a_sampler, uv1, dx, dy), w);
 	}
 
 	/**
@@ -436,6 +451,17 @@ namespace FallShading
 	}
 
 	/** D174: how much of the pixel the foam covers, as the river's (dense foam solid, thin foam only in the pattern's bubbles). */
+	/**
+	 * D183: how much of the pixel aerated water's foam covers: a long, soft ramp (from flecks in the pattern's bubbles at low aeration
+	 * to dense foam), not FoamCover's narrow one (it switched aerated water on and off, the user)
+	 */
+	float AerationCover(float a_aeration, float a_pattern)
+	{
+		const float threshold = a_pattern * 0.6;
+		// D183: starting late, so it pulls inward from its edges into smaller patches (the user), still a soft ramp
+		return smoothstep(threshold + 0.15, threshold + 0.75, a_aeration) * FOAM_OPACITY;
+	}
+
 	float FoamCover(float a_contact, float a_pattern)
 	{
 		const float threshold = a_pattern * 0.5;

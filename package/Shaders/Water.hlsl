@@ -1299,12 +1299,15 @@ PS_OUTPUT main(PS_INPUT input)
 	const float fallAboveWater = FallShading::AboveWater(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, input.FallFade.z, input.FallFade.y, input.FallData.y);
 	const float fallContact = FallShading::ContactStrength(fallSheetGap, fallBehind, fallAboveWater, fallLip, input.FallClip);
 	// D179: aerated water foams as well as bubbling (the user), in the same pattern, not on the lip (the crest stays glassy)
-	// D181: no stretch on the pattern: the run coordinate is large far down a sheet, and scaled by a stretch varying across it, it
-	// sheared into hair-like swirls (SS 1315). The bake's stretch stays for a later, derivative-based use
-	const float fallFoamStretch = 1.0;
-	const float fallFoamDrive = max(fallContact, fallAerated * FallShading::AERATION_FOAM * fallLip) *
-	                            FallShading::FoamBreakup(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, fallFoamStretch);
-	const float fallFoam = fallFoamDrive > 0.02 ? FallShading::FoamCover(fallFoamDrive, FallShading::FlowFoamPattern(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, fallFoamStretch)) : 0.0;
+	const float fallFoamStretch = fallFlow.stretch;  // D182: the bake's (FlowFoamPattern lays it on a wrapped coordinate: no shear)
+	const float fallFoamDrive = fallContact *
+	                            FallShading::FoamBreakup(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, 1.0);
+	const float fallFoamPattern = FallShading::FlowFoamPattern(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, fallFoamStretch);
+	// D183: the contact's foam with its crisp edge; the aerated water's over a long, soft ramp (it switched on and off, the user)
+	const float fallAerationFoam = FallShading::AerationCover(fallAerated * FallShading::AERATION_FOAM * 2.0 * fallLip *
+																  FallShading::FoamBreakup(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, 1.0),
+		fallFoamPattern);
+	const float fallFoam = max(fallFoamDrive > 0.02 ? FallShading::FoamCover(fallFoamDrive, fallFoamPattern) : 0.0, fallAerationFoam);
 	// D176: under the water below (its plane is flat: the height over it interpolates exactly), only the foam shows, fading as it
 	// does: the water faded more slowly than the foam's cover, a strip of dark water between the falls' foam and the pool's down to
 	// the per-vertex cut, in the triangles' steps (SS 1235, 1236)

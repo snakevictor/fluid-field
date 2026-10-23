@@ -56,6 +56,10 @@ Replaces the flat white river foam on plunge pools.
 -   **The swell normal** (SWELL_HEIGHT 0): its slope from the bake's field, not screen derivatives.
 -   **The crest blend** (step 2): the shared parameterization.
 
+## The target look (the user's reference, 2026-10-22)
+
+From a photo of a large waterfall: the thick, lumpy white water with real volume and self-shadowing (cauliflower clumps, not a flat texture), and the droplets shed off it as it falls. Not its water colour (the user). The bake's aeration and speed drive where it breaks up; the foam needs its own relief and shading; the droplets come from the emitters past the crests (D183).
+
 ## Later (after 1-6, @Victor)
 
 ### 7. Denser falls near the player

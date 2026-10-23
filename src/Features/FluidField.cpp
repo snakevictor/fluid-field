@@ -1128,6 +1128,19 @@ void FluidField::DrawGroundFogAfterWorld()
 			params.spraySize = settings.SpraySize;
 			params.sprayOpacity = settings.SprayOpacity;
 			params.mistOpacity = settings.MistOpacity;
+			if (auto* eye = RE::Main::WorldRootCamera()) {  // D182: the emitters near the main camera (the cached frame's eye alternated
+				// with other passes', (0, 0, 1) every other call)
+				params.cameraPosition[0] = eye->world.translate.x;
+				params.cameraPosition[1] = eye->world.translate.y;
+				params.cameraPosition[2] = eye->world.translate.z;
+			}
+			if (waterShaderData.Enabled && nearWater.solver.GetMapSRV()) {  // D183: seeded on the water's foam
+				params.waterSurface = nearWater.solver.GetSurfaceSRV();
+				params.waterFlow = nearWater.solver.GetFlowSRV();
+				params.waterMap = nearWater.solver.GetMapSRV();
+				params.mapSpacing = nearWater.solver.GetMapSpacing();
+				params.mapResolution = nearWater.solver.GetMapResolution();
+			}
 			globals::profiler->BeginPass("FluidField::FallEffects");
 			fallSurface.Draw(globals::d3d::device, globals::d3d::context, params);
 			globals::profiler->EndPass();

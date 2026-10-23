@@ -4129,3 +4129,86 @@ Entry format:
     emitter meanwhile); mist puffs cut by the water and the falls' depth (the
     hardware test against them: test against a copy with them instead, softly).
 -   References: D31, D35, D104, D174, D179, D180
+
+## D182: Spray only near the camera, never from the ground; particles shaded as small volumes
+
+-   Date: 2026-10-22
+-   Decision:
+    -   **Only the emitters near the camera reach the GPU** (all 19,554 after
+        D181's finer bake cost the vertex stage): FallSurfaceRenderer::UploadNear
+        picks them, nearest first, again each time the camera moves far enough.
+        The eye is the main camera's (the cached frame's alternated with other
+        passes').
+    -   **Never from the ground** (the user, SS 1316, 1317): the bake reads the
+        whole mesh (D132), so texels under the landscape threw spray from inside
+        it. ComputePlunges reads a copy of the landscape round the falls on its
+        worker and drops emitters more than SPRAY_BURIED under it.
+    -   **Soft contact** against a copy of the depth with the water planes and
+        the falls in it, over a short reach. Droplets fade once they fall back
+        below where they were thrown.
+    -   **Shading** (the user: catch the light, have depth): a sphere's normal
+        across each quad, a wrapped sun term, Henyey-Greenstein forward
+        scattering (mist more), the light's colour only in part (PARTICLE_COLOR).
+    -   **The bubbles' stretch** laid on the run coordinate wrapped into a tile,
+        in two phases half a tile apart (D181's shear, SS 1315, stays within a
+        tile).
+-   References: D126, D132, D181
+
+## D183: Fixed emitters on the drawn water, stable ids, a debug view
+
+-   Date: 2026-10-22
+-   Decision:
+    -   **Emitters on the water as drawn**: each texel pushed out by its swell
+        (ComputePushes) and EMIT_PROUD over it. Lifting particles by the depth
+        buffer was view-dependent (the user saw an emitter's height change with
+        the camera's distance, SS 1345-1347).
+    -   **A stable id per emitter** (an FNV hash of its floored position and
+        kind, 21 bits, packed as kind + 4 id): its particles' random choices and
+        its on/off switching follow it, not its place in the near list, which
+        changed as the camera moved (the user: jitter).
+    -   **Switched on and off** each SWITCH_PERIOD, with a chance rising with the
+        simulated foam and flow at it.
+    -   **Reach**: SPRAY_NEAR_FADE 6000, SPRAY_FAR 8000 (2000 / 3000 went out in
+        plain sight, SS 1351); thinning from SPRAY_LOD_FROM to a fifth, by each
+        particle's own hash (no flicker), the rest drawn bigger.
+    -   **Bake back to 8 units a texel, 256 a side** (the user: D181's 6 / 320
+        too costly); cache version 10.
+    -   **DEBUG_EMITTERS** (FallSpray): a marker over everything on each
+        emitter, pink crest, green meet, blue strike, dim while off.
+    -   Test conditions (the user): clear weather (fw 81a), 13:30, the full
+        load, the recorded camera pose.
+-   References: D78, D82, D182
+
+## D184: The emitters where the user drew them: crests, meeting sheets, rock
+
+-   Date: 2026-10-23
+-   Decision (the user's colour map, SS 1352):
+    -   **Pink, the crest**: only on meshes that pour out of a body of water
+        (at least SOURCE_LEAST_CRESTS and SOURCE_SHARE of their columns' crests
+        at a plane's or a pool's level: the meshes the crest blend works on),
+        none from meshes in the middle of a fall. Each column from where its
+        bare normal turns from the sky to falling (the first shown texel past
+        the crest under LIP_TANGENT 0.94 up), and weaker ones over the band
+        upstream of it (CREST_BAND_ROWS, the user, SS 1370). A column that runs
+        into rock after its water starts throws none (the user); rock before it
+        is the lead-in tucked into the bed. Thrown fast (CREST_LAUNCH, at least
+        CREST_THROW), level to a little up or down, fanned in a V (CREST_FAN
+        0.3), fading as they fly.
+    -   **Green, where sheets meet**: texels whose shown water lies within
+        MEET_EMIT of another mesh's shown water (the culling's meet line, D126).
+        A grounded heavy mist drifting forward a little (MEET_DRIFT), and
+        droplets fanned forward like the crest's but steeper (half the slots).
+    -   **Blue, rock in the way**: foam over STRIKE_FOAM with rock within
+        HEAD_ON_REACH along the turned flow and none beside it (a face, not a
+        bank). Splashes up, leaning on the flow, and a longer mist.
+    -   **Never deep under water**: none more than EMIT_DEEP under another
+        sheet's shown surface, or EMIT_SUBMERGED under a plane or pool (the
+        plane's bound reaches over the fall: not past a crest).
+    -   **Droplets** tear-shaped (DROP_LONG, DROP_THIN, each its own width and
+        length), DROP_BIG larger, leaving at DROP_OPACITY 0.75, shaded darker
+        away from the sun and underneath. Every droplet slot thrown while its
+        emitter is on. Mist 30% sheerer (MIST_SHEER).
+    -   No more spray from the plunges' feet or the crossings of water surfaces.
+-   Left: bake and bake-load times, nearest falls first (the user); the crest
+    blend; the foam's relief; a volumetric or parallaxed mist (the user's idea).
+-   References: D70, D79, D126, D170, D183

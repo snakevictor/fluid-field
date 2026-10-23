@@ -1,6 +1,7 @@
 #include "FallSurfaceRenderer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <random>
 
@@ -12,6 +13,8 @@ namespace FluidFieldSim
 		constexpr UINT CAMERA_SLOT = 12;
 		constexpr UINT EMITTERS_SLOT = 100;
 		constexpr UINT SCENE_DEPTH_SLOT = 103;
+		constexpr UINT WATER_SLOT = 66;  // D183: the simulation's surface and flow (t66-t67)
+		constexpr UINT WATER_MAP_SLOT = 104;
 	}
 
 	void FallSurfaceRenderer::Release()
@@ -25,6 +28,11 @@ namespace FluidFieldSim
 		blend = nullptr;
 		depthState = nullptr;
 		raster = nullptr;
+		allEmitters.clear();
+		refilter = true;
+		depthCopy = nullptr;
+		depthCopySRV = nullptr;
+		depthCopyFailed = false;
 		ReleaseShaders();
 	}
 
@@ -82,20 +90,57 @@ namespace FluidFieldSim
 		return true;
 	}
 
-	void FallSurfaceRenderer::Upload(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const std::vector<FallEmitter>& a_emitters, uint64_t a_version)
+	void FallSurfaceRenderer::Upload(ID3D11Device*, ID3D11DeviceContext*, const std::vector<FallEmitter>& a_emitters, uint64_t a_version)
 	{
 		if (a_version == uploadedVersion)
 			return;
 		uploadedVersion = a_version;
-		emitterCount = 0;
-		if (a_emitters.empty())
+		// Shuffled, so that when only the first emitters fit (DrawParticles), they are spread over every fall
+		allEmitters = a_emitters;
+		std::mt19937 random(0x5eed);
+		std::shuffle(allEmitters.begin(), allEmitters.end(), random);
+		refilter = true;
+	}
+
+	void FallSurfaceRenderer::UploadNear(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const float (&a_camera)[3])
+	{
+		// D182: only the emitters near the camera reach the GPU (all of them, 19,554 after the finer bake, cost the vertex
+		// shader every frame though their particles were faded out past SPRAY_FAR): within NEAR_REACH, nearest first, at most
+		// MOST_NEAR; chosen again when the camera has moved REFILTER_MOVE or the emitters changed
+		const float dx0 = a_camera[0] - filteredAt[0], dy0 = a_camera[1] - filteredAt[1], dz0 = a_camera[2] - filteredAt[2];
+		if (!refilter && dx0 * dx0 + dy0 * dy0 + dz0 * dz0 < REFILTER_MOVE * REFILTER_MOVE)
 			return;
-		const auto count = static_cast<uint32_t>(a_emitters.size());
+		refilter = false;
+		std::copy_n(a_camera, 3, filteredAt);
+		std::vector<std::pair<float, uint32_t>> nearby;
+		for (uint32_t i = 0; i < allEmitters.size(); i++) {
+			const auto& e = allEmitters[i];
+			const float dx = e.position[0] - a_camera[0], dy = e.position[1] - a_camera[1], dz = e.position[2] - a_camera[2];
+			const float d2 = dx * dx + dy * dy + dz * dz;
+			if (d2 < NEAR_REACH * NEAR_REACH)
+				nearby.emplace_back(d2, i);
+		}
+		if (nearby.size() > MOST_NEAR) {
+			std::nth_element(nearby.begin(), nearby.begin() + MOST_NEAR, nearby.end());
+			nearby.resize(MOST_NEAR);
+		}
+		std::sort(nearby.begin(), nearby.end(), [](const auto& a_a, const auto& a_b) { return a_a.second < a_b.second; });  // the shuffle's spread kept
+		emitterCount = 0;
+		if (nearby.empty()) {
+			float nearest = FLT_MAX;
+			for (const auto& e : allEmitters) {
+				const float dx = e.position[0] - a_camera[0], dy = e.position[1] - a_camera[1], dz = e.position[2] - a_camera[2];
+				nearest = std::min(nearest, std::sqrt(dx * dx + dy * dy + dz * dz));
+			}
+			logger::info("[Fluid Field] Spray: none of {} emitters near the eye at ({:.0f}, {:.0f}, {:.0f}); the nearest {:.0f} away", allEmitters.size(), a_camera[0], a_camera[1], a_camera[2], nearest);
+			return;
+		}
+		const auto count = static_cast<uint32_t>(nearby.size());
 		if (count > emitterCapacity) {
 			emitters = nullptr;
 			emittersSRV = nullptr;
 			emitterCapacity = 0;
-			const uint32_t capacity = count + count / 4;
+			const uint32_t capacity = std::max(count + count / 4, 256u);
 			D3D11_BUFFER_DESC desc{ .ByteWidth = static_cast<UINT>(capacity * sizeof(FallEmitter)), .Usage = D3D11_USAGE_DEFAULT, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, .StructureByteStride = sizeof(FallEmitter) };
 			D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{ .Format = DXGI_FORMAT_UNKNOWN, .ViewDimension = D3D11_SRV_DIMENSION_BUFFER, .Buffer = { .FirstElement = 0, .NumElements = capacity } };
 			if (FAILED(a_device->CreateBuffer(&desc, nullptr, emitters.put())) || FAILED(a_device->CreateShaderResourceView(emitters.get(), &srvDesc, emittersSRV.put()))) {
@@ -107,24 +152,95 @@ namespace FluidFieldSim
 			Util::SetResourceName(emittersSRV.get(), "FluidField::FallEmitters SRV");
 			emitterCapacity = capacity;
 		}
-		// Shuffled, so that when only the first emitters fit (DrawParticles), they are spread over every fall
-		std::vector<FallEmitter> shuffled = a_emitters;
-		std::mt19937 random(0x5eed);
-		std::shuffle(shuffled.begin(), shuffled.end(), random);
+		std::vector<FallEmitter> chosen;
+		chosen.reserve(count);
+		for (const auto& entry : nearby) {
+			// D183: each with its own id from where it is (FallSpray's random choices: by its place in this list they changed
+			// whenever the camera moved and the list was chosen again, and the particles jumped), packed over its kind
+			FallEmitter emitter = allEmitters[entry.second];
+			uint32_t id = 2166136261u;
+			for (int k = 0; k < 3; k++)
+				id = (id ^ static_cast<uint32_t>(static_cast<int32_t>(std::floor(emitter.position[k])))) * 16777619u;
+			id = (id ^ static_cast<uint32_t>(emitter.kind)) * 16777619u;
+			emitter.kind += 4.0f * static_cast<float>(id & EMITTER_ID_MASK);
+			chosen.push_back(emitter);
+		}
 		const D3D11_BOX box{ 0, 0, 0, static_cast<UINT>(count * sizeof(FallEmitter)), 1, 1 };
-		a_context->UpdateSubresource(emitters.get(), 0, &box, shuffled.data(), 0, 0);
+		a_context->UpdateSubresource(emitters.get(), 0, &box, chosen.data(), 0, 0);
 		emitterCount = count;
+		logger::info("[Fluid Field] Spray: {} of {} emitters near the eye at ({:.0f}, {:.0f}, {:.0f})", count, allEmitters.size(), a_camera[0], a_camera[1], a_camera[2]);
+	}
+
+	bool FallSurfaceRenderer::EnsureDepthCopy(ID3D11Device* a_device, ID3D11DepthStencilView* a_depth)
+	{
+		if (depthCopyFailed || !a_depth)
+			return false;
+		winrt::com_ptr<ID3D11Resource> resource;
+		a_depth->GetResource(resource.put());
+		auto texture = resource.try_as<ID3D11Texture2D>();
+		if (!texture)
+			return false;
+		D3D11_TEXTURE2D_DESC source{};
+		texture->GetDesc(&source);
+		if (depthCopy) {
+			D3D11_TEXTURE2D_DESC existing{};
+			depthCopy->GetDesc(&existing);
+			if (existing.Width == source.Width && existing.Height == source.Height && existing.Format == source.Format)
+				return true;
+		}
+		depthCopy = nullptr;
+		depthCopySRV = nullptr;
+		D3D11_DEPTH_STENCIL_VIEW_DESC view{};
+		a_depth->GetDesc(&view);
+		// The read format from the depth's (the engine's depth is R24G8 or R32 typeless)
+		DXGI_FORMAT readFormat = DXGI_FORMAT_UNKNOWN;
+		switch (view.Format) {
+		case DXGI_FORMAT_D24_UNORM_S8_UINT:
+			readFormat = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+			break;
+		case DXGI_FORMAT_D32_FLOAT:
+			readFormat = DXGI_FORMAT_R32_FLOAT;
+			break;
+		case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+			readFormat = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+			break;
+		default:
+			break;
+		}
+		D3D11_TEXTURE2D_DESC desc = source;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		desc.CPUAccessFlags = 0;
+		desc.MiscFlags = 0;
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+		srvDesc.Format = readFormat;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MipLevels = 1;
+		if (readFormat == DXGI_FORMAT_UNKNOWN || source.SampleDesc.Count != 1 || FAILED(a_device->CreateTexture2D(&desc, nullptr, depthCopy.put())) ||
+			FAILED(a_device->CreateShaderResourceView(depthCopy.get(), &srvDesc, depthCopySRV.put()))) {
+			depthCopy = nullptr;
+			depthCopySRV = nullptr;
+			depthCopyFailed = true;
+			logger::warn("[Fluid Field] Spray: could not copy the depth; mist meets the water on a hard line");
+			return false;
+		}
+		Util::SetResourceName(depthCopy.get(), "FluidField::FallEffectsDepth");
+		Util::SetResourceName(depthCopySRV.get(), "FluidField::FallEffectsDepth SRV");
+		return true;
 	}
 
 	void FallSurfaceRenderer::Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params)
 	{
+		// D183: fixed emitters on the water surfaces (FallSites), the ones near the camera; each switches on and off over time in the
+		// shader, by the water's foam and flow there
+		UploadNear(a_device, a_context, a_params.cameraPosition);
 		if (emitterCount == 0 || !a_params.target || !a_params.depth || !a_params.camera || !EnsureShaders() || !EnsureStates(a_device))
 			return;
 		const uint32_t perEmitter = std::max(a_params.sprayPerEmitter + a_params.mistPerEmitter, 1u);
 
 		const Constants data{ a_params.time, BRIGHTNESS, std::min(emitterCount, MAX_PARTICLES / perEmitter), a_params.sprayPerEmitter,
 			a_params.mistPerEmitter, SPRAY_LIFE, SPRAY_SPEED, a_params.spraySize, SPRAY_STRETCH, a_params.sprayOpacity, MIST_LIFE, MIST_SIZE, MIST_RISE, a_params.mistOpacity,
-			PARTICLE_GRAVITY, 0.0f };
+			PARTICLE_GRAVITY, 0.0f, a_params.mapSpacing, a_params.mapResolution, { 0.0f, 0.0f } };
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		if (FAILED(a_context->Map(constants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
 			return;
@@ -158,9 +274,22 @@ namespace FluidFieldSim
 		winrt::com_ptr<ID3D11Buffer> savedVSCamera, savedPSCamera;
 		a_context->VSGetConstantBuffers(CAMERA_SLOT, 1, savedVSCamera.put());
 		a_context->PSGetConstantBuffers(CAMERA_SLOT, 1, savedPSCamera.put());
-		winrt::com_ptr<ID3D11ShaderResourceView> savedVSEmitters, savedPSDepth;
+		winrt::com_ptr<ID3D11ShaderResourceView> savedVSEmitters, savedPSDepth, savedVSWater[2], savedVSMap;
 		a_context->VSGetShaderResources(EMITTERS_SLOT, 1, savedVSEmitters.put());
+		a_context->VSGetShaderResources(WATER_SLOT, 2, reinterpret_cast<ID3D11ShaderResourceView**>(savedVSWater));
+		a_context->VSGetShaderResources(WATER_MAP_SLOT, 1, savedVSMap.put());
 		a_context->PSGetShaderResources(SCENE_DEPTH_SLOT, 1, savedPSDepth.put());
+
+		// D182: the depth as it is now (the water planes and the falls in it), for the particles' soft contact: against the opaque
+		// scene's alone, mist met the water and the falls on the depth test's hard line (cards cutting through the water, the user)
+		ID3D11ShaderResourceView* contactDepth = a_params.sceneDepth;
+		if (EnsureDepthCopy(a_device, a_params.depth)) {
+			winrt::com_ptr<ID3D11Resource> live;
+			a_params.depth->GetResource(live.put());
+			a_context->OMSetRenderTargets(0, nullptr, nullptr);
+			a_context->CopyResource(depthCopy.get(), live.get());
+			contactDepth = depthCopySRV.get();
+		}
 
 		// Draw
 		a_context->OMSetRenderTargets(1, &a_params.target, a_params.depth);
@@ -175,7 +304,10 @@ namespace FluidFieldSim
 		a_context->PSSetConstantBuffers(SHARED_SLOT, 3, buffers);
 		a_context->VSSetConstantBuffers(CAMERA_SLOT, 1, &a_params.camera);
 		a_context->PSSetConstantBuffers(CAMERA_SLOT, 1, &a_params.camera);
-		a_context->PSSetShaderResources(SCENE_DEPTH_SLOT, 1, &a_params.sceneDepth);
+		a_context->PSSetShaderResources(SCENE_DEPTH_SLOT, 1, &contactDepth);
+		ID3D11ShaderResourceView* water[2] = { a_params.waterSurface, a_params.waterFlow };
+		a_context->VSSetShaderResources(WATER_SLOT, 2, water);
+		a_context->VSSetShaderResources(WATER_MAP_SLOT, 1, &a_params.waterMap);
 		DrawParticles(a_context, perEmitter);
 
 		// Restore
@@ -200,6 +332,10 @@ namespace FluidFieldSim
 		a_context->PSSetConstantBuffers(CAMERA_SLOT, 1, &psCamera);
 		ID3D11ShaderResourceView* vsEmitters = savedVSEmitters.get();
 		a_context->VSSetShaderResources(EMITTERS_SLOT, 1, &vsEmitters);
+		ID3D11ShaderResourceView* vsWater[2] = { savedVSWater[0].get(), savedVSWater[1].get() };
+		a_context->VSSetShaderResources(WATER_SLOT, 2, vsWater);
+		ID3D11ShaderResourceView* vsMap = savedVSMap.get();
+		a_context->VSSetShaderResources(WATER_MAP_SLOT, 1, &vsMap);
 		ID3D11ShaderResourceView* psDepth = savedPSDepth.get();
 		a_context->PSSetShaderResources(SCENE_DEPTH_SLOT, 1, &psDepth);
 	}

@@ -482,6 +482,10 @@ namespace FluidFieldSim
 			std::vector<FallPlunge> plungePoints;
 			std::vector<FallEmitter> sprayEmitters;
 			uint32_t meets = 0, lips = 0, kinds[3]{};
+			LandscapeCache land;  ///< D182: the landscape round the falls (a copy, read on the worker): no spray from under it
+			bool haveLand = false;
+			uint32_t buried = 0;
+			uint32_t crestColumns = 0, lipColumns = 0, dropColumns = 0, submergedDrops = 0, footColumns = 0;  ///< D184: the emitters' stages, for the log
 		};
 		std::unique_ptr<PlungeResult> plungeResult;  ///< D172: the plunges' worker's
 		bool plungesDue = false;                     ///< D172: asked for (several asks, one build)
@@ -559,8 +563,8 @@ namespace FluidFieldSim
 		static constexpr float CLIP_MARGIN = 6.0f;            ///< A vertex this far inside rock still shows (water lying on it)
 		static constexpr float CLIP_RANGE = 32.0f;            ///< The most a vertex counts as in or out, so the cut stays near the rock's face
 		static constexpr double CLIP_BUDGET_MS = 3.0;
-		static constexpr float BAKE_TEXEL = 6.0f;         ///< D59: world units per texel of a mesh's flow bake (D181: 10 before, its steps showed)
-		static constexpr uint32_t BAKE_MOST_SIDE = 320;   ///< ...and the most texels along a side (D181: 192)
+		static constexpr float BAKE_TEXEL = 8.0f;         ///< D59: world units per texel of a mesh's flow bake (D181: 6, 10 before, its steps showed; D183: 8, 6 cost too much)
+		static constexpr uint32_t BAKE_MOST_SIDE = 256;   ///< ...and the most texels along a side (D181: 320, 192 before; D183: 256)
 		static constexpr float BAKE_ROCK_MARGIN = 24.0f;  ///< A texel this far inside rock is still water (vanilla's sheets dip into the rock they lie on)
 		static constexpr double BAKE_BUDGET_MS = 3.0;
 		static constexpr std::size_t BAKE_LEAST_ROCK = 6;  ///< D60: rock islands of this many texels or fewer are specks, taken as water
@@ -673,9 +677,9 @@ namespace FluidFieldSim
 			std::vector<float> disturbance;            ///< D85: how stirred the water is there (the wobble's size), softened
 			std::vector<float> clearFront, clearBack;  ///< D104: as BakeJob's: the open water or air on each side of the sheet (its depth behind, once its outer side is known)
 		};
-		static constexpr uint32_t BAKE_CACHE_VERSION = 9;  ///< D181: 9, finer and smoother; D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances; D126: 7, the domain was the culled shell; D132: 8, the whole mesh again)
-		static constexpr float CLEAR_REACH = 600.0f;       ///< D104: world units the clearance rays look for rock
-		static constexpr float CLEAR_START = 40.0f;        ///< D105: the clearance rays start this far off the other side of the sheet
+		static constexpr uint32_t BAKE_CACHE_VERSION = 10;  ///< D183: 10, 8 units a texel; D181: 9, finer and smoother; D82: bump whenever a bake would come out different (D85: 2, the disturbance; D91: 3, the evenly split copies; D104: 4, the clearances; D126: 7, the domain was the culled shell; D132: 8, the whole mesh again)
+		static constexpr float CLEAR_REACH = 600.0f;        ///< D104: world units the clearance rays look for rock
+		static constexpr float CLEAR_START = 40.0f;         ///< D105: the clearance rays start this far off the other side of the sheet
 		/** @brief D82: where a bake job's finished bake is kept on disk: by its reference, model part, placement, the rock and ground round it, and the version. */
 		static std::filesystem::path BakeCachePath(const BakeJob& a_job);
 		static bool SaveBake(const std::filesystem::path& a_path, const BakeField& a_field);
@@ -740,20 +744,42 @@ namespace FluidFieldSim
 		static constexpr float PLUNGE_BAND = 14.0f;           ///< A texel this near above the water below, or under it, is in it
 		static constexpr float PLUNGE_HEAD = 40.0f;           ///< Water that has fallen at least this far down its mesh plunges
 		static constexpr float PLUNGE_STEEP = 0.8f;           ///< Water this steep (upward normal) at the water's level plunges whatever its head (D46)
-		static constexpr float PLUNGE_SPACING = 16.0f;        ///< World units between plunge emitters
 		static constexpr float PLUNGE_WATER_SPACING = 24.0f;  ///< World units between the plunge points (their pushes on the simulated water)
 		static constexpr float OBSTACLE_FOAM = 0.6f;          ///< Rock foam at least this much throws spray
 		static constexpr float OBSTACLE_SPACING = 28.0f;
-		static constexpr float FALL_VIEW_RANGE = 2500.0f;   ///< World units round the camera the fall debug view draws (D36)
-		static constexpr float POOL_COVER = 2.0f;           ///< Water lying under a pool's surface by more than this is the pool's (D36)
-		static constexpr float POOL_BAND = 24.0f;           ///< D40: a pool's water is where vanilla's falling water lies at its level, within this...
-		static constexpr float TOP_POOL_CUT = 24.0f;        ///< D50: how much deeper the falls are cut under the pool they come from
-		static constexpr float POOL_SHALLOW = 160.0f;       ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
-		static constexpr int32_t POOL_LIP_REACH = 3;        ///< D53: cells round a pool's cell its falls are looked at: a fall dropping away below the level...
-		static constexpr float POOL_LIP_DROP = 48.0f;       ///< ...this far, with none coming in from above it, is the pool's lip or a curtain under it: not the pool's water
-		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;  ///< World units round each point where the falls meet the water below that it foams (D44, D47)
-		static constexpr float AERATED_SPRAY = 0.55f;       ///< D181: the bake's aeration from which the water throws spray and mist
-		static constexpr float AERATED_SPACING = 40.0f;     ///< D181: world units between those emitters
+		static constexpr float FALL_VIEW_RANGE = 2500.0f;    ///< World units round the camera the fall debug view draws (D36)
+		static constexpr float POOL_COVER = 2.0f;            ///< Water lying under a pool's surface by more than this is the pool's (D36)
+		static constexpr float POOL_BAND = 24.0f;            ///< D40: a pool's water is where vanilla's falling water lies at its level, within this...
+		static constexpr float TOP_POOL_CUT = 24.0f;         ///< D50: how much deeper the falls are cut under the pool they come from
+		static constexpr float POOL_SHALLOW = 160.0f;        ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
+		static constexpr int32_t POOL_LIP_REACH = 3;         ///< D53: cells round a pool's cell its falls are looked at: a fall dropping away below the level...
+		static constexpr float POOL_LIP_DROP = 48.0f;        ///< ...this far, with none coming in from above it, is the pool's lip or a curtain under it: not the pool's water
+		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;   ///< World units round each point where the falls meet the water below that it foams (D44, D47)
+		static constexpr float AERATED_SPRAY = 0.75f;        ///< D181: the bake's aeration from which the water throws spray and mist (D182: 0.55 threw from most of every sheet)
+		static constexpr float SPRAY_BURIED = 8.0f;          ///< D182: world units under the landscape past which a texel throws no spray
+		static constexpr float EMIT_PROUD = 4.0f;            ///< D183: world units off the drawn water an emitter sits
+		static constexpr float EMIT_SUBMERGED = 8.0f;        ///< D183: world units under another water surface a texel is hidden and throws nothing
+		static constexpr float EMIT_DEEP = 24.0f;            ///< D184: another sheet's shown water this far over an emitter: it is deep under it, none
+		static constexpr uint32_t SOURCE_LEAST_CRESTS = 4;   ///< D184: a mesh with this many columns' crests at a water's level pours out of it...
+		static constexpr float SOURCE_SHARE = 0.15f;         ///< D184: ...and at least this share of its columns'
+		static constexpr int32_t CREST_BAND_STEP = 4;        ///< D184: texels between the crest band's emitters upstream of a column's turn...
+		static constexpr int32_t CREST_BAND_ROWS = 12;       ///< D184: ...up to this many texels upstream of it
+		static constexpr float CREST_BAND_STRENGTH = 0.45f;  ///< D184: how much the band's emitters throw (on less often than the turn's)
+		static constexpr float MEET_CELL = 16.0f;            ///< D184: world units per cell of the shown water's grid (ComputePlunges)
+		static constexpr float MEET_EMIT = 12.0f;            ///< D184: another mesh's shown water this near a texel: the two sheets meet there (mist)
+		static constexpr float MEET_SPACING = 40.0f;         ///< D184: world units between the meeting mist emitters
+		static constexpr float MEET_STRENGTH = 0.85f;        ///< D184: how much a meeting throws
+		static constexpr float CREST_THROW = 300.0f;         ///< D184: world units a second the crests' spray leaves at least
+		static constexpr int32_t HEAD_ON_REACH = 3;          ///< D183: texels downstream rock must lie for the water to strike it head-on
+		static constexpr float STRIKE_FOAM = 0.75f;          ///< D183: the bake's rock foam a head-on strike needs
+		static constexpr float STRIKE_SPACING = 56.0f;       ///< D183: world units between strike emitters
+		static constexpr float LIP_TANGENT = 0.94f;          ///< D183: past a crest, the first texel facing less up than this is where the flat water turns to fall (the crest's droplets)
+		static constexpr float SURFACE_CELL = 16.0f;         ///< D183: world units per cell of the meshes' surface grids (ComputePlunges)
+		static constexpr float OTHER_REACH = 400.0f;         ///< D183: world units above a point another mesh's water may lie and still cover it
+		static constexpr int32_t DROP_SEARCH = 48;           ///< D183: texels down from a crest the roll-over is looked for
+		static constexpr float DROP_SPACING = 32.0f;         ///< D183: world units between the droplet emitters past the crests
+		static constexpr float DROP_STRENGTH = 0.7f;
+		static constexpr float AERATED_SPACING = 96.0f;     ///< D181: world units between those emitters (D182: 40)
 		static constexpr float PLUNGE_PUSH_OFFSET = 32.0f;  ///< D56: world units downstream of the falls' line the plunge pushes the water
 		static constexpr float PLUNGE_MARK = 0.001f;        ///< D56: radial speed marking a fall's emitter (its own foam rate) without spreading the water
 		static constexpr float PLUNGE_PULL = 0.2f;          ///< Fraction of the falling water's speed the water below is pulled along at

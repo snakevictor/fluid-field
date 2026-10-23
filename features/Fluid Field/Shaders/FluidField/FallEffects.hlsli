@@ -23,6 +23,9 @@ cbuffer FallEffectsCB : register(b7)
 	float MistOpacity;
 	float Gravity;  // World units per second squared
 	float EffectsPad;
+	float MapSpacing;  // D183: the water simulation's map (WaterMap): world units between texels, and texels per side
+	uint MapRes;
+	float2 MapPad;
 };
 
 #endif  // FLUID_FIELD_FALL_EFFECTS_HLSLI

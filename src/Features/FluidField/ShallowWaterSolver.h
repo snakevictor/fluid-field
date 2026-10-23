@@ -147,6 +147,9 @@ namespace FluidFieldSim
 
 		/** @brief (slope x, slope y, height above vanilla, coverage) per texel, in storage order. */
 		ID3D11ShaderResourceView* GetSurfaceSRV() const { return surface.srv.get(); }
+		/** @brief D183: the bed and vanilla surface map (WaterMap: r bed, g surface), toroidal at GetMapSpacing. */
+		ID3D11ShaderResourceView* GetMapSRV() const { return map.srv.get(); }
+		float GetMapSpacing() const { return mapSpacing; }
 		/** @brief Cell-centred velocity (xy) and foam (z, 0 to about 1.5) per texel, in storage order. */
 		ID3D11ShaderResourceView* GetFlowSRV() const { return flow.srv.get(); }
 
