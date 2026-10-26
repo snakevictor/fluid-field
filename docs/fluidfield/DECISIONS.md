@@ -4301,3 +4301,75 @@ Entry format:
 -   Left: the falls' water texture stretched and magnified on fast water (SS 1466); the light following the wobble; per-texel
     plunge data in the bake; the dense copies' load time (~17 s on their worker).
 -   References: D73, D82, D99, D174, D179, D185, D186
+
+## D188: Plunge data in the bake; the light follows the wobble; even normal maps
+
+-   Date: 2026-10-24
+-   Decision:
+    -   **Plunges in the bake**: a fourth texture section, per texel, where the water lands in a pool (x, how hard) and the
+        foam it carries on (y), filled by ComputePlunges; the falls foam and aerate there.
+    -   **The light follows the wobble**: the vertex wobble's slope tilts the shading normal (WobbleNormal, WOBBLE_LIGHT).
+    -   **Even normal maps**: the flow coordinates' stretch evened out (FlowNormalEven), a sharper mip and a finer detail layer
+        near the camera; fast water had stretched the texture into long blocks (SS 1466).
+    -   **The dense copy's shape** eased into its limit instead of clamped (clamped vertices lined up into level plateaus).
+-   References: D179, D186, D187
+
+## D189: The falls' own look by how far they have dropped
+
+-   Date: 2026-10-24
+-   Decision:
+    -   **Drop**: the bake keeps the height the water has fallen down steep faces (plunge.z, FallStrands). The crest keeps the
+        river's look; milk, bubbles, aeration and normal strength grow as the water drops (Dropped, DROP\_\*).
+    -   **Foam relief**: the foam pattern read as a height, a normal from it, lit lumps and shadowed hollows (FoamRelief).
+    -   **Aerated volume**: foam layers under the surface along the view, the deeper dimmer (AerationVolume).
+    -   **Body light**: at least BODY_AMBIENT of the scene's ambient, so falls out of the sun are not black.
+    -   **Screen-space reflections**: jittered start, refined hits, near misses take some of the scene (no hard cut);
+        rough water spreads its rays.
+    -   **Rock foam** by the flow (pile-up and wake), not an even ring; the cut-edge foam at CUT_FOAM_SHARE.
+-   References: D179, D181, D186, D188
+
+## D190: Three phases down a fall; smooth shape; less sun shadow
+
+-   Date: 2026-10-24
+-   Decision:
+    -   **Progress down the fall** (plunge.w): 0 at its tangent (where it turns steep), 1 at its foot, times height over
+        PLUNGE_WHITE_HEIGHT; negative above the tangent; -1 where a mesh never turns steep. Tangents and feet carried across
+        linked meshes; the drop clears over calm runs (CALM_RUN).
+    -   **Crest**: the river's own look (FluidField::ApplyAeration); none of the falls' own.
+    -   **Smoothing by bend redistribution** replaces Taubin, which flattened bumps into plateaus (flat share 2-4% to ~0%,
+        flatmap.py).
+    -   **Sun shadow** on the falls cut to SUN_SHADOW: the volumetric cascades made the white change near and far.
+    -   Landing foam only on steep sheets (PLUNGE_LEVEL), so level pool sheets no longer go white.
+-   Left: the user judged the overall look wrong; the target was agreed before more work (D191).
+-   References: D188, D189
+
+## D191: White ribbons, smooth seams, falls fed through pools
+
+-   Date: 2026-10-25
+-   Decision (target agreed from the user's reference photos: the river's own colour kept, white in ribbons, lumpy white):
+    -   **Ribbons**: below the tangent, white ribbons along the flow (RibbonField: noise in columns, repeating with the scroll's
+        wrap, bent and morphing over time) widen until they merge near the foot. The grey aerated phase and the even milk
+        are gone. The white in tufts (Tufts); deeper foam relief.
+    -   **Crest aeration from the bake's fields**: the river simulation's grid drew stepped blocks on crests over boulders.
+    -   **Seams**: every vertex of a mesh with a source water gets its depth under it (D124 fill); per-vertex gaps drew
+        saw-tooth edges in the lip gate, the edge foam and a false waterline.
+    -   **Progress**: smoothed before it is written; the calm fade counts only runs below the tangent; held above -1 over a
+        tangent; carried into fed meshes and through pools (a fall pouring out of the pool others land in starts white).
+    -   **Wobble**: larger where a plunge is white (WOBBLE_CRASH) and where it lands (WOBBLE_IMPACT, applied once the
+        plunges are known).
+    -   **Pools**: more foam where falls land (WaterFoamCS PLUNGE_RATE).
+    -   A tint from the water type's shallow colour was tried and rejected: the falls keep their source's rendered colour.
+-   References: D124, D188-D190
+
+## D192: GPU timing; the bake's speed made physical; rapids
+
+-   Date: 2026-10-26
+-   Decision:
+    -   **GPU spans** (GpuSpans): timestamp queries on the engine's water, the refractive falls, the spray and the simulation;
+        a span over 50 ms is logged at once. Added after GPU timeouts hung the PC (LiveKernelEvent 141).
+    -   **Speed**: the bake stored the strands' speed as a ratio to vanilla's scroll held to 0.5-1.6 (median 1, p90 1); it now
+        stores the simulated speed over 300 units/s, as the shaders read it (median 300, p90 390, p99 677). Bake cache 26.
+    -   **Rapids**: undropped water running fast down a steep face, or stirred, gets the dropped water's texture and air
+        (not its colour): Rapids(speed x steepness, disturbance). Thresholds set from the baked data (bakestats.py).
+-   Left: the cascades still read smooth; their shape (no swell bumps) and thresholds need more data.
+-   References: D179, D188, D191
