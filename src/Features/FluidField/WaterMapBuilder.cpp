@@ -11,7 +11,7 @@ namespace FluidFieldSim
 {
 	namespace
 	{
-		/** @brief Bed assumed under water where neither landscape nor a ray says otherwise. */
+		/** @brief Bed depth assumed under water where neither landscape nor a ray gives one. */
 		constexpr float UNKNOWN_BED_DEPTH = 1024.0f;
 	}
 
@@ -43,7 +43,6 @@ namespace FluidFieldSim
 		if (nextRow == 0) {
 			const int32_t originX = static_cast<int32_t>(std::round(a_centreX / MAP_SPACING)) - static_cast<int32_t>(n / 2);
 			const int32_t originY = static_cast<int32_t>(std::round(a_centreY / MAP_SPACING)) - static_cast<int32_t>(n / 2);
-			// Nothing changed since the last map: no work
 			if (!data.empty() && a_inputVersion == builtVersion && originX == builtOrigin[0] && originY == builtOrigin[1])
 				return false;
 			build.assign(static_cast<std::size_t>(n) * n * MAP_CHANNELS, 0.0f);
@@ -70,8 +69,7 @@ namespace FluidFieldSim
 				if (const auto* ray = a_rays ? a_rays->Find(wx, wy) : nullptr) {
 					if (ray->kind == BedRaycasts::HitKind::Terrain)
 						bed = ray->height;
-					// Meshes rising out of the water are left to the fine obstacle layer: blended at this
-					// spacing, a pillar would spread into a blob over its neighbours
+					// Meshes rising out of the water are left to the fine obstacle layer: at this spacing a pillar would blur into a blob
 					else if (ray->kind == BedRaycasts::HitKind::Static && !(hasWater && ray->height > surface))
 						bed = std::isfinite(bed) ? std::max(bed, ray->height) : ray->height;
 				}
@@ -80,7 +78,6 @@ namespace FluidFieldSim
 				if (!std::isfinite(bed))
 					bed = hasWater ? surface - UNKNOWN_BED_DEPTH : 0.0f;
 
-				// Toroidal storage: the texel of lattice point (lx, ly) is (lx mod n, ly mod n)
 				const auto tx = static_cast<uint32_t>(lx) & (n - 1);
 				const auto ty = static_cast<uint32_t>(ly) & (n - 1);
 				const std::size_t index = (static_cast<std::size_t>(ty) * n + tx) * MAP_CHANNELS;

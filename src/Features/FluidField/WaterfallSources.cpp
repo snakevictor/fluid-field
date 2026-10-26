@@ -26,8 +26,8 @@ namespace FluidFieldSim
 		/** @brief Narrowest a fall's plunge counts as, world units. */
 		constexpr float MIN_WIDTH = 96.0f;
 
-		/** @brief Speed the water spreads out from the plunge, world units per second. */
-		constexpr float RADIAL_SPEED = 0.001f;  // D56: marks a fall's emitter only; spreading out from a point dented the water
+		/** @brief D56: near zero; only marks a fall's emitter (spreading out from a point dented the water). */
+		constexpr float RADIAL_SPEED = 0.001f;
 		/** @brief Speed the water runs on in the fall's direction, world units per second. */
 		constexpr float OUTFLOW_SPEED = 60.0f;
 
@@ -67,7 +67,7 @@ namespace FluidFieldSim
 		if (!root)
 			return false;
 
-		// The body's vertices in world space, where the meshes keep them on the CPU
+		// World-space vertices, where the mesh keeps them on the CPU
 		std::vector<RE::NiPoint3> points;
 		RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
 			auto* triShape = a_geometry->AsTriShape();
@@ -274,7 +274,7 @@ namespace FluidFieldSim
 			const float texel[2] = { fall.plunge[0] / a_cellSize - static_cast<float>(a_gridMin[0]), fall.plunge[1] / a_cellSize - static_cast<float>(a_gridMin[1]) };
 			if (texel[0] < 0.0f || texel[1] < 0.0f || texel[0] >= static_cast<float>(a_gridRes) || texel[1] >= static_cast<float>(a_gridRes))
 				continue;
-			// A churning plunge: water spreading out and running downstream
+			// Current running downstream from the plunge
 			a_emitters.push_back({ .position = { texel[0], texel[1] },
 				.radius = std::max(0.5f * fall.width / a_cellSize, 1.5f),
 				.depthRate = 0.0f,  // D55: the falls drive the water's flow and foam, never dent its surface

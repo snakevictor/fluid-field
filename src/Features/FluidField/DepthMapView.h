@@ -16,10 +16,8 @@ namespace FluidFieldSim
 	/**
 	 * @brief Debug images of the depth map (R1, D7 stage 3): bed, water surface, depth and raycast results.
 	 *
-	 * Built on the CPU from the landscape cache, water surfaces and bed raycasts over a square
-	 * centred on the player, north up, and uploaded to small textures for the layer overlay. Each
-	 * rebuild is spread over several frames so no frame pays for all of it. Debug only: it exists
-	 * while the overlay is shown, and is released otherwise.
+	 * Built on the CPU over a square centred on the player, north up, for the layer overlay. Each rebuild is spread
+	 * over several frames. Debug only: released while the overlay is hidden.
 	 */
 	class DepthMapView
 	{

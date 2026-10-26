@@ -8,12 +8,10 @@
 namespace FluidFieldSim
 {
 	/**
-	 * @brief Where vanilla water is around the player, and at what height.
+	 * @brief Where vanilla water is around the player, and at what height: the depth map's surface layer (R1, D7 stage 2).
 	 *
-	 * Built from the engine's water objects (`TESWaterSystem::waterObjects`: placed water and cell
-	 * water planes near the player), with each loaded cell's water height as the fallback. This is
-	 * the surface layer of the depth map (R1, D7 stage 2): together with the landscape bed it gives
-	 * water depth. Sloped water (rapids, waterfalls) is counted but not used yet; blending it is R3's.
+	 * From the engine's water objects (`TESWaterSystem::waterObjects`), falling back to each loaded cell's water height.
+	 * Sloped bounds (rapids, waterfalls) are counted but skipped.
 	 */
 	class WaterSurfaces
 	{
@@ -50,8 +48,8 @@ namespace FluidFieldSim
 
 		/**
 		 * @brief Rebuilds the surface list from the engine's water objects every few updates.
-		 * @param a_verify After each rebuild that changed the list, compare with the engine and log.
-		 * Call on the main thread; it reads the engine's water system and cell grid.
+		 * @param a_verify After a rebuild that changed the list, compare with the engine and log.
+		 * Main thread only (reads the engine's water system and cell grid).
 		 */
 		void Update(bool a_verify);
 
@@ -64,9 +62,8 @@ namespace FluidFieldSim
 		 */
 		Source SampleHeight(float a_worldX, float a_worldY, float& a_height) const;
 		/**
-		 * @brief As SampleHeight, also giving how much the water there flows with the river current:
-		 * 1 for water types with the flowmap enabled (rivers), 0 for lakes, the sea and cell water.
-		 * Vanilla renders those still even where the world flowmap has data under them.
+		 * @brief As SampleHeight, plus flow scale: 1 for flowmap water types (rivers), 0 for lakes, sea and cell water
+		 * (vanilla renders those still even over world flowmap data).
 		 */
 		Source SampleHeight(float a_worldX, float a_worldY, float& a_height, float& a_flowScale) const;
 
@@ -78,10 +75,7 @@ namespace FluidFieldSim
 			Source source;
 		};
 
-		/**
-		 * @brief Every water plane overlapping a world box: water objects, and the water of each loaded
-		 * cell the box touches (an interior's water covers everything).
-		 */
+		/** @brief Every water plane overlapping a world box: water objects and touched cells' water (an interior's covers all). */
 		void CollectPlanes(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<Plane>& a_planes) const;
 
 		std::size_t GetSurfaceCount() const { return surfaces.size(); }

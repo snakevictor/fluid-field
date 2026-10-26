@@ -13,10 +13,8 @@ namespace FluidFieldSim
 	/**
 	 * @brief Builds the shallow-water solver's bed and vanilla-surface map on the CPU.
 	 *
-	 * A world-aligned lattice every MAP_SPACING units around the player, stored toroidally like
-	 * the simulation grid: lattice point (x, y) lives at texel (x mod res, y mod res). Each rebuild
-	 * samples the depth map (landscape, bed raycasts, water surfaces) over a few calls, then the
-	 * complete map is ready to upload.
+	 * A world-aligned lattice every MAP_SPACING units, toroidal like the sim grid (point (x, y) at texel (x mod res, y mod res)).
+	 * Each rebuild samples landscape, bed rays and water surfaces over SLICES calls.
 	 */
 	class WaterMapBuilder
 	{
@@ -30,8 +28,7 @@ namespace FluidFieldSim
 		static uint32_t ResolutionFor(float a_gridSize);
 
 		/**
-		 * @brief Advances the current rebuild by one slice. A new rebuild only starts when the inputs
-		 * changed (a_inputVersion) or the player moved to another lattice point.
+		 * @brief Advances the rebuild by one slice; a new one starts only when a_inputVersion or the centre lattice point changed.
 		 * @return True when a rebuild just completed and GetData() holds a new map.
 		 */
 		bool Update(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, const BedRaycasts* a_rays,
@@ -39,7 +36,7 @@ namespace FluidFieldSim
 
 		void Clear();
 
-		/** @brief (bed, surface) pairs in storage order; surface is ShallowWaterSolver::NO_WATER where there is none. */
+		/** @brief MAP_CHANNELS floats per texel in storage order; surface is ShallowWaterSolver::NO_WATER where there is none. */
 		std::span<const float> GetData() const { return data; }
 
 	private:

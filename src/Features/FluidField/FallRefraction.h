@@ -14,27 +14,21 @@
 namespace FluidFieldSim
 {
 	/**
-	 * @brief D91: the falls' lit pieces drawn as refractive, see-through water by a forward pass of our own after the
-	 * world (water and blended geometry included), before the spray. Each piece is drawn from our own immutable
-	 * buffers, built once from its CPU copy (the dense copies', D73), with the same per-vertex shift and wobble (t123)
-	 * and the same flow bake (t124) as the lit passes, at the frame's latched scroll phase. The shader
-	 * (FluidField/FallSurface.hlsl) ports the river water's look (Water.hlsl): its colour lit and shadowed as the
-	 * river's (D102), what lies behind showing faintly through a thin, mostly opaque sheet, fresnel reflection, the
-	 * sun's glint, and white water from the bake. Every piece of pipeline state it touches is saved and restored.
+	 * @brief D91: draws the falls' lit pieces as refractive water in our own forward pass after the world (water and
+	 * blended geometry included), before the spray. Each piece uses immutable buffers built once from its CPU copy (D73),
+	 * with the lit passes' vertex shift and wobble (t123), flow bake (t124) and latched scroll phase. The shader
+	 * (FluidField/FallSurface.hlsl) ports Water.hlsl's look: lit and shadowed as the river (D102), faintly see-through,
+	 * fresnel, sun glint, white water from the bake. All pipeline state it touches is saved and restored.
 	 */
 	class FallRefraction
 	{
 	public:
-		/**
-		 * @brief D98: the look of the water a piece pours out of, from its water type (TESWaterForm::data) as Water.hlsl
-		 * reads it: colours under the weather's water multiplier, the above-water fog that hides what lies behind, the
-		 * fresnel, the reflection and the sun's glint.
-		 */
+		/** @brief D98: the look of the water a piece pours out of, from its TESWaterForm::data as Water.hlsl reads it. */
 		struct WaterLook
 		{
 			float shallowColor[3]{ 0.25f, 0.33f, 0.3f };     ///< ShallowColor, 0 to 1, times the weather's water multiplier
 			float deepColor[3]{ 0.05f, 0.09f, 0.1f };        ///< DeepColor, the same
-			float reflectionColor[3]{ 0.3f, 0.35f, 0.4f };   ///< ReflectionColor times the reflection amount (VarAmounts.y): the reflection without a cubemap
+			float reflectionColor[3]{ 0.3f, 0.35f, 0.4f };   ///< ReflectionColor times VarAmounts.y: the reflection without a cubemap
 			float fogNear = 0.0f;                            ///< Above-water fog distance near (FogParam.z less FogParam.w)
 			float fogFar = 600.0f;                           ///< ...and far (FogParam.z): water this deep is wholly its own colour
 			float fogAmount = 1.0f;                          ///< ...and amount (FogNearColor.w): the curve from seen-through to coloured
@@ -60,7 +54,7 @@ namespace FluidFieldSim
 			ID3D11ShaderResourceView* bake = nullptr;            ///< Its flow bake (t124), or null
 			ID3D11ShaderResourceView* diffuse = nullptr;         ///< Its material's diffuse texture, or null
 			ID3D11ShaderResourceView* normal = nullptr;          ///< Its material's normal map, or null
-			const RiverCapture* river = nullptr;                 ///< D171: its water type's capture when drawn this frame (its whole state), or null for the frame's
+			const RiverCapture* river = nullptr;                 ///< D171: its water type's draw state this frame, or null: the frame's
 			ID3D11Buffer* riverMaterial = nullptr;               ///< D171: its water type's PerMaterial (b1) for the river's shader, or null for the frame's
 			ID3D11VertexShader* riverVertexShader = nullptr;     ///< D171: ...and that type's variant of it, or null for the frame's
 			ID3D11PixelShader* riverPixelShader = nullptr;
@@ -78,7 +72,7 @@ namespace FluidFieldSim
 			ID3D11Buffer* features = nullptr;                 ///< FeatureData (b6)
 			ID3D11ShaderResourceView* vertexClip = nullptr;   ///< FallGround's VertexClip (t123)
 			ID3D11ShaderResourceView* poolHeights = nullptr;  ///< FallGround's Heights (t120)
-			ID3D11ShaderResourceView* environment = nullptr;  ///< A cubemap of the surroundings (Dynamic Cubemaps, once it holds a capture), or null for each water's reflection colour
+			ID3D11ShaderResourceView* environment = nullptr;  ///< Dynamic Cubemaps' capture, or null: each water's reflection colour
 			float time = 0.0f;                                ///< D129: seconds, for the water normal maps' drift
 			float skyFogNearColor[3]{};                       ///< D151: the sky's distance fog, as the water shader takes it
 			float skyFogFarColor[3]{};
@@ -86,14 +80,14 @@ namespace FluidFieldSim
 			float skyFogFar = 0.0f;  ///< 0: no fog
 			float skyFogPower = 1.0f;
 			float skyFogClamp = 0.0f;
-			uint32_t frame = 0;              ///< D123: the rendered frame's number (a pre-water copy of this frame is used)
+			uint32_t frame = 0;              ///< D123: the rendered frame's number (only this frame's pre-water copy is used)
 			float depthScale = 1.0f;         ///< D102: how thick the sheet reads (Water Depth): its opacity and depth of colour
 			float refraction = 0.5f;         ///< How strongly the surface bends what is seen through it
 			float streakFoam = 0.4f;         ///< How much of vanilla's streak texture reads as white water
-			bool volumetricShadows = false;  ///< D102: Volumetric Shadows is loaded: its shadow map (t18) and cascades (t98) shadow the sheet while bound
+			bool volumetricShadows = false;  ///< D102: Volumetric Shadows is loaded: its map (t18) and cascades (t98) shadow the sheet while bound
 			/**
-			 * D159: the river's draw state captured this frame and the falls variant of its shaders (Water.hlsl with
-			 * FLUID_FIELD_FALLS): when all three are set, the falls are shaded by the river's own shader; else FallSurface.hlsl
+			 * D159: this frame's river draw state and the falls variant of its shaders (Water.hlsl, FLUID_FIELD_FALLS); with
+			 * all three set the falls use the river's shader, else FallSurface.hlsl
 			 */
 			const RiverCapture* river = nullptr;
 			ID3D11VertexShader* riverVertexShader = nullptr;
@@ -103,9 +97,9 @@ namespace FluidFieldSim
 		/** @brief Draws a_meshes; nothing when the shaders failed or nothing is bound. */
 		void Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params, const std::vector<MeshDraw>& a_meshes);
 		/**
-		 * @brief D123: copies the scene before the water draws, for this frame's Draw to refract (when its target is the same
-		 * texture): the river's surface seen through a sheet showed as a plane behind it, cut by the sheet (SS 981).
-		 * @param a_frame The rendered frame's number; Draw uses the copy only within the same frame.
+		 * @brief D123: copies the scene before the water draws, for this frame's Draw to refract when its target is the same
+		 * texture (else the river seen through a sheet shows as a plane cut by it).
+		 * @param a_frame The rendered frame's number; Draw uses the copy only within that frame.
 		 */
 		void CopyBeforeWater(ID3D11Device* a_device, ID3D11DeviceContext* a_context, ID3D11Texture2D* a_source, ID3D11RenderTargetView* a_target, uint32_t a_frame);
 		/** @brief Drops the buffers of every piece not in a_keep (their geometry went away). */
@@ -115,7 +109,7 @@ namespace FluidFieldSim
 		/** @brief False once its shaders failed to compile or the scene could not be copied: the engine's lit falls are then kept. */
 		bool IsUsable() const { return !shaderFailed && !sceneCopyFailed; }
 
-		/** @brief World units of water behind the surface counted at most: D102, the sheet is what reads, not the gap behind it. */
+		/** @brief D102: most world units of water behind the surface counted (the sheet should read, not the gap behind it). */
 		static constexpr float LONGEST_PATH = 32.0f;
 		/** @brief World units of water the sheet itself is thick, looked at square on. */
 		static constexpr float SHEET_THICKNESS = 8.0f;
@@ -126,7 +120,7 @@ namespace FluidFieldSim
 		ID3D11PixelShader* EnsureShadowedShader();
 
 	public:
-		/** @brief D186: Volumetric Shadows' map (t18) and cascades (t98) as the last draw found them bound (null: none), for the spray drawn after it. */
+		/** @brief D186: Volumetric Shadows' map (t18) and cascades (t98) as the last draw found them (null: none), for the spray after it. */
 		ID3D11ShaderResourceView* GetShadowMap() const { return lastShadowMap.get(); }
 		ID3D11ShaderResourceView* GetShadowCascades() const { return lastShadowCascades.get(); }
 
@@ -160,7 +154,7 @@ namespace FluidFieldSim
 			float position[3];
 			float uv[2];
 			float normal[3];
-			float tangent[3];  ///< D174: the direction the texture's v runs (down the mesh's flow), model space, summed over its triangles
+			float tangent[3];  ///< D174: the direction texture v runs (down the flow), model space, summed over its triangles
 		};
 		static_assert(sizeof(Vertex) == 44);
 
@@ -186,7 +180,7 @@ namespace FluidFieldSim
 			uint32_t hasEnvironment;
 			uint32_t hasDiffuse;
 			uint32_t hasNormal;
-			uint32_t hasFront;  ///< D125: the front surface's depth is bound (t105): a register of its own in the cbuffer
+			uint32_t hasFront;  ///< D125: the front surface's depth is bound (t105)
 			uint32_t padding[3];
 			float noiseScale[3];  ///< D129: the water type's normal maps' world units per repeat
 			float noiseTime;      ///< D129: seconds, for the maps' drift along the flow

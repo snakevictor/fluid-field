@@ -14,7 +14,7 @@ namespace FluidFieldSim
 		constexpr float MAX_SPEED = 1500.0f;
 		/** @brief Per-second rate at which a body part drags the air around it toward its own velocity. */
 		constexpr float PUSH_RATE = 6.0f;
-		/** @brief Body parts more than this far above the actor's feet are above the ground fog and stir nothing. */
+		/** @brief Parts higher than this above the feet are above the ground fog. */
 		constexpr float MAX_HEIGHT_ABOVE_FEET = 140.0f;
 
 		/** @brief A skeleton node that stirs the fog, and the radius it stirs (world units, at scale 1). */
@@ -33,7 +33,7 @@ namespace FluidFieldSim
 			{ "NPC Pelvis [Pelv]", 18.0f },
 		} };
 
-		/** @brief Smallest radius the whole body stirs when the skeleton has none of the parts above (creatures). */
+		/** @brief Smallest whole-body radius, for creatures without the parts above. */
 		constexpr float MIN_BODY_RADIUS = 24.0f;
 
 		struct Candidate
@@ -74,8 +74,7 @@ namespace FluidFieldSim
 		consider(RE::PlayerCharacter::GetSingleton());
 		std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) { return a.distanceSquared < b.distanceSquared; });
 
-		// One emitter per moving body part, so the fog follows the legs and feet rather than the
-		// actor's collision capsule. History is kept per actor and part.
+		// One emitter per moving body part, with history per actor and part
 		const auto emit = [&](uint64_t a_key, const RE::NiPoint3& a_position, float a_radius) {
 			auto& seen = history[a_key];
 			const bool hasPrevious = seen.lastSeen == updateCounter - 1;
@@ -87,7 +86,7 @@ namespace FluidFieldSim
 			const float vx = (a_position.x - previous.x) / a_deltaTime;
 			const float vy = (a_position.y - previous.y) / a_deltaTime;
 			const float speed = std::sqrt(vx * vx + vy * vy);
-			// Only movement disturbs the air and the fog; a part at rest lets the fog settle back
+			// A part at rest lets the fog settle back
 			if (speed < MIN_SPEED || speed > MAX_SPEED)
 				return;
 			const float push = std::min(PUSH_RATE * a_deltaTime, 1.0f) * a_strength;

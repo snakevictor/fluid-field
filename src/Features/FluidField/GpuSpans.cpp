@@ -50,7 +50,7 @@ namespace FluidFieldSim
 		auto& frame = frames[current];
 		if (frame.open)
 			return;
-		// A frame still in flight from FRAMES ago (the GPU far behind): its results are dropped rather than waited for
+		// A frame still in flight from FRAMES ago is dropped rather than waited for
 		frame.inFlight = false;
 		frame.begun.fill(false);
 		frame.ended.fill(false);

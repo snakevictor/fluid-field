@@ -26,7 +26,7 @@ namespace FluidFieldSim
 		Lip = 0,       ///< Where the surface drops away: the water leaves it running on
 		Plunge = 1,    ///< Where falling water meets the water below: thrown up and out
 		Strike = 2,    ///< Where the water strikes rock or another piece
-		MeetDrops = 3  ///< D186: along a steep seam between sheets (the water still falling there): droplets, no mist
+		MeetDrops = 3  ///< D186: a steep seam between falling sheets: droplets, no mist
 	};
 
 	/** @brief Where falling water meets the water below (D35), for its pushes on the simulated water. */
@@ -36,14 +36,12 @@ namespace FluidFieldSim
 		float direction[2];  ///< Horizontal way the falling water runs, unit (or zero)
 		float speed;         ///< World units per second it arrives at
 		float strength;      ///< 0 to 1
-		float reach = 1.0f;  ///< D98: how much further than a plunge's its foam reaches (where a mesh crosses a water surface: 1.5)
+		float reach = 1.0f;  ///< D98: foam reach relative to a plunge's (1.5 where a mesh crosses a water surface)
 	};
 
 	/**
-	 * @brief Draws the falls' spray after the world (D31): stateless GPU particles thrown from the
-	 * emitters. Depth tested against the scene
-	 * without writing, premultiplied-alpha blended. Every piece of pipeline state it touches is saved and
-	 * restored. (D30's own merged falls surface was drawn here too, until D32 returned to vanilla's meshes.)
+	 * @brief D31: draws the falls' spray after the world as stateless GPU particles from the emitters. Soft depth test in the
+	 * shader (D186), no depth writes, premultiplied alpha; saves and restores all pipeline state it touches (D30, D32).
 	 */
 	class FallSurfaceRenderer
 	{
@@ -66,16 +64,16 @@ namespace FluidFieldSim
 			float sprayOpacity = 0.2f;
 			float mistOpacity = 0.06f;
 			float cameraPosition[3]{};  ///< D182: world, for the emitters near enough to draw
-			/// D183: the water simulation's near level (surface, flow) and its map: the spray and mist are seeded on the foamy water
+			/// D183: the simulation's near level (surface, flow) and map, to seed spray and mist on foamy water
 			ID3D11ShaderResourceView* waterSurface = nullptr;
 			ID3D11ShaderResourceView* waterFlow = nullptr;
 			ID3D11ShaderResourceView* waterMap = nullptr;
 			float mapSpacing = 0.0f;
 			uint32_t mapResolution = 0;
-			/// D186: Volumetric Shadows' map and cascades (FallRefraction found them bound this frame): the particles in the sun's shadow
+			/// D186: Volumetric Shadows' map and cascades (as FallRefraction found them bound), to shadow the particles
 			ID3D11ShaderResourceView* shadowMap = nullptr;
 			ID3D11ShaderResourceView* shadowCascades = nullptr;
-			/// D186: the frame as it stands (copied for the droplets to refract) and the surroundings' cubemap (as the falls' surface)
+			/// D186: the frame (copied for the droplets to refract) and the environment cubemap (as the falls' surface uses)
 			ID3D11Texture2D* targetTexture = nullptr;
 			ID3D11ShaderResourceView* environment = nullptr;
 		};
@@ -92,9 +90,9 @@ namespace FluidFieldSim
 		static constexpr float MIST_LIFE = 3.0f;
 		static constexpr float MIST_SIZE = 100.0f;
 		static constexpr float MIST_RISE = 40.0f;                    ///< World units per second
-		static constexpr float PARTICLE_GRAVITY = 1100.0f;           ///< D50: droplets turn down sooner than free fall (they read as too floaty)
-		static constexpr float NEAR_REACH = 8200.0f;                 ///< D182: world units from the camera an emitter is drawn within (FallSpray's SPRAY_FAR, and their reach; D183: 8200, was 3200: they went out in plain sight)
-		static constexpr uint32_t EMITTER_ID_MASK = (1u << 21) - 1;  ///< D183: an emitter's id, packed over its kind (kind + 4 id stays exact in a float)
+		static constexpr float PARTICLE_GRAVITY = 1100.0f;           ///< D50: stronger than free fall so droplets don't read as floaty
+		static constexpr float NEAR_REACH = 8200.0f;                 ///< D182, D183: draw distance from the camera; matches FallSpray's SPRAY_FAR
+		static constexpr uint32_t EMITTER_ID_MASK = (1u << 21) - 1;  ///< D183: emitter id packed over its kind (kind + 4 * id stays exact in a float)
 		static constexpr uint32_t MOST_NEAR = 4096;                  ///< D182: the most emitters drawn, nearest first
 		static constexpr uint32_t SEEDS = 4096;                      ///< D183: the seeds scattered over the water round the camera (FallSpray: SEED_RADIUS)
 		static constexpr float REFILTER_MOVE = 256.0f;               ///< D182: world units the camera moves before the near emitters are chosen again

@@ -10,7 +10,7 @@ namespace FluidFieldSim
 {
 	namespace
 	{
-		/** @brief Largest capture side, texels: a site this big is captured over its centre only. */
+		/** @brief Largest capture side in texels; larger sites are captured over their centre only. */
 		constexpr uint32_t MAX_SIDE = 512;
 		constexpr int FILL_PASSES = 8;
 
@@ -82,7 +82,7 @@ namespace FluidFieldSim
 			while (next < heights.size() && std::chrono::steady_clock::now() < deadline) {
 				const float x = originX + static_cast<float>(next % width) * CELL;
 				const float y = originY + static_cast<float>(next / width) * CELL;
-				// The highest rock or ground below the ceiling, through anything else (water, actors, clutter)
+				// Highest rock or ground below the ceiling, stepping through anything else
 				float hit = NONE;
 				float fromZ = top;
 				for (int attempt = 0; attempt < 4 && fromZ > bottom; attempt++) {
@@ -121,7 +121,7 @@ namespace FluidFieldSim
 		const auto h = static_cast<int32_t>(height);
 		const auto index = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * width + a_x; };
 
-		// Holes (rays that found no rock) take the mean of their known neighbours, growing inward
+		// Holes take the mean of at least 3 known neighbours, growing inward
 		std::vector<float> scratch = heights;
 		for (int pass = 0; pass < FILL_PASSES; pass++) {
 			bool any = false;
@@ -152,7 +152,7 @@ namespace FluidFieldSim
 				break;
 		}
 
-		// Spikes (a stray rock, a fence post) go with a 3x3 median of the known values
+		// 3x3 median of known values removes spikes (a stray rock, a post)
 		for (int32_t y = 0; y < h; y++) {
 			for (int32_t x = 0; x < w; x++) {
 				if (heights[index(x, y)] <= NONE)

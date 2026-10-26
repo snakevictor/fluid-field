@@ -46,10 +46,7 @@ namespace FluidFieldSim
 			}
 		}
 
-		/**
-		 * @brief D176: a waterfall or rapids effect (Fluid Field draws these as water): never solid. Cut at the water's surface,
-		 * the falls' sheets became a row of dry cells along every foot, holes in the pool's foam there (SS 1245, 1246).
-		 */
+		/** @brief D176: waterfall and rapids effects (drawn as water) are never solid; cut, they left dry cells along each fall's foot. */
 		bool IsFallingWater(const RE::TESBoundObject* a_base)
 		{
 			const auto* model = a_base ? a_base->As<RE::TESModel>() : nullptr;
@@ -300,8 +297,7 @@ namespace FluidFieldSim
 				for (uint32_t gy = 0; gy < grid->length; gy++)
 					visitCell(GetGridCell(grid, gx, gy), true);
 			}
-			// Persistent references (the Riverwood stone bridge among them) are listed in the
-			// worldspace's persistent cell, not in the grid cells; only the ones with loaded 3D pass
+			// Persistent references (e.g. Riverwood's stone bridge) live in the worldspace's persistent cell; only loaded 3D passes
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			if (auto* worldspace = player ? player->GetWorldspace() : nullptr)
 				visitCell(worldspace->persistentCell, false);
@@ -351,7 +347,7 @@ namespace FluidFieldSim
 				return RE::BSVisit::BSVisitControl::kContinue;
 			}
 
-			// Vertex positions are 4 floats in SE/AE whether or not VF_FULLPREC is set (live check, 2026-10-14)
+			// Vertex positions are 4 floats in SE/AE whether or not VF_FULLPREC is set (checked live)
 			const auto& transform = a_geometry->world;
 			world.resize(counts.vertexCount);
 			float minZ = FLT_MAX;
@@ -380,8 +376,7 @@ namespace FluidFieldSim
 			return RE::BSVisit::BSVisitControl::kContinue;
 		});
 
-		// Rasterise: every segment is drawn as a line (watertight on a four-neighbour grid),
-		// and the inside of each closed loop is filled
+		// Rasterise segments as four-neighbour-watertight lines, then fill each closed loop
 		const float spacing = fineSpacing;
 		const float top = a_surface + SOLID_RISE;
 		std::unordered_set<uint64_t> points;

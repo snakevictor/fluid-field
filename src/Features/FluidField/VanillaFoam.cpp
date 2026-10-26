@@ -15,7 +15,7 @@ namespace FluidFieldSim
 {
 	namespace
 	{
-		/** @brief How far below a reference's origin the water may be, for the effect to count as on the water. */
+		/** @brief Band around the water surface within which a reference's origin counts as on the water. */
 		constexpr float MAX_HEIGHT_ABOVE_WATER = 1024.0f;
 		constexpr float MAX_DEPTH_BELOW_WATER = 512.0f;
 
@@ -33,9 +33,8 @@ namespace FluidFieldSim
 		}
 
 		/**
-		 * @brief Collects the effect parts of a mesh: every leaf not drawn with the lighting shader.
-		 * Effect meshes like FXrapidsRocks carry real, lit rock geometry beside their foam cards and
-		 * particles, and the rocks must stay.
+		 * @brief Collects a mesh's effect parts: every leaf not drawn with the lighting shader, so lit rocks
+		 * (FXrapidsRocks) stay.
 		 */
 		void CollectEffectParts(RE::NiAVObject* a_object, std::vector<RE::NiPointer<RE::NiAVObject>>& a_parts)
 		{

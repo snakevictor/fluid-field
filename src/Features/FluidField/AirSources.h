@@ -9,13 +9,10 @@
 namespace FluidFieldSim
 {
 	/**
-	 * @brief Wind and fog emitters from the actors moving around the player (D21).
+	 * @brief D21: wind and fog emitters from moving actors near the player.
 	 *
-	 * Follows the body, not the collision capsule: each moving foot, lower leg and hip of a humanoid
-	 * skeleton (the whole body for creatures without one) drags the air along its own velocity over
-	 * about its own size and ploughs the ground fog, so legs kick through the fog as they swing.
-	 * Parts high above the feet, above the fog, are left out. Nearest actors first, up to the wind
-	 * solver's limit. Runs on the main thread.
+	 * Follows the body, not the collision capsule: each moving foot, calf and hip (whole body for creatures without a
+	 * humanoid skeleton) drags the air and ploughs the fog. Nearest actors first, up to the solver's limit. Main thread.
 	 */
 	class AirSources
 	{

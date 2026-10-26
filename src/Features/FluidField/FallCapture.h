@@ -9,10 +9,8 @@ namespace FluidFieldSim
 	/**
 	 * @brief The rock under one waterfall site (D25 stage S4, used by D26's grounding).
 	 *
-	 * A heightfield over the site's falling water plus MARGIN, CELL units per texel, from downward
-	 * Havok rays that start CEILING above the site's top level (so bridges and arches over the river
-	 * do not become dams) and see only rock, ground and statics. Cast a few at a time within a time
-	 * budget; holes are filled from their neighbours and spikes removed with a 3x3 median.
+	 * Heightfield over the site plus MARGIN from downward Havok rays that start only CEILING above the site's top, so
+	 * bridges and arches don't become dams. Cast within a time budget; holes filled from neighbours, spikes removed by a 3x3 median.
 	 */
 	class FallCapture
 	{
@@ -27,7 +25,7 @@ namespace FluidFieldSim
 		void Begin(const float a_min[2], const float a_max[2], float a_top, float a_bottom);
 		/** @brief Casts rays until a_budgetMs is used; cleans up once all are cast. True when complete. */
 		bool Cast(double a_budgetMs);
-		/** @brief D185: whether its rays can be cast now (its cell's physics world is loaded). */
+		/** @brief D185: whether its cell's physics world is loaded. */
 		bool Castable() const;
 		bool IsComplete() const { return complete; }
 		float GetProgress() const { return heights.empty() ? 0.0f : static_cast<float>(next) / static_cast<float>(heights.size()); }
@@ -41,15 +39,15 @@ namespace FluidFieldSim
 		uint32_t GetHeight() const { return height; }
 		float At(uint32_t a_x, uint32_t a_y) const { return heights[static_cast<std::size_t>(a_y) * width + a_x]; }
 
-		/** @brief Diagnostics: what the rays hit, by collision layer (the first hit of each attempt), and how many found nothing solid. */
+		/** @brief Diagnostics: ray hits by collision layer and how many found nothing solid. */
 		std::string DescribeRays() const;
-		/** @brief Diagnostics: writes the heights (after cleanup) to a_path: width, height (uint32), origin x, y, cell (float), then the heights row by row. */
+		/** @brief Writes the cleaned heights: width, height (uint32), origin x, y, cell (float), then rows. */
 		bool Dump(const std::string& a_path) const;
-		/** @brief D185: reads heights Dump wrote, if they match this capture's layout (Begin's); complete then. */
+		/** @brief D185: reads a Dump file if it matches the layout from Begin; the capture is then complete. */
 		bool Load(const std::string& a_path);
 
-		bool reported = false;  ///< D185: its completion handled (logged, the meshes grounded again, kept on disk)
-		std::string cachePath;  ///< D185: where it is kept on disk (empty: not kept)
+		bool reported = false;  ///< D185: completion handled (logged, meshes regrounded, saved)
+		std::string cachePath;  ///< D185: on-disk cache path (empty: not cached)
 
 	private:
 		void CleanUp();

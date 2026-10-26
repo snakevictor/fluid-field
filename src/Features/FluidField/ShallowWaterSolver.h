@@ -1,7 +1,6 @@
 #pragma once
 
-// Kept free of plugin headers (no PCH, globals or CommonLib), like WindSolver, so a standalone
-// test can build and run it on a WARP device outside the game.
+// Free of plugin headers (no PCH, globals or CommonLib), like WindSolver, so a standalone WARP test can run it.
 
 #include "WindSolver.h"
 
@@ -14,17 +13,14 @@
 
 namespace FluidFieldSim
 {
-	/**
-	 * @brief Water emitter, matching `Emitter` in WaterForcesCS.hlsl. Same layout as the wind
-	 * `Emitter`, with its first padding float used as a depth rate.
-	 */
+	/** @brief Water emitter, matching `Emitter` in WaterForcesCS.hlsl: the wind `Emitter`'s layout, first pad as depth rate. */
 	struct WaterEmitter
 	{
 		float position[2];  ///< Logical texel coordinates (texel centres at +0.5)
 		float radius;       ///< Gaussian falloff radius in texels
 		float depthRate;    ///< World units per second added to depth at the centre
 		float velocity[2];  ///< Velocity the water near the emitter is pulled toward
-		float pad1[2];      ///< Radial speed (water spreads out from the centre) and foam rate, for waterfalls (D22); zero otherwise
+		float pad1[2];      ///< Waterfalls (D22): outward spread speed and foam rate; zero otherwise
 	};
 	static_assert(sizeof(WaterEmitter) == 32);
 
@@ -40,8 +36,7 @@ namespace FluidFieldSim
 		float edgeWidth = 16.0f;    ///< Texels of the absorbing border; set from the grid size each step
 		float edgeRelax = 4.0f;     ///< Per-second pull toward calm vanilla water at the very edge (quadratic ramp inward)
 		float damping = 0.2f;       ///< Fraction of velocity lost per second
-		/// River currents from Unified Water's world flowmap (64 texels per cell, rows from the north);
-		/// when set, they replace `current` as the velocity the water relaxes toward
+		/// Unified Water's world flowmap (64 texels per cell, rows from the north); when set, replaces `current` as the relax target
 		ID3D11ShaderResourceView* flowmap = nullptr;
 		float flowmapCells[2]{};          ///< Flowmap size in cells
 		std::int32_t flowmapOffset[2]{};  ///< Added to a cell's coordinates to get its flowmap tile
@@ -49,19 +44,17 @@ namespace FluidFieldSim
 		float vorticity = 0.0f;           ///< Vorticity confinement strength (0: off)
 		float foamStrength = 1.0f;        ///< Scales how much foam the flow makes (0: none)
 		float foamMax = 1.5f;             ///< Most foam a cell holds (1 is fully white once drawn)
-		/// Foam for cells coming into the grid: another level's flow output (foam in z), with its
-		/// placement, so the near level takes over the far level's foam instead of starting clean
+		/// Another level's flow output (foam in z) and placement, seeding foam in cells entering the grid so the near level inherits it
 		ID3D11ShaderResourceView* seedFoam = nullptr;
 		std::int32_t seedGridMin[2]{};
 		std::uint32_t seedRes = 0;
 		float seedCellSize = 0.0f;
-		/// D44: where waterfalls plunge into the water, per texel 0 to 1 (FallSites::BuildPlungeMap); the water foams there
+		/// D44: where waterfalls plunge, 0 to 1 per texel (FallSites::BuildPlungeMap); the water foams there
 		ID3D11ShaderResourceView* plungeMap = nullptr;
 		float plungeOrigin[2]{};
 		float plungeInverseCell = 0.0f;
 		std::uint32_t plungeSize = 0;
-		/// D170: the falls' lips on the plunge map's lattice (FallSites::BuildLipMap): the way and speed the water is drawn
-		/// toward a lip (xy) and how strongly (z)
+		/// D170: the falls' lips on the plunge map's lattice (FallSites::BuildLipMap): pull velocity toward a lip (xy), strength (z)
 		ID3D11ShaderResourceView* lipMap = nullptr;
 	};
 
@@ -74,12 +67,10 @@ namespace FluidFieldSim
 	};
 
 	/**
-	 * @brief Shallow water on the Fluid Field grid: depth and staggered velocity, advected
-	 * semi-Lagrangian, with height and velocity updated from the surface slope
+	 * @brief Shallow water: depth and staggered velocity, semi-Lagrangian advection, height and velocity from the surface slope
 	 * (Bridson & Mueller-Fischer, "Fluid Simulation", SIGGRAPH 2007 course, heightfield chapter).
 	 *
-	 * The bed and the vanilla water surface come from a coarse world-aligned map uploaded by the
-	 * caller. Owns every GPU resource it uses.
+	 * Bed and vanilla surface come from a coarse world-aligned map the caller uploads. Owns all its GPU resources.
 	 */
 	class ShallowWaterSolver
 	{
@@ -102,17 +93,13 @@ namespace FluidFieldSim
 		std::uint32_t GetMapResolution() const { return mapResolution; }
 		std::uint32_t GetObstacleResolution() const { return obstacleResolution; }
 
-		/**
-		 * @brief Uploads the bed and vanilla surface map: mapResolution^2 pairs (bed, surface), stored
-		 * toroidally (the map texel of lattice point (x, y) is (x mod res, y mod res)).
-		 */
+		/** @brief Uploads mapResolution^2 (bed, surface) pairs, toroidal: lattice point (x, y) at texel (x mod res, y mod res). */
 		void UploadMap(ID3D11DeviceContext* context, std::span<const float> bedAndSurface, float mapSpacing);
 		bool HasMap() const { return mapUploaded; }
 
 		/**
-		 * @brief Writes one square block of fine bed detail: size x size texels of (height, fine x, fine y, kind),
-		 * rows south to north, starting at fine lattice point (originX, originY). originX and originY must be
-		 * multiples of size, and size must divide the obstacle resolution, so a block never wraps.
+		 * @brief Writes a size x size block of fine bed detail (height, fine x, fine y, kind), rows south to north, from fine
+		 * point (originX, originY). The origin must be a multiple of size and size must divide the resolution, so it never wraps.
 		 */
 		void UploadObstacleBlock(ID3D11DeviceContext* context, std::int32_t originX, std::int32_t originY, std::uint32_t size, const float* texels, float spacing);
 		/** @brief Erases all fine detail. Needed once after creation or a reset before blocks are uploaded. */
@@ -239,9 +226,9 @@ namespace FluidFieldSim
 		void Dispatch(ID3D11DeviceContext* context, ID3D11ComputeShader* shader, std::span<ID3D11ShaderResourceView* const> srvs, std::span<ID3D11UnorderedAccessView* const> uavs);
 
 		std::uint32_t resolution = 0;
-		ID3D11ShaderResourceView* seedFoamSRV = nullptr;
-		ID3D11ShaderResourceView* lipSRV = nullptr;     ///< D170: this step's lip map (not owned)
-		ID3D11ShaderResourceView* plungeSRV = nullptr;  ///< This step's plunge map (not owned)  ///< This step's seed foam (not owned)
+		ID3D11ShaderResourceView* seedFoamSRV = nullptr;  ///< This step's seed foam (not owned)
+		ID3D11ShaderResourceView* lipSRV = nullptr;       ///< D170: this step's lip map (not owned)
+		ID3D11ShaderResourceView* plungeSRV = nullptr;    ///< This step's plunge map (not owned)
 		std::uint32_t mapResolution = 0;
 		float mapSpacing = 64.0f;
 		bool mapUploaded = false;

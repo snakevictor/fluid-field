@@ -11,15 +11,11 @@ namespace FluidFieldSim
 	class WaterSurfaces;
 
 	/**
-	 * @brief Water emitters from the actors in and at the water (D17).
+	 * @brief D17: water emitters from actors in the water.
 	 *
-	 * The player and the actors in the high process (NPCs, horses, creatures) make a wake while
-	 * they move through the water with part of their body above it: the top of the bounding box
-	 * must be above the surface, so a fully submerged swimmer, fish or object makes none. A wake
-	 * is sized from the actor's bound. An actor whose feet cross the surface going down (a jump
-	 * or fall into the water) pushes the water down at the entry point, scaled by its speed; one
-	 * leaving it upward makes a smaller push. Nearest actors first, up to the solver's limit.
-	 * Runs on the main thread.
+	 * High-process actors moving through water with their bound's top above it make a wake sized from the bound (fully
+	 * submerged ones make none). Feet crossing the surface push the water down by vertical speed (less when leaving).
+	 * Nearest actors first, up to the solver's limit. Main thread.
 	 */
 	class WakeSources
 	{

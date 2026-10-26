@@ -9,16 +9,13 @@
 namespace FluidFieldSim
 {
 	/**
-	 * @brief D159: the river's draw state, captured at one of its draws each frame, so the see-through falls can be shaded by
-	 * the engine's own water pixel shader (Water.hlsl with FLUID_FIELD_FALLS) exactly as the river is.
+	 * @brief D159: the river's draw state, captured once a frame, so the see-through falls are shaded by the engine's own
+	 * water pixel shader (Water.hlsl with FLUID_FIELD_FALLS) exactly as the river is.
 	 *
-	 * Taken per water type (D171: one capture for all took whichever water was drawn first, another type's as the camera
-	 * moved, and every fall took its fog and glint), at its first draw of a frame with the water shader's refracting surface technique (SPECULAR with no specular
-	 * lights, the Refractions flag), from State::Draw, after the engine has bound everything for it: the contents of its
-	 * constant buffers (the engine's shared per-size buffers, rewritten by every draw, so their contents are copied into our
-	 * own buffers, never the buffers kept), and references to every pixel shader resource and sampler it binds (the water's
-	 * textures, the shadow maps, Light Limit Fix's lights, Skylighting, Dynamic Cubemaps...). The references are released
-	 * before the next frame's water and after the falls are drawn: engine textures are not held across frames (LEARNINGS).
+	 * D171: one capture per water type, so each fall gets its own type's fog and glint. Taken in State::Draw at the type's
+	 * first refracting-surface draw, once the engine has bound it: constant buffer contents are copied (the engine's buffers
+	 * are shared and rewritten by every draw), and every pixel shader view and sampler is referenced. The references are
+	 * released after the falls are drawn, before the next frame's water: engine textures are not held across frames.
 	 */
 	class RiverCapture
 	{
@@ -26,7 +23,7 @@ namespace FluidFieldSim
 		static constexpr UINT VIEW_COUNT = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;  ///< t0-t127
 		static constexpr UINT SAMPLER_COUNT = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT;      ///< s0-s15
 		static constexpr UINT PIXEL_BUFFER_COUNT = 5;                                     ///< b0 PerTechnique, b1 PerMaterial, b2 PerGeometry, b3 Light Limit Fix's, b4 Permutation
-		static constexpr UINT VERTEX_BUFFER_COUNT = 2;                                    ///< b0 PerTechnique, b1 PerMaterial (the normal maps' scroll and scale, vanilla's fog)
+		static constexpr UINT VERTEX_BUFFER_COUNT = 2;                                    ///< b0 PerTechnique, b1 PerMaterial (normal map scroll and scale, vanilla fog)
 
 		/** @brief Whether a draw with this shader and these (CS-modified) descriptors is the river's refracting surface. */
 		static bool IsRiverDraw(const RE::BSShader* a_shader, uint32_t a_pixelDescriptor);
@@ -35,7 +32,7 @@ namespace FluidFieldSim
 		bool Capture(ID3D11Device* a_device, ID3D11DeviceContext* a_context, RE::BSShader* a_shader, uint32_t a_vertexDescriptor, uint32_t a_pixelDescriptor, uint32_t a_frame);
 		/** @brief Whether a draw of frame a_frame was captured (and its references are still held). */
 		bool IsCaptured(uint32_t a_frame) const { return captured && capturedFrame == a_frame; }
-		/** @brief Whether this frame's capture was already tried (taken or failed): one try per frame. */
+		/** @brief Whether this frame's one capture attempt was made (taken or failed). */
 		bool WasTried(uint32_t a_frame) const { return triedFrame == a_frame; }
 		/** @brief Drops the references to the engine's views and samplers (our buffer copies are kept for reuse). */
 		void ReleaseViews();
@@ -45,7 +42,7 @@ namespace FluidFieldSim
 		/** @brief D171: the river piece (its geometry) the capture was taken at, set by the caller. */
 		const void* GetGeometry() const { return geometry; }
 		void SetGeometry(const void* a_geometry) { geometry = a_geometry; }
-		/** @brief D171: our copy of its PerMaterial (b1: the water type's colours, fog and glint), kept past the frame, or null. */
+		/** @brief D171: our copy of its PerMaterial (b1: colours, fog, glint), kept past the frame, or null. */
 		ID3D11Buffer* GetMaterialBuffer() const { return shader && pixelBound[1] ? pixelBuffers[1].get() : nullptr; }
 		uint32_t GetVertexDescriptor() const { return vertexDescriptor; }
 		uint32_t GetPixelDescriptor() const { return pixelDescriptor; }
@@ -57,7 +54,7 @@ namespace FluidFieldSim
 		void GetVertexBuffers(ID3D11Buffer* (&o_buffers)[VERTEX_BUFFER_COUNT]) const;
 
 	private:
-		/** @brief Copies a_source's contents into o_copy (made or remade to its size); false and o_copy unbound where there is none. */
+		/** @brief Copies a_source into o_copy (resized as needed); o_bound false if a_source is null. False on failure. */
 		static bool CopyBuffer(ID3D11Device* a_device, ID3D11DeviceContext* a_context, ID3D11Buffer* a_source, winrt::com_ptr<ID3D11Buffer>& o_copy, bool& o_bound);
 
 		std::array<winrt::com_ptr<ID3D11ShaderResourceView>, VIEW_COUNT> views;

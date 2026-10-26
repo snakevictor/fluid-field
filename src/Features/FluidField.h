@@ -22,11 +22,9 @@
 /**
  * @brief Player-centred fluid simulation shared by water, fog, smoke and buoyancy outputs.
  *
- * Phase 1: a wind layer solved with stable fluids on a grid that follows the player with
- * toroidal addressing, a depth map of riverbed and vanilla water, and (flowing water slice) a
- * shallow-water layer on the same grid. Every GPU resource is created and freed here, and the
- * field is cleared after every loading screen. While disabled it creates nothing and dispatches
- * nothing.
+ * A stable-fluids wind layer on a toroidal grid that follows the player, a riverbed and water depth map, and a
+ * shallow-water layer. Owns every GPU resource; cleared after each loading screen; while disabled it creates and
+ * dispatches nothing.
  */
 struct FluidField : OverlayFeature
 {
@@ -95,13 +93,13 @@ struct FluidField : OverlayFeature
 		uint32_t FallLayerMask = 0x1;        ///< Which parts of vanilla's falling-water models show while waterfall effects are hidden (bits: inner surface, white-water sheet, streaks, particles)
 		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		bool HideUnderwaterFalls = true;     ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
-		bool FallWhitening = false;          ///< The falls whiten with their foam and speed (D34); D86: off by default until the foam layer replaces it (barely visible)
-		float FallSpeed = 1.75f;             ///< D90: the falls' flow (texture and wobble) this many times vanilla's speed
-		bool RefractiveFalls = false;        ///< D91: the falls drawn as refractive, see-through water by their own pass after the world (experimental)
-		float FallDepth = 1.0f;              ///< D102: how thick the falls' sheet reads: how opaque and how deep its colour
-		float FallRefraction = 0.5f;         ///< D91: how strongly the falls' surface bends what is seen through them (D102: faint by default)
-		bool FallsRiverShader = true;        ///< D159: the see-through falls shaded by the river's own water shader (Water.hlsl), FallSurface.hlsl's port while it is not ready
-		bool FallBlendedCopies = false;      ///< D91 experiment: dense copies built with a blended alpha property (falls built after it is set)
+		bool FallWhitening = false;          ///< The falls whiten with their foam and speed (D34); D86: off until the foam layer replaces it
+		float FallSpeed = 1.75f;             ///< D90: the falls' flow (texture and wobble) as a multiple of vanilla's speed
+		bool RefractiveFalls = false;        ///< D91: experimental refractive falls, drawn by their own pass after the world
+		float FallDepth = 1.0f;              ///< D102: the falls' sheet opacity and colour depth
+		float FallRefraction = 0.5f;         ///< D91: how strongly the falls bend what is seen through them (D102: faint by default)
+		bool FallsRiverShader = true;        ///< D159: shade the see-through falls with Water.hlsl until FallSurface.hlsl's port is ready
+		bool FallBlendedCopies = false;      ///< D91 experiment: dense copies with a blended alpha property (falls built after it is set)
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		int SprayAmount = 200;               ///< Spray droplets alive per emitter at once (D31)
 		float SpraySize = 1.4f;              ///< Spray droplet width, world units
@@ -175,10 +173,7 @@ private:
 
 	/** @brief World units per texel. */
 	float GetCellSize() const { return settings.GridSize / static_cast<float>(settings.GridResolution); }
-	/**
-	 * @brief Obstacle points per bed-ray fine point along each axis: as many as it takes to match the
-	 * simulation's cell size, so mesh-cut obstacles are as sharp as the grid can show (at most 4).
-	 */
+	/** @brief Obstacle points per fine bed-ray point per axis, enough to match the simulation's cell size (at most 4). */
 	int32_t GetObstacleRatio() const;
 	/** @brief World units between obstacle (mesh-cut) points: the bed rays' fine spacing over GetObstacleRatio. */
 	float GetObstacleSpacing() const;
@@ -228,7 +223,7 @@ private:
 		float pad;
 	};
 	static_assert(sizeof(GroundFogConstants) == 80);
-	/** @brief The fog area: the ground map's texels per side and their size; twice the wind grid's width, around the player. */
+	/** @brief The fog's ground map: texels per side and their size (twice the wind grid's width). */
 	static constexpr uint32_t FOG_GROUND_RESOLUTION = 512;
 	static constexpr float FOG_GROUND_CELL = 16.0f;
 	/** @brief Fog drift at the weather's full wind speed, world units per second. */
@@ -275,31 +270,20 @@ private:
 
 public:
 	/**
-	 * @brief Draws the ground fog into the scene (D21) once the world is rendered, water and
-	 * transparent geometry included, before first person, TAA, upscaling and tonemapping. Called
-	 * from Deferred's Main_RenderWorld hook.
+	 * @brief D21: draws the ground fog after the world (water and transparents included), before first person, TAA,
+	 * upscaling and tonemapping. Called from Deferred's Main_RenderWorld hook.
 	 */
 	void DrawGroundFogAfterWorld();
 
-	/**
-	 * @brief Called as each effect, lighting or utility geometry is set up for drawing: binds the waterfall
-	 * flow and cuts (D29, D56) when it is part of a grounded falling-water mesh, and turns them off
-	 * again for the next draw otherwise.
-	 */
+	/** @brief Per effect, lighting or utility draw setup: binds the falls' flow and cuts (D29, D56) on grounded falls, else unbinds. */
 	void SetupFallGeometry(RE::BSRenderPass* a_pass);
 
-	/**
-	 * @brief Called from the deferred passes: snapshots the main camera for the ground fog drawn
-	 * after the world, and (debug) draws the fog there instead.
-	 */
+	/** @brief From the deferred passes: snapshots the main camera for the fog drawn after the world; (debug) draws the fog here. */
 	void DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main);
 
-	/**
-	 * @brief D159: called from State::Draw before every draw call, once the engine has bound it: captures the river's draw
-	 * state (the water shader's refracting surface, once a frame) for the see-through falls to be shaded by the same shader.
-	 */
+	/** @brief D159: from State::Draw before each draw: captures the river's draw state (once a frame) to shade the falls with. */
 	void CaptureRiverDraw(RE::BSShader* a_shader, uint32_t a_vertexDescriptor, uint32_t a_pixelDescriptor);
-	/** @brief D171: the water shader's geometry being set up (BSWaterShader::SetupGeometry): its next draw's water type. */
+	/** @brief D171: from BSWaterShader::SetupGeometry; tells which water type the next water draw is. */
 	void SetupWaterGeometry(RE::BSRenderPass* a_pass);
 
 private:
@@ -312,16 +296,13 @@ private:
 	FluidFieldSim::FallSites fallSites;
 	FluidFieldSim::FallSurfaceRenderer fallSurface;  ///< D30: the falls' own water surfaces
 	float fallSurfaceTime = 0.0f;                    ///< Seconds, for the surfaces' flow
-	float fallPhase = 0.0f;                          ///< D67: the falls' one scroll, integrated each frame (a repeat at most): every mesh of a cascade reads the same
+	float fallPhase = 0.0f;                          ///< D67: the falls' shared scroll (wrapped), so a cascade's meshes match
 	uint32_t fallPhaseFrame = UINT32_MAX;            ///< D85: the rendered frame fallDrawPhase was latched for
-	float fallDrawPhase = 0.0f;                      ///< D85: the phase every falls draw of this frame reads (both depth passes alike)
-	float fallDrawPhasePrevious = 0.0f;              ///< D85: the previous frame's (the wobble's motion vectors)
-	float fallRate = 0.0f;                           ///< D67: ...and its rate, texture coordinates per second (vanilla's, averaged over the falls' materials)
+	float fallDrawPhase = 0.0f;                      ///< D85: this frame's phase for every falls draw (identical in both depth passes)
+	float fallDrawPhasePrevious = 0.0f;              ///< D85: previous frame's, for the wobble's motion vectors
+	float fallRate = 0.0f;                           ///< D67: its rate, texture coords/s (vanilla's, averaged over materials)
 
-	/**
-	 * @brief D28 and D36: the pools' surface around the player, where vanilla's falling water is cut, and each
-	 * lit falls mesh's own flow (D59). Matches FallGroundCB in FallGround.hlsli.
-	 */
+	/** @brief D28, D36: pool surface for cutting vanilla's falls, and each lit falls mesh's flow (D59). Matches FallGroundCB. */
 	struct FallGroundData
 	{
 		float Origin[2];
@@ -339,7 +320,7 @@ private:
 		uint32_t HideUnderwater;
 		float InverseScale[2];
 		uint32_t BakeOn;
-		float PreviousPhase;  ///< D85: last frame's Scroll[0] (the wobble's motion vectors)
+		float PreviousPhase;  ///< D85: last frame's Scroll[0], for the wobble's motion vectors
 		float BlendAlpha;     ///< D91 experiment: how see-through a blended dense copy's clear water is (0: opaque)
 		float Pad;
 		float BakeRect[4];
@@ -347,28 +328,27 @@ private:
 	static_assert(sizeof(FallGroundData) == 112);
 	static constexpr float FALL_BLEND_TEST_ALPHA = 0.6f;  ///< D91 experiment: BlendAlpha for the dense copies built blended
 	/**
-	 * @brief D56-D85: fills fallGroundData for a grounded falls mesh about to be drawn (its texture scroll taken out,
-	 * the frame's latched phase, its per-vertex base and its bake, which o_bake receives, or null). Shared by the lit
-	 * passes (SetupFallGeometry) and the refractive pass (D91), so both read the same flow.
+	 * @brief D56-D85: fills fallGroundData for a grounded falls mesh (scroll removed, latched phase, vertex base); o_bake gets
+	 * its bake or null. Shared by the lit and refractive (D91) passes so both read the same flow.
 	 */
 	void PrepareFallGroundData(const RE::BSGeometry* a_geometry, RE::BSShaderProperty* a_property, ID3D11ShaderResourceView*& o_bake);
 	/** @brief D91: the falls as refractive, see-through water, drawn after the world (before the spray). */
 	void DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Texture2D* a_targetTexture, ID3D11DepthStencilView* a_depth, ID3D11ShaderResourceView* a_sceneDepth);
 	/** @brief D91: whether the refractive pass draws the falls this frame (the lit pieces are then hidden). */
 	bool RefractiveFallsActive() const;
-	FluidFieldSim::GpuSpans gpuSpans;                                                        ///< D192: GPU time of the engine's water and falls, our falls, the spray and the simulation, logged when slow
+	FluidFieldSim::GpuSpans gpuSpans;                                                        ///< D192: GPU timings of water, falls, spray and simulation; logged when slow
 	FluidFieldSim::FallRefraction fallRefraction;                                            ///< D91
 	std::unordered_map<const RE::TESWaterForm*, FluidFieldSim::RiverCapture> riverCaptures;  ///< D159, D171: each water type's draw state, for the falls drawn by its shader
 	const RE::BSGeometry* waterGeometry = nullptr;                                           ///< D171: the water geometry last set up (SetupWaterGeometry)
-	std::unordered_map<const RE::TESWaterForm*, const RE::BSGeometry*> riverPieces;          ///< D171: each water type's river piece the falls keep taking while it is drawn
-	/** @brief D159: whether the see-through falls are to be shaded by the river's water shader this frame (the capture runs). */
+	std::unordered_map<const RE::TESWaterForm*, const RE::BSGeometry*> riverPieces;          ///< D171: each water type's river piece, kept while it is drawn
+	/** @brief D159: whether the river's water shader shades the see-through falls this frame (the capture runs). */
 	bool RiverShaderFallsWanted() const;
-	/** @brief D98: the water type each refractive falls piece pours out of (null: none found), looked up again every FALL_WATER_REFRESH frames. */
+	/** @brief D98: the water type each refractive falls piece pours from (null: none); refreshed every FALL_WATER_REFRESH frames. */
 	std::unordered_map<const RE::BSGeometry*, const RE::TESWaterForm*> fallWaterTypes;
 	uint32_t fallWaterTypesAge = 0;
 	static constexpr uint32_t FALL_WATER_REFRESH = 120;
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
-	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must be FallCapture::CELL: the pools are copied texel for texel
+	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must equal FallCapture::CELL: pools are copied texel for texel
 	static constexpr float DEFAULT_FALL_SCROLL = 0.15f;     ///< D60: vanilla's scroll before it is measured (texture coordinates per second)
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
 	static constexpr float FALL_POOL_FOAM = 26.0f;          ///< World units above the water below over which the falls foam into it (D36)
@@ -386,8 +366,8 @@ private:
 		float time = 0.0f;
 		float rate = 0.0f;
 		bool known = false;
-		float scale = 1.0f;      ///< Vanilla's texture scale along v, averaged (its slow zoom left out)
-		float scaleTime = 0.0f;  ///< ...as of this fallSurfaceTime
+		float scale = 1.0f;      ///< Vanilla's texture scale along v, averaged to drop its slow zoom
+		float scaleTime = 0.0f;  ///< fallSurfaceTime of that scale
 	};
 	std::unordered_map<const void*, FallScroll> fallScrolls;
 	winrt::com_ptr<ID3D11Buffer> fallGroundOn;  ///< Constants for grounded draws, rewritten per draw (each mesh's texture scroll)
@@ -409,7 +389,7 @@ private:
 	void ReleaseFallGround();
 	int fallDebugView = 0;                                   ///< Debug: 1 the spray emitters and plunges (D36, D78); not saved
 	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
-	float plungeFoamBehind = 0.0f;                           ///< D176: tuning, world units the plunge foam is moved behind the falls' line (against their flow); not saved
+	float plungeFoamBehind = 0.0f;                           ///< D176: tuning, plunge foam offset upstream of the falls' line, world units; not saved
 	float plungeFoamRadius = 1.0f;                           ///< D176: tuning, the plunge foam's radius scale; not saved
 	float plungeFoamBuilt[2] = { 0.0f, 1.0f };               ///< D176: the values the plunge map was last built with
 	int fallMeshDebug = 0;                                   ///< D75: the falls' meshes debug overlay (FallSites::DrawMeshDebug: 1 wireframe, 2 flow, 3 both); not saved
@@ -419,13 +399,11 @@ private:
 	/** @brief Creates the water layer's GPU resources and shaders as needed. Returns false if it cannot run. */
 	bool EnsureWater(WaterLevel& a_level, uint32_t a_resolution, float a_size, bool a_obstacles);
 	void ReleaseWater();
-	/** @brief Rebuilds the water map, then steps and writes out the water layer for this frame. */
-	/** @brief Steps one water level, centred on the player. The near level also takes obstacles and wakes. */
+	/** @brief Updates one level's water map, then steps it centred on the player; the near level also takes obstacles and wakes. */
 	void StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, bool a_near, uint32_t a_resolution, float a_size, const RE::NiPoint3& a_playerPos, float a_deltaTime);
 	/**
-	 * @brief Uploads changed obstacle blocks: refined ray detail with mesh-cut solids on top.
-	 * Mesh-cut blocks are kept resident only inside the obstacle texture's window around the player,
-	 * since blocks further away would alias in the wrapped texture.
+	 * @brief Uploads changed obstacle blocks (ray detail with mesh-cut solids on top). Mesh-cut blocks stay resident only
+	 * inside the obstacle texture's window, since further blocks would alias in the wrapped texture.
 	 */
 	void UploadObstacles(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos);
 	/** @brief One obstacle block at fine coordinates: ray detail where refined, mesh-cut solids over it. */

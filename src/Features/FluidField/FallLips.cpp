@@ -7,22 +7,20 @@
 #include <cmath>
 #include <vector>
 
-// D170: the falls' lips as a map for the shallow-water solver. Where a falls mesh climbs out of the river it pours from
-// (a column with a hidden lead-in under that river, its crest the lip, D79), the river is drawn toward the crest over its
-// last few metres, along the way the falls start, up to the speed their texture leaves the crest at (FallStrands'
-// CREST_SPEED): the drawdown real water shows before a drop. The solver's continuity thins the water as it speeds up.
+// D170: lip map for the shallow-water solver. Where a falls column climbs a hidden lead-in out of its river (D79), the river
+// is drawn toward the crest up to the texture's crest speed: the drawdown before a drop. Continuity thins it as it speeds up.
 
 namespace FluidFieldSim
 {
 	namespace
 	{
-		constexpr float LIP_SPEED = 200.0f;      ///< World units a second the river reaches at the crest: FallStrands' CREST_SPEED, where the falls' texture starts
-		constexpr float LIP_REACH = 320.0f;      ///< World units upstream of a crest the river starts to speed up (4.5 m; 210 in D170, the user: the surrounding area)
-		constexpr float LIP_PAST = 48.0f;        ///< World units past the crest (over the drop's top) still drawn on
-		constexpr float LIP_SIDE = 64.0f;        ///< World units to either side of a lip point it reaches (28 in D170: a lane per column)
+		constexpr float LIP_SPEED = 200.0f;      ///< World units/s at the crest; matches FallStrands' CREST_SPEED
+		constexpr float LIP_REACH = 320.0f;      ///< World units upstream of a crest the river starts to speed up
+		constexpr float LIP_PAST = 48.0f;        ///< World units past the crest still drawn on
+		constexpr float LIP_SIDE = 64.0f;        ///< World units to either side of a lip point it reaches
 		constexpr float LIP_WATER_BAND = 40.0f;  ///< A crest this near the water over it is that water's lip (FallSites::LIP_BAND)
 		constexpr float LIP_DROP_FROM = 24.0f;   ///< World units of drop below the crest at which the draw starts...
-		constexpr float LIP_DROP_FULL = 160.0f;  ///< ...and is whole: a small step barely draws the river on
+		constexpr float LIP_DROP_FULL = 160.0f;  ///< ...and is full, so a small step barely draws the river on
 
 		float Smoothstep(float a_from, float a_to, float a_x)
 		{
@@ -52,7 +50,7 @@ namespace FluidFieldSim
 			const std::size_t count = static_cast<std::size_t>(w) * h;
 			if (w < 2 || h < 3 || field->position.size() != count || field->covered.size() != count)
 				continue;
-			// Only the shell's crests (D126), as BuildPlunges' lips: none from parts cut inside rock or another sheet
+			// D126: only shell crests, as in BuildPlunges; none from parts inside rock or another sheet
 			std::vector<uint8_t> shell;
 			{
 				const float uvMin[2] = { field->uvMin[0], field->uvMin[1] }, uvSize[2] = { field->uvSize[0], field->uvSize[1] };
@@ -84,14 +82,14 @@ namespace FluidFieldSim
 			const auto index = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * w + a_x; };
 			for (int32_t x = 0; x < w; x++) {
 				const int32_t c = crest[x];
-				// A lip: the column climbed a lead-in to its crest (fed meshes and mid-fall starts have none)
+				// A lip needs a lead-in before its crest (fed meshes and mid-fall starts have none)
 				if (c < 1 || c + 2 >= h || !leadIn[index(x, c - 1)] || !field->covered[index(x, c + 2)])
 					continue;
 				const std::size_t i = index(x, c);
 				if ((!field->rock.empty() && field->rock[i]) || (i < shell.size() && !shell[i]))
 					continue;
 				const RE::NiPoint3& p = field->position[i];
-				// The water over it: the crest lies at its surface
+				// The crest must lie at a water surface
 				float level = 0.0f;
 				bool river = PoolLevelAt(p.x, p.y, level) && std::abs(p.z - level) <= LIP_WATER_BAND;
 				for (const auto& plane : planes) {
@@ -123,7 +121,7 @@ namespace FluidFieldSim
 					const float side = std::abs(rx * lip.dy - ry * lip.dx);
 					if (upstream > LIP_REACH || upstream < -LIP_PAST || side > LIP_SIDE)
 						continue;
-					// Drawn on harder the nearer the drop (the water accelerates toward it), whole over the crest
+					// Stronger nearer the drop (the water accelerates toward it), full past the crest
 					const float toward = upstream > 0.0f ? 1.0f - upstream / LIP_REACH : 1.0f;
 					const float weight = lip.strength * toward * toward * (1.0f - Smoothstep(0.5f * LIP_SIDE, LIP_SIDE, side));
 					float* texel = &a_field[(static_cast<std::size_t>(y) * a_size + x) * 4];

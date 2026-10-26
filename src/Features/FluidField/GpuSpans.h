@@ -9,26 +9,25 @@
 namespace FluidFieldSim
 {
 	/**
-	 * D192: Fluid Field's own GPU timing of a few spans per frame (timestamp queries), apart from the built-in profiler, which
-	 * cannot nest passes: the engine's water and falls draws lie between other features' timed passes. Results are read a few
-	 * frames late without stalling. A span past SLOW_MS is logged at once (the log flushes per line, so it survives a hang that
-	 * follows), and each span's worst over the last LOG_SECONDS is logged while any of them ran past NOTE_MS.
+	 * D192: GPU timestamps for a few spans per frame, apart from the built-in profiler, which cannot nest passes (the engine's
+	 * water lies between other features' timed passes). Read a few frames late without stalling. A span past SLOW_MS is
+	 * logged at once (per-line flush survives a following hang); each span's worst over LOG_SECONDS is logged if any passed NOTE_MS.
 	 */
 	class GpuSpans
 	{
 	public:
 		enum Span : uint32_t
 		{
-			EngineWater,      ///< Between the end of the deferred pass and the world's end: the engine's water, the falls drawn by Water.hlsl among it
-			RefractiveFalls,  ///< DrawRefractiveFalls: the falls drawn by our own pass
+			EngineWater,      ///< Deferred end to world end: the engine's water, including falls drawn by Water.hlsl
+			RefractiveFalls,  ///< DrawRefractiveFalls: falls drawn by our own pass
 			FallEffects,      ///< The falls' spray and mist
-			Simulation,       ///< Prepass: the wind and water solvers, the bakes' GPU work
+			Simulation,       ///< Prepass: wind and water solvers, bake GPU work
 			Count
 		};
 
-		/** @brief GPU milliseconds of a span over which it is logged at once. */
+		/** @brief GPU ms past which a span is logged at once. */
 		static constexpr float SLOW_MS = 50.0f;
-		/** @brief GPU milliseconds of a span over which the periodic summary is logged. */
+		/** @brief GPU ms past which the periodic summary is logged. */
 		static constexpr float NOTE_MS = 8.0f;
 		static constexpr float LOG_SECONDS = 10.0f;
 
@@ -42,7 +41,7 @@ namespace FluidFieldSim
 		void Begin(ID3D11DeviceContext* a_context, Span a_span);
 		/** @brief Marks a span's end; a span without its start this frame is ignored. */
 		void End(ID3D11DeviceContext* a_context, Span a_span);
-		/** @brief Once per frame: closes the frame's queries, reads finished frames' results and logs what ran slow. */
+		/** @brief Once per frame: closes this frame's queries, reads finished frames and logs slow spans. */
 		void EndFrame(ID3D11DeviceContext* a_context);
 
 	private:

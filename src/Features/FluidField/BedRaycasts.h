@@ -16,18 +16,12 @@ namespace FluidFieldSim
 	/**
 	 * @brief Riverbed and obstacle heights from downward Havok raycasts where there is water (R1, D7 stage 4).
 	 *
-	 * Landscape heights miss placed meshes: rocks, banks, bridge piers and riverbed meshes. On a
-	 * lattice around the player, wherever a water plane lies above (or near) the landscape, a ray
-	 * is cast down from above the surface. If it first hits something above the water, a short ray
-	 * up from just under the surface tells an overhead structure (a deck or arch with air beneath,
-	 * which water flows under) from a solid rising out of the water (a rock or pier, an obstacle).
-	 * Non-static hits (the water's own collision, actors, clutter) are stepped through.
-	 * Results are cached per lattice point, since statics do not move, and a few rays are cast per
-	 * frame. The coarse lattice comes first and takes only the first hit (the coarse map ignores meshes
-	 * rising out of the water anyway). Once it is complete, lattice squares around meshes near the
-	 * water within REFINE_RADIUS of the player are refined with REFINE x REFINE rays each; those rays
-	 * also probe for overhead structures, so pillars and the gaps between them are resolved. A hard
-	 * time limit is checked before every ray. Runs on the main thread under the physics world's read lock.
+	 * Landscape heights miss placed meshes (rocks, banks, piers, riverbed meshes). A ray is cast down at each lattice point
+	 * with water; a hit above the water is probed from below to tell an overhead (deck, arch: water flows under) from a
+	 * solid (rock, pier). Non-static hits are stepped through. Statics don't move, so results are cached. The coarse
+	 * lattice takes only the first hit; then squares around meshes near the water within REFINE_RADIUS are refined
+	 * REFINE x REFINE, probing overheads so pillars and gaps resolve. A time limit is checked before every ray.
+	 * Main thread, under the physics world's read lock.
 	 */
 	class BedRaycasts
 	{
@@ -83,8 +77,8 @@ namespace FluidFieldSim
 		};
 
 		/**
-		 * @brief Casts up to a_maxRays new rays (and at most RAY_TIME_BUDGET_MS of them) for lattice points around the centre.
-		 * Does nothing while every point around an unmoved centre is already resolved.
+		 * @brief Casts up to a_maxRays new rays, within RAY_TIME_BUDGET_MS, for lattice points around the centre.
+		 * Idle while every point around an unmoved centre is resolved.
 		 * @param a_spacing Lattice spacing in world units.
 		 * @param a_extent World units per side of the square to cover.
 		 * @param a_log Log what each ray hits (rate-limited) and a summary every few seconds.
@@ -112,10 +106,7 @@ namespace FluidFieldSim
 		 * @return False when that point has not been refined.
 		 */
 		bool FindFine(int32_t a_fineX, int32_t a_fineY, float& a_height, float& a_kind) const;
-		/**
-		 * @brief With mesh-cut obstacles, rays only measure the bed: every mesh above the water is looked
-		 * under, and none is judged solid from a probe. Changing it clears the results.
-		 */
+		/** @brief With mesh-cut obstacles, every mesh above the water is looked under, none judged solid. Clears results on change. */
 		void SetOverheadsAlwaysOpen(bool a_open);
 
 		const Stats& GetStats() const { return stats; }

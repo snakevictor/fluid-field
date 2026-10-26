@@ -13,14 +13,11 @@ namespace FluidFieldSim
 	class WaterSurfaces;
 
 	/**
-	 * @brief Water-line obstacles cut from the visual meshes of placed references (D14, D15).
+	 * @brief Water-line obstacles cut from placed references' visual meshes (D14, D15).
 	 *
-	 * Static meshes keep CPU copies of their vertices and indices (BSGraphics::TriShape
-	 * rawVertexData / rawIndexData). For each loaded reference that crosses a water surface,
-	 * every triangle is cut by the horizontal plane at the water height; the segments are chained
-	 * into loops, and the fine lattice points inside a closed loop (a pillar, a post, a hull) or
-	 * on any segment (a wall face whose other side is under the bank) become solid. Statics do
-	 * not move, so each reference is cut once while it stays loaded. Runs on the main thread.
+	 * Uses the CPU copies statics keep (TriShape rawVertexData / rawIndexData): each reference crossing water is cut at the
+	 * water height, and fine points inside a closed loop (pillar, hull) or on any segment (a wall backed by the bank) become
+	 * solid. Statics do not move, so each is cut once while loaded. Main thread only.
 	 */
 	class MeshCut
 	{

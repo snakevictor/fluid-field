@@ -11,14 +11,11 @@ namespace FluidFieldSim
 	class WaterSurfaces;
 
 	/**
-	 * @brief Waterfalls that drive the simulated water where they land (D22).
+	 * @brief D22: waterfalls that drive the simulated water where they land.
 	 *
-	 * Vanilla's falling water stays as it is: its body meshes (FXWaterfallBody*, FXWaterfallThin*)
-	 * are found among the loaded references, and each one's plunge (where its lowest vertices are),
-	 * width and fall direction are read once from its geometry, with its bounds as a fallback. Bodies
-	 * landing on water are merged into falls, and each fall becomes a water emitter: a pulsing push
-	 * at the plunge, a current spreading out from it and running on downstream, and foam. Runs on the
-	 * main thread.
+	 * Each loaded body mesh's (FXWaterfallBody*, FXWaterfallThin*) plunge, width and direction are read once from its
+	 * geometry (bounds as fallback). Bodies landing on water merge into falls; each emits a downstream current and foam at
+	 * its plunge. Main thread.
 	 */
 	class WaterfallSources
 	{

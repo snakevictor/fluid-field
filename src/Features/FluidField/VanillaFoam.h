@@ -10,23 +10,18 @@ namespace FluidFieldSim
 	class WaterSurfaces;
 
 	/**
-	 * @brief Hides vanilla's placed foam and spray effects where Fluid Field simulates the water (D19).
+	 * @brief D19: hides vanilla's placed foam and spray effects where Fluid Field simulates the water.
 	 *
-	 * Vanilla fakes rapids foam, splashes and spray with effect meshes placed along rivers and at
-	 * waterfalls (FXRapids, FxRapidsRing, FXrapidsRocks, FXSplash...Churn, waterfall skirts, mist
-	 * blasts and spray). Their looping textures ignore the flow, so inside the simulated area their
-	 * effect parts are culled (`SetAppCulled`) and Fluid Field's own foam takes over; lit geometry in
-	 * the same mesh (the rocks of FXrapidsRocks) stays. Nothing is written to the
-	 * save: a reference is shown again once it leaves the area, or when the option or the water is
-	 * turned off. Waterfall bodies and ambient low mist stay: falling water and atmosphere are not
-	 * something the surface simulation produces. Runs on the main thread.
+	 * Their looping textures ignore the flow, so their effect parts are culled (`SetAppCulled`) and our foam takes over; lit
+	 * geometry in the same mesh (FXrapidsRocks' rocks) stays. Nothing is saved: a reference is shown again when it leaves the
+	 * area or the option is off. Waterfall bodies and low mist stay (the surface sim doesn't make them). Main thread.
 	 */
 	class VanillaFoam
 	{
 	public:
 		/**
-		 * @brief Hides foam effects within a_halfSize of the centre (a square) that sit on water, and shows
-		 * again any hidden one that left it. Rescans the loaded references every few updates.
+		 * @brief Hides foam effects on water within the square a_halfSize around the centre and shows those that left it.
+		 * Rescans every SCAN_INTERVAL updates.
 		 */
 		void Update(const WaterSurfaces& a_water, float a_centreX, float a_centreY, float a_halfSize);
 

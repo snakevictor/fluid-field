@@ -12,14 +12,11 @@ namespace FluidFieldSim
 	class WaterSurfaces;
 
 	/**
-	 * @brief Ground height under the wind grid, for the ground fog (D21): the landscape, or the water
-	 * surface where there is water over it, so fog lies on rivers and lakes as mist.
+	 * @brief D21: ground height under the wind grid for the ground fog: landscape, or the water surface over it, so fog
+	 * lies on water as mist.
 	 *
-	 * A float texture on the wind grid, stored toroidally like the field: world cell c lives in
-	 * texel c & (res - 1). As the grid scrolls only the cells that came into it are sampled from
-	 * the landscape cache; cells over land that is not loaded yet are retried every few updates.
-	 * Unknown ground is NO_GROUND, far below anything, so no fog forms there. Runs on the main
-	 * thread; the texture is updated on the render thread's context.
+	 * Toroidal like the field (world cell c in texel c & (res - 1)); on scroll only new cells are sampled, and cells over
+	 * unloaded land are retried. Main thread; the texture is updated on the render thread's context.
 	 */
 	class GroundHeightMap
 	{
@@ -37,7 +34,7 @@ namespace FluidFieldSim
 		void Release();
 
 		ID3D11ShaderResourceView* GetSRV() const { return srv.get(); }
-		/** @brief Highest known ground in the map, so the fog pass can skip rays that stay above the fog. */
+		/** @brief Highest known ground, so the fog pass can skip rays above the fog. */
 		float GetMaxHeight() const { return maxHeight; }
 
 	private:

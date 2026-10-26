@@ -66,7 +66,7 @@ namespace FluidFieldSim
 				const auto* waterType = waterObject->waterType;
 				const uint32_t formID = waterType ? waterType->GetFormID() : 0;
 				const float flowScale = waterType && waterType->flags.any(RE::TESWaterForm::Flag::kEnableFlowmap) ? 1.0f : 0.0f;
-				// With the check on, describe each water type once: how the game tells rivers from lakes and sea
+				// With the check on, log each water type once (how the game tells rivers from lakes and sea)
 				if (a_verify && waterType && loggedWaterTypes.insert(formID).second) {
 					const auto& v = waterType->linearVelocity;
 					logger::info("[Fluid Field] Water type {:08X}: flowmap {}, flowmap scale {:.2f}, linear velocity ({:.1f}, {:.1f}, {:.1f}), wave amplitude {:.2f}",
@@ -132,7 +132,7 @@ namespace FluidFieldSim
 
 	WaterSurfaces::Source WaterSurfaces::SampleHeight(float a_worldX, float a_worldY, float& a_height, float& a_flowScale) const
 	{
-		// Highest water object covering the point wins; which overlap rule is right is R3's question
+		// Highest water object covering the point wins
 		bool found = false;
 		a_flowScale = 0.0f;
 		for (const auto& surface : surfaces) {

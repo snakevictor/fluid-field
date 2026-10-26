@@ -8,8 +8,8 @@ namespace FluidFieldSim
 	{
 		if (!a_shader || a_shader->shaderType.get() != RE::BSShader::Type::Water)
 			return false;
-		// Technique 0: SPECULAR with no specular lights (the lit surface; 1-7 are the point lights' passes, 8+ underwater,
-		// LOD, stencil and simple); and the Refractions flag, which the falls' composite (the scene behind) needs
+		// Technique 0: SPECULAR with no specular lights (1-7 are light passes, 8+ underwater, LOD, stencil, simple);
+		// Refractions is needed for the falls' composite of the scene behind
 		const uint32_t technique = (a_pixelDescriptor >> 11) & 0xF;
 		const auto refractions = static_cast<uint32_t>(SIE::ShaderCache::WaterShaderFlags::Refractions);
 		const auto falls = static_cast<uint32_t>(SIE::ShaderCache::WaterShaderFlags::FluidFieldFalls);
@@ -20,7 +20,7 @@ namespace FluidFieldSim
 	{
 		o_bound = false;
 		if (!a_source)
-			return true;  // Nothing bound there: bound as nothing
+			return true;  // Nothing bound
 		D3D11_BUFFER_DESC source{};
 		a_source->GetDesc(&source);
 		if (o_copy) {
@@ -47,7 +47,7 @@ namespace FluidFieldSim
 		if (!a_device || !a_context || !a_shader)
 			return false;
 
-		// The constant buffers' contents: the engine's buffers are shared by every draw of their size and rewritten by the next
+		// Copy contents: the engine's buffers are shared by every draw of their size and rewritten by the next
 		ID3D11Buffer* pixel[PIXEL_BUFFER_COUNT]{};
 		ID3D11Buffer* vertex[VERTEX_BUFFER_COUNT]{};
 		a_context->PSGetConstantBuffers(0, PIXEL_BUFFER_COUNT, pixel);

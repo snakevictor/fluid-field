@@ -1,7 +1,6 @@
 #pragma once
 
-// Kept free of plugin headers (no PCH, globals or CommonLib) so the solver test
-// in tests/FluidField can build and run it on a WARP device outside the game.
+// Free of plugin headers (no PCH, globals or CommonLib) so tests/FluidField can run the solver on a WARP device.
 
 #include <d3d11.h>
 #include <winrt/base.h>
@@ -60,10 +59,8 @@ namespace FluidFieldSim
 	};
 
 	/**
-	 * @brief 2D stable-fluids wind layer on a toroidally addressed, scrolling grid.
-	 *
-	 * Owns every GPU resource it uses. Each step runs add forces, advect, divergence,
-	 * a Jacobi pressure solve and projection, as separate compute dispatches.
+	 * @brief 2D stable-fluids wind layer on a toroidal, scrolling grid. Owns its GPU resources.
+	 * Each step dispatches add forces, advect, divergence, a Jacobi pressure solve and projection.
 	 */
 	class WindSolver
 	{

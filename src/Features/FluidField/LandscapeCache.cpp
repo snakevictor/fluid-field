@@ -7,9 +7,8 @@ namespace FluidFieldSim
 	namespace
 	{
 		/**
-		 * @brief Height of cell vertex (x, y) from the engine's four 17x17 quadrants.
-		 * Quadrant bit 0 is the east half and bit 1 the north half; quadrants share their edge
-		 * vertices, so the middle row and column are read from the west and south quadrants.
+		 * @brief Height of cell vertex (x, y) from the engine's four 17x17 quadrants (bit 0 east, bit 1 north).
+		 * Quadrants share edge vertices; the middle row and column come from the west and south quadrants.
 		 */
 		float GetLandVertexHeight(const RE::TESObjectLAND::LoadedLandData& a_data, int32_t a_x, int32_t a_y)
 		{
@@ -116,8 +115,7 @@ namespace FluidFieldSim
 					for (int32_t x = 0; x < VERTS_PER_SIDE; x++)
 						copy.heights[y * VERTS_PER_SIDE + x] = GetLandVertexHeight(*land->loadedData, x, y);
 				}
-				// Stored heights are relative; heightExtents.x is the cell's lowest world height
-				// (confirmed against TES::GetLandHeight, see reports/r1-stage-a-checks.md)
+				// Stored heights are relative; heightExtents.x is the cell's lowest world height (checked against GetLandHeight)
 				copy.anchor = land->loadedData->heightExtents.x - *std::ranges::min_element(copy.heights);
 				for (float& height : copy.heights)
 					height += copy.anchor;

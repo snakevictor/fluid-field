@@ -86,8 +86,7 @@ namespace FluidFieldSim
 		target.BlendOpAlpha = D3D11_BLEND_OP_ADD;
 		target.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
 		D3D11_DEPTH_STENCIL_DESC depthDesc{};
-		// D186: no depth test: the shader tests against the depth copy itself, softly (a puff's chord cut where the scene lies; a
-		// droplet faded within 2 units), so mist thins into the water and rock instead of being cut on a hard, jagged line (SS 1374)
+		// D186: no depth test; the shader tests the depth copy softly so mist thins into water and rock instead of a hard line
 		depthDesc.DepthEnable = FALSE;
 		depthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
 		depthDesc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;  // Depth runs from 0 near to 1 far (the sky)
@@ -119,7 +118,7 @@ namespace FluidFieldSim
 		if (a_version == uploadedVersion)
 			return;
 		uploadedVersion = a_version;
-		// Shuffled, so that when only the first emitters fit (DrawParticles), they are spread over every fall
+		// Shuffled so that when only the first emitters fit (DrawParticles), they spread over every fall
 		allEmitters = a_emitters;
 		std::mt19937 random(0x5eed);
 		std::shuffle(allEmitters.begin(), allEmitters.end(), random);
@@ -128,9 +127,8 @@ namespace FluidFieldSim
 
 	void FallSurfaceRenderer::UploadNear(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const float (&a_camera)[3])
 	{
-		// D182: only the emitters near the camera reach the GPU (all of them, 19,554 after the finer bake, cost the vertex
-		// shader every frame though their particles were faded out past SPRAY_FAR): within NEAR_REACH, nearest first, at most
-		// MOST_NEAR; chosen again when the camera has moved REFILTER_MOVE or the emitters changed
+		// D182: upload only emitters within NEAR_REACH (at most MOST_NEAR, nearest first); all of them cost the vertex shader
+		// every frame though faded out. Rechosen when the camera moves REFILTER_MOVE or the emitters change.
 		const float dx0 = a_camera[0] - filteredAt[0], dy0 = a_camera[1] - filteredAt[1], dz0 = a_camera[2] - filteredAt[2];
 		if (!refilter && dx0 * dx0 + dy0 * dy0 + dz0 * dz0 < REFILTER_MOVE * REFILTER_MOVE)
 			return;
@@ -179,8 +177,7 @@ namespace FluidFieldSim
 		std::vector<FallEmitter> chosen;
 		chosen.reserve(count);
 		for (const auto& entry : nearby) {
-			// D183: each with its own id from where it is (FallSpray's random choices: by its place in this list they changed
-			// whenever the camera moved and the list was chosen again, and the particles jumped), packed over its kind
+			// D183: an id hashed from its position, packed over its kind, so FallSpray's random choices don't jump when the list is rechosen
 			FallEmitter emitter = allEmitters[entry.second];
 			uint32_t id = 2166136261u;
 			for (int k = 0; k < 3; k++)
@@ -250,7 +247,7 @@ namespace FluidFieldSim
 		depthCopySRV = nullptr;
 		D3D11_DEPTH_STENCIL_VIEW_DESC view{};
 		a_depth->GetDesc(&view);
-		// The read format from the depth's (the engine's depth is R24G8 or R32 typeless)
+		// The engine's depth is R24G8 or R32 typeless; pick the matching read format
 		DXGI_FORMAT readFormat = DXGI_FORMAT_UNKNOWN;
 		switch (view.Format) {
 		case DXGI_FORMAT_D24_UNORM_S8_UINT:
@@ -289,8 +286,7 @@ namespace FluidFieldSim
 
 	void FallSurfaceRenderer::Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params)
 	{
-		// D183: fixed emitters on the water surfaces (FallSites), the ones near the camera; each switches on and off over time in the
-		// shader, by the water's foam and flow there
+		// D183: fixed emitters from FallSites; the shader switches each on and off by the water's foam and flow there
 		UploadNear(a_device, a_context, a_params.cameraPosition);
 		if (emitterCount == 0 || !a_params.target || !a_params.depth || !a_params.camera || !EnsureShaders() || !EnsureStates(a_device))
 			return;
@@ -346,8 +342,7 @@ namespace FluidFieldSim
 		a_context->PSGetShaderResources(SCENE_COLOR_SLOT, 1, savedScene.put());
 		a_context->PSGetShaderResources(ENVIRONMENT_SLOT, 1, savedEnvironment.put());
 
-		// D182: the depth as it is now (the water planes and the falls in it), for the particles' soft contact: against the opaque
-		// scene's alone, mist met the water and the falls on the depth test's hard line (cards cutting through the water, the user)
+		// D182: copy the current depth (water planes and falls included) for soft contact; the opaque-only depth cut mist on a hard line
 		ID3D11ShaderResourceView* contactDepth = a_params.sceneDepth;
 		if (EnsureDepthCopy(a_device, a_params.depth)) {
 			winrt::com_ptr<ID3D11Resource> live;
@@ -356,7 +351,7 @@ namespace FluidFieldSim
 			a_context->CopyResource(depthCopy.get(), live.get());
 			contactDepth = depthCopySRV.get();
 		}
-		// D186: the frame as it stands, for the droplets to refract (the falls in it: a drop before a fall shows the fall)
+		// D186: copy the frame (falls included) for the droplets to refract
 		ID3D11ShaderResourceView* scene = nullptr;
 		if (EnsureSceneCopy(a_device, a_params.targetTexture)) {
 			a_context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -378,8 +373,7 @@ namespace FluidFieldSim
 		a_context->VSSetConstantBuffers(CAMERA_SLOT, 1, &a_params.camera);
 		a_context->PSSetConstantBuffers(CAMERA_SLOT, 1, &a_params.camera);
 		a_context->PSSetShaderResources(SCENE_DEPTH_SLOT, 1, &contactDepth);
-		// D186: in the sun's shadow (Volumetric Shadows' map, as the falls' surface reads it) when its maps are known this frame;
-		// terrain and cloud shadows either way
+		// D186: sun shadow from Volumetric Shadows' maps when bound this frame; terrain and cloud shadows either way
 		activePixelShader = sprayPixelShader.get();
 		if (a_params.shadowMap && a_params.shadowCascades) {
 			if (!sprayPixelShaderShadowed && !shadowedShaderFailed) {

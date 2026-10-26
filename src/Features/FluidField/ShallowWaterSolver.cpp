@@ -14,7 +14,7 @@ namespace FluidFieldSim
 		constexpr std::uint32_t GROUP_SIZE = 8;  // FLUIDFIELD_GROUP_SIZE in Common.hlsli
 		constexpr std::uint32_t MAX_SRVS = 4;    // t0..t3; the map sits at t4, fine detail at t5, the flowmap at t6
 		constexpr std::uint32_t MAP_SLOT = 4;
-		constexpr std::uint32_t BOUND_SRVS = 11;  // Through the lips' map (D170)
+		constexpr std::uint32_t BOUND_SRVS = 11;  // Slots t0..t10, up to the lips' map (D170)
 		constexpr std::uint32_t LIP_SLOT = 10;    // D170: the falls' lips, read by the forces and output passes
 		constexpr std::uint32_t FOAM_SLOT = 7;    // The foam pass reads last step's foam here
 		constexpr std::uint32_t MAX_UAVS = 3;
@@ -171,9 +171,8 @@ namespace FluidFieldSim
 
 	void ShallowWaterSolver::Reset()
 	{
-		// The forces pass starts every cell from vanilla water while history is invalid. The map is
-		// forgotten too: after a load it describes the previous location, and starting from it would
-		// flood or drain the grid once the new map arrives.
+		// Invalid history makes the forces pass start every cell from vanilla water. Drop the map too: after a load it
+		// describes the previous location and would flood or drain the grid once the new map arrives.
 		historyValid = false;
 		stepped = false;
 		hasDebugViews = false;

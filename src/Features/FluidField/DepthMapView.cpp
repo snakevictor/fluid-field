@@ -21,7 +21,7 @@ namespace FluidFieldSim
 			return c(r) | (c(g) << 8) | (c(b) << 16) | 0xFF000000u;
 		}
 
-		constexpr uint32_t MISSING = 0xFFFF00FFu;  // Magenta: no landscape data
+		constexpr uint32_t MISSING = 0xFFFF00FFu;  // Magenta: no bed data
 		constexpr uint32_t NO_WATER = 0xFF202020u;
 	}
 
@@ -90,8 +90,7 @@ namespace FluidFieldSim
 			float height = std::numeric_limits<float>::quiet_NaN();
 			if (!a_landscape.SampleHeight(wx, wy, height))
 				height = std::numeric_limits<float>::quiet_NaN();
-			// The same rule as the water map: a terrain hit is the engine's own triangle height and a static
-			// hit raises the bed, except a coarse mesh above the water, which was never checked for air beneath
+			// As the water map: terrain hits replace, static hits raise the bed, except a coarse mesh above the water (never probed)
 			if (const auto* ray = a_rays ? a_rays->FindDetail(wx, wy) : nullptr) {
 				float surface = 0.0f;
 				const bool hasWater = a_water.SampleHeight(wx, wy, surface) != WaterSurfaces::Source::None;
@@ -100,7 +99,7 @@ namespace FluidFieldSim
 				else if (ray->kind == BedRaycasts::HitKind::Static && (ray->refined || !(hasWater && ray->height > surface)))
 					height = std::isfinite(height) ? std::max(height, ray->height) : ray->height;
 			}
-			// A mesh-cut obstacle stands above the water, as the water solver sees it
+			// Mesh-cut obstacles raise the bed, as the water solver sees them
 			if (a_meshCut && a_meshCut->GetFineSpacing() > 0.0f) {
 				const float spacing = a_meshCut->GetFineSpacing();
 				float top = 0.0f;
@@ -201,8 +200,8 @@ namespace FluidFieldSim
 					pixels[2][out] = Pack(0.55f, 0.45f, 0.30f);
 				}
 
-				// Raycasts: red a mesh-cut obstacle, green terrain, purple looked under a deck, orange mesh above
-				// the water (obstacle), brown mesh below it (riverbed), dark blue nothing in reach, grey dry (not cast)
+				// Raycasts: red mesh-cut obstacle, green terrain, purple under an overhead, brown/orange/yellow mesh (see below),
+				// dark blue nothing in reach, grey not cast
 				const auto* ray = a_rays ? a_rays->FindDetail(wx, wy) : nullptr;
 				if (a_meshCut && a_meshCut->IsSolidAt(wx, wy)) {
 					pixels[3][out] = Pack(0.95f, 0.15f, 0.20f);

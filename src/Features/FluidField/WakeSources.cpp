@@ -53,7 +53,6 @@ namespace FluidFieldSim
 		if (!(a_deltaTime > 0.0f) || !(a_cellSize > 0.0f))
 			return emitters;
 
-		// Every loaded actor inside the grid, nearest the player first
 		const float halfGrid = a_cellSize * static_cast<float>(a_gridRes) * 0.5f;
 		std::vector<Candidate> candidates;
 		const auto consider = [&](RE::Actor* a_actor) {
@@ -127,7 +126,6 @@ namespace FluidFieldSim
 			wakeCount++;
 		}
 
-		// Drop actors not seen for a while
 		for (auto it = history.begin(); it != history.end();) {
 			if (updateCounter - it->second.lastSeen > FORGET_AFTER)
 				it = history.erase(it);

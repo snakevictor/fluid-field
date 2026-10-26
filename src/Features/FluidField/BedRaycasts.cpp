@@ -294,15 +294,12 @@ namespace FluidFieldSim
 
 		// Landscape never overhangs water, so only a mesh above the water can be overhead
 		if (a_probeOverheads && hit.z > a_surface + ABOVE_SURFACE_MARGIN && !IsLandscapeLayer(hit.layer)) {
-			// Something above the water: look up from just under the surface. An underside below the
-			// top means air over the water (a deck, an arch); nothing, or only the top itself, means a
-			// solid rising out of the water (a rock, a pier), which stays an obstacle.
-			// With mesh-cut obstacles the mesh cut decides what is solid, so skip the probe and look under
+			// Look up from just under the surface for an underside (air over the water). With mesh-cut obstacles
+			// the mesh cut decides what is solid, so skip the probe and look under.
 			const RayHit up = overheadsAlwaysOpen ? RayHit{ .hit = true, .z = a_surface + PROBE_OFFSET, .normalZ = -1.0f } :
 			                                        CastVertical(world, a_worldX, a_worldY, a_surface - PROBE_OFFSET, hit.z + 1.0f, a_aborted);
-			// A downward-facing underside clear of the water is open (a deck, an arch, a thin plank whose
-			// underside is at its top's height). An underside touching the water is solid (a pillar, a post);
-			// so is no underside, or an upward-facing hit from inside a solid.
+			// Open: a downward-facing underside clear of the water (deck, arch, thin plank). Solid: an underside
+			// touching the water (pillar), none, or an upward-facing hit from inside a solid.
 			const bool open = overheadsAlwaysOpen || (up.hit && up.normalZ < -0.3f && up.z > a_surface + UNDERSIDE_CLEARANCE);
 			if (a_log && !a_aborted && !open) {
 				const auto what = !up.hit ? std::string("solid, probe found no underside") :
@@ -372,7 +369,7 @@ namespace FluidFieldSim
 		if (!refineQueue.empty())
 			idle = false;
 		if (!idle) {
-			// Drop points that have fallen well outside the covered square, once per lattice step moved
+			// Drop points well outside the covered square, once the centre has moved over a quarter of its half-extent
 			if (std::abs(centreX - prunedCentre[0]) > half / 4 || std::abs(centreY - prunedCentre[1]) > half / 4) {
 				prunedCentre[0] = centreX;
 				prunedCentre[1] = centreY;

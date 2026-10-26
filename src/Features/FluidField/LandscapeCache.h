@@ -7,13 +7,10 @@
 namespace FluidFieldSim
 {
 	/**
-	 * @brief CPU copy of the landscape heights of the loaded exterior cells around the player.
+	 * @brief CPU copy of the loaded exterior cells' landscape heights; the depth map's riverbed source (R1, D7 stage 1).
 	 *
-	 * Each attached cell's `TESObjectLAND` heights are copied once when the cell appears in the
-	 * engine's loaded grid, and dropped when it leaves. This is the riverbed source for the depth
-	 * map (R1, D7 stage 1). The engine stores the heights relative to the cell; adding
-	 * `heightExtents.x - min(heights)` turns them into world heights, which `Verify` confirms
-	 * against `TES::GetLandHeight`.
+	 * Copied once when a cell attaches, dropped when it leaves. Stored heights are cell-relative; adding
+	 * `heightExtents.x - min(heights)` makes them world heights (`Verify` checks against `TES::GetLandHeight`).
 	 */
 	class LandscapeCache
 	{
@@ -45,8 +42,8 @@ namespace FluidFieldSim
 
 		/**
 		 * @brief Polls the engine's loaded grid and copies newly attached cells.
-		 * @param a_verify Compare each newly copied cell with `TES::GetLandHeight` and log the result.
-		 * Call on the main thread; it reads the engine's cell grid.
+		 * @param a_verify Check each new cell against `TES::GetLandHeight` and log it.
+		 * Main thread only (reads the engine's cell grid).
 		 */
 		void Update(bool a_verify);
 
@@ -64,7 +61,7 @@ namespace FluidFieldSim
 
 		std::size_t GetCellCount() const { return cells.size(); }
 
-		/** @brief D172: a copy holding only the cached cells over a world area (for a worker; the cache itself changes each frame). */
+		/** @brief D172: a copy of the cells over a world area, for a worker (the cache changes each frame). */
 		LandscapeCache Subset(float a_minX, float a_minY, float a_maxX, float a_maxY) const;
 		const VerifyStats& GetVerifyStats() const { return verifyStats; }
 

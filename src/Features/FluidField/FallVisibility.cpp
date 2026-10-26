@@ -12,7 +12,7 @@ namespace FluidFieldSim
 {
 	namespace
 	{
-		/** @brief A bounding volume hierarchy over triangles, built by median splits; asked only whether a segment meets any. */
+		/** @brief Median-split BVH over triangles; answers only whether a segment meets any. */
 		class Bvh
 		{
 		public:
@@ -188,7 +188,7 @@ namespace FluidFieldSim
 	std::vector<std::vector<uint8_t>> FallVisibility::Visible(const std::vector<Sheet>& a_sheets, const std::vector<Triangle>& a_others, const LandscapeCache* a_land, uint64_t* o_tested,
 		uint64_t* o_rays)
 	{
-		// Everything that can hide a vertex: every sheet's drawn triangles and the statics'; the box the rays must leave
+		// Occluders (sheets' drawn triangles and statics) and the box the rays must leave
 		std::vector<Triangle> all = a_others;
 		float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
 		for (const auto& sheet : a_sheets) {
@@ -215,7 +215,6 @@ namespace FluidFieldSim
 		}
 		const Bvh bvh(std::move(all));
 
-		// The directions: a Fibonacci lattice over the sphere
 		std::vector<RE::NiPoint3> directions(DIRECTIONS);
 		const float golden = std::numbers::pi_v<float> * (3.0f - std::sqrt(5.0f));
 		for (int i = 0; i < DIRECTIONS; i++) {
@@ -223,10 +222,10 @@ namespace FluidFieldSim
 			const float r = std::sqrt(std::max(0.0f, 1.0f - z * z));
 			directions[i] = RE::NiPoint3(std::cos(golden * static_cast<float>(i)) * r, std::sin(golden * static_cast<float>(i)) * r, z);
 		}
-		// Upward ones first: most vertices that can be seen are seen from above, so they stop early
+		// Upward first: most visible vertices are seen from above, so they stop early
 		std::stable_sort(directions.begin(), directions.end(), [](const RE::NiPoint3& a_a, const RE::NiPoint3& a_b) { return a_a.z > a_b.z; });
 
-		// The vertices some drawn triangle uses, over every sheet
+		// Only vertices some drawn triangle uses
 		std::vector<std::pair<uint32_t, uint32_t>> work;
 		for (std::size_t s = 0; s < a_sheets.size(); s++) {
 			std::vector<uint8_t> used(a_sheets[s].positions->size(), 0);
