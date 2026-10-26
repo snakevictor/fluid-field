@@ -27,7 +27,7 @@ namespace FluidFieldSim::FallStrands
 		constexpr float LEAST_CLEAR = 0.5f;        ///< Texels: nearer than this it is pushed out
 		constexpr float MOST_ESCAPE = 14.0f;       ///< Texels: rock wider than this either way lies under the sheet (it runs over)
 		constexpr float MOST_TURN = 1.7320508f;    ///< The most a strand turns from straight down (60 degrees)
-		constexpr float ACROSS_PULL = 0.35f;       ///< Share of gravity across the surface the strands feel (vanilla's UVs already run the right way; in full it rolled them off every dome)
+		constexpr float ACROSS_PULL = 0.35f;       ///< Share of across-surface gravity felt (vanilla's UVs already run right; full rolled strands off domes)
 		constexpr float HEAL = 1.5f;               ///< Seconds a strand turned aside takes to come back to its column
 		constexpr float LEAST_SPACING = 0.5f;      ///< Strands press together to this share of their spacing at most (the streaks squeeze 2x)
 		constexpr float OPEN_SPACING = 3.0f;       ///< A gap this many spacings wide (and 3 texels) is open: the wake behind rock
@@ -422,10 +422,8 @@ namespace FluidFieldSim::FallStrands
 			return a_field[index(x, std::clamp(a_y, 0, h - 1))];
 		};
 
-		// The strands: one per crest column (at most MOST_STRANDS), spread evenly in world width along the crests, so each
-		// carries the same water; every column's crest feeds (columns starting low on a dome's side included: fed from the
-		// top band only, they stayed bare)
-		// (a crest inside rock: from the first water below it, the water coming round the rock)
+		// The strands: one per crest column (at most MOST_STRANDS), spread evenly in world width so each carries the same
+		// water; every crest feeds, low ones on a dome's side too (else they stay bare). A crest in rock starts below it.
 		std::vector<int32_t> columns;
 		for (int32_t x = 0; x < w; x++) {
 			int32_t c = result.crest[x];
@@ -543,8 +541,7 @@ namespace FluidFieldSim::FallStrands
 			nextAcross = std::clamp(nextAcross, -MOST_TURN * nextDown, MOST_TURN * nextDown);
 			// Falling (the drop where the surface is steep) breaks the sheet up; strikes and pressing together aerate it
 			const float drop = std::max(sample(height, a_node.x, static_cast<float>(a_row - 1)) - sample(height, x, static_cast<float>(a_row)), 0.0f);
-			// D186: a near vertical drop breaks up far sooner (the user: the vertical plunges aerated too little): up to
-			// VERTICAL_AERATION more as the face nears upright
+			// D186: a near vertical drop breaks up far sooner: up to VERTICAL_AERATION more as the face nears upright
 			const float upright = std::clamp((0.4f - flat) / 0.4f, 0.0f, 1.0f);
 			const float fell = drop * std::clamp((0.8f - flat) / 0.6f, 0.0f, 1.0f) * (1.0f + VERTICAL_AERATION * upright * upright);
 			a_node.fallen += fell;
@@ -553,12 +550,10 @@ namespace FluidFieldSim::FallStrands
 			a_node.recent = a_node.recent * std::exp(-calmRun / CALM_RUN) + fell;
 			a_node.calm += calmRun;
 			const float stirred = a_node.aeration * std::exp(-dt / AERATION_FADE) + dt * 1.5f * std::max(a_node.squeeze - 1.5f, 0.0f) + 0.6f * strike / std::max(nextDown, 1.0f);
-			// D179: growing with the height fallen down steep faces (drops far more than runs), gradually: a threshold's
-			// smoothstep made it near on or off in broad patches with hard edges
+			// D179: grows gradually with the height fallen down steep faces (a smoothstep threshold gave hard-edged on/off patches)
 			a_node.aeration = std::clamp(std::max(1.0f - std::exp(-a_node.fallen / breakup), stirred), 0.0f, 1.0f);
-			// The texture keeps vanilla's speed (its UVs carry the artist's speeding up down the drops; retimed by the
-			// physics it stretched and squeezed), along the strand's own way: a row's worth, more where it runs aslant
-			// (taken a row at a time down, a turning streak's texture sheared instead of turning with it)
+			// The texture keeps vanilla's speed (its UVs carry the artist's speed-ups; physics timing stretched it) along the
+			// strand's own way: a row's worth, more where it runs aslant (straight down, turning streaks sheared)
 			const float slant = (x - a_node.x) * lu / lv;
 			a_node.along += texelV * std::min(std::sqrt(1.0f + slant * slant), MOST_SLANT);
 			a_node.time += dt;
@@ -688,9 +683,8 @@ namespace FluidFieldSim::FallStrands
 					result.calm[i] += a_node.calm * a_weight;
 					result.foam[i] += std::clamp(1.5f * a_node.strike / std::max(a_node.down, 1.0f) + 0.5f * std::max(a_node.squeeze - 1.5f, 0.0f), 0.0f, 1.0f) * a_weight;
 					result.turn[i] += a_node.across / std::max(a_node.down, 1.0f) * sample(perRow, a_node.x, static_cast<float>(y)) / sample(perColumn, a_node.x, static_cast<float>(y)) * a_weight;
-					// D192: the strand's own speed (world units a second over SPEED_UNIT, as the shaders read it: fields.x x 300), not its ratio to
-					// vanilla's scroll held to 0.5-1.6 (the debug arrows' scale): over every baked texel its median was 1 and its p90 1, so nothing
-					// read from it (the rapids, roughness, milk) could tell a slow pool's edge from a chute (bakestats.py, 2026-10-26)
+					// D192: the strand's own speed over SPEED_UNIT (shaders: fields.x x 300), not a clamped ratio to vanilla's
+					// scroll, which was ~1 everywhere and could not tell a slow pool edge from a chute
 					result.speed[i] += a_node.down / SPEED_UNIT * a_weight;
 					result.swell[i] += (std::max(a_node.squeeze - 1.0f, 0.0f) + 2.0f * a_node.strike / std::max(a_node.down, 1.0f) + PILLOW_SWELL * a_node.pillow) *
 					                   a_weight;
@@ -763,12 +757,9 @@ namespace FluidFieldSim::FallStrands
 			}
 		}
 
-		// The texture's mapping, on vanilla's own texture grid (the frame its look is drawn in). Its streaks follow the
-		// strands' way at every cell (every turn kept), keeping vanilla's spacing only as far as that allows: where the
-		// water gathers or spreads they close up or open out instead of copying the strands' own bunching (copied, it
-		// squeezed the texture one way: ripples). Its run is their partner, square to them and spaced as they are, so
-		// the texture turns with the flow instead of shearing and where it gathers shrinks evenly instead of squishing.
-		// Each a least squares fit over the grid's cells, solved by conjugate gradients
+		// The texture's mapping on vanilla's grid: streaks follow the strands' way at every cell, keeping vanilla's spacing
+		// as far as that allows (copying the strands' bunching squeezed the texture into ripples); the run is square to them
+		// at the same spacing, so the texture turns and shrinks evenly with the flow. Each a least-squares fit (conjugate gradients)
 		{
 			std::vector<float> slope = result.turn, scratch(count);
 			for (int pass = 0; pass < SOFTEN; pass++) {

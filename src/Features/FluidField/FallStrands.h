@@ -5,16 +5,13 @@
 
 namespace FluidFieldSim::FallStrands
 {
-	/**
-	 * D190: the world units of calm, level run over which the height fallen recently clears by e (its bubbles rise out: the user, a
-	 * cascade below a shelf read white from its crest, SS 1617); from CALM_FROM of level (the face's lying) to full calm at level
-	 */
+	/** D190: calm, level run (world units) over which the recent fall clears by e; calm from CALM_FROM of level. */
 	inline constexpr float CALM_RUN = 200.0f;
 	inline constexpr float CALM_FROM = 0.75f;
 
 	/**
-	 * @brief D80: one vanilla falls mesh's texture grid, as its bake rasterised it (texture v runs downstream).
-	 * Plain types, so the offline harness (scratchpad strandbake.cpp) runs the same code on the bake dumps.
+	 * @brief D80: a falls mesh's texture grid as rasterised by its bake (v runs downstream).
+	 * Plain types so the offline harness (tools/harness/strand) can run this code.
 	 */
 	struct Input
 	{
@@ -28,14 +25,13 @@ namespace FluidFieldSim::FallStrands
 	/** @brief D80: the strand sheet's steady state, gathered onto the texture grid. */
 	struct Output
 	{
-		/// Per texel: the lip column (texels, fractional) its water came over, the run from there (texture v, at the
-		/// texture's speed: D67's along), aeration, foam where it strikes rock or piles up, its turn (texels across
-		/// per row; the debug arrows) and speed (vanilla's 1)
+		/// Per texel: source lip column, run from it (texture v, D67), aeration, foam, turn (texels across per row)
+		/// and speed (D192: world units/s over 300)
 		std::vector<float> seed, along, aeration, foam, turn, speed;
-		std::vector<float> fallen;       ///< D189: world units its water has fallen down steep faces (the nodes' own), for the shading's drop; D190: recently (clearing over calm runs, CALM_RUN)
-		std::vector<float> calm;         ///< D190: world units its water has run on calm, level water since this mesh's lip (what it carried in clears by them)
-		std::vector<float> swell;        ///< D82: per texel how much the water piles up (pressed together, striking rock): 0 where it runs free
-		std::vector<float> disturbance;  ///< D85: how stirred the water is, from where it piled up or struck rock upstream, carried down its strand and fading: the wobble's size
+		std::vector<float> fallen;       ///< D189: height fallen down steep faces; D190: clears over calm runs
+		std::vector<float> calm;         ///< D190: calm run since this mesh's lip (world units)
+		std::vector<float> swell;        ///< D82: how much the water piles up; 0 where it runs free
+		std::vector<float> disturbance;  ///< D85: stirring carried down from pile-ups and strikes; drives the wobble
 		std::vector<int32_t> crest;      ///< D79: per column, the row its water starts at (-1: none)
 		std::vector<uint8_t> leadIn;     ///< D79: texels before their column's crest
 		uint32_t strands = 0, nodes = 0, reachedFoot = 0, openTexels = 0, leadTexels = 0, inflows = 0;
@@ -46,27 +42,23 @@ namespace FluidFieldSim::FallStrands
 	};
 
 	/**
-	 * @brief D80: the water on a vanilla falls mesh as a sheet of strands (streamlines): each column's crest feeds
-	 * strands of equal discharge, marched down the mesh a row at a time by gravity along its real shape, bed friction
-	 * and air drag; steered round rock they see coming, never crossing (pressed together they thicken and foam),
-	 * healing back toward their own column behind it, leaving the wake open meanwhile; aerating as they fall.
+	 * @brief D80: marches the water down a falls mesh as non-crossing strands of equal discharge, under gravity, bed
+	 * friction and drag, steering round rock and healing back to their columns behind it.
 	 */
 	Output March(const Input& a_input);
 
 	/**
-	 * @brief D79: each column's crest (the row its water starts at, -1 for none) and the lead-in before it (vanilla's
-	 * sheets climb a hidden face under the upper water to their lip). Only position and covered are read.
-	 * @return The lead-in's texels.
+	 * @brief D79: each column's crest row (-1: none) and the hidden lead-in above it. Reads only position and covered.
+	 * @return The number of lead-in texels.
 	 */
 	uint32_t FindCrests(const Input& a_input, std::vector<int32_t>& a_crest, std::vector<uint8_t>& a_leadIn);
 
 	/**
-	 * @brief D83: the lead-in texels no strand comes near: more than a_reach texels across from any texel past its
-	 * crest in the same row (crests lie on different rows, so a row hidden in one column runs in the next, and its
-	 * rock walls that water in). The rock test passes them by. Only position and covered are read.
+	 * @brief D83: lead-in texels more than a_reach across from any running texel in their row; the rock test skips
+	 * them. Reads only position and covered.
 	 */
 	std::vector<uint8_t> HiddenLeadIn(const Input& a_input, int32_t a_reach);
 
-	/** @brief D82: this code's build, for the bake cache (a rebuilt sheet bakes afresh). */
+	/** @brief D82: this code's version, part of the bake cache key. */
 	const char* Version();
 }
