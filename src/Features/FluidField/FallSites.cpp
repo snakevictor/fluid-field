@@ -1240,8 +1240,7 @@ namespace FluidFieldSim
 			if (base != vertexClipBase.end() && base->second == job.base && job.base + count <= vertexClips.size()) {
 				uint32_t shallow = 0;
 				for (std::size_t v = 0; v < count; v++) {
-					vertexClips[job.base + v][12] = job.plus[v];
-					vertexClips[job.base + v][13] = job.minus[v];
+					vertexClips[job.base + v][13] = job.minus[v];  // (d.x is the wobble's scale, D188: ComputePushes)
 					shallow += job.minus[v] < CLEAR_REACH * 0.5f ? 1 : 0;
 				}
 				vertexClipVersion++;
@@ -1364,6 +1363,23 @@ namespace FluidFieldSim
 				vertexClips.push_back({ clip, 1.0f, above, positions[v].z < bottom + WATER_CUT_BAND ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, CLEAR_REACH, 0.0f, below, NO_WATER });  // D126: d.w no other sheet near until CullStep's MeetDistance
 				vertexCuts.push_back({ .water = clip });                                                                                                                                                   // D112: a.x's parts, kept apart
 				clipTested++;
+			}
+			// D191: every vertex of a mesh that pours out of water has its depth under that water (the highest source any of its vertices
+			// found), not only those within SOURCE_DEPTH_MOST of it: the rest took none, and the shaders' lip gate and source-pool test
+			// switched between neighbouring vertices, a saw-tooth along the triangles across the crests (CAM 11, 12, the user)
+			{
+				float meshSource = -FLT_MAX;
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					if (vertexClips[base + v][14] < NO_WATER)
+						meshSource = std::max(meshSource, vertexClips[base + v][14] + positions[v].z);
+				}
+				if (meshSource > -FLT_MAX) {
+					for (uint32_t v = 0; v < counts.vertexCount; v++) {
+						auto& below = vertexClips[base + v][14];
+						if (below >= NO_WATER && positions[v].z <= meshSource + CREST_RISE)
+							below = std::max(meshSource - positions[v].z, 0.0f);
+					}
+				}
 			}
 			vertexClipBase[geometry.get()] = base;
 			depthQueue.emplace_back(geometry);  // D106
@@ -1612,9 +1628,45 @@ namespace FluidFieldSim
 			for (std::size_t v = 0; v < positions.size(); v++)
 				start[groupOf[v]] = rest[v];
 			const float most = DENSE_SHAPE_MOST / scale;
+			// D190: the bend moved, not taken away (the user: flat patches, SS 1618, 1619). Taubin's averaging of the positions flattened
+			// every bump the size of the original's crease bands, the more the freer it was (flatmap.py: the flat share of a sheet 1.8%
+			// unsmoothed, 2.1% held to 12 units, 4.1% to 40). The original's faces are flat and its bend all in its creases: each
+			// vertex's bend (its neighbours' mean's reach along its normal, over their spacing squared) spread over its neighbourhood,
+			// DENSE_CURVE_SPREAD passes a pass asked for, so the creases' bend lies over the faces beside them; then the shape solved to
+			// that bend (DENSE_CURVE_SOLVE passes, along the normals, the open edges held)
+			std::vector<float> bend(groups, 0.0f), spacing(groups, 1.0f), spread(groups, 0.0f);
+			for (std::size_t g = 0; g < groups; g++) {
+				if (neighbours[g].empty())
+					continue;
+				RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
+				float squared = 0.0f;
+				for (const uint32_t o : neighbours[g]) {
+					sum += place[o];
+					squared += (place[o] - place[g]).SqrLength();
+				}
+				const auto n = static_cast<float>(neighbours[g].size());
+				spacing[g] = std::max(squared / n, 1e-6f);
+				bend[g] = (sum / n - place[g]).Dot(along[g]) / spacing[g];
+			}
+			for (int pass = 0; pass < a_passes * DENSE_CURVE_SPREAD; pass++) {
+				for (std::size_t g = 0; g < groups; g++) {
+					spread[g] = bend[g];
+					if (held[g] || neighbours[g].empty())
+						continue;
+					// The open edges' own bend left out (their neighbours on one side only); a neighbour's turned to this one's normal
+					float total = bend[g], weight = 1.0f;
+					for (const uint32_t o : neighbours[g]) {
+						if (held[o])
+							continue;
+						total += along[o].Dot(along[g]) >= 0.0f ? bend[o] : -bend[o];
+						weight += 1.0f;
+					}
+					spread[g] = total / weight;
+				}
+				bend.swap(spread);
+			}
 			std::vector<RE::NiPoint3> next(groups);
-			for (int pass = 0; pass < a_passes * 2; pass++) {
-				const float factor = pass % 2 == 0 ? DENSE_SHAPE_IN : DENSE_SHAPE_OUT;
+			for (int pass = 0; a_passes > 0 && pass < DENSE_CURVE_SOLVE; pass++) {
 				for (std::size_t g = 0; g < groups; g++) {
 					next[g] = place[g];
 					if (held[g] || neighbours[g].empty())
@@ -1622,14 +1674,78 @@ namespace FluidFieldSim
 					RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
 					for (const uint32_t o : neighbours[g])
 						sum += place[o];
-					const RE::NiPoint3 toward = sum / static_cast<float>(neighbours[g].size()) - place[g];
-					const float moved = (place[g] - start[g]).Dot(along[g]) + factor * toward.Dot(along[g]);
-					next[g] = start[g] + along[g] * std::clamp(moved, -most, most);
+					// Toward the place whose neighbours' mean reaches its bend along its normal
+					const float off = (sum / static_cast<float>(neighbours[g].size()) - place[g]).Dot(along[g]) - bend[g] * spacing[g];
+					const float moved = (place[g] - start[g]).Dot(along[g]) + off * DENSE_CURVE_STEP;
+					// D188: eased into its limit, not cut at it: clamped, the vertices past it lined up into a level plateau with a fold
+					// where they began (SS 1482)
+					next[g] = start[g] + along[g] * (most * std::tanh(moved / most));
+				}
+				place.swap(next);
+			}
+			// D190: then the solve's dimples at each vertex (flatmap.py: dots on the normals) taken out by DENSE_CURVE_TIDY Taubin pairs,
+			// too few to reach past a vertex's neighbours
+			for (int pass = 0; a_passes > 0 && pass < DENSE_CURVE_TIDY * 2; pass++) {
+				const float factor = pass % 2 == 0 ? 0.5f : -0.53f;
+				for (std::size_t g = 0; g < groups; g++) {
+					next[g] = place[g];
+					if (held[g] || neighbours[g].empty())
+						continue;
+					RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
+					for (const uint32_t o : neighbours[g])
+						sum += place[o];
+					next[g] = place[g] + along[g] * (factor * (sum / static_cast<float>(neighbours[g].size()) - place[g]).Dot(along[g]));
 				}
 				place.swap(next);
 			}
 			for (std::size_t v = 0; v < positions.size(); v++)
 				positions[v] = place[groupOf[v]];
+			// D188: the texture coordinates relaxed likewise (the original's mapping turns at its triangles' edges: its scale and
+			// way jumped there, in the bake's grid and everything laid on it): over the neighbours, held at the open edges and at
+			// the texture's seams (a position with more than one coordinate), never so far a triangle flips
+			{
+				std::vector<RE::NiPoint2> mapped(groups);
+				std::vector<uint8_t> seam(groups, 0), seen(groups, 0);
+				for (std::size_t v = 0; v < uvs.size() && v < positions.size(); v++) {
+					const uint32_t g = groupOf[v];
+					if (seen[g] && (std::abs(mapped[g].x - uvs[v].x) > 1e-5f || std::abs(mapped[g].y - uvs[v].y) > 1e-5f))
+						seam[g] = 1;
+					mapped[g] = uvs[v];
+					seen[g] = 1;
+				}
+				const auto signedArea = [&](const std::vector<RE::NiPoint2>& a_uv, const std::array<uint32_t, 3>& a_tri) {
+					const RE::NiPoint2 &a = a_uv[groupOf[a_tri[0]]], &b = a_uv[groupOf[a_tri[1]]], &c = a_uv[groupOf[a_tri[2]]];
+					return (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+				};
+				std::vector<RE::NiPoint2> moved(groups);
+				for (int pass = 0; pass < DENSE_UV_PASSES; pass++) {
+					for (std::size_t g = 0; g < groups; g++) {
+						moved[g] = mapped[g];
+						if (held[g] || seam[g] || neighbours[g].empty())
+							continue;
+						float sx = 0.0f, sy = 0.0f;
+						for (const uint32_t o : neighbours[g]) {
+							sx += mapped[o].x;
+							sy += mapped[o].y;
+						}
+						const float n = static_cast<float>(neighbours[g].size());
+						moved[g] = RE::NiPoint2(mapped[g].x + DENSE_UV_STEP * (sx / n - mapped[g].x), mapped[g].y + DENSE_UV_STEP * (sy / n - mapped[g].y));
+					}
+					// (a triangle whose winding in the texture would flip keeps its corners where they were)
+					for (const auto& tri : triangles) {
+						const float before = signedArea(mapped, tri), after = signedArea(moved, tri);
+						if (before * after <= 0.0f || std::abs(after) < std::abs(before) * 0.25f) {
+							for (const uint32_t k : tri)
+								moved[groupOf[k]] = mapped[groupOf[k]];
+						}
+					}
+					mapped.swap(moved);
+				}
+				for (std::size_t v = 0; v < uvs.size() && v < positions.size(); v++) {
+					if (!seam[groupOf[v]])
+						uvs[v] = mapped[groupOf[v]];
+				}
+			}
 			// Its normals from the new shape's faces (by area), each vertex keeping its own side
 			std::vector<RE::NiPoint3> faces(groups, RE::NiPoint3(0.0f, 0.0f, 0.0f));
 			for (const auto& tri : triangles) {
@@ -3738,6 +3854,10 @@ namespace FluidFieldSim
 		blur(aeration, 10);  // D179: 1 before, its patches' edges showed; D181: 4; D186: 10 (hard-ish edges still, SS 1405)
 		std::vector<float> turn = std::move(strands.turn);
 		blur(turn, 1);
+		std::vector<float> fallen = std::move(strands.fallen);
+		blur(fallen, 4);  // D189: the shading's drop (a smooth ramp down the sheet)
+		std::vector<float> calm = std::move(strands.calm);
+		blur(calm, 4);
 
 		auto field = std::make_shared<BakeField>();
 		field->width = w;
@@ -3765,6 +3885,8 @@ namespace FluidFieldSim
 		// D85: the disturbance, softened alike
 		field->disturbance = std::move(strands.disturbance);
 		blur(field->disturbance, PUSH_BLUR);
+		field->fallen = std::move(fallen);
+		field->calm = std::move(calm);
 		logger::info("[Fluid Field]   bake: {}x{} texels, {} more inside the statics' meshes", w, h, meshRock);
 		if (!a_job.cache.empty() && !SaveBake(a_job.cache, *field))
 			logger::warn("[Fluid Field]   bake cache: could not write {}", a_job.cache.string());
@@ -3910,6 +4032,8 @@ namespace FluidFieldSim
 			put(a_field.disturbance);
 			put(a_field.clearFront);
 			put(a_field.clearBack);
+			put(a_field.fallen);  // D189
+			put(a_field.calm);    // D190
 			if (!file)
 				return false;
 		}
@@ -3958,6 +4082,8 @@ namespace FluidFieldSim
 		get(field->disturbance);
 		get(field->clearFront);
 		get(field->clearBack);
+		get(field->fallen);  // D189
+		get(field->calm);    // D190
 		return ok ? field : nullptr;
 	}
 
@@ -4071,6 +4197,7 @@ namespace FluidFieldSim
 	{
 		uint32_t meshes = 0, pushed = 0, wobbled = 0, flippedTotal = 0, leadCut = 0;
 		float most = 0.0f, mostWobble = 0.0f;
+		wobbleImpacts.clear();
 		for (const auto& lit : litMeshList) {
 			auto* geometry = lit.geometry.get();
 			const auto field = bakeFields.find(geometry);
@@ -4266,6 +4393,23 @@ namespace FluidFieldSim
 				a_across = mix(0);
 				a_along = mix(1);
 			};
+			// D191: how hard the water crashes there (0 to 1): the white part of a plunge, by the linked bake's progress down its fall (plunge.w,
+			// written just before; its impacts come later, ComputePlunges), so the crashing, white water deforms more than the glassy (the user)
+			const auto crashAt = [&](float a_u, float a_v) {
+				if (linked == flowBakes.end())
+					return 0.0f;
+				const FlowBake& flow = linked->second;
+				const auto fw = static_cast<int32_t>(flow.width), fh = static_cast<int32_t>(flow.height);
+				const std::size_t count = static_cast<std::size_t>(fw) * fh;
+				if (flow.texels.size() != count * 16)
+					return 0.0f;
+				const auto gx = std::clamp(static_cast<int32_t>(std::lround((a_u - flow.uvMin[0]) / std::max(flow.uvSize[0], 1e-6f) * static_cast<float>(fw) - 0.5f)), 0, fw - 1);
+				const auto gy = std::clamp(static_cast<int32_t>(std::lround((a_v - flow.uvMin[1]) / std::max(flow.uvSize[1], 1e-6f) * static_cast<float>(fh) - 0.5f)), 0, fh - 1);
+				const float* plunge = &flow.texels[(count * 3 + static_cast<std::size_t>(gy) * fw + gx) * 4];
+				const float white = std::clamp((plunge[3] - WOBBLE_CRASH_FROM) / (WOBBLE_CRASH_FULL - WOBBLE_CRASH_FROM), 0.0f, 1.0f);
+				const float crash = white * white * (3.0f - 2.0f * white);
+				return std::isfinite(crash) ? crash : 0.0f;
+			};
 			const auto stirredAt = [&](float a_u, float a_v) {
 				if (bake.disturbance.empty())
 					return 0.0f;
@@ -4346,7 +4490,7 @@ namespace FluidFieldSim
 			// piled highest right against the rock (D84's pillow) stood up to 20 units over a vertex in the rock beside it,
 			// and the old half push one row in from an open edge zigzagged with the copy's irregular rows: the saw teeth
 			// along boulders and the sheets' outlines
-			std::vector<float> wobbleSize(counts.vertexCount, 0.0f), swellPush(counts.vertexCount, 0.0f);
+			std::vector<float> wobbleSize(counts.vertexCount, 0.0f), swellPush(counts.vertexCount, 0.0f), wobbleWeight(counts.vertexCount, 0.0f);
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
 				if (open[v] || inRock[v] || normals[v].Length() < 1e-6f)
 					continue;
@@ -4355,7 +4499,9 @@ namespace FluidFieldSim
 					const float inland = std::clamp(fromEdge[v] / WOBBLE_EDGE_REACH, 0.0f, 1.0f);
 					// (D186: churning it toward rock spiked the fine mesh there: the flow's coordinates the wobble runs on jump between
 					// neighbours where the strands part round a boulder, SS 1444-1453; it fades out toward rock again, D89)
-					wobbleSize[v] = (WOBBLE_CALM + (WOBBLE_MOST - WOBBLE_CALM) * stirred * stirred * (3.0f - 2.0f * stirred)) * inland * inland * (3.0f - 2.0f * inland);
+					wobbleSize[v] = (WOBBLE_CALM + (WOBBLE_MOST - WOBBLE_CALM) * stirred * stirred * (3.0f - 2.0f * stirred) + WOBBLE_CRASH * crashAt(uvs[v][0], uvs[v][1])) *
+					                inland * inland * (3.0f - 2.0f * inland);
+					wobbleWeight[v] = inland * inland * (3.0f - 2.0f * inland);
 				}
 				const float t = std::clamp((swellAt(uvs[v][0], uvs[v][1]) - PUSH_FROM) / (PUSH_FULL - PUSH_FROM), 0.0f, 1.0f);
 				swellPush[v] = PUSH_MOST * t * t * (3.0f - 2.0f * t);
@@ -4367,6 +4513,7 @@ namespace FluidFieldSim
 				const float t = std::clamp((fromRock[v] - ROCK_CONTACT) / ROCK_RAMP, 0.0f, 1.0f);
 				const float ramp = t * t * (3.0f - 2.0f * t);
 				wobbleSize[v] *= ramp;
+				wobbleWeight[v] *= ramp;
 				swellPush[v] *= ramp;
 			}
 			// D186: widely (the user, SS 1461: water is smooth however stirred; the deformation in area, not local): many passes, so it
@@ -4406,11 +4553,35 @@ namespace FluidFieldSim
 					values->swap(softened);
 				}
 			}
+			// D188: world units a unit of the wobble's run coordinate spans at each vertex (from its neighbours: their distance over
+			// their run's difference), so the shaders can tilt the light by the wobble's slope (d.x)
+			std::vector<float> runScale(counts.vertexCount, 0.0f);
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				float distances = 0.0f, runs = 0.0f;
+				for (const auto& [n, length] : next[v]) {
+					const float run = std::abs(wobbleAlong[n] - wobbleAlong[v]);
+					distances += length * run;
+					runs += run * run;
+				}
+				runScale[v] = runs > 1e-10f ? distances / runs : 0.0f;
+			}
+			// D191: kept for the plunges' impacts (ApplyWobbleImpacts)
+			auto& impact = wobbleImpacts[geometry];
+			impact.size.assign(counts.vertexCount, 0.0f);
+			impact.weight = std::move(wobbleWeight);
+			impact.uv.resize(counts.vertexCount);
+			impact.direction.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
 				const float length = normals[v].Length();
+				impact.uv[v] = { uvs[v][0], uvs[v][1] };
+				if (wobbleSize[v] > 0.0f && length > 1e-6f) {
+					impact.size[v] = wobbleSize[v];
+					impact.direction[v] = normals[v] / (length * scale);
+				}
 				if (base + v < vertexClips.size()) {
 					auto& value = vertexClips[base + v];
 					value[7] = value[8] = value[9] = value[10] = value[11] = 0.0f;
+					value[12] = std::isfinite(runScale[v]) ? std::clamp(runScale[v], 0.0f, 4096.0f) : 0.0f;
 					// D106: the depth behind (value[12], [13]) comes from DepthStep's rays from the vertices themselves
 					if (wobbleSize[v] > 0.0f) {
 						const float across = wobbleAcross[v], along = wobbleAlong[v];
@@ -4492,6 +4663,11 @@ namespace FluidFieldSim
 			std::vector<std::array<int32_t, 3>> links;  ///< Per top column fed: the column, and the feeder's texel (x, y)
 			bool done = false;
 			std::vector<float> across, along;
+			std::vector<float> fallen;                                ///< D189: the height fallen, carried on from its feeder as along is
+			float tangent = std::numeric_limits<float>::quiet_NaN();  ///< D190: world z where its fall turns steep (none: NaN)
+			bool continues = false;                                   ///< D190: its feeder's fall going on (the tangent carried on)
+			float foot = FLT_MAX;                                     ///< D190: the lowest its fall reaches, down the meshes it runs on into
+			float arriving = 0.0f;                                    ///< D190: the height fallen recently its water comes in with (the log)
 		};
 		std::vector<Node> nodes;
 		for (const auto& [geometry, field] : bakeFields) {
@@ -4619,15 +4795,17 @@ namespace FluidFieldSim
 			// The water coming in at each column's top: from the feeder where it reaches; elsewhere its streaks
 			// carried on in a straight line over u (fitted to the fed columns) and its mean run time; on a top,
 			// the mesh's own u, and no time yet
-			std::vector<float> across0(w, 0.0f), along0(w, 0.0f);
+			std::vector<float> across0(w, 0.0f), along0(w, 0.0f), fallen0(w, 0.0f);
 			std::vector<uint8_t> fed(w, 0);
-			double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0, sumAlong = 0.0;
+			double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0, sumAlong = 0.0, sumFallen = 0.0;
 			const Node* feeder = a_node.feeder >= 0 && nodes[a_node.feeder].done ? &nodes[a_node.feeder] : nullptr;
 			if (feeder) {
 				for (const auto& link : a_node.links) {
 					const std::size_t j = static_cast<std::size_t>(link[2]) * feeder->field->width + link[1];
 					across0[link[0]] = feeder->across[j];
 					along0[link[0]] = feeder->along[j];
+					fallen0[link[0]] = feeder->fallen.size() > j ? feeder->fallen[j] : 0.0f;
+					sumFallen += fallen0[link[0]];
 					fed[link[0]] = 1;
 					sx += u(link[0]);
 					sy += across0[link[0]];
@@ -4638,7 +4816,7 @@ namespace FluidFieldSim
 				linked++;
 			}
 			const double n = feeder ? static_cast<double>(a_node.links.size()) : 0.0;
-			double slope = 1.0, intercept = 0.0, meanAlong = 0.0;
+			double slope = 1.0, intercept = 0.0, meanAlong = 0.0, meanFallen = 0.0;
 			if (n >= 1.0) {
 				const double denominator = n * sxx - sx * sx;
 				slope = n >= 2.0 && std::abs(denominator) > 1e-9 ? (n * sxy - sx * sy) / denominator : 1.0;
@@ -4649,12 +4827,14 @@ namespace FluidFieldSim
 				intercept = (sy - slope * sx) / n;
 				logger::info("[Fluid Field]   link: a mesh fed at {} columns (its feeder's streaks would have fitted a slope of {:.2f})", a_node.links.size(), fitted);
 				meanAlong = sumAlong / n;
+				meanFallen = sumFallen / n;
 			}
 			for (int32_t x = 0; x < w; x++) {
 				if (fed[x])
 					continue;
 				across0[x] = static_cast<float>(slope * u(x) + intercept);
 				along0[x] = static_cast<float>(meanAlong);
+				fallen0[x] = static_cast<float>(meanFallen);
 			}
 			// D80: each texel's streak and run from the lip column its strand came over (between columns, in proportion)
 			const auto atLip = [&](const std::vector<float>& a_line, float a_x) {
@@ -4666,10 +4846,48 @@ namespace FluidFieldSim
 			};
 			a_node.across.assign(count, 0.0f);
 			a_node.along.assign(count, 0.0f);
+			a_node.fallen.assign(count, 0.0f);
 			for (std::size_t i = 0; i < count; i++) {
 				const float seed = field.seed.size() == count ? field.seed[i] : static_cast<float>(i % w);
 				a_node.across[i] = atLip(across0, seed);
 				a_node.along[i] = atLip(along0, seed) + (field.along.size() == count ? field.along[i] : 0.0f);
+				// D190: what it carried in clearing over its calm runs here, as the strands' own does
+				const float calm = field.calm.size() == count ? field.calm[i] : 0.0f;
+				a_node.fallen[i] = atLip(fallen0, seed) * std::exp(-calm / FallStrands::CALM_RUN) + (field.fallen.size() == count ? field.fallen[i] : 0.0f);
+			}
+			// D190: where its water turns steep (its tangent, world z): the falls' own look starts there (the user: clear from the crest
+			// to the tangent, aerated to midway, white below). Its feeder's while the water is still falling (one tangent for the whole
+			// fall, so its meshes agree: they did not, each by its own drop, SS 1624), its own after calm water (SS 1617)
+			a_node.arriving = static_cast<float>(meanFallen);
+			if (feeder && !std::isnan(feeder->tangent) && meanFallen > TANGENT_KEEP_FALLEN) {
+				a_node.tangent = feeder->tangent;
+				a_node.continues = true;
+			} else if (field.normal.size() == count) {
+				std::vector<float> turns;
+				std::size_t columns = 0;
+				for (int32_t x = 0; x < w; x++) {
+					if (a_node.first[x] < 0)
+						continue;
+					columns++;
+					for (int32_t y = a_node.first[x]; y <= a_node.last[x]; y++) {
+						const std::size_t i = static_cast<std::size_t>(y) * w + x;
+						if (field.covered[i] && std::abs(field.normal[i].z) < TANGENT_STEEP) {
+							turns.push_back(field.position[i].z);
+							break;
+						}
+					}
+				}
+				// A fall where a quarter of its columns turn steep at least, at their median
+				if (!turns.empty() && turns.size() * 4 >= columns) {
+					std::nth_element(turns.begin(), turns.begin() + turns.size() / 2, turns.end());
+					a_node.tangent = turns[turns.size() / 2];
+				}
+			}
+			// D190: a mesh with no fall of its own below a feeder's carries the fall on, however calm its water came in (the lower
+			// meshes of the middle and right falls read "no fall", grey to their foot: CAM 6, SS 1630)
+			if (std::isnan(a_node.tangent) && feeder && !std::isnan(feeder->tangent)) {
+				a_node.tangent = feeder->tangent;
+				a_node.continues = true;
 			}
 			FlowBake bake;
 			bake.width = field.width;
@@ -4780,7 +4998,10 @@ namespace FluidFieldSim
 			// D179: twice the rows: the flow as before, then what the march knows of the water for the shading (FallGround's
 			// BakeFieldsAt): its speed over vanilla's, how high it piles up (swell), how stirred it is, how aerated. D181: a
 			// third, the coordinates' stretch (x; D186: yzw the flow's frame)
-			bake.texels.resize(count * 12);
+			// D188: a fourth section: where the water lands in a pool (x, how hard) and the foam it leaves on its way on (y), both filled
+			// by ComputePlunges (ApplyPlunges: where it meets the water below, not another sheet: the user). D189: z the height its water
+			// has fallen down steep faces, from the top of the falls (carried on from mesh to mesh), for the shading's drop. D190: w its own drop's progress
+			bake.texels.resize(count * 16);
 			const auto fieldAt = [&](const std::vector<float>& a_values, std::size_t a_i, float a_none) { return a_values.size() == count ? a_values[a_i] : a_none; };
 			for (std::size_t i = 0; i < count; i++) {
 				bake.texels[i * 4] = a_node.across[i];
@@ -4797,6 +5018,10 @@ namespace FluidFieldSim
 				third[1] = frame[i].x;  // D186: the flow's frame, world axes (zero: none)
 				third[2] = frame[i].y;
 				third[3] = frame[i].z;
+				float* fourth = &bake.texels[(count * 3 + i) * 4];
+				fourth[0] = fourth[1] = 0.0f;
+				fourth[2] = a_node.fallen[i];
+				fourth[3] = -1.0f;  // D190: the fall's progress, once all are linked (below)
 			}
 			flowBakes[a_node.geometry] = std::move(bake);
 			a_node.done = true;
@@ -4811,6 +5036,264 @@ namespace FluidFieldSim
 			}
 			if (!any)
 				break;
+		}
+		// D190: each fall's foot (the lowest its water reaches, carried up from the meshes it runs on into) and each texel's progress
+		// down it, from its tangent (0) to its foot (1), times how tall it is up to PLUNGE_WHITE_HEIGHT (a short step whitens only
+		// partly); above the tangent, the height still to go over the fall's (to -1); none (-1) where the mesh never turns steep
+		for (auto& node : nodes)
+			node.foot = node.lo[2];
+		for (std::size_t pass = 0; pass < nodes.size(); pass++) {
+			bool changed = false;
+			for (const auto& node : nodes) {
+				if (node.continues && node.feeder >= 0 && node.foot < nodes[node.feeder].foot) {
+					nodes[node.feeder].foot = node.foot;
+					changed = true;
+				}
+			}
+			if (!changed)
+				break;
+		}
+		// D191: each mesh's progress first, then what its feeder's water carries in (below), then written
+		std::vector<std::vector<float>> progressOf(nodes.size());
+		for (std::size_t n = 0; n < nodes.size(); n++) {
+			const Node& node = nodes[n];
+			const auto bake = flowBakes.find(node.geometry);
+			const BakeField& field = *node.field;
+			const auto w = static_cast<int32_t>(field.width), h = static_cast<int32_t>(field.height);
+			const std::size_t count = static_cast<std::size_t>(w) * h;
+			if (bake == flowBakes.end() || bake->second.texels.size() != count * 16 || std::isnan(node.tangent))
+				continue;
+			const float span = std::max(node.tangent - node.foot, 1.0f);
+			const float tall = std::min(span / PLUNGE_WHITE_HEIGHT, 1.0f);
+			std::vector<float> progress(count, -1.0f);
+			for (int32_t x = 0; x < w; x++) {
+				// Covered texels by their height; the rest of the column as its nearest covered one (the texture filter reaches them)
+				int32_t lastKnown = -1;
+				float calmAbove = std::numeric_limits<float>::quiet_NaN();
+				for (int32_t y = 0; y < h; y++) {
+					const std::size_t i = static_cast<std::size_t>(y) * w + x;
+					if (field.covered[i]) {
+						const float p = (node.tangent - field.position[i].z) / span;
+						// (clearing over this mesh's calm runs, as the height fallen does: a shelf carrying a fall on does not run white)
+						// D191: only those below the tangent: the calm river over the crest faded a whole fall's progress to near 0, so its
+						// middle never whitened (CAM 6)
+						const float calm = field.calm.size() == count ? field.calm[i] : 0.0f;
+						if (p <= 0.0f || std::isnan(calmAbove))
+							calmAbove = calm;
+						// (above the tangent held over -1, which the shading reads as a mesh that never turns steep: D191)
+						progress[i] = p > 0.0f ? std::min(p, 1.0f) * tall * std::exp(-std::max(calm - calmAbove, 0.0f) / FallStrands::CALM_RUN) : std::max(p, -PROGRESS_ABOVE_MOST);
+						if (lastKnown < 0) {
+							for (int32_t k = 0; k < y; k++)
+								progress[static_cast<std::size_t>(k) * w + x] = progress[i];
+						}
+						lastKnown = y;
+					} else if (lastKnown >= 0) {
+						progress[i] = progress[static_cast<std::size_t>(lastKnown) * w + x];
+					}
+				}
+			}
+			// D191: softened over the texels (each covered column's from its own heights: they stepped from column to column and at its fills,
+			// so the white came in in blocks, hard edges: the user, r7), only among the texels that have one (a column with none keeps -1)
+			{
+				std::vector<uint8_t> known(count, 0);
+				for (std::size_t i = 0; i < count; i++)
+					known[i] = progress[i] > -0.99f ? 1 : 0;
+				for (int pass = 0; pass < PROGRESS_SOFTEN_PASSES; pass++) {
+					std::vector<float> softened = progress;
+					for (int32_t y = 0; y < h; y++) {
+						for (int32_t x = 0; x < w; x++) {
+							const std::size_t i = static_cast<std::size_t>(y) * w + x;
+							if (!known[i])
+								continue;
+							float sum = 0.0f, weight = 0.0f;
+							for (int32_t dy = -1; dy <= 1; dy++) {
+								for (int32_t dx = -1; dx <= 1; dx++) {
+									const int32_t nx = x + dx, ny = y + dy;
+									if (nx < 0 || ny < 0 || nx >= w || ny >= h)
+										continue;
+									const std::size_t neighbour = static_cast<std::size_t>(ny) * w + nx;
+									if (!known[neighbour])
+										continue;
+									const float k = (dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f);
+									sum += progress[neighbour] * k;
+									weight += k;
+								}
+							}
+							softened[i] = std::max(sum / weight, -PROGRESS_ABOVE_MOST);
+						}
+					}
+					progress.swap(softened);
+				}
+			}
+			progressOf[n] = std::move(progress);
+		}
+		// D191: the water a fed mesh takes in is as far down its fall as its feeder's texel it comes from (the links: per top column), clearing
+		// over this mesh's calm runs: a fall pouring from the basin under another's plunge started over, glassy and foamless (SS 1815, 1816).
+		// Highest first, so a chain carries on down
+		std::vector<std::size_t> order(nodes.size());
+		for (std::size_t n = 0; n < order.size(); n++)
+			order[n] = n;
+		std::sort(order.begin(), order.end(), [&](std::size_t a_a, std::size_t a_b) { return nodes[a_a].top > nodes[a_b].top; });
+		uint32_t carriedColumns = 0;
+		for (const std::size_t n : order) {
+			const Node& node = nodes[n];
+			if (node.feeder < 0 || progressOf[n].empty() || progressOf[static_cast<std::size_t>(node.feeder)].empty())
+				continue;
+			const BakeField& field = *node.field;
+			const BakeField& feederField = *nodes[static_cast<std::size_t>(node.feeder)].field;
+			const auto w = static_cast<int32_t>(field.width), h = static_cast<int32_t>(field.height);
+			const auto fw = static_cast<int32_t>(feederField.width), fh = static_cast<int32_t>(feederField.height);
+			const std::size_t count = static_cast<std::size_t>(w) * h;
+			const auto& from = progressOf[static_cast<std::size_t>(node.feeder)];
+			auto& progress = progressOf[n];
+			for (const auto& [column, fx, fy] : node.links) {
+				if (column < 0 || column >= w || fx < 0 || fy < 0 || fx >= fw || fy >= fh)
+					continue;
+				const float carried = from[static_cast<std::size_t>(fy) * fw + fx];
+				if (!(carried > 0.0f))
+					continue;
+				carriedColumns++;
+				for (int32_t y = 0; y < h; y++) {
+					const std::size_t i = static_cast<std::size_t>(y) * w + column;
+					if (progress[i] <= -0.99f)
+						continue;
+					const float calm = field.calm.size() == count ? field.calm[i] : 0.0f;
+					progress[i] = std::max(progress[i], carried * std::exp(-calm / FallStrands::CALM_RUN));
+				}
+			}
+		}
+		// D191: a fall pouring out of the pool other falls land in takes their white water in (the pool's surface the same under its top and
+		// under their feet: their meshes reach on under the water, so their own lowest points lie well under its top, SS 1815, 1844: fall 10
+		// under falls 12, 14 and 15), fading across the pool (POOL_CARRY_RUN) and over its own calm runs
+		uint32_t poolLinks = 0;
+		{
+			const auto ends = [&](std::size_t a_n, RE::NiPoint3& o_top, RE::NiPoint3& o_foot) {
+				const BakeField& field = *nodes[a_n].field;
+				float hiZ = -FLT_MAX, loZ = FLT_MAX;
+				for (std::size_t i = 0; i < field.position.size() && i < field.covered.size(); i++) {
+					if (!field.covered[i])
+						continue;
+					if (field.position[i].z > hiZ) {
+						hiZ = field.position[i].z;
+						o_top = field.position[i];
+					}
+					if (field.position[i].z < loZ) {
+						loZ = field.position[i].z;
+						o_foot = field.position[i];
+					}
+				}
+				return hiZ > -FLT_MAX;
+			};
+			std::vector<RE::NiPoint3> tops(nodes.size()), feet(nodes.size());
+			std::vector<uint8_t> known(nodes.size(), 0);
+			for (std::size_t n = 0; n < nodes.size(); n++)
+				known[n] = ends(n, tops[n], feet[n]) ? 1 : 0;
+			// The water's surface at a point: our pools, else the highest engine water plane over it no higher than a_ceiling (the basins
+			// between falls are the engine's rivers as often as our pools: the cut log's "in the river")
+			const auto waterAt = [&](const RE::NiPoint3& a_p, float a_ceiling, float& o_level) {
+				if (PoolLevelAt(a_p.x, a_p.y, o_level) && o_level <= a_ceiling)
+					return true;
+				std::vector<std::array<float, 5>> planes;
+				CollectWaterPlanes(a_p.x - 1.0f, a_p.y - 1.0f, a_p.x + 1.0f, a_p.y + 1.0f, planes);
+				float best = -FLT_MAX;
+				for (const auto& plane : planes) {
+					if (a_p.x >= plane[0] && a_p.x <= plane[2] && a_p.y >= plane[1] && a_p.y <= plane[3] && plane[4] <= a_ceiling)
+						best = std::max(best, plane[4]);
+				}
+				o_level = best;
+				return best > -FLT_MAX;
+			};
+			for (const std::size_t n : order) {
+				if (nodes[n].feeder >= 0 || progressOf[n].empty() || !known[n])
+					continue;
+				// (by its crest, node.top: its highest texel is its hidden lead-in, climbing on under the water above, -895 over a crest at
+				// -1166; vanilla's crests stand up to ~120 units over the water they pour out of: fall 11 over -1280, fall 13 over -3750)
+				float pool = 0.0f;
+				const RE::NiPoint3 crest(tops[n].x, tops[n].y, nodes[n].top);
+				if (!waterAt(crest, crest.z + POOL_LINK_TOP, pool) || crest.z - pool > POOL_LINK_ABOVE || pool - crest.z > POOL_LINK_TOP) {
+					logger::info("[Fluid Field]   falls: fall {} (in at {:.0f}, {:.0f}, crest {:.0f}) pours out of no water near its top{}", n, tops[n].x, tops[n].y, crest.z,
+						pool != 0.0f ? std::format(" (the nearest under it at {:.0f})", pool) : "");
+					continue;
+				}
+				float carried = 0.0f;
+				std::size_t from = n;
+				for (std::size_t m = 0; m < nodes.size(); m++) {
+					float landing = 0.0f;
+					if (m == n || progressOf[m].empty() || !known[m] || feet[m].z > pool + POOL_LINK_TOP || !waterAt(feet[m], pool + POOL_LINK_LEVEL, landing) ||
+						std::abs(landing - pool) > POOL_LINK_LEVEL)
+						continue;
+					const float across = std::sqrt((feet[m].x - tops[n].x) * (feet[m].x - tops[n].x) + (feet[m].y - tops[n].y) * (feet[m].y - tops[n].y));
+					if (across > POOL_LINK_REACH)
+						continue;
+					const float white = *std::max_element(progressOf[m].begin(), progressOf[m].end()) * std::exp(-across / POOL_CARRY_RUN);
+					if (white > carried) {
+						carried = white;
+						from = m;
+					}
+				}
+				if (!(carried > 0.01f)) {
+					logger::info("[Fluid Field]   falls: fall {} pours out of water at {:.0f}, but no fall lands in it within reach", n, pool);
+					continue;
+				}
+				const BakeField& field = *nodes[n].field;
+				auto& progress = progressOf[n];
+				const std::size_t count = progress.size();
+				for (std::size_t i = 0; i < count; i++) {
+					if (progress[i] <= -0.99f)
+						continue;
+					const float calm = field.calm.size() == count ? field.calm[i] : 0.0f;
+					progress[i] = std::max(progress[i], carried * std::exp(-calm / FallStrands::CALM_RUN));
+				}
+				poolLinks++;
+				logger::info("[Fluid Field]   falls: fall {} pours out of the pool fall {} lands in (its surface {:.0f}): {:.2f} of a fall's white water carried in", n, from, pool, carried);
+			}
+		}
+		for (std::size_t n = 0; n < nodes.size(); n++) {
+			if (progressOf[n].empty())
+				continue;
+			auto& texels = flowBakes[nodes[n].geometry].texels;
+			const std::size_t count = progressOf[n].size();
+			if (texels.size() != count * 16)
+				continue;
+			for (std::size_t i = 0; i < count; i++)
+				texels[(count * 3 + i) * 4 + 3] = progressOf[n][i];
+		}
+		logger::info("[Fluid Field]   falls: {} columns carry their feeder's white water in", carriedColumns);
+		// D191: where each mesh's water comes in (its highest covered texel) and goes out (its lowest), world units: for the pool links (a
+		// fall pouring out of the pool another lands in starts white, SS 1815, 1844), logged before they are relied on
+		std::vector<RE::NiPoint3> topPoint(nodes.size()), footPoint(nodes.size());
+		for (std::size_t n = 0; n < nodes.size(); n++) {
+			const BakeField& field = *nodes[n].field;
+			float hiZ = -FLT_MAX, loZ = FLT_MAX;
+			for (std::size_t i = 0; i < field.position.size() && i < field.covered.size(); i++) {
+				if (!field.covered[i])
+					continue;
+				if (field.position[i].z > hiZ) {
+					hiZ = field.position[i].z;
+					topPoint[n] = field.position[i];
+				}
+				if (field.position[i].z < loZ) {
+					loZ = field.position[i].z;
+					footPoint[n] = field.position[i];
+				}
+			}
+		}
+		for (std::size_t n = 0; n < nodes.size(); n++) {
+			const Node& node = nodes[n];
+			logger::info("[Fluid Field]   fall {}: a mesh from {:.0f} to {:.0f}: tangent {:.0f}{}, foot {:.0f}, {} (water in with {:.0f} fallen); in at ({:.0f}, {:.0f}), out at ({:.0f}, {:.0f}, {:.0f})", n,
+				node.top, node.lo[2], node.tangent, node.continues ? " (its feeder's)" : "", node.foot, node.feeder >= 0 ? "fed" : "a top", node.arriving, topPoint[n].x, topPoint[n].y,
+				footPoint[n].x, footPoint[n].y, footPoint[n].z);
+			if (node.feeder >= 0)
+				continue;
+			// The meshes whose foot lands within reach of where this one's water comes in, below it or a little above: candidates
+			for (std::size_t m = 0; m < nodes.size(); m++) {
+				if (m == n)
+					continue;
+				const float dx = footPoint[m].x - topPoint[n].x, dy = footPoint[m].y - topPoint[n].y, dz = footPoint[m].z - topPoint[n].z;
+				const float across = std::sqrt(dx * dx + dy * dy);
+				if (across < 1200.0f && dz > -400.0f && dz < 200.0f)
+					logger::info("[Fluid Field]     fall {} may pour out of the pool fall {} lands in: {:.0f} units across, its foot {:.0f} units {}", n, m, across, std::abs(dz), dz < 0.0f ? "under this one's top" : "over it");
+			}
 		}
 		linkedDue = true;  // D172: flowBakeVersion++ and the plunges on the render thread, once this worker is done (FinishHeavyWork)
 		logger::info("[Fluid Field] Waterfall flow linked: {} meshes, {} fed by the mesh above them", nodes.size(), linked);
@@ -5436,6 +5919,8 @@ namespace FluidFieldSim
 			FinishHeavyWork();
 			if (!Busy())
 				FinishDenseWork();
+			if (!Busy() && wobbleImpactsDue)
+				ApplyWobbleImpacts();
 		});
 		if (!Busy() && plungesDue) {
 			// D172: the plunges on a worker (up to 150 ms, three to five times a load, on the render thread)
@@ -5908,6 +6393,27 @@ namespace FluidFieldSim
 
 	void FallSites::ApplyPlunges(PlungeResult& a_result)
 	{
+		// D188: the pool landings into the bakes' plunge section (x the impact, y its foam carried on), for the falls' foam
+		bool plunged = false;
+		for (const auto& [geometry, impact] : a_result.impacts) {
+			const auto bake = flowBakes.find(geometry);
+			const auto landing = a_result.landings.find(geometry);
+			if (bake == flowBakes.end() || landing == a_result.landings.end())
+				continue;
+			const std::size_t count = static_cast<std::size_t>(bake->second.width) * bake->second.height;
+			if (bake->second.texels.size() != count * 16 || impact.size() != count || landing->second.size() != count)
+				continue;
+			for (std::size_t i = 0; i < count; i++) {
+				float* fourth = &bake->second.texels[(count * 3 + i) * 4];
+				fourth[0] = impact[i];
+				fourth[1] = landing->second[i];
+			}
+			plunged = true;
+		}
+		if (plunged) {
+			flowBakeVersion++;
+			wobbleImpactsDue = true;  // D191: the wobble takes them in once no worker holds vertexClips
+		}
 		plungePoints.swap(a_result.plungePoints);
 		sprayEmitters.swap(a_result.sprayEmitters);
 		emitterVersion++;
@@ -5915,6 +6421,51 @@ namespace FluidFieldSim
 		logger::info("[Fluid Field] Waterfall plunges: {} texels meet the water below, {} plunge points ({} where a mesh crosses a water surface); spray emitters: {} at plunges, {} droplets-only on steep seams, {} striking rock, {} past the crests ({} under the landscape left out); crest columns {}, on meshes from a water {}, turning down {} ({} deep under a sheet), sheets meeting {} texels",
 			a_result.meets, plungePoints.size(), a_result.lips, a_result.kinds[1], a_result.kinds[3], a_result.kinds[2], a_result.kinds[0], a_result.buried, a_result.crestColumns,
 			a_result.lipColumns, a_result.dropColumns, a_result.submergedDrops, a_result.footColumns);
+	}
+
+	void FallSites::ApplyWobbleImpacts()
+	{
+		wobbleImpactsDue = false;
+		uint32_t raised = 0;
+		float most = 0.0f;
+		for (const auto& [geometry, impact] : wobbleImpacts) {
+			const auto bake = flowBakes.find(geometry);
+			const auto base = vertexClipBase.find(geometry);
+			if (bake == flowBakes.end() || base == vertexClipBase.end())
+				continue;
+			const FlowBake& flow = bake->second;
+			const auto fw = static_cast<int32_t>(flow.width), fh = static_cast<int32_t>(flow.height);
+			const std::size_t count = static_cast<std::size_t>(fw) * fh;
+			const std::size_t vertices = impact.size.size();
+			if (flow.texels.size() != count * 16 || base->second + vertices > vertexClips.size() || impact.weight.size() != vertices || impact.uv.size() != vertices ||
+				impact.direction.size() != vertices)
+				continue;
+			// The impact (the plunge section's x) bilinear at a vertex's texture coordinates
+			const auto impactAt = [&](float a_u, float a_v) {
+				const float gx = std::clamp((a_u - flow.uvMin[0]) / std::max(flow.uvSize[0], 1e-6f) * static_cast<float>(fw) - 0.5f, 0.0f, static_cast<float>(fw - 1));
+				const float gy = std::clamp((a_v - flow.uvMin[1]) / std::max(flow.uvSize[1], 1e-6f) * static_cast<float>(fh) - 0.5f, 0.0f, static_cast<float>(fh - 1));
+				const int32_t x0 = std::min(static_cast<int32_t>(gx), fw - 1), y0 = std::min(static_cast<int32_t>(gy), fh - 1);
+				const int32_t x1 = std::min(x0 + 1, fw - 1), y1 = std::min(y0 + 1, fh - 1);
+				const float fx = gx - static_cast<float>(x0), fy = gy - static_cast<float>(y0);
+				const auto at = [&](int32_t a_x, int32_t a_y) { return flow.texels[(count * 3 + static_cast<std::size_t>(a_y) * fw + a_x) * 4]; };
+				return (at(x0, y0) * (1.0f - fx) + at(x1, y0) * fx) * (1.0f - fy) + (at(x0, y1) * (1.0f - fx) + at(x1, y1) * fx) * fy;
+			};
+			for (std::size_t v = 0; v < vertices; v++) {
+				if (impact.size[v] <= 0.0f)
+					continue;
+				const float hit = std::clamp(impactAt(impact.uv[v][0], impact.uv[v][1]), 0.0f, 1.0f);
+				const float extra = WOBBLE_IMPACT * hit * hit * (3.0f - 2.0f * hit) * impact.weight[v];
+				const float size = impact.size[v] + (std::isfinite(extra) ? extra : 0.0f);
+				auto& value = vertexClips[base->second + v];
+				value[8] = impact.direction[v].x * size;
+				value[9] = impact.direction[v].y * size;
+				value[10] = impact.direction[v].z * size;
+				raised += extra > 0.5f ? 1 : 0;
+				most = std::max(most, size);
+			}
+		}
+		vertexClipVersion++;
+		logger::info("[Fluid Field] Waterfall wobble: {} vertices raised where the plunges land, at most {:.1f} units", raised, most);
 	}
 
 	void FallSites::ComputePlunges(PlungeResult& o_result) const
@@ -5962,6 +6513,7 @@ namespace FluidFieldSim
 		{
 			const RE::BSGeometry* geometry;
 			RE::NiPoint3 p;
+			RE::NiPoint3 normal;  // D189: its surface's (which way it faces), for how another sheet's water meets it
 		};
 		std::unordered_map<int64_t, std::vector<ShownTexel>> shownCells;
 		// D184: and each mesh's shown surface, its highest shown texel per SURFACE_CELL column: no emitter deep under another sheet's
@@ -5984,7 +6536,7 @@ namespace FluidFieldSim
 			for (std::size_t i = 0; i < shell.size() && i < field->position.size(); i++) {
 				if (shell[i] && (field->rock.empty() || !field->rock[i])) {
 					const RE::NiPoint3& p = field->position[i];
-					shownCells[meetCell(meetOf(p.x), meetOf(p.y), meetOf(p.z))].push_back({ geometry, p });
+					shownCells[meetCell(meetOf(p.x), meetOf(p.y), meetOf(p.z))].push_back({ geometry, p, i < field->normal.size() ? field->normal[i] : RE::NiPoint3(0.0f, 0.0f, 1.0f) });
 					auto [it, added] = surface.try_emplace(surfaceKey(p.x, p.y), p.z);
 					if (!added)
 						it->second = std::max(it->second, p.z);
@@ -6009,6 +6561,29 @@ namespace FluidFieldSim
 			}
 			return false;
 		};
+		// D189: the nearest other sheet's surface normal round a_p (zero: none within MEET_EMIT)
+		const auto otherNormal = [&](const RE::BSGeometry* a_self, const RE::NiPoint3& a_p) {
+			const int64_t cx = meetOf(a_p.x), cy = meetOf(a_p.y), cz = meetOf(a_p.z);
+			float nearest = MEET_EMIT * MEET_EMIT;
+			RE::NiPoint3 normal(0.0f, 0.0f, 0.0f);
+			for (int64_t x = cx - 1; x <= cx + 1; x++) {
+				for (int64_t y = cy - 1; y <= cy + 1; y++) {
+					for (int64_t z = cz - 1; z <= cz + 1; z++) {
+						const auto it = shownCells.find(meetCell(x, y, z));
+						if (it == shownCells.end())
+							continue;
+						for (const ShownTexel& other : it->second) {
+							const float d = (other.p - a_p).SqrLength();
+							if (other.geometry != a_self && d <= nearest) {
+								nearest = d;
+								normal = other.normal;
+							}
+						}
+					}
+				}
+			}
+			return normal;
+		};
 		const auto deepUnderSheet = [&](const RE::BSGeometry* a_self, const RE::NiPoint3& a_p) {
 			for (const auto& [geometry, surface] : shownSurfaces) {
 				if (geometry == a_self)
@@ -6023,6 +6598,8 @@ namespace FluidFieldSim
 		{
 			RE::NiPoint3 at, way;
 			float speed;
+			float level;  // D189: how level its water's surface is there (its normal's up, either side)
+			bool ends;    // D189: its sheet ends just downstream (its water lands here), not running on beside the other
 		};
 		std::vector<MeetPoint> meetPoints;  // D186: where sheets meet, over every mesh
 		std::vector<std::array<float, 5>> planes;
@@ -6040,6 +6617,9 @@ namespace FluidFieldSim
 			const std::vector<uint8_t>& shellCovered = shells[geometry];
 			if (shellCovered.size() != count)
 				continue;
+			// D188: where its water lands in a pool, how hard (for the bake's plunge section: ApplyPlunges)
+			auto& meshImpact = o_result.impacts[geometry];
+			meshImpact.assign(count, 0.0f);
 			const auto index = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * w + a_x; };
 			const auto covered = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < w && a_y < h && field->covered[index(a_x, a_y)]; };
 			float top = -FLT_MAX, bottom = FLT_MAX, lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
@@ -6268,7 +6848,14 @@ namespace FluidFieldSim
 						if (!underWater(at) && !deepUnderSheet(geometry, at)) {
 							// D186: kept for after every mesh: mist only where each seam's water lands (the lowest of its line), droplets
 							// along the rest
-							meetPoints.push_back({ at, flowAt(x, y), speedAt(field->position[i].z) });
+							// D189: its water runs into the other sheet's surface there (pours onto it), not along it (the two side by
+							// side, both running on down: no landing). Its way: down its own texture a few texels
+							const int32_t below = std::min(y + MEET_WAY_ROWS, h - 1), aboveRow = std::max(y - MEET_WAY_ROWS, 0);
+							RE::NiPoint3 way = field->position[index(x, below)] - field->position[index(x, aboveRow)];
+							const float wayLength = way.Length();
+							const RE::NiPoint3 facing = otherNormal(geometry, field->position[i]);
+							const bool ends = wayLength > 1e-3f && facing.SqrLength() > 0.25f && std::abs(way.Dot(facing)) / wayLength / facing.Length() >= MEET_POUR;
+							meetPoints.push_back({ at, flowAt(x, y), speedAt(field->position[i].z), field->normal.size() > i ? std::abs(field->normal[i].z) : 1.0f, ends });
 						}
 					}
 					if (!shellCovered[i] || (!field->rock.empty() && field->rock[i]))
@@ -6303,6 +6890,7 @@ namespace FluidFieldSim
 						continue;
 					meets++;
 					const float strength = std::clamp(std::max(fallen / (PLUNGE_HEAD * 4.0f), steepIn ? 0.6f : 0.0f), 0.25f, 1.0f);
+					meshImpact[i] = std::max(meshImpact[i], strength);
 					const RE::NiPoint3 direction = flowAt(x, y);
 					const float speed = speedAt(p.z);
 					const auto key = (static_cast<int64_t>(std::floor(p.x / PLUNGE_WATER_SPACING)) << 32) ^
@@ -6320,6 +6908,65 @@ namespace FluidFieldSim
 					plunge.direction[1] = horizontal > 0.05f ? direction.y / horizontal : 0.0f;
 					plunge.speed = speed;
 					plunge.strength = strength;
+				}
+			}
+		}
+		// D188: each mesh's pool landings, softened. D189: widened first (a max over its neighbours: blurred alone, the one-texel line
+		// of the waterline faded to a tenth), and carried UP the sheet from there (the white water at a curtain's foot, the user:
+		// carried down the flow, it ran off past the foot, where there is no sheet)
+		std::vector<float> scratch;
+		for (auto& [geometry, impact] : o_result.impacts) {
+			const auto field = bakeFields.find(geometry);
+			if (field == bakeFields.end() || !field->second || impact.size() != static_cast<std::size_t>(field->second->width) * field->second->height)
+				continue;
+			const auto w = static_cast<int32_t>(field->second->width), h = static_cast<int32_t>(field->second->height);
+			const std::size_t count = impact.size();
+			// D190: only where the sheet falls into the pool: one lying level on it is at its waterline all over (a whole pool sheet
+			// read as a landing, white end to end: CAM 4, SS 1618)
+			if (field->second->normal.size() == count) {
+				for (std::size_t i = 0; i < count; i++)
+					impact[i] *= std::clamp((PLUNGE_LEVEL - std::abs(field->second->normal[i].z)) / PLUNGE_LEVEL_EASE, 0.0f, 1.0f);
+			}
+			scratch.resize(count);
+			for (int pass = 0; pass < PLUNGE_WIDEN; pass++) {
+				for (int32_t y = 0; y < h; y++) {
+					for (int32_t x = 0; x < w; x++) {
+						float most = 0.0f;
+						for (int32_t dy = std::max(y - 1, 0); dy <= std::min(y + 1, h - 1); dy++) {
+							for (int32_t dx = std::max(x - 1, 0); dx <= std::min(x + 1, w - 1); dx++)
+								most = std::max(most, impact[static_cast<std::size_t>(dy) * w + dx]);
+						}
+						scratch[static_cast<std::size_t>(y) * w + x] = most;
+					}
+				}
+				impact.swap(scratch);
+			}
+			auto& landing = o_result.landings[geometry];
+			landing.assign(count, 0.0f);
+			for (int32_t y = h - 1; y >= 0; y--) {
+				for (int32_t x = 0; x < w; x++) {
+					const std::size_t i = static_cast<std::size_t>(y) * w + x;
+					landing[i] = field->second->covered[i] ? std::max(impact[i], y + 1 < h ? landing[i + w] * PLUNGE_CARRY : 0.0f) : 0.0f;
+				}
+			}
+			for (int pass = 0; pass < 2; pass++) {
+				for (auto* values : { &impact, &landing }) {
+					for (int32_t y = 0; y < h; y++) {
+						for (int32_t x = 0; x < w; x++) {
+							float total = 0.0f, weight = 0.0f;
+							for (int32_t dy = -1; dy <= 1; dy++) {
+								for (int32_t dx = -1; dx <= 1; dx++) {
+									if (x + dx < 0 || y + dy < 0 || x + dx >= w || y + dy >= h)
+										continue;
+									const float k = (dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f);
+									total += (*values)[static_cast<std::size_t>(y + dy) * w + x + dx] * k;
+									weight += k;
+								}
+							}
+							scratch[static_cast<std::size_t>(y) * w + x] = total / weight;
+						}
+					}
+					values->swap(scratch);
 				}
 			}
 		}
@@ -6359,16 +7006,33 @@ namespace FluidFieldSim
 				for (const uint32_t m : members)
 					parent[root(m)] = root(members.front());
 			}
-			std::unordered_map<uint32_t, float> lowest;
-			for (uint32_t k = 0; k < meetPoints.size(); k++) {
-				const uint32_t r = root(k);
-				const auto [it, added] = lowest.try_emplace(r, meetPoints[k].at.z);
-				if (!added)
-					it->second = std::min(it->second, meetPoints[k].at.z);
-			}
+			// D188: judged round each point (its seam's points within MEET_LOCAL). D189: by its water's own surface there, not the seam's
+			// way: where two curtains overlap their meeting is a patch across the curtain, not a line, its spread level on a vertical
+			// face (mist down vertical faces again, the user). Mist where the water there is level enough to land on, or at the foot
+			// of a steeper stretch (no meeting point lower nearby); droplets only down steep faces
 			for (uint32_t k = 0; k < meetPoints.size(); k++) {
 				const MeetPoint& m = meetPoints[k];
-				const bool landing = m.at.z - lowest[root(k)] <= MEET_FOOT_BAND;
+				const int64_t cx = lineCell(m.at.x), cy = lineCell(m.at.y), cz = lineCell(m.at.z);
+				bool lower = false;
+				for (int64_t dx = -2; dx <= 2 && !lower; dx++) {
+					for (int64_t dy = -2; dy <= 2 && !lower; dy++) {
+						for (int64_t dz = -2; dz <= 2 && !lower; dz++) {
+							const auto it = cells.find(lineKey(cx + dx, cy + dy, cz + dz));
+							if (it == cells.end())
+								continue;
+							for (const uint32_t o2 : it->second) {
+								const RE::NiPoint3 d = meetPoints[o2].at - m.at;
+								if (d.SqrLength() <= MEET_LOCAL * MEET_LOCAL && d.z < -MEET_FOOT_DROP) {
+									lower = true;
+									break;
+								}
+							}
+						}
+					}
+				}
+				// D189: and only where its water lands (its sheet ends there): two sheets side by side, both running on down, are not a
+				// landing (the user's vertical mist, still: CAM 1)
+				const bool landing = m.ends && (m.level >= MEET_LEVEL || (!lower && m.level >= MEET_FOOT_LEVEL));
 				offer(m.at, RE::NiPoint3(0.0f, 0.0f, 1.0f), m.way, m.speed, MEET_STRENGTH, landing ? FallEmitterKind::Plunge : FallEmitterKind::MeetDrops, MEET_SPACING);
 			}
 			o_result.footColumns = static_cast<uint32_t>(meetPoints.size());

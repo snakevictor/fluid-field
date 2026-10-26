@@ -6,6 +6,13 @@
 namespace FluidFieldSim::FallStrands
 {
 	/**
+	 * D190: the world units of calm, level run over which the height fallen recently clears by e (its bubbles rise out: the user, a
+	 * cascade below a shelf read white from its crest, SS 1617); from CALM_FROM of level (the face's lying) to full calm at level
+	 */
+	inline constexpr float CALM_RUN = 200.0f;
+	inline constexpr float CALM_FROM = 0.75f;
+
+	/**
 	 * @brief D80: one vanilla falls mesh's texture grid, as its bake rasterised it (texture v runs downstream).
 	 * Plain types, so the offline harness (scratchpad strandbake.cpp) runs the same code on the bake dumps.
 	 */
@@ -25,6 +32,8 @@ namespace FluidFieldSim::FallStrands
 		/// texture's speed: D67's along), aeration, foam where it strikes rock or piles up, its turn (texels across
 		/// per row; the debug arrows) and speed (vanilla's 1)
 		std::vector<float> seed, along, aeration, foam, turn, speed;
+		std::vector<float> fallen;       ///< D189: world units its water has fallen down steep faces (the nodes' own), for the shading's drop; D190: recently (clearing over calm runs, CALM_RUN)
+		std::vector<float> calm;         ///< D190: world units its water has run on calm, level water since this mesh's lip (what it carried in clears by them)
 		std::vector<float> swell;        ///< D82: per texel how much the water piles up (pressed together, striking rock): 0 where it runs free
 		std::vector<float> disturbance;  ///< D85: how stirred the water is, from where it piled up or struck rock upstream, carried down its strand and fading: the wobble's size
 		std::vector<int32_t> crest;      ///< D79: per column, the row its water starts at (-1: none)

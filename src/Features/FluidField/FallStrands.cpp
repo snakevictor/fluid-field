@@ -19,8 +19,8 @@ namespace FluidFieldSim::FallStrands
 		constexpr float CREST_RISE = 48.0f;        ///< D79: a column climbing more than this to its highest row starts there
 		constexpr float BAND = 0.15f;              ///< Share of the mesh's rows its foot band is (the water leaves there)
 		constexpr float VANILLA_SCROLL = 0.15f;    ///< Texture coordinates per second (D56)
-		constexpr float LEAST_RATIO = 0.5f;        ///< The debug arrows' speed (vanilla's 1) at least...
-		constexpr float MOST_RATIO = 1.6f;         ///< ...and at most this
+		constexpr float LEAST_RATIO = 0.5f;        ///< The least a strand slows to, over vanilla's speed there
+		constexpr float SPEED_UNIT = 300.0f;       ///< D192: world units a second a baked speed of 1 means (vanilla's falls' ~300; FallGround's fields.x)
 		constexpr uint32_t MOST_STRANDS = 128;     ///< Strands per mesh at most (one per crest column below that)
 		constexpr int32_t LOOK = 5;                ///< Rows ahead a strand sees rock coming (the pillow in front of it)
 		constexpr float CLEAR = 1.2f;              ///< Texels a strand steers to pass rock by
@@ -139,6 +139,8 @@ namespace FluidFieldSim::FallStrands
 			float along = 0.0f;   ///< Texture v run since its crest, at the texture's speed
 			float aeration = 0.0f;
 			float fallen = 0.0f;  ///< World units fallen where steep (a sliding sheet does not break up by falling)
+			float recent = 0.0f;  ///< D190: fallen, clearing over calm runs (the shading's drop)
+			float calm = 0.0f;    ///< D190: world units run on calm, level water
 			float squeeze = 1.0f;
 			float strike = 0.0f;  ///< World units per second of across speed lost against rock this row
 			float spacing = 1.0f;
@@ -226,6 +228,8 @@ namespace FluidFieldSim::FallStrands
 		result.seed.assign(count, 0.0f);
 		result.along.assign(count, 0.0f);
 		result.aeration.assign(count, 0.0f);
+		result.fallen.assign(count, 0.0f);
+		result.calm.assign(count, 0.0f);
 		result.foam.assign(count, 0.0f);
 		result.turn.assign(count, 0.0f);
 		result.speed.assign(count, 1.0f);
@@ -542,7 +546,12 @@ namespace FluidFieldSim::FallStrands
 			// D186: a near vertical drop breaks up far sooner (the user: the vertical plunges aerated too little): up to
 			// VERTICAL_AERATION more as the face nears upright
 			const float upright = std::clamp((0.4f - flat) / 0.4f, 0.0f, 1.0f);
-			a_node.fallen += drop * std::clamp((0.8f - flat) / 0.6f, 0.0f, 1.0f) * (1.0f + VERTICAL_AERATION * upright * upright);
+			const float fell = drop * std::clamp((0.8f - flat) / 0.6f, 0.0f, 1.0f) * (1.0f + VERTICAL_AERATION * upright * upright);
+			a_node.fallen += fell;
+			// D190: and for the shading, clearing again over calm, level runs
+			const float calmRun = lv * std::clamp((flat - CALM_FROM) / (1.0f - CALM_FROM), 0.0f, 1.0f);
+			a_node.recent = a_node.recent * std::exp(-calmRun / CALM_RUN) + fell;
+			a_node.calm += calmRun;
 			const float stirred = a_node.aeration * std::exp(-dt / AERATION_FADE) + dt * 1.5f * std::max(a_node.squeeze - 1.5f, 0.0f) + 0.6f * strike / std::max(nextDown, 1.0f);
 			// D179: growing with the height fallen down steep faces (drops far more than runs), gradually: a threshold's
 			// smoothstep made it near on or off in broad patches with hard edges
@@ -661,6 +670,8 @@ namespace FluidFieldSim::FallStrands
 						result.seed[i] = result.seed[i - w];
 						result.along[i] = result.along[i - w] + texelV;
 						result.aeration[i] = result.aeration[i - w];
+						result.fallen[i] = result.fallen[i - w];
+						result.calm[i] = result.calm[i - w];
 					}
 					continue;
 				}
@@ -673,9 +684,14 @@ namespace FluidFieldSim::FallStrands
 					result.seed[i] += a_lip * a_weight;
 					result.along[i] += a_node.along * a_weight;
 					result.aeration[i] += a_node.aeration * a_weight;
+					result.fallen[i] += a_node.recent * a_weight;
+					result.calm[i] += a_node.calm * a_weight;
 					result.foam[i] += std::clamp(1.5f * a_node.strike / std::max(a_node.down, 1.0f) + 0.5f * std::max(a_node.squeeze - 1.5f, 0.0f), 0.0f, 1.0f) * a_weight;
 					result.turn[i] += a_node.across / std::max(a_node.down, 1.0f) * sample(perRow, a_node.x, static_cast<float>(y)) / sample(perColumn, a_node.x, static_cast<float>(y)) * a_weight;
-					result.speed[i] += std::clamp(a_node.down / std::max(sample(vanilla, a_node.x, static_cast<float>(y)), 1.0f), LEAST_RATIO, MOST_RATIO) * a_weight;
+					// D192: the strand's own speed (world units a second over SPEED_UNIT, as the shaders read it: fields.x x 300), not its ratio to
+					// vanilla's scroll held to 0.5-1.6 (the debug arrows' scale): over every baked texel its median was 1 and its p90 1, so nothing
+					// read from it (the rapids, roughness, milk) could tell a slow pool's edge from a chute (bakestats.py, 2026-10-26)
+					result.speed[i] += a_node.down / SPEED_UNIT * a_weight;
 					result.swell[i] += (std::max(a_node.squeeze - 1.0f, 0.0f) + 2.0f * a_node.strike / std::max(a_node.down, 1.0f) + PILLOW_SWELL * a_node.pillow) *
 					                   a_weight;
 					result.disturbance[i] += a_node.disturbance * a_weight;
