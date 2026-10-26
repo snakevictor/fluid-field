@@ -174,8 +174,7 @@ void State::Draw()
 			permutationDataPrevious = permutationData;
 		}
 
-		// D159: Fluid Field captures the river's draw state (everything is bound by now, the permutation buffer included)
-		// for the see-through falls to be shaded by the river's own shader
+		// D159: Fluid Field captures the river's bound draw state here, for its see-through falls
 		if (currentShader && globals::features::fluidField.loaded)
 			globals::features::fluidField.CaptureRiverDraw(currentShader, modifiedVertexDescriptor, modifiedPixelDescriptor);
 

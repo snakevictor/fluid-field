@@ -241,7 +241,7 @@ namespace LightingExtensions
 
 namespace WaterExtensions
 {
-	// D171: Fluid Field learns which water type each river draw is (its see-through falls take their own water's state)
+	// D171: Fluid Field records each river draw's water type, whose state its see-through falls take
 	struct BSWaterShader_SetupGeometry
 	{
 		static void thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)

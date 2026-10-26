@@ -76,8 +76,8 @@ struct VS_OUTPUT
 #	endif
 #endif
 #if defined(FLUID_FIELD)
-	float FallClip: SV_ClipDistance0;  // Fluid Field (D38): the same cut as Lighting.hlsl, so the depth pre-pass leaves nothing where falling water is hidden
-	float2 FallFade: FALLFADE0;        // Fluid Field (D67): the same seam dither as Lighting.hlsl
+	float FallClip: SV_ClipDistance0;  // Fluid Field (D38): Lighting.hlsl's cut, so the pre-pass leaves no depth where falling water is hidden
+	float2 FallFade: FALLFADE0;        // Fluid Field (D67): Lighting.hlsl's seam dither
 #endif
 };
 
@@ -129,7 +129,7 @@ VS_OUTPUT main(VS_INPUT input)
 #	else
 
 #		if defined(FLUID_FIELD)
-	// Fluid Field (D69): a falls seam's edge moved across its gap, the same as Lighting.hlsl
+	// Fluid Field (D69): a falls seam's edge moved across its gap, as in Lighting.hlsl
 	input.PositionMS.xyz += FallGround::Shift(input.VertexID, FallGround::Scroll.x);
 #		endif
 	precise float4 positionMS = float4(input.PositionMS.xyz, 1.0);
@@ -375,7 +375,7 @@ PS_OUTPUT main(PS_INPUT input)
 	PS_OUTPUT psout;
 
 #	if defined(FLUID_FIELD)
-	// Fluid Field (D67): a falls seam's edge dithered out, the same pattern as Lighting.hlsl; D99: and the fade to its cut
+	// Fluid Field (D67, D99): Lighting.hlsl's seam dither and cut fade
 	if (FallGround::Enabled && FallGround::Dithered(input.PositionCS.xy, input.FallFade.x * FallGround::CutFade(input.FallClip)))
 		discard;
 #	endif
