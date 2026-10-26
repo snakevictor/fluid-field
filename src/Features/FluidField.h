@@ -5,6 +5,7 @@
 #include "FluidField/DepthMapView.h"
 #include "FluidField/FallRefraction.h"
 #include "FluidField/FallSites.h"
+#include "FluidField/GpuSpans.h"
 #include "FluidField/GroundHeightMap.h"
 #include "FluidField/LandscapeCache.h"
 #include "FluidField/MeshCut.h"
@@ -355,6 +356,7 @@ private:
 	void DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Texture2D* a_targetTexture, ID3D11DepthStencilView* a_depth, ID3D11ShaderResourceView* a_sceneDepth);
 	/** @brief D91: whether the refractive pass draws the falls this frame (the lit pieces are then hidden). */
 	bool RefractiveFallsActive() const;
+	FluidFieldSim::GpuSpans gpuSpans;                                                        ///< D192: GPU time of the engine's water and falls, our falls, the spray and the simulation, logged when slow
 	FluidFieldSim::FallRefraction fallRefraction;                                            ///< D91
 	std::unordered_map<const RE::TESWaterForm*, FluidFieldSim::RiverCapture> riverCaptures;  ///< D159, D171: each water type's draw state, for the falls drawn by its shader
 	const RE::BSGeometry* waterGeometry = nullptr;                                           ///< D171: the water geometry last set up (SetupWaterGeometry)

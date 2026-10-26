@@ -598,6 +598,16 @@ void FluidField::Prepass()
 		ClearDepthMap();
 		return;
 	}
+	if (!gpuSpans.IsReady())
+		gpuSpans.Initialize(globals::d3d::device);
+	// D192: the last frame's spans closed, finished frames read (slow ones logged), and this frame's simulation timed to Prepass' end
+	gpuSpans.EndFrame(globals::d3d::context);
+	gpuSpans.Begin(globals::d3d::context, FluidFieldSim::GpuSpans::Simulation);
+	struct SimulationSpan
+	{
+		FluidFieldSim::GpuSpans& spans;
+		~SimulationSpan() { spans.End(globals::d3d::context, FluidFieldSim::GpuSpans::Simulation); }
+	} simulationSpan{ gpuSpans };
 
 	auto state = globals::state;
 	if (state->isMapMenuOpen || state->IsMainOrLoadingMenuOpen())
@@ -941,6 +951,7 @@ void FluidField::ReleaseWater()
 	ReleaseFallGround();
 	fallSurface.Release();
 	fallRefraction.Release();
+	gpuSpans.Release();
 	riverCaptures.clear();
 	riverPieces.clear();
 	waterGeometry = nullptr;
@@ -1086,6 +1097,8 @@ void FluidField::DrawGroundFogAfterWorld()
 {
 	if (!loaded || !settings.Enabled || !globals::state->inWorld)
 		return;
+	// D192: the engine's water and the falls it draws with Water.hlsl, since the deferred pass ended (DrawGroundFogBeforeWater)
+	gpuSpans.End(globals::d3d::context, FluidFieldSim::GpuSpans::EngineWater);
 	auto* renderer = globals::game::renderer;
 	if (!renderer)
 		return;
@@ -1103,7 +1116,9 @@ void FluidField::DrawGroundFogAfterWorld()
 			auto* behind = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
 			// D177: the writable view: the falls write their surface's depth, for the passes after them (distance fog read the
 			// depth of what lay behind a sheet, a hard line across it where that changed from rock to ground, SS 1268)
+			gpuSpans.Begin(globals::d3d::context, FluidFieldSim::GpuSpans::RefractiveFalls);
 			DrawRefractiveFalls(target.RTV, target.texture, depth.views[0] ? depth.views[0] : depth.readOnlyViews[0], behind ? behind : depth.depthSRV);
+			gpuSpans.End(globals::d3d::context, FluidFieldSim::GpuSpans::RefractiveFalls);
 		}
 	}
 
@@ -1152,7 +1167,9 @@ void FluidField::DrawGroundFogAfterWorld()
 				params.mapResolution = nearWater.solver.GetMapResolution();
 			}
 			globals::profiler->BeginPass("FluidField::FallEffects");
+			gpuSpans.Begin(globals::d3d::context, FluidFieldSim::GpuSpans::FallEffects);
 			fallSurface.Draw(globals::d3d::device, globals::d3d::context, params);
+			gpuSpans.End(globals::d3d::context, FluidFieldSim::GpuSpans::FallEffects);
 			globals::profiler->EndPass();
 		}
 	}
@@ -1217,6 +1234,8 @@ void FluidField::DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main)
 		auto& main = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
 		fallRefraction.CopyBeforeWater(globals::d3d::device, globals::d3d::context, main.texture, main.RTV, globals::state->frameCount);
 	}
+	// D192: the engine's water (and the falls it draws with Water.hlsl) timed from here to DrawGroundFogAfterWorld
+	gpuSpans.Begin(globals::d3d::context, FluidFieldSim::GpuSpans::EngineWater);
 }
 
 void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderResourceView* a_depth)
