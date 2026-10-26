@@ -218,6 +218,18 @@ namespace FallGround
 		return VertexClip[VertexBase + a_vertex].a.w >= 3.5 ? 1.0 : 0.0;
 	}
 
+	/**
+	 * D188: a falls vertex's wobble as the light needs it: x its streak, y its run less the phase, z its size (model units: its
+	 * world size after the mesh's scale), w world units a unit of its run spans (0: none)
+	 */
+	float4 WobbleAt(uint a_vertex, float a_phase)
+	{
+		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
+			return 0.0;
+		const FallVertex fallVertex = VertexClip[VertexBase + a_vertex];
+		return float4(fallVertex.b.w, fallVertex.c.w - a_phase, length(fallVertex.c.xyz), fallVertex.d.x);
+	}
+
 	/** D69, D82, D85: a falls vertex's move: across a seam's gap, its swell, and its wobble at the scroll's phase a_phase. */
 	float3 Shift(uint a_vertex, float a_phase)
 	{
@@ -252,6 +264,7 @@ namespace FallGround
 		float runTime;    // D59: seconds the water has run since it came onto this mesh (0 without a bake)
 		float4 fields;    // D179: BakeFieldsAt: speed over vanilla's, swell, disturbance, aeration
 		float3 frame;     // D186: the way the flow's along coordinate runs, world axes (the normal maps' frame); zero where unknown
+		float4 plunge;    // D188: where the water lands (x, how hard), the foam it leaves on its way on (y); D189: z the height fallen; D190: w its own drop's progress
 		float stretch;    // D181: BakeStretchAt
 	};
 
@@ -266,7 +279,7 @@ namespace FallGround
 			return 0.0;
 		uint width, height;
 		FlowBake.GetDimensions(width, height);
-		height /= 3;  // D179, D181: the flow in the first third of the rows, the water's fields in the second, the stretch in the third
+		height /= 4;  // D179, D181, D188: the flow, the water's fields, the stretch and frame, the plunges: a quarter of the rows each
 		const float2 texel = (a_uv - BakeRect.xy) * BakeRect.zw * float2(width, height) - 0.5;
 		const float2 cell = floor(texel);
 		const float2 t = texel - cell;
@@ -311,6 +324,7 @@ namespace FallGround
 		const float4 third = BakeOn ? BakeRowsAt(uvStill, 2) : float4(1.0, 0.0, 0.0, 0.0);
 		result.stretch = max(third.x, 0.25);
 		result.frame = third.yzw;
+		result.plunge = BakeOn ? BakeRowsAt(uvStill, 3) : 0.0;
 		const float2 uvBase = (BakeOn ? baked.xy : uvStill) - float2(0.0, Scroll.x);
 		result.uvA = uvBase;
 		result.velocity = 0.0;

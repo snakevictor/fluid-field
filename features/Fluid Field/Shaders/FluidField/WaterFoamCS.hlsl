@@ -71,7 +71,7 @@ static const float BREAKING_RATE = 0.15;
 static const float WAKE_RATE = 1.5;
 static const float SPLASH_RATE = 6.0;
 /** D44: foam made per second where a waterfall plunges in at full strength: it stays white there. */
-static const float PLUNGE_RATE = 1.0;
+static const float PLUNGE_RATE = 2.2;  // D191: 1.0 (too little foam on the pools where the falls land, the user, SS 1817); the rim left as it was (D48, D56)
 /** D49: extra foam right where the falls meet the water (the plunge map near 1): solid, hiding where the falls are cut. */
 static const float PLUNGE_RIM_RATE = 2.0;  // D48: was 3, which saturated the pool into a flat white sheet; D56: 5 made a flat grey band
 

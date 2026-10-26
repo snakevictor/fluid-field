@@ -163,6 +163,7 @@ struct VS_OUTPUT
 	float4 FallData: TEXCOORD12;      // ...x the baked water or air behind, y under the water it pours out of, z to the nearest other sheet
 	float4 FallOutward: TEXCOORD13;   // ...the normal turned to its outer side, w 1 where another sheet lies behind its inner side
 	float3 FallTangent: TEXCOORD14;   // D174: the direction its texture's v runs, world axes (the frame its detail normal is laid on)
+	float4 FallWobble: TEXCOORD15;    // D188: FallGround::WobbleAt (z in world units), for the light to follow the wobble
 	float FallClip: SV_ClipDistance0;
 #	endif
 };
@@ -241,6 +242,8 @@ VS_OUTPUT main(uint vertexID : SV_VertexID)
 
 	vsout.FallNormal = mul((float3x3)FallWorld, fallVertex.Normal);
 	vsout.FallTangent = mul((float3x3)FallWorld, fallVertex.Tangent);
+	vsout.FallWobble = FallGround::WobbleAt(vertexID, FallGround::Scroll.x);
+	vsout.FallWobble.z *= length(FallWorld[0].xyz);  // its size in world units
 	vsout.FallTexCoord = fallVertex.TexCoord;
 	vsout.FallFade.xy = FallGround::Fade(vertexID);
 	vsout.FallFade.y = min(vsout.FallFade.y, 512.0);  // D139: the "none" value held before interpolation
@@ -486,6 +489,8 @@ Texture2D<float4> FallFoamTex : register(t113);      // D174: the river's own No
 static float3 FallUp = float3(0, 0, 1);
 /** D159: the plane through this pixel of the sheet, as ReflectPlane[0] (camera-relative): the depth behind is measured from it. */
 static float4 FallPlane = float4(0, 0, 1, 0);
+/** D189: how far this pixel's reflected ray spreads (fast and aerated water, FallShading::SSR_ROUGH_*). */
+static float FallRoughness = 0.0;
 #		endif
 
 /** The surface's plane (camera-relative, n.p + w = 0), from which the water behind it is measured. */
@@ -1037,7 +1042,16 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 		const float ssrAmount = sqrt(saturate(min(pointingAlignment, pointingDirection)));
 		float2 dimensions;
 		RefractionTex.GetDimensions(dimensions.x, dimensions.y);
-		const float4 hit = FallShading::ScreenReflection(RefractionTex, DepthTex, RefractionSampler, input.WPosition.xyz, FallShading::SafeNormalize(R, FallUp), dimensions, dimensions * FrameBuffer::DynamicResolutionParams1.xy);
+		// D189: spread on rough water (a random tilt per pixel and frame, resolved over frames: a blurred reflection, not a hard cut),
+		// kept over the sheet, and its first step jittered (the steps' bands)
+		const float3 spread = float3(Random::InterleavedGradientNoise(input.HPosition.xy, SharedData::FrameCount),
+								  Random::InterleavedGradientNoise(input.HPosition.xy + 17.3, SharedData::FrameCount),
+								  Random::InterleavedGradientNoise(input.HPosition.xy + 41.7, SharedData::FrameCount)) -
+		                      0.5;
+		float3 rough = FallShading::SafeNormalize(R + spread * (2.0 * FallRoughness), R);
+		rough = dot(rough, FallUp) < 0.0 ? rough - FallUp * (2.0 * dot(rough, FallUp)) : rough;
+		const float jitter = Random::InterleavedGradientNoise(input.HPosition.xy + 5.1, SharedData::FrameCount);
+		const float4 hit = FallShading::ScreenReflection(RefractionTex, DepthTex, RefractionSampler, input.WPosition.xyz, FallShading::SafeNormalize(rough, FallUp), dimensions, dimensions * FrameBuffer::DynamicResolutionParams1.xy, jitter);
 		reflectionColor = lerp(reflectionColor, max(0, hit.xyz), saturate(hit.w * distanceFactor * ssrAmount));
 	}
 #			elif !defined(LOD) && NUM_SPECULAR_LIGHTS == 0
@@ -1264,35 +1278,72 @@ PS_OUTPUT main(PS_INPUT input)
 	// The flow, as the lit pass reads it: the water type's normal maps run on the sheet's flow coordinates (a whole number
 	// of repeats along the scroll, D130) instead of the river's world xy
 	const FallGround::FlowSample fallFlow = FallGround::Flow(input.FallTexCoord / max(FallGround::InverseScale, 1e-4) + FallGround::TexOffset, input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
-	input.TexCoord1.xy += fallFlow.uvA * FallShading::FlowScale(input.NormalsScale.x);
-	input.TexCoord1.zw += fallFlow.uvA * FallShading::FlowScale(input.NormalsScale.y);
-	input.TexCoord2.xy += fallFlow.uvA * FallShading::FlowScale(input.NormalsScale.z);
+	// D188: across widened by the coordinates' stretch (the texture keeps its proportions where fast water draws the flow out
+	// along: long blocky shards, SS 1466; across, not along: the run coordinate is large, a varying stretch on it shears)
+	const float2 fallEvenUv = float2(fallFlow.uvA.x / clamp(fallFlow.stretch, FallShading::FLOW_STRETCH_RANGE.x, FallShading::FLOW_STRETCH_RANGE.y), fallFlow.uvA.y);
+	input.TexCoord1.xy += fallEvenUv * FallShading::FlowScale(input.NormalsScale.x);
+	input.TexCoord1.zw += fallEvenUv * FallShading::FlowScale(input.NormalsScale.y);
+	input.TexCoord2.xy += fallEvenUv * FallShading::FlowScale(input.NormalsScale.z);
 
 	// The falls' white water and fades (FallShading), from the scene's depth just behind the sheet
 	// D179: the bake's aeration (impacts, pile-ups, the height fallen: drops far more than runs), as bubbles too
 	// The bake's aeration is near on or off in broad patches: eased, so its edges do not draw lines
 	// And where the water is stirred (the bake's disturbance): behind a boulder, its two streams rejoining, and where it piles
 	// against rock, the water churns full of air (the user, SS 1302-1304)
-	const float fallAerated = max(max(smoothstep(0.0, 1.0, fallFlow.fields.w) * 0.7, FallShading::Aerated(fallFlow.runTime) * 0.3),
-		smoothstep(FallShading::STIRRED_FROM, FallShading::STIRRED_FULL, fallFlow.fields.z) * FallShading::STIRRED_AERATION);
+	// D189: and heavily where it lands (the bake's plunges: the impact and what it carries on) and where the bake foams (the water
+	// striking rock, squeezing past it, rejoining behind it): white and full of air at the bottom (the user)
+	const float fallPlungeAir = saturate(fallFlow.plunge.x * FallShading::PLUNGE_AERATION_IMPACT + fallFlow.plunge.y * FallShading::PLUNGE_AERATION_CARRIED);
+	// D189: how far it has dropped from its crest (the bake's height fallen): the river's look there, its own (milky, bubbly, less
+	// clear) as it falls; the bake's aeration (saturated within a short drop) grows with it
+	// D190: the aerated phase below a fall's tangent; the drop by the height fallen only where the mesh never turns steep (on a fall it
+	// clouded the water from just after the crest, the user)
+	// D191: only where the mesh never turns steep: above a fall's tangent the slide's share faded out just before the fall's own drop
+	// came in, a band of undropped water across every curtain (r7, CAM 4)
+	const float fallSliding = fallFlow.plunge.w <= -0.99 ? FallShading::DroppedSliding(fallFlow.plunge.z, fallFlow.runTime) : 0.0;
+	// D189: the streaks down the fall (the foam pattern drawn out along the flow)
+	const float fallStreaks = FallShading::FlowFoamPattern(FallFoamTex, Normals01Sampler, fallFlow.uvA * float2(FallShading::MILK_STREAK_ACROSS, FallShading::MILK_STREAK_ALONG) + 0.71, SharedData::MipBias, fallFlow.stretch);
+	// D191: a fall's white water in ribbons down the flow, widening until they merge near its foot (the user's references): the
+	// streaks over coarse columns (each its own rate), soft (read mips down). A slide's own drop only where the mesh never turns steep
+	// (above a fall's tangent it whitened the crest, CAM 6)
+	const float fallColumns = FallShading::RibbonField(fallFlow.uvA, fallStreaks, FallGround::Time);
+	const float2 fallRibbons = FallShading::Ribbons(fallColumns, FallShading::RibbonReach(fallFlow.plunge.w, fallSliding));
+	const float fallWhite = fallRibbons.x;
+	const float fallDropped = max(max(FallShading::PhaseAerated(fallFlow.plunge.w), fallSliding), fallWhite);
+	// D192: rapids: water that has not dropped but runs fast or churns (the bake's speed and disturbance) is rough, bumpy and aerated, not
+	// the crest's glass (the cascades read as flat dark domes, SS 1821, 1892, 1897, CAM 15); only its texture and air, its colour the river's
+	const float fallChurn = max(fallDropped, FallShading::Rapids(fallFlow.fields, fallFlow.plunge.w, 1.0 - abs(FallUp.z)));
+	// D191: the share of the dropped water's own milk, aeration and bubbles it keeps: in the gaps between the ribbons little (the body's
+	// own colour shows, not grey), full in their haze
+	const float fallGap = lerp(1.0, lerp(FallShading::RIBBON_GAP, 1.0, fallRibbons.y), fallDropped);
+	// D190: the run's aeration with the drop too (the crest the river's: the user)
+	const float fallAerated = max(max(max(smoothstep(0.0, 1.0, fallFlow.fields.w) * 0.7 * lerp(FallShading::DROP_CREST_AERATION, 1.0, fallDropped), FallShading::Aerated(fallFlow.runTime) * 0.3 * fallChurn) * fallGap,
+									  smoothstep(FallShading::STIRRED_FROM, FallShading::STIRRED_FULL, fallFlow.fields.z) * FallShading::STIRRED_AERATION),
+		max(max(fallPlungeAir, saturate(fallFlow.foam) * FallShading::BAKE_FOAM_AERATION), fallWhite * FallShading::PLUNGE_WHITE_AERATION));
 	// D186: its look eased inward (the user: subtler, blending in from its edges): faint at a patch's rim, whole only well inside it
 	const float fallAeratedLook = fallAerated * smoothstep(FallShading::AERATION_EASE_FROM, FallShading::AERATION_EASE_FULL, fallAerated);
+	// D189: rough where fast and aerated (its reflected rays spread)
+	FallRoughness = saturate(fallFlow.fields.x * 300.0 / 600.0) * FallShading::SSR_ROUGH_SPEED * fallChurn + fallAeratedLook * FallShading::SSR_ROUGH_AERATION;
+	// The sheet's axes: along its flow (D186: the bake's frame) and across it
+	const float3 fallWay = dot(fallFlow.frame, fallFlow.frame) > 0.01 ? fallFlow.frame : input.FallTangent;
+	const float3 fallAlong = FallShading::SafeNormalize(fallWay - FallUp * dot(fallWay, FallUp), float3(0.0, 0.0, -1.0));
+	const float3 fallAcross = cross(fallAlong, FallUp);
 	// The view across the sheet, in its flow coordinates per world unit of depth (v down the flow, u across it): the bubble
 	// layers' parallax, held back where the view grazes the sheet
 	float2 fallViewShift;
 	{
 		const float3 toEye = -viewDirection;
-		const float3 fallWay = dot(fallFlow.frame, fallFlow.frame) > 0.01 ? fallFlow.frame : input.FallTangent;  // D186: the flow's frame
-		const float3 along = FallShading::SafeNormalize(fallWay - FallUp * dot(fallWay, FallUp), float3(0.0, 0.0, -1.0));
-		const float3 across = cross(along, FallUp);
 		const float facing = max(dot(toEye, FallUp), 0.35);
-		fallViewShift = -float2(dot(toEye, across), dot(toEye, along)) / facing / FallShading::FALLS_UV_WORLD;
+		fallViewShift = -float2(dot(toEye, fallAcross), dot(toEye, fallAlong)) / facing / FallShading::FALLS_UV_WORLD;
 	}
 	// Screen pixels a world unit spans at this pixel (the bubbles' size on screen)
 	const float fallPixelsPerUnit = 1.0 / max(length(fwidth(input.WPosition.xyz)) * 0.7071, 1e-4);
-	const float4 fallBubbleSample = FallShading::Bubbles(fallFlow.uvA, fallViewShift, fallAerated, fallPixelsPerUnit);
+	// D189: few at the crest, more as it falls
+	const float fallBubbleAeration = saturate(fallAerated * lerp(FallShading::DROP_CREST_BUBBLES, FallShading::DROP_BUBBLES, fallChurn) * fallGap + fallWhite * FallShading::PLUNGE_WHITE_BUBBLES);
+	const float4 fallBubbleSample = FallShading::Bubbles(fallFlow.uvA, fallViewShift, fallBubbleAeration, fallPixelsPerUnit);
 	const float fallBubbles = fallBubbleSample.x;
-	const float fallLip = FallShading::Lip(input.FallData.y, fallFlow.runTime);
+	// D191: water that has already dropped is no glassy crest, whatever pool it runs out of: a fall pouring from the basin under another
+	// fall's plunge lost all its foam in the lip's quiet band, a hard line across it at the mesh's top (SS 1816, CAM 8)
+	const float fallLip = max(FallShading::Lip(input.FallData.y, fallFlow.runTime), fallDropped);
 	const float fallBehind = max(SharedData::GetScreenDepth(DepthTex.Load(int3(input.HPosition.xy, 0)).x) - fallDepth, 0.0);
 	// D174: foam wherever the sheet touches something (the next sheet behind, rock and ground, the water below), per pixel,
 	// in the river's foam pattern laid on the sheet and drifting on the flow
@@ -1300,24 +1351,40 @@ PS_OUTPUT main(PS_INPUT input)
 	// wider than SheetGap's pixels reach (no sheet in the second layer along it, a dark line, the user)
 	const float fallSheetGap = FallShading::SheetGap(FallBehindDepth, int2(input.HPosition.xy), fallDepth, input.FallData.z);
 	const float fallAboveWater = FallShading::AboveWater(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, input.FallFade.z, input.FallFade.y, input.FallData.y);
-	const float fallContact = FallShading::ContactStrength(fallSheetGap, fallBehind, fallAboveWater, fallLip, input.FallClip);
+	// D189: against rock, piled up on its upstream face and trailing its wake, little on its sides (not an even ring)
+	const float fallRockShare = saturate(FallShading::ROCK_FOAM_SIDE + fallFlow.fields.y * FallShading::ROCK_FOAM_PILE + fallFlow.wake * FallShading::ROCK_FOAM_WAKE);
+	const float fallContact = FallShading::ContactStrength(fallSheetGap, fallBehind, fallAboveWater, fallLip, input.FallClip, fallRockShare, FallShading::CUT_FOAM_SHARE);
 	// D179: aerated water foams as well as bubbling (the user), in the same pattern, not on the lip (the crest stays glassy)
 	const float fallFoamStretch = fallFlow.stretch;  // D182: the bake's (FlowFoamPattern lays it on a wrapped coordinate: no shear)
-	// D186: unbroken where the contact is strong (head on: thick and steady, the user)
-	const float fallFoamDrive = fallContact * lerp(FallShading::FoamBreakup(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, 1.0), 1.0,
-												  smoothstep(0.45, 0.85, fallContact));
-	const float fallFoamPattern = FallShading::FlowFoamPattern(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, fallFoamStretch);
+	// D186: unbroken where the contact is strong (head on: thick and steady, the user). D188: and where the water lands (the bake's
+	// plunges): solid at the impact, carried on down the flow
+	const float fallLanding = saturate(fallFlow.plunge.x * FallShading::PLUNGE_FOAM_IMPACT + fallFlow.plunge.y * FallShading::PLUNGE_FOAM_CARRIED) * fallLip;
+	// D189: and the bake's own foam (rock: the strikes, squeezes and rejoins), white where it is strong
+	const float fallBakeFoam = saturate(fallFlow.foam * FallShading::BAKE_FOAM) * fallLip;
+	// D190: and a plunge's white water foams over (the user: white and foamy from the middle down). D191: in its ribbons
+	const float fallFoamSource = max(max(max(fallLanding, fallContact), fallBakeFoam), fallWhite * FallShading::PLUNGE_WHITE_FOAM * fallLip);
+	const float fallFoamDrive = fallFoamSource * lerp(FallShading::FoamBreakup(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, 1.0), 1.0, smoothstep(0.45, 0.85, fallFoamSource));
+	// D190: read where the view meets its raised lumps (the user: shaded, not raised)
+	const float2 fallFoamUv = FallShading::FoamParallax(FallFoamTex, Normals01Sampler, fallFlow.uvA, fallViewShift, SharedData::MipBias, fallFoamStretch);
+	const float fallFoamPattern = FallShading::FlowFoamPattern(FallFoamTex, Normals01Sampler, fallFoamUv, SharedData::MipBias, fallFoamStretch);
+	// D189: the foam's relief: its pattern as a height, a normal from it and the height toward the sun (its lumps' shadows)
+	const float3 fallFoamNormal = FallShading::FoamReliefNormal(FallUp, input.WPosition.xyz, fallFoamPattern);
+	const float2 fallToSun = float2(dot(SharedData::DirLightDirection.xyz, fallAcross), dot(SharedData::DirLightDirection.xyz, fallAlong)) / FallShading::FALLS_UV_WORLD;
+	const float fallFoamSunHeight = FallShading::FlowFoamPattern(FallFoamTex, Normals01Sampler, fallFoamUv + fallToSun * FallShading::FOAM_SHADOW_REACH, SharedData::MipBias, fallFoamStretch);
 	// D183: the contact's foam with its crisp edge; the aerated water's over a long, soft ramp (it switched on and off, the user)
 	// D186: in two layers under the surface, each seen along the view (parallaxed: the user, it showed only from above), the
 	// deeper fainter
-	const float fallAerationDrive = fallAeratedLook * FallShading::AERATION_FOAM * 2.0 * fallLip *
+	// D189: more as it falls, and heavily where it lands (the user: the aerated volume did not show)
+	const float fallAerationDrive = max(fallAeratedLook * FallShading::AERATION_FOAM * 2.0 * lerp(1.0, FallShading::DROP_AERATION_FOAM, fallChurn), fallPlungeAir * FallShading::PLUNGE_AERATION_FOAM) * fallLip *
 	                                FallShading::FoamBreakup(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, 1.0);
-	const float fallAerationNear = FallShading::AerationCover(fallAerationDrive,
-		FallShading::FlowFoamPattern(FallFoamTex, Normals01Sampler, fallFlow.uvA + fallViewShift * FallShading::AERATION_DEPTH_NEAR, SharedData::MipBias, fallFoamStretch));
-	const float fallAerationFar = FallShading::AerationCover(fallAerationDrive * 0.8,
-		FallShading::FlowFoamPattern(FallFoamTex, Normals01Sampler, fallFlow.uvA + fallViewShift * FallShading::AERATION_DEPTH_FAR + 0.37, SharedData::MipBias, fallFoamStretch));
-	const float fallAerationFoam = 1.0 - (1.0 - fallAerationNear * 0.7) * (1.0 - fallAerationFar * 0.5);
-	const float fallFoam = max(fallFoamDrive > 0.02 ? FallShading::ContactCover(fallFoamDrive, fallFoamPattern) : 0.0, fallAerationFoam);
+	// D189: as a volume, its layers from just under the surface to deep in it, the deeper dimmer (the user: parallaxed, 3D)
+	const float3 fallAerationVolume = FallShading::AerationVolume(FallFoamTex, Normals01Sampler, fallFlow.uvA, fallViewShift, fallAerationDrive, SharedData::MipBias, fallFoamStretch);
+	const float fallAerationFoam = fallAerationVolume.x;
+	const float fallSurfaceFoam = fallFoamDrive > 0.02 ? FallShading::ContactCover(fallFoamDrive, fallFoamPattern) : 0.0;
+	const float fallFoam = max(fallSurfaceFoam, fallAerationFoam);
+	// D189: its light: the surface foam's in full, the aerated volume's dimmer with depth
+	const float fallSurfaceShare = saturate(fallSurfaceFoam / max(fallFoam, 1e-4));
+	const float fallFoamShade = lerp(fallAerationVolume.y, 1.0, fallSurfaceShare);
 	// D176: under the water below (its plane is flat: the height over it interpolates exactly), only the foam shows, fading as it
 	// does: the water faded more slowly than the foam's cover, a strip of dark water between the falls' foam and the pool's down to
 	// the per-vertex cut, in the triangles' steps (SS 1235, 1236)
@@ -1407,8 +1474,16 @@ PS_OUTPUT main(PS_INPUT input)
 		// flow too (D127's strength), laid over the water type's
 		[branch] if (FallHasNormal)
 		{
-			float3 own = FallNormalTex.Sample(Normals01Sampler, fallFlow.uvA).xyz * 2.0 - 1.0;
-			own.xy *= FallShading::NORMAL_STRENGTH;
+			// D188: its stretch evened out, a sharper mip, and a finer layer of it near the camera (magnified it read as blocks)
+			float3 own = FallShading::FlowNormalEven(FallNormalTex, Normals01Sampler, fallFlow.uvA, fallFlow.stretch, 1.0, SharedData::MipBias + FallShading::FLOW_NORMAL_MIP_BIAS);
+			const float detailNear = 1.0 - smoothstep(FallShading::FLOW_DETAIL_NEAR, FallShading::FLOW_DETAIL_FAR, length(input.WPosition.xyz));
+			[branch] if (detailNear > 0.0)
+			{
+				const float3 fine = FallShading::FlowNormalEven(FallNormalTex, Normals01Sampler, fallFlow.uvA + float2(0.17, 0.31), fallFlow.stretch, FallShading::FLOW_DETAIL_SCALE,
+					SharedData::MipBias + FallShading::FLOW_NORMAL_MIP_BIAS);
+				own.xy += fine.xy * FallShading::FLOW_DETAIL_STRENGTH * detailNear;
+			}
+			own.xy *= FallShading::NORMAL_STRENGTH * lerp(FallShading::DROP_CREST_NORMAL, 1.0, fallChurn);  // D189: the river's look at the crest (D192: not on rapids)
 			normal = FallShading::SafeNormalize(float3(normal.xy + own.xy, normal.z * max(own.z, 0.1)), normal);
 		}
 		// D186: laid on the flow's own frame (the bake's), smooth over the sheet; the mesh's tangent only where the bake has none
@@ -1416,6 +1491,8 @@ PS_OUTPUT main(PS_INPUT input)
 		normal = FallShading::SheetNormal(FallUp, fallFrame, normal);  // D174: not PerturbNormal's per-triangle frame
 		// D179: the bake's swell, the sheet bulging and piling up between its vertices
 		normal = FallShading::RaiseNormal(normal, input.WPosition.xyz, fallFlow.fields.y * FallShading::SWELL_HEIGHT);
+		// D188: and tilted by the wobble's slope (the vertices move with it: the light slid over the moving surface)
+		normal = FallShading::WobbleNormal(normal, FallUp, fallFrame, input.FallWobble, fallFlow.stretch);
 	}
 #			endif
 
@@ -1425,6 +1502,10 @@ PS_OUTPUT main(PS_INPUT input)
 #			endif
 
 	float fresnel = GetFresnelValue(normal, viewDirection);
+#			if defined(FLUID_FIELD_FALLS)
+	// D190: white water mirrors little (foam and bubbles are matte): its white is its own, not the sky's
+	fresnel *= (1.0 - fallWhite * FallShading::WHITE_REFLECTION_LOSS) * (1.0 - fallDropped * FallShading::BODY_REFLECTION_LOSS);  // D191: and the falling body's
+#			endif
 
 #			if defined(SPECULAR) && (NUM_SPECULAR_LIGHTS != 0)
 	float3 finalColor = 0.0.xxx;
@@ -1464,6 +1545,13 @@ PS_OUTPUT main(PS_INPUT input)
 
 	float surfaceShadow;
 	float dirShadow = ShadowSampling::Get3DFilteredShadow(input.WPosition.xyz, diffuseOutput.refractedViewDirection, input.HPosition.xy, surfaceShadow);
+#				if defined(FLUID_FIELD_FALLS)
+	// D190: the sun's shadow on the falls softened (their light scattered through white water): the volumetric shadows' cascades
+	// resolve the cliffs' shadows only near, so the falls darkened in blotches as one came close (SS 1622-1626; CAM 6, toggle
+	// noshadow: gone)
+	surfaceShadow = lerp(1.0, surfaceShadow, FallShading::SUN_SHADOW);
+	dirShadow = lerp(1.0, dirShadow, FallShading::SUN_SHADOW);
+#				endif
 
 	float3 dirColor;
 	float3 ambientColor;
@@ -1489,15 +1577,50 @@ PS_OUTPUT main(PS_INPUT input)
 	// water: that one moves with every ripple and makes the foam flicker in sunlight
 	const float3 fluidFoamLight = FluidField::FoamColor(dirColor + ambientColor, ShadowSampling::GetDirectionalLighting() * surfaceShadow + fluidAmbientLight);
 #					if defined(FLUID_FIELD_FALLS)
+	// D189: the falls' foam lit over its relief (the sun on its lumps, its hollows and their shadows)
+	// D190: the relief the surface foam's only (the volume inside the water has none)
+	float3 fallFoamLight = fluidFoamLight * fallFoamShade *
+	                       lerp(1.0, FallShading::FoamRelief(FallUp, fallFoamNormal, fallFoamPattern, fallFoamSunHeight, SharedData::DirLightDirection.xyz, Color::RGBToLuminance(ShadowSampling::GetDirectionalLighting() * surfaceShadow), Color::RGBToLuminance(fluidAmbientLight)),
+							   fallSurfaceShare);
+	// D189: the falls' body lit by the scene's ambient light at least: the water type's colour split into sun and ambient left its
+	// ambient part near black, so out of the sun the falls went black beside grey rock (16:30, CAM 1, 4)
+	// D190: by the sheet's steepness as well as its drop (the crest the river's; the steep cascades, little dropped, went black)
+	diffuseOutput.refractionDiffuseColor = max(diffuseOutput.refractionDiffuseColor,
+		fluidAmbientLight * FallShading::BODY_AMBIENT * max(fallDropped, saturate((1.0 - abs(FallUp.z)) * 1.5)));
+	// D191: the sheet thinning over the lip lights up in its own colour (the references: a lighter crest, never darker)
+	diffuseOutput.refractionDiffuseColor *= 1.0 + FallShading::CREST_GLOW * FallShading::CrestGlow(fallFlow.plunge.w);
+	// D190: the crest the river's own (Community Shaders' water and Fluid Field's on it, the user): its aeration there, fading as the
+	// water drops. D191: FluidField::ApplyAeration's measure from the bake's own speed and aeration, not the river simulation at the
+	// pixel's world xy: its grid lies on the river's plane and its sampling skips wall cells, so a crest draped over a boulder switched
+	// from cell to cell, a pixelated staircase (SS 1818-1820, 1845, 1846; CAM 9, 10: toggle.py noriver cleared it)
+	{
+		const float riverAeration = saturate(fallFlow.fields.w * 0.6 + fallFlow.fields.x * 300.0 / 600.0) * FluidField::MAX_AERATION * (1.0 - fallDropped);
+		diffuseOutput.refractionDiffuseColor = lerp(diffuseOutput.refractionDiffuseColor, fluidFoamLight, riverAeration);
+		diffuseOutput.refractionColor = lerp(diffuseOutput.refractionColor, fluidFoamLight, 0.5 * riverAeration);
+	}
+	// D191: the falling body in the river's own hue, light (the references: never the grey of the rock seen through it)
+	{
+		const float3 body = FallShading::BodyTint(Color::Water(ShallowColor.xyz), FallShading::BODY_LIGHT * Color::RGBToLuminance(fluidFoamLight));
+		diffuseOutput.refractionDiffuseColor = lerp(diffuseOutput.refractionDiffuseColor, body, fallDropped * FallShading::BODY_TINT);
+	}
 	// D159: the falls' aeration by their run time (D127), not the river simulation's at their world xy
 	{
 		// D181: milky as the river's shallows (FluidField::ApplyAeration's measure: foam and speed, up to MAX_AERATION), from the
 		// falls' own aeration and speed (the bake's, over vanilla's ~300 units a second)
 		// D186: less (the user: aerated water read thick and opaque beside the clear)
-		const float milk = saturate(fallAeratedLook * FallShading::MILK_AERATION + fallFlow.fields.x * 300.0 / 600.0 * FallShading::MILK_SPEED) * FluidField::MAX_AERATION;
-		diffuseOutput.refractionDiffuseColor = lerp(diffuseOutput.refractionDiffuseColor, fluidFoamLight, milk);
-		diffuseOutput.refractionColor = lerp(diffuseOutput.refractionColor, fluidFoamLight, milk * 0.5);
+		// D189: little at the crest (the river's look), more as it falls
+		const float milk = saturate((fallAeratedLook * FallShading::MILK_AERATION + fallFlow.fields.x * 300.0 / 600.0 * FallShading::MILK_SPEED) * lerp(FallShading::DROP_CREST_MILK, 1.0, fallDropped) +
+									fallDropped * FallShading::DROP_MILK) *
+		                   FallShading::MILK_MOST * lerp(1.0 - FallShading::MILK_STREAK, 1.0 + FallShading::MILK_STREAK, smoothstep(0.3, 0.7, fallStreaks)) * fallGap;  // D189: the falls' own (the river's MAX_AERATION, 0.15, left them the water type's dark body colour), in streaks
+		// D191: and the white water's haze round its ribbons (the water beside them whitened: the ribbons themselves are foam)
+		const float white = saturate(milk + fallRibbons.y * FallShading::RIBBON_HAZE_MILK);
+		diffuseOutput.refractionDiffuseColor = lerp(diffuseOutput.refractionDiffuseColor, fluidFoamLight, white);
+		diffuseOutput.refractionColor = lerp(diffuseOutput.refractionColor, fluidFoamLight, white * 0.5);
 	}
+	// D191: the white water in tufts (lit crowns, shadowed gaps between clumps: the Victoria reference)
+	fallFoamLight *= lerp(1.0, FallShading::Tufts(fallFlow.uvA), fallWhite);
+	// D190: the aerated volume's deeper foam the water's colour (seen through it: inside, not painted on, the user)
+	fallFoamLight = lerp(fallFoamLight, diffuseOutput.refractionDiffuseColor, fallAerationVolume.z * FallShading::AERATION_DEEP_TINT * (1.0 - fallSurfaceShare));
 	// D179: aerated water is milky (the bubbles scatter the light inside it), less see-through, and its bubbles glint
 	diffuseOutput.refractionDiffuseColor = lerp(diffuseOutput.refractionDiffuseColor, fluidFoamLight, saturate(fallAeratedLook * FallShading::BUBBLE_MILK + fallBubbles * 0.2));
 	diffuseOutput.refractionMul = lerp(diffuseOutput.refractionMul, 1.0, saturate(fallAeratedLook * FallShading::BUBBLE_OPACITY));
@@ -1521,6 +1644,12 @@ PS_OUTPUT main(PS_INPUT input)
 #						else
 	diffuseOutput.refractionMul = FluidField::TintedRefractionWeight(diffuseOutput.refractionMul, distanceMul.w * FogParam.z);
 #						endif
+#					endif
+#					if defined(FLUID_FIELD_FALLS)
+	// D189: less see-through as it falls (turbid with air), the river's clarity at the crest
+	// D190: and near opaque in a plunge's white water
+	// D191: and in the ribbons' haze (the ribbons themselves are foam, opaque)
+	diffuseOutput.refractionMul = lerp(diffuseOutput.refractionMul, 1.0, max(fallDropped * FallShading::BODY_OPACITY, fallRibbons.y * FallShading::RIBBON_HAZE_OPACITY));
 #					endif
 #				endif
 
@@ -1696,11 +1825,11 @@ PS_OUTPUT main(PS_INPUT input)
 		if (fallAboveWater < 0.0) {
 			// D176: under the water below only the foam shows (fallAlpha is its cover): its colour alone, not mixed with the
 			// sheet's dark water, which specked the pool's foam where the falls' foam thins (SS 1245, 1246)
-			finalColorPreFog = fluidFoamLight;
+			finalColorPreFog = fallFoamLight;
 			waterOpacity = 1.0;
 		} else if (fallFoam > 0.0) {
 			const float fallOpacity = lerp(waterOpacity, 1.0, fallFoam);
-			finalColorPreFog = (finalColorPreFog * (waterOpacity * (1.0 - fallFoam)) + fluidFoamLight * fallFoam) / max(fallOpacity, 1e-3);
+			finalColorPreFog = (finalColorPreFog * (waterOpacity * (1.0 - fallFoam)) + fallFoamLight * fallFoam) / max(fallOpacity, 1e-3);
 			waterOpacity = fallOpacity;
 		}
 #							else
