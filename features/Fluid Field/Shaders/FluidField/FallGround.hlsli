@@ -1,8 +1,6 @@
-// Fluid Field waterfall flow (D28, D32, D59): vanilla's lit falling-water meshes, their textures carried
-// by each mesh's own solved flow so they part round rock and close up behind it, foamed where the water
-// strikes rock, and cut where they run under the pools (D36, D56). FluidField binds the constants, the
-// pools' surface (FallSites::BuildPoolMap) and each mesh's flow bake only for the draws of grounded
-// meshes; Enabled is 0 for every other draw.
+// Fluid Field waterfall flow (D28, D32, D59): vanilla's lit falls meshes, textured along each mesh's solved flow (parting
+// round rock, closing behind it), foamed where they strike rock, and cut under the pools (D36, D56). Bound only for
+// grounded meshes' draws; Enabled is 0 for every other draw.
 
 #ifndef FLUID_FIELD_FALL_GROUND_HLSLI
 #define FLUID_FIELD_FALL_GROUND_HLSLI
@@ -13,56 +11,56 @@ namespace FallGround
 	{
 		float2 Origin;         // World position of texel (0, 0)
 		float InverseCell;     // Texels per world unit
-		float Size;            // Texels along each side
+		float Size;            // Texels per side
 		uint Enabled;          // This draw is a grounded mesh
-		uint DebugMode;        // 0 off; 1: the mesh's bake; 2: the flow's direction; 3: vanilla's own texture
+		uint DebugMode;        // 0 off; 1 bake; 2 flow direction; 3 vanilla's texture
 		float Time;            // Seconds
 		float PoolFoamHeight;  // World units above the water below over which the falls foam into it
-		float2 Scroll;         // D67: the falls' one scroll (texture coordinates, a repeat at most), and its rate per second
-		float2 TexOffset;      // This mesh's texture scroll (vanilla's), taken back out of its coordinates
-		float3 CameraOffset;   // FrameBuffer::CameraPosAdjust, for the vertex shaders that have none (D38)
-		uint Whitening;        // The falls whiten with their foam and speed (D34); 0 for the debug comparison (D39)
-		uint VertexBase;       // D56: this mesh's first value in VertexClip, or NO_VERTEX_CLIP
-		uint HideUnderwater;   // Falling water under the pools' surface is not drawn (D36)
-		float2 InverseScale;   // D57: undoes vanilla's animated texture scale (its slow zoom), with TexOffset its scroll
-		uint BakeOn;           // D59: this mesh has a flow bake (FlowBake)
-		float PreviousPhase;   // D85: last frame's Scroll.x (the wobble's motion vectors)
-		float BlendAlpha;      // D91 experiment: how see-through a blended dense copy's clear water is (0: opaque, every other draw)
+		float2 Scroll;         // D67: the falls' shared scroll (texture coordinates, at most one repeat) and its rate per second
+		float2 TexOffset;      // Vanilla's texture scroll, removed from the coordinates
+		float3 CameraOffset;   // D38: FrameBuffer::CameraPosAdjust, for vertex shaders without it
+		uint Whitening;        // D34: whiten with foam and speed; 0 for the debug comparison (D39)
+		uint VertexBase;       // D56: this mesh's first VertexClip entry, or NO_VERTEX_CLIP
+		uint HideUnderwater;   // D36: don't draw falling water under the pools' surface
+		float2 InverseScale;   // D57: undoes vanilla's animated texture scale (with TexOffset, its scroll)
+		uint BakeOn;           // D59: this mesh has a FlowBake
+		float PreviousPhase;   // D85: last frame's Scroll.x, for the wobble's motion vectors
+		float BlendAlpha;      // D91 experiment: a blended dense copy's clear-water transparency (0: opaque, every other draw)
 		float GroundPad;
-		float4 BakeRect;  // D59: the bake's texture coordinates: its least u and v, and one over its extent
+		float4 BakeRect;  // D59: the bake's least u and v, and one over its extent
 	};
 
-	Texture2D<float2> Heights : register(t120);  // The captured rock (x, not read here), and the pools' surface (y, D36)
-	// D56: per vertex of the falls' lit meshes, how far it stands out of the rock (negative inside); D67: and how
-	// much of it shows where it overlaps a mesh leading it (its seam edge fades, dithered, in both passes)
-	/** D69: per vertex of the falls' lit meshes: the rock cut, fade, height above the water below (a), and its move across a seam's gap, in its mesh's space (b). */
+	Texture2D<float2> Heights : register(t120);  // Captured rock (x, unused here) and the pools' surface (y, D36)
+	/**
+	 * D69: per vertex of the falls' lit meshes. a: rock clearance (D56, negative inside), seam fade (D67, dithered in both
+	 * passes), height above the water below (D68), side flags (w).
+	 */
 	struct FallVertex
 	{
 		float4 a;
-		float4 b;  // D69: its move across a seam's gap, D82: and its swell, in its mesh's space; D85: w its streak
-		float4 c;  // D85: its wobble's direction and size (its normal), and its run down the flow
-		float4 d;  // D106: y the open water or air behind its visible face (against its authored normal) to the first rock or ground, world units; D124: z how far under the water it pours out of (NO_WATER: none, it starts mid-fall); D128: w how far to the nearest other shown sheet (NO_WATER: none within 64); x spare
+		float4 b;  // D69: move across a seam's gap; D82: plus swell, mesh space; D85: w its streak
+		float4 c;  // D85: wobble direction and size (its normal); w its run down the flow
+		float4 d;  // D106: y open water or air behind the visible face to the first rock (world units); D124: z depth under the water it pours from (NO_WATER: starts mid-fall); D128: w distance to the nearest other shown sheet (NO_WATER: none within 64); D188: x world units per unit of run
 	};
-	StructuredBuffer<FallVertex> VertexClip : register(t123);  // D68: and how far it stands above the water it falls into (z)
-	// D59, D67: this mesh's flow, solved on its own texture grid and linked to the mesh above it (FallSites::LinkBakes):
-	// the texture coordinates its water reads (across: its streak; along: its run time at the shared scroll), a
-	// rock's wake, and foam (its rim, water piling against it)
+	StructuredBuffer<FallVertex> VertexClip : register(t123);
+	// D59, D67: this mesh's flow on its own texture grid, linked to the mesh above (FallSites::LinkBakes): coordinates
+	// (across: streak; along: run time at the shared scroll), rock wake, foam
 	Texture2D<float4> FlowBake : register(t124);
 
 	static const uint NO_VERTEX_CLIP = 0xFFFFFFFF;
-	/** D58: the most a vertex counts as above or under the cut, world units. */
+	/** D58: clamp on a vertex's distance above or below the cut, world units. */
 	static const float CLIP_MOST = 48.0;
-	/** D59: seconds of running for the water to be most of the way aerated, and how white aerated water gets. */
+	/** D59: seconds of running to be mostly aerated, and how white aerated water gets. */
 	static const float AERATION_SECONDS = 1.2;
 	static const float AERATION_WHITE = 0.3;
 	static const float NONE = -1.0e6;  // Below this, no ground is captured
-	/** D78: world units per second the flow direction view (DebugMode 2) shows at full brightness. */
+	/** D78: world units per second shown at full brightness in DebugMode 2. */
 	static const float DEBUG_FLOW_SPEED = 420.0;
 
-	/** The pools' surface over a world position (the water the falls leave and land in), or false where there is none (D36). */
+	/** D36: the pools' surface height at a world position; false where there is none. */
 	bool Pool(float2 a_position, out float a_height)
 	{
-		// D58: bilinear over the pool's own texels: the nearest texel stepped the cut every 16 units, a saw-tooth
+		// D58: bilinear; the nearest texel stepped the cut every 16 units
 		a_height = 0.0;
 		const float2 texel = (a_position - Origin) * InverseCell;
 		const int2 base = int2(floor(texel));
@@ -80,60 +78,53 @@ namespace FallGround
 		return true;
 	}
 
-	/** D47: the falls are cut this far under the pools' surface, so the pool's water overlaps the cut. */
-	static const float POOL_CUT = 48.0;  // D49: under the pools the falls are hidden, the foam at the waterline covering the line; D58: with the pool read bilinear, shallow again; D176: deeper, under the water only the foam shows (the cut's steps showed as the meshes moved)
+	/** D47: depth of the cut under the pools' surface, so the pool's water overlaps it. */
+	static const float POOL_CUT = 48.0;  // D49, D58, D176: deep enough that only the foam shows at the waterline, hiding the cut's steps
 
 	/**
-	 * D38: how far a vertex of falling water stands above where it is buried (under the pools' surface,
-	 * or in the rock, D56), for SV_ClipDistance. The depth pre-pass (Utility.hlsl) and
-	 * the lit pass (Lighting.hlsl) cut the same triangles at the same line, so nothing is left behind in
-	 * depth where the water is hidden. CLIP_MOST on every other draw (D99).
-	 * @param a_position Camera-relative world position (add CameraOffset for the absolute one).
-	 * @param a_vertex The vertex's index in its mesh (SV_VertexID), for VertexClip.
+	 * D38: a falls vertex's height above where it is buried (under the pools, or in rock, D56), for SV_ClipDistance.
+	 * The depth pre-pass (Utility.hlsl) and lit pass (Lighting.hlsl) must cut at the same line, or hidden water stays in
+	 * depth. CLIP_MOST on every other draw (D99).
+	 * @param a_position Camera-relative world position.
+	 * @param a_vertex SV_VertexID, for VertexClip.
 	 */
 	float ClipDistance(float3 a_position, uint a_vertex)
 	{
-		// D99: CLIP_MOST (wholly shown) where nothing is cut, not 1: the pixel shaders fade over CutFade's band
+		// D99: CLIP_MOST, not 1, so the pixel shaders' CutFade sees it wholly shown
 		if (!Enabled)
 			return CLIP_MOST;
 		if (!HideUnderwater)
 			return CLIP_MOST;
 		const float3 position = a_position + CameraOffset;
-		// D58: held within CLIP_MOST, so a far value never drags the cut across a triangle onto its other corner
+		// D58: clamped so a far value never drags the cut across a triangle
 		float distance = CLIP_MOST;
-		// D71: the pools cut a mesh only at its foot (VertexClip's a.w): near a lip the captured pool reaches over
-		// the drop, and cut a hole in the curtain just under it where a rock stands behind
+		// D71: pools cut a mesh only at its foot (a.w odd): near a lip the captured pool reaches over the drop
 		float pool;
-		const bool foot = VertexBase == NO_VERTEX_CLIP || fmod(VertexClip[VertexBase + a_vertex].a.w, 2.0) > 0.5;  // D100: +2 marks an inward normal, D103: +4 a covered inner side
+		const bool foot = VertexBase == NO_VERTEX_CLIP || fmod(VertexClip[VertexBase + a_vertex].a.w, 2.0) > 0.5;  // D100: +2 inward normal; D103: +4 covered inner side
 		if (foot && Pool(position.xy, pool))
 			distance = min(distance, position.z - (pool - POOL_CUT));
-		// D56: the rock per vertex, tested against the game's collision (FallSites::ClipStep): the top-down
-		// ground map called everything under an overhang buried, and holed the falls there
+		// D56: rock per vertex from the game's collision (FallSites::ClipStep); a top-down map buried overhangs
 		if (VertexBase != NO_VERTEX_CLIP)
 			distance = min(distance, VertexClip[VertexBase + a_vertex].a.x);
 		return clamp(distance, -CLIP_MOST, CLIP_MOST);
 	}
 
 	/**
-	 * D99: world units over which falling water fades out toward its cut (ClipDistance's 0): the cut's line had no
-	 * fade, a hard edge. Matches FallSites::INSIDE_MARGIN, so a vertex just in front of a leading mesh's face (the
-	 * least the curl cut writes) is wholly shown.
+	 * D99: world units over which falling water fades out toward its cut. Matches FallSites::INSIDE_MARGIN, so a vertex
+	 * just in front of a leading mesh's face is wholly shown.
 	 */
 	static const float CUT_SOFT = 6.0;
 
-	/** D99: how much of a pixel of falling water shows near its cut, from its interpolated ClipDistance: 0 at the cut, 1 past CUT_SOFT. */
+	/** D99: a falls pixel's visibility from its interpolated ClipDistance: 0 at the cut, 1 past CUT_SOFT. */
 	float CutFade(float a_clip)
 	{
 		return Enabled ? saturate(a_clip / CUT_SOFT) : 1.0;
 	}
 
-	/** D68: a vertex's height above the water it falls into, where there is none. */
+	/** D68: height above the water below, where there is none. */
 	static const float NO_WATER = 1.0e4;
 
-	/**
-	 * D67: how much of a vertex of falling water shows (its seam edges over a mesh leading it fade), and (D68) how
-	 * far it stands above the water it falls into; 1 and NO_WATER on every other draw.
-	 */
+	/** D67: a falls vertex's seam fade and (D68) height above the water below; 1 and NO_WATER on every other draw. */
 	float2 Fade(uint a_vertex)
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
@@ -141,7 +132,7 @@ namespace FallGround
 		return VertexClip[VertexBase + a_vertex].a.yz;
 	}
 
-	/** D69: how far a vertex of falling water moves, in its mesh's space, to close a seam's gap; 0 on every other draw. The same in both depth passes. */
+	/** D85: hash to [-1, 1). */
 	float WobbleHash(float2 a_p)
 	{
 		a_p = frac(a_p * float2(0.1031, 0.1030));
@@ -149,7 +140,7 @@ namespace FallGround
 		return frac((a_p.x + a_p.y) * a_p.x) * 2.0 - 1.0;
 	}
 
-	/** D85: smooth noise on a lattice of a_cells per texture repeat, wrapping each repeat (the scroll's phase wraps at 1). */
+	/** D85: smooth noise, a_cells per texture repeat, wrapping each repeat (the scroll's phase wraps at 1). */
 	float WobbleNoise(float2 a_p, float2 a_cells)
 	{
 		const float2 p = a_p * a_cells;
@@ -161,21 +152,19 @@ namespace FallGround
 	}
 
 	/**
-	 * D85: the falls' wobble at a point of the flow (its streak, and its run less the scroll's phase): waves square to
-	 * the flow riding down it with the texture, broken up by a smooth noise carried the same way. Periodic over a
-	 * texture repeat, so the phase's wrap never jumps. D88: -0.15 to 0.85 (mostly up).
+	 * D85: the falls' wobble at (streak, run less phase): waves across the flow riding down with the texture, broken
+	 * by noise. Periodic per texture repeat so the phase's wrap never jumps. D88: -0.15 to 0.85 (mostly up).
 	 */
 	float Wobble(float a_across, float a_run)
 	{
-		static const float WAVES = 2.0;  // Crests per texture repeat down the flow (D90: longer: shorter than the mesh's vertices could draw, they folded triangles; D91: a whole number, or the wave jumped each time the scroll's phase wrapped)
+		static const float WAVES = 2.0;  // Crests per texture repeat. D90: shorter waves folded triangles; D91: whole, or it jumps at the phase wrap
 		const float wave = sin(6.2831853 * WAVES * a_run + 1.7 * WobbleNoise(float2(a_across, a_run), float2(2.0, 2.0)));
 		const float wobble = 0.65 * wave + 0.35 * WobbleNoise(float2(a_across, a_run), float2(3.0, 4.0));
-		// D88: mostly up from the mesh, a little down (dipped, the water sank into the ground at its banks)
+		// D88: mostly outward; dipping far sank the water into its banks
 		return 0.5 * wobble + 0.35;
 	}
 
-	/** D104: world units of open water or air behind a falls vertex (to the first rock), baked; large where there is none. */
-	/** D124: how far a vertex lies under the water its fall pours out of (the whole drop's top), NO_WATER where none. */
+	/** D124: a vertex's depth under the water its fall pours from; NO_WATER where none. */
 	float BelowSource(uint a_vertex)
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
@@ -183,7 +172,7 @@ namespace FallGround
 		return VertexClip[VertexBase + a_vertex].d.z;
 	}
 
-	/** D128: how far a vertex lies from the nearest other shown falls sheet (where two meet), NO_WATER where none is near. */
+	/** D128: distance to the nearest other shown falls sheet; NO_WATER where none is near. */
 	float ToOtherSheet(uint a_vertex)
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
@@ -191,17 +180,18 @@ namespace FallGround
 		return VertexClip[VertexBase + a_vertex].d.w;
 	}
 
+	/** D104: world units of open water or air behind a falls vertex to the first rock, baked; large where there is none. */
 	float Behind(uint a_vertex)
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
 			return 600.0;
-		// D106: d.y, behind its visible face (against its authored normal)
+		// D106: behind the visible face (against the authored normal)
 		return VertexClip[VertexBase + a_vertex].d.y;
 	}
 
 	/**
-	 * D100: 1 where the vertex's normal faces its mesh's outer side, -1 where it faces in. D103: the outer side carried
-	 * over the sheet (FallSites::ComputeSides), not the travel's per vertex (it turned a C-shaped sheet's lead-in in).
+	 * D100: 1 where the vertex's normal faces its mesh's outer side, -1 where it faces in. D103: the side is carried over
+	 * the sheet (FallSites::ComputeSides), not taken per vertex.
 	 */
 	float OutwardSign(uint a_vertex)
 	{
@@ -210,7 +200,7 @@ namespace FallGround
 		return fmod(VertexClip[VertexBase + a_vertex].a.w, 4.0) >= 1.5 ? -1.0 : 1.0;
 	}
 
-	/** D103: 1 where another shown sheet's outer face lies behind the vertex's inner side (only there is that side hidden), else 0. */
+	/** D103: 1 where another shown sheet's outer face lies behind the vertex's inner side, else 0. */
 	float InnerCovered(uint a_vertex)
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
@@ -219,8 +209,8 @@ namespace FallGround
 	}
 
 	/**
-	 * D188: a falls vertex's wobble as the light needs it: x its streak, y its run less the phase, z its size (model units: its
-	 * world size after the mesh's scale), w world units a unit of its run spans (0: none)
+	 * D188: a falls vertex's wobble for lighting: x streak, y run less phase, z size (model units), w world units per
+	 * unit of run (0: none)
 	 */
 	float4 WobbleAt(uint a_vertex, float a_phase)
 	{
@@ -230,7 +220,7 @@ namespace FallGround
 		return float4(fallVertex.b.w, fallVertex.c.w - a_phase, length(fallVertex.c.xyz), fallVertex.d.x);
 	}
 
-	/** D69, D82, D85: a falls vertex's move: across a seam's gap, its swell, and its wobble at the scroll's phase a_phase. */
+	/** D69, D82, D85: a falls vertex's move (seam gap, swell, wobble at phase a_phase), mesh space; 0 on other draws. */
 	float3 Shift(uint a_vertex, float a_phase)
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
@@ -240,9 +230,8 @@ namespace FallGround
 	}
 
 	/**
-	 * D67: whether a pixel of falling water is dithered out at its fade (the mesh leading it shows there instead).
-	 * The same pattern in the depth pre-pass and the lit pass (the pixel and the frame, not the draw), which TAA
-	 * resolves into a blend. Lit falls are opaque, so this is how two of them blend.
+	 * D67: whether a falls pixel is dithered out at its fade. Lit falls are opaque, so two blend this way, resolved by TAA.
+	 * The pattern depends only on pixel and frame, so the depth pre-pass and lit pass agree.
 	 */
 	bool Dithered(float2 a_pixel, float a_fade)
 	{
@@ -254,24 +243,23 @@ namespace FallGround
 		return noise >= smoothstep(0.0, 1.0, a_fade);
 	}
 
-	/** A pixel of falling water's texture coordinates under the flowmap (Flow). */
+	/** A falls pixel's flow (Flow). */
 	struct FlowSample
 	{
-		float2 uvA;       // The texture coordinates the water reads
+		float2 uvA;       // Texture coordinates the water reads
 		float3 velocity;  // World units per second, along the surface
-		float foam;       // D59: the bake's foam: the rock's rim, the water piling against it and squeezing past it
-		float wake;       // D60: the wake of a rock above, fading down the streaks
-		float runTime;    // D59: seconds the water has run since it came onto this mesh (0 without a bake)
+		float foam;       // D59: baked foam: rock rims, water piling against and squeezing past rock
+		float wake;       // D60: wake of a rock above, fading down the streaks
+		float runTime;    // D59: seconds run since entering this mesh (0 without a bake)
 		float4 fields;    // D179: BakeFieldsAt: speed over vanilla's, swell, disturbance, aeration
-		float3 frame;     // D186: the way the flow's along coordinate runs, world axes (the normal maps' frame); zero where unknown
-		float4 plunge;    // D188: where the water lands (x, how hard), the foam it leaves on its way on (y); D189: z the height fallen; D190: w its own drop's progress
+		float3 frame;     // D186: world direction of the along coordinate (the normal maps' frame); zero where unknown
+		float4 plunge;    // D188: x landing strength, y foam left after it; D189: z height fallen; D190: w progress of its own drop
 		float stretch;    // D181: BakeStretchAt
 	};
 
 	/**
-	 * D59: this mesh's flow bake at a texture coordinate (vanilla's own, unscrolled); 0 where there is none. D67: across,
-	 * along, wake, foam. D80: a cubic B-spline over 4x4 texels, so the coordinates' gradients run on smoothly (bilinear,
-	 * they stepped at every texel: the texture's scale and mip with them, a blocky pattern)
+	 * D59: one quarter (a_half) of the flow bake at a vanilla, unscrolled texture coordinate; 0 without a bake. D67: rows 0
+	 * hold across, along, wake, foam. D80: cubic B-spline over 4x4 texels, as bilinear stepped the gradients (and mips).
 	 */
 	float4 BakeRowsAt(float2 a_uv, uint a_half)
 	{
@@ -279,7 +267,7 @@ namespace FallGround
 			return 0.0;
 		uint width, height;
 		FlowBake.GetDimensions(width, height);
-		height /= 4;  // D179, D181, D188: the flow, the water's fields, the stretch and frame, the plunges: a quarter of the rows each
+		height /= 4;  // D179, D181, D188: flow, fields, stretch and frame, plunges: a quarter of the rows each
 		const float2 texel = (a_uv - BakeRect.xy) * BakeRect.zw * float2(width, height) - 0.5;
 		const float2 cell = floor(texel);
 		const float2 t = texel - cell;
@@ -299,18 +287,16 @@ namespace FallGround
 
 	float4 BakeAt(float2 a_uv) { return BakeRowsAt(a_uv, 0); }
 
-	/** D179: the water's fields at a texture coordinate (FallSites' bake, its second half): x its speed over vanilla's, y how high it piles up (swell), z how stirred, w how aerated. */
+	/** D179: the water's fields: x speed over vanilla's, y swell, z disturbance, w aeration. */
 	float4 BakeFieldsAt(float2 a_uv) { return BakeOn ? BakeRowsAt(a_uv, 1) : float4(1.0, 0.0, 0.0, 0.0); }
 
-	/** D181: the flow coordinates' stretch: world units a unit of along spans over one of across (1 without a bake). */
+	/** D181: world units one unit of along spans over one of across (1 without a bake). */
 	float BakeStretchAt(float2 a_uv) { return BakeOn ? max(BakeRowsAt(a_uv, 2).x, 0.25) : 1.0; }
 
 	/**
-	 * D67: a pixel of falling water's texture coordinates: the bake's (its streak across, its run time along)
-	 * less the falls' one scroll, integrated on the CPU. The streaks bend round the rock and close behind it,
-	 * the texture runs faster where the water does, and runs on from one mesh into the next (both read the
-	 * same coordinates where they meet); nothing but the scroll moves in time, so it cannot pulse or run back.
-	 * Without a bake, vanilla's own coordinates under the same scroll.
+	 * D67: a falls pixel's flow: the bake's coordinates (streak across, run time along) less the shared scroll. Streaks
+	 * bend round rock, speed up with the water and run on into the next mesh; only the scroll moves in time, so the
+	 * texture cannot pulse or run back. Without a bake, vanilla's coordinates under the same scroll.
 	 */
 	FlowSample Flow(float2 a_uv, float3 a_position)
 	{
@@ -345,8 +331,7 @@ namespace FallGround
 		return frac((a_p.x + a_p.y) * a_p.x);
 	}
 
-	/** D134: periodic along y every a_period cells (a whole number): the flow's scroll phase wraps at 1, and a hashed
-	 * lattice that does not wrap with it jumped there (the foam snapping back every few seconds) */
+	/** D134: value noise periodic in y every a_period cells (whole), so it wraps with the scroll's phase. */
 	float LaceNoise(float2 a_p, float a_period)
 	{
 		const float2 i = floor(a_p);
@@ -357,18 +342,13 @@ namespace FallGround
 		return lerp(lerp(LaceHash(float2(i.x, y0)), LaceHash(float2(i.x + 1.0, y0)), u.x), lerp(LaceHash(float2(i.x, y1)), LaceHash(float2(i.x + 1.0, y1)), u.x), u.y);
 	}
 
-	/**
-	 * D42: foam as lace, the way white water looks: thin filaments, stretched along the flow, carried by
-	 * it (the same texture coordinates as the water's texture), so they stream with the water. 0 to 1,
-	 * high on the filaments. The texture runs along u.
-	 */
+	/** D42: foam lace: thin filaments stretched along and carried by the flow. 0 to 1, high on the filaments. */
 	float Lace(FlowSample a_flow)
 	{
-		// D130: whole numbers along v (the scroll's phase wraps at 1: a fractional scale jumped there, the texture visibly
-		// resetting each cycle)
+		// D130: whole-number scales along v, so the pattern repeats with the scroll's wrap
 		const float2 stretch = float2(0.7, 3.0);
 		const float n = LaceNoise(a_flow.uvA * stretch, 3.0) * 0.6 + LaceNoise(a_flow.uvA * float2(1.89, 8.0) + float2(3.1, 0.0), 8.0) * 0.4;
-		// Ridges of the noise: thin lines where it crosses its middle
+		// Thin ridges where the noise crosses its middle
 		return 1.0 - saturate(abs(n - 0.5) * 2.6);
 	}
 }

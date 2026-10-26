@@ -1,6 +1,5 @@
-// Fluid Field water, pass 5: what other shaders read. Surface is (slope x, slope y, height above
-// the vanilla surface, coverage), and Flow is the cell-centred velocity. Coverage is 0 on dry cells
-// and fades to 0 toward the grid edge, so consumers blend back to vanilla there.
+// Fluid Field water, pass 5: outputs for other shaders. Surface: (slope x, slope y, height above vanilla, coverage);
+// Flow: (cell-centred velocity, foam, lip draw). Coverage is 0 when dry and fades out toward the edge and shores.
 
 #include "FluidField/WaterCommon.hlsli"
 
@@ -66,8 +65,7 @@ float Swirl(int2 logical)
 
 	float eta = cellMap.x + depth;
 
-	// Slopes smoothed over the wet cells of a 3 x 3 neighbourhood (tent weights), so water piled
-	// against a wall or bank does not show as a one-cell spike
+	// Tent-smoothed over wet 3 x 3 cells, so water piled against a bank is not a one-cell spike
 	float2 slope = 0.0;
 	float slopeWeight = 0.0;
 	[unroll] for (int dy = -1; dy <= 1; dy++)
@@ -84,8 +82,7 @@ float Swirl(int2 logical)
 	}
 	slope = slopeWeight > 0.0 ? slope / slopeWeight : 0.0;
 
-	// Only waves, wakes and eddies should tilt the surface, not the river's overall gradient: subtract
-	// the mean slope of the wet water around (a sparse 9 x 9 window, every other cell)
+	// Only waves and eddies tilt the surface, not the river's gradient: subtract the mean wet slope (sparse 9 x 9)
 	float2 meanSlope = 0.0;
 	float meanWeight = 0.0;
 	[unroll] for (int my = -4; my <= 4; my += 2)
@@ -102,15 +99,14 @@ float Swirl(int2 logical)
 	if (meanWeight > 0.0)
 		slope -= meanSlope / meanWeight;
 
-	// Eddies dent the surface: a dip where the water swirls, sloping out to its rim
+	// Eddies dip the surface where the water swirls
 	float dipEast = -EDDY_DIP_PER_SWIRL * Swirl(logical + int2(1, 0));
 	float dipWest = -EDDY_DIP_PER_SWIRL * Swirl(logical + int2(-1, 0));
 	float dipNorth = -EDDY_DIP_PER_SWIRL * Swirl(logical + int2(0, 1));
 	float dipSouth = -EDDY_DIP_PER_SWIRL * Swirl(logical + int2(0, -1));
 	slope += float2(dipEast - dipWest, dipNorth - dipSouth) / (2.0 * CellSize);
 
-	// Cap the steepness, so one-step spikes at jagged edges cannot flash. (The output is not read
-	// back for temporal smoothing: typed loads of RGBA16F UAVs are optional in D3D11.)
+	// Cap steepness so spikes at jagged edges cannot flash (no temporal smoothing: RGBA16F UAV typed loads are optional in D3D11)
 	float slopeLength = length(slope);
 	if (slopeLength > MAX_SLOPE)
 		slope *= MAX_SLOPE / slopeLength;
@@ -126,11 +122,11 @@ float Swirl(int2 logical)
 	}
 	float shoreFade = smoothstep(0.5, 1.0, wetCount / 25.0);
 
-	// Height relative to vanilla water: vanilla surface is bed + vanilla depth where it is wet
+	// Height above vanilla water (bed + vanilla depth), where vanilla is wet
 	float vanillaSurface = cellMap.x + cellMap.y;
 	float heightOffset = wet && cellMap.y > WetThreshold ? eta - vanillaSurface : 0.0;
 
-	// A wide, smooth fade toward the grid edge (15% of the grid), so the hand-over to vanilla has no line
+	// Wide fade over 15% of the grid, so the hand-over to vanilla has no line
 	int2 fromEdge = min(logical, int(GridRes) - 1 - logical);
 	float edgeFade = smoothstep(0.0, 1.0, float(min(fromEdge.x, fromEdge.y)) / (0.15 * float(GridRes)));
 	float coverage = wet ? edgeFade * shoreFade : 0.0;
@@ -141,7 +137,7 @@ float Swirl(int2 logical)
 	float2 flow = wet ? 0.5 * float2(here.x + uE, here.y + vN) : 0.0;
 
 	SurfaceOut[id] = float4(slopeX, slopeY, heightOffset, coverage);
-	// Foam, softened over its four neighbours so single cells do not sparkle; none on dry cells
+	// Foam blurred with its four neighbours so single cells do not sparkle
 	float foam = 0.0;
 	if (wet) {
 		foam = 0.5 * Foam[id];
@@ -150,8 +146,7 @@ float Swirl(int2 logical)
 		foam += 0.125 * Foam[LogicalToStorage(clamp(logical + int2(0, 1), 0, int(GridRes) - 1))];
 		foam += 0.125 * Foam[LogicalToStorage(clamp(logical + int2(0, -1), 0, int(GridRes) - 1))];
 	}
-	// The far level behind this one takes over its foam in the water shader's cross-fade, so the
-	// foam is not faded here as well (that made a dip, a visible seam)
-	// D170: w how strongly a fall's lip draws the water on here (the water shader lets its detail run faster and stretch)
+	// With a far level, foam is not edge-faded: the water shader cross-fades it, and fading here too leaves a seam.
+	// D170: w is the lip draw (the water shader runs and stretches its detail faster there)
 	FlowOut[id] = float4(flow, SeedRes != 0 ? foam : foam * edgeFade, wet ? saturate(LipAt(CellWorldPos(logical)).z) : 0.0);
 }

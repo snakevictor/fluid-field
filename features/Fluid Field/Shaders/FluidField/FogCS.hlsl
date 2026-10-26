@@ -1,13 +1,8 @@
-// Fluid Field fog (D21): how much ground fog lies on each cell of the wind grid, drawn by the
-// ground fog pass (GroundFogCS). 1 is full fog, 0 clear air.
-//
-// Each step the fog is carried along by the wind and the weather's drift and settles back over a
-// few seconds toward a resting pattern of banks and clearings. Fog is thick and slow, and only
-// moving actors disturb it: their bodies plough it aside, mostly ahead and to the sides, packing it
-// up (to MaxFog, twice the resting amount) along their path, and the air they push curls it into
-// swirls behind them. An actor standing still pushes nothing, so the fog flows back over its feet.
-// Strong stirring thins it a little, mixing in clear air.
-// Cells that scrolled into the grid since the last step, and every cell after a reset, start at rest.
+// Fluid Field fog (D21): ground fog amount per wind-grid cell (1 full, 0 clear), drawn by GroundFogCS.
+// Carried by the wind and the weather's drift, it settles back toward a resting pattern over a few seconds.
+// Only moving actors disturb it: their bodies plough it aside (mostly ahead and sideways), packing it up to
+// MaxFog, and their wake curls it; a standing actor pushes nothing. Strong stirring thins it a little.
+// Cells that scrolled in, and all cells after a reset, start at the resting pattern.
 
 #include "FluidField/Common.hlsli"
 #include "FluidField/FogPattern.hlsli"
@@ -15,13 +10,13 @@
 cbuffer FogCB : register(b1)
 {
 	float2 Drift;         // Weather wind carrying the fog, world units per second
-	float RefillRate;     // Per-second rate at which thinned fog fills back in toward 1
+	float RefillRate;     // Per-second rate at which fog relaxes toward the resting pattern
 	float StirRate;       // Per-second rate at which fully stirred air clears the fog
 	float StirSpeed;      // Wind speed (world units per second) that counts as fully stirred
-	float DisplaceSpeed;  // Speed (world units per second) at which an actor's body shoves the fog outward
+	float DisplaceSpeed;  // World units per second an actor's body shoves the fog outward
 	float MaxFog;         // Most fog a cell can be packed to, as a multiple of the resting amount
 	float FogPad;
-	float2 PatternOffset;  // How far the resting pattern has drifted with the weather's wind, world units
+	float2 PatternOffset;  // Resting pattern's drift with the weather's wind, world units
 	float2 FogPad2;
 };
 
@@ -34,7 +29,7 @@ struct Emitter
 	float2 Pad1;
 };
 
-/** Fog is thick and heavy: it follows the air only partly, and smooths out as it moves. */
+/** Heavy fog follows the air only partly, and smooths out as it moves. */
 static const float FOG_DRAG = 0.6;
 static const float FOG_DIFFUSION = 0.15;
 
@@ -46,7 +41,7 @@ Texture2D<float> FogIn : register(t1);
 StructuredBuffer<Emitter> Emitters : register(t2);
 RWTexture2D<float> FogOut : register(u0);
 
-/** Last step's fog at a logical cell; 1 for cells that were not in the grid then (or after a reset). */
+/** Last step's fog at a logical cell; the resting pattern for cells not in the grid then (or after a reset). */
 float LoadFog(int2 logical)
 {
 	int2 cell = GridMin + logical;
@@ -63,11 +58,7 @@ float SampleFog(float2 position)
 	return lerp(lerp(LoadFog(i), LoadFog(i + int2(1, 0)), t.x), lerp(LoadFog(i + int2(0, 1)), LoadFog(i + int2(1, 1)), t.x), t.y);
 }
 
-/**
- * How moving actors plough the fog at a logical position, world units per second: outward from
- * each actor, mostly ahead of it and to its sides, scaled by its speed. Zero at its centre,
- * strongest around its edge and gone a little beyond.
- */
+/** Actors' shove on the fog at a logical position (world units/s): outward, mostly ahead and sideways, peaking at their edge. */
 float2 Displacement(float2 position)
 {
 	float2 shove = 0.0;
@@ -82,7 +73,7 @@ float2 Displacement(float2 position)
 		float distance = length(d);
 		float r = max(e.Radius, 0.5);
 		float2 outward = d / max(distance, 1e-3);
-		// Ahead and to the sides; little behind, where the actor has already been
+		// Little behind, where the actor has already been
 		float bow = 0.25 + 0.75 * saturate(dot(outward, heading) * 0.5 + 0.6);
 		// d/r * exp(-(d/r)^2) peaks at 1/sqrt(2) of the radius; scaled so the peak is the push
 		shove += outward * push * bow * 2.33 * (distance / r) * exp(-dot(d, d) / (r * r));
@@ -97,13 +88,12 @@ float2 Displacement(float2 position)
 	int2 logical = StorageToLogical(id);
 	float2 wind = Velocity[id];
 
-	// Carried along by the wind, the weather's drift and the shove of actors' bodies; where that
-	// shove spreads out the fog thins, where it converges (just outside the body) the fog packs up
+	// Advected by wind, drift and shove; the fog thins where the shove diverges and packs up where it converges
 	float2 position = float2(logical) + 0.5;
 	float2 shove = Displacement(position);
 	float2 source = position - DeltaTime * (wind * FOG_DRAG + Drift + shove) / CellSize;
 	float fog = SampleFog(source);
-	// Viscous: disturbances spread and soften rather than staying sharp
+	// Viscous: disturbances soften rather than staying sharp
 	float neighbours = 0.25 * (SampleFog(source + float2(1, 0)) + SampleFog(source - float2(1, 0)) + SampleFog(source + float2(0, 1)) + SampleFog(source - float2(0, 1)));
 	fog = lerp(fog, neighbours, saturate(FOG_DIFFUSION * DeltaTime * 60.0));
 	float divergence = (Displacement(position + float2(1, 0)).x - Displacement(position - float2(1, 0)).x +

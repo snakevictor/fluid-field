@@ -1,10 +1,7 @@
-// Fluid Field water, pass 1: refresh the per-cell map, carry state over from the previous step,
-// start new and reset cells from vanilla water, apply emitters, the background current, the level
-// relaxation and the edge blend back to vanilla.
-//
-// When a cell's bed changes under live water (its map arrived late, or fine detail landed), the
-// water surface is kept where it was and the depth recomputed, so data arriving makes no waves.
-// If the cell changes between wet and dry, it restarts as calm vanilla water instead.
+// Fluid Field water, pass 1: refresh the cell map, carry state over (new and reset cells start as vanilla water), apply
+// emitters, current, level relaxation and the edge blend to vanilla.
+// When a cell's bed changes under live water (late map data), the surface is kept and depth recomputed so it makes no
+// waves; a cell that changes between wet and dry restarts as calm vanilla water.
 
 #include "FluidField/WaterCommon.hlsli"
 
@@ -23,7 +20,7 @@ Texture2D<float2> VelocityIn : register(t1);
 Texture2D<float2> CellMapIn : register(t2);
 StructuredBuffer<Emitter> Emitters : register(t3);
 
-static const float BED_CHANGE_THRESHOLD = 2.0;
+static const float BED_CHANGE_THRESHOLD = 2.0;  // World units
 
 RWTexture2D<float> DepthOut : register(u0);
 RWTexture2D<float2> VelocityOut : register(u1);
@@ -44,10 +41,7 @@ float Curl(int2 logical)
 	return (dvdx - dudy) / (2.0 * CellSize);
 }
 
-/**
- * @brief Vorticity confinement: a push along N x omega, where N points up the gradient of |omega|.
- * It puts back the swirl that advection smears out, so eddies behind obstacles stay alive.
- */
+/** @brief Vorticity confinement (push along N x omega, N up the gradient of |omega|): restores swirl advection smears out. */
 float2 ConfinementForce(int2 logical)
 {
 	float omega = Curl(logical);
@@ -68,7 +62,7 @@ float CellNoise(int2 cell, float step)
 	return float(h & 0xFFFFu) / 32767.5 - 1.0;
 }
 
-/** @brief Smooth value noise in 3D (space and time), in [-1, 1]. */
+/** @brief Hash of a lattice point to [-1, 1]. */
 float Hash3(int3 p)
 {
 	uint h = uint(p.x) * 73856093u ^ uint(p.y) * 19349663u ^ uint(p.z) * 83492791u;
@@ -76,6 +70,7 @@ float Hash3(int3 p)
 	return float(h & 0xFFFFu) / 32767.5 - 1.0;
 }
 
+/** @brief Smooth value noise in 3D (space and time), in [-1, 1]. */
 float ValueNoise(float3 p)
 {
 	int3 i = int3(floor(p));
@@ -91,16 +86,13 @@ static const float STIR_RATE = 0.35;
 /** @brief Stirring acceleration per unit of river speed (1/s), before Turbulence scales it. */
 static const float STIR_STRENGTH = 0.9;
 
-/** @brief D170: per second, how fast the water at a lip takes the lip's way and speed (at its full weight). */
+/** @brief D170: per-second rate at which water at a lip (full weight) takes the lip's velocity. */
 static const float LIP_PULL = 6.0;
-/** @brief D170: the share of the water's depth drawn down at a lip's brink, and the most in world units. */
+/** @brief D170: share of the depth drawn down at a lip's brink, and its cap in world units. */
 static const float LIP_DRAWDOWN = 0.3;
 static const float LIP_DRAWDOWN_MOST = 16.0;
 
-/**
- * @brief Curl noise: the curl of a smooth, slowly changing stream function, so it swirls water
- * without piling it up anywhere. Real rivers never settle into one flow; this keeps ours moving.
- */
+/** @brief Curl noise from a slowly changing stream function: swirls water without piling it up, so rivers never settle. */
 float2 StirVelocity(float2 worldPos)
 {
 	float3 p = float3(worldPos / STIR_SCALE, SimTime * STIR_RATE);
@@ -168,36 +160,32 @@ float2 StirVelocity(float2 worldPos)
 	}
 
 	if (Vorticity > 0.0 && depth > WetThreshold && kept) {
-		// Symmetric flow past an obstacle does not shed vortices on its own; real rivers always carry
-		// small disturbances. Nudge fast water beside dry cells sideways, varying in time and space.
+		// Symmetric flow past an obstacle sheds no vortices on its own; real rivers always carry small disturbances
 		float speed = length(velocity);
 		bool besideObstacle = LoadDepth(DepthIn, logical + int2(1, 0)) <= WetThreshold || LoadDepth(DepthIn, logical + int2(-1, 0)) <= WetThreshold ||
 		                      LoadDepth(DepthIn, logical + int2(0, 1)) <= WetThreshold || LoadDepth(DepthIn, logical + int2(0, -1)) <= WetThreshold;
-		// Swirl reinforcement only in open water: beside jagged edges it made the flow flicker
+		// Confinement only in open water: beside jagged edges it makes the flow flicker
 		if (!besideObstacle)
 			velocity += ConfinementForce(logical) * DeltaTime;
-		// Stir moving water, in proportion to the river's speed here
+		// Stir moving water in proportion to the river's speed
 		float riverSpeed = length(restVelocity);
 		if (riverSpeed > 1.0)
 			velocity += StirVelocity(worldPos) * riverSpeed * STIR_STRENGTH * Vorticity * DeltaTime;
-		// (No per-cell shedding nudge: random per cell, it rang shores at the grid's own frequency.
-		// The smooth stirring above keeps the flow shedding behind obstacles.)
+		// No per-cell random nudge: it rings shores at the grid frequency; the smooth stirring sheds vortices instead
 	}
 
 	velocity = lerp(velocity, restVelocity, saturate(CurrentRelax * DeltaTime));
-	// D170: drawn on toward a fall's lip over the last few metres (the drawdown): along the way the falls start, at least
-	// as fast as their texture leaves the crest, harder nearer it. The height pass's continuity thins the water as it speeds up
-	// (continuity: h u holds along the flow), and the level it settles to is drawn down toward the brink (a free overfall
-	// passes its critical depth, about two thirds of the water's depth upstream, just before the edge)
+	// D170: drawdown: water is pulled toward a fall's lip, at least as fast as its texture leaves the crest, harder nearer
+	// it. Continuity thins it as it speeds up, and its rest level drops toward the brink (a free overfall passes critical
+	// depth, about two thirds of the upstream depth, just before the edge)
 	float levelDepth = vanillaDepth;
 	if (depth > WetThreshold) {
 		const float4 lip = LipAt(worldPos);
 		if (lip.z > 1e-3) {
 			const float speed = length(lip.xy);
 			const float2 way = lip.xy / max(speed, 1e-3);
-			// D179: the target speed itself rises toward the lip, from the river's own current far off to the lip's at the
-			// brink (pulled toward the lip's speed wherever it reached, at a rate fading with the weight, the whole cascade's
-			// river sped up: every stretch lies near some lip, the user)
+			// D179: target speed rises from the river's own current to the lip's at the brink; pulling to the lip's speed
+			// everywhere it reached sped up whole cascades, since every stretch lies near some lip
 			const float own = max(dot(restVelocity, way), 0.0);
 			const float2 target = way * max(lerp(own, speed, saturate(lip.z)), dot(velocity, way));
 			velocity = lerp(velocity, target, sqrt(saturate(lip.z)) * saturate(LIP_PULL * DeltaTime));
@@ -206,14 +194,13 @@ float2 StirVelocity(float2 worldPos)
 	}
 	depth = lerp(depth, levelDepth, saturate(LevelRelax * DeltaTime));
 
-	// Absorbing border: the pull toward calm vanilla water grows quadratically toward the edge and is
-	// a per-second rate, so waves fade into it instead of bouncing off an abrupt change
+	// Absorbing border: a per-second pull to vanilla growing quadratically toward the edge, so waves fade instead of bouncing
 	float edgeWeight = EdgeWeight(logical);
 	float edge = saturate(edgeWeight * edgeWeight * EdgeRelax * DeltaTime);
 	velocity = lerp(velocity, restVelocity, edge);
 	depth = lerp(depth, vanillaDepth, edge);
 
 	DepthOut[id] = max(depth, 0.0);
-	// Damping calms waves and stray motion, not the river itself: only the deviation decays
+	// Only the deviation from the river decays, so damping calms waves, not the current
 	VelocityOut[id] = restVelocity + (velocity - restVelocity) * VelocityDecay;
 }

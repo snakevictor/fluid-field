@@ -1,6 +1,5 @@
-// Fluid Field wind, pass 1: carry velocity over from the previous step and add emitter impulses.
-// Texels that scrolled into the grid since the previous step hold another cell's data, so they
-// start from rest, as does every texel after a reset.
+// Fluid Field wind, pass 1: carry velocity over and add emitter impulses. Texels that scrolled in hold another
+// cell's data, so they start from rest, as does every texel after a reset.
 
 #include "FluidField/Common.hlsli"
 
@@ -15,10 +14,7 @@ struct Emitter
 
 Texture2D<float2> VelocityIn : register(t0);
 
-/**
- * Vorticity confinement strength: puts back the small swirls that advection smooths away, so the
- * air an actor stirs keeps curling (and the fog it carries with it) instead of going still at once.
- */
+/** Vorticity confinement strength: restores swirls advection smooths away, so stirred air (and its fog) keeps curling. */
 static const float VORTICITY = 0.6;
 
 /** Curl of the velocity at a logical cell, 1/s (central differences). */

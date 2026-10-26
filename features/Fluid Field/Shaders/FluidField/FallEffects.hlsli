@@ -1,6 +1,4 @@
-// Fluid Field waterfall spray constants (D31), for FallSpray.hlsl, which FallSurfaceRenderer draws
-// after the world. Matches
-// FallSurfaceRenderer::Constants.
+// Fluid Field waterfall spray constants (D31) for FallSpray.hlsl, drawn after the world. Matches FallSurfaceRenderer::Constants.
 
 #ifndef FLUID_FIELD_FALL_EFFECTS_HLSLI
 #define FLUID_FIELD_FALL_EFFECTS_HLSLI
@@ -23,7 +21,7 @@ cbuffer FallEffectsCB : register(b7)
 	float MistOpacity;
 	float Gravity;  // World units per second squared
 	float EffectsPad;
-	float MapSpacing;  // D183: the water simulation's map (WaterMap): world units between texels, and texels per side
+	float MapSpacing;  // D183: WaterMap's world units between texels, and texels per side
 	uint MapRes;
 	uint HasEnvironment;  // D186: EnvironmentTex holds the surroundings
 	float MapPad;

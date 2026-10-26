@@ -1,14 +1,10 @@
 #ifndef FLUIDFIELD_COMMON_HLSLI
 #define FLUIDFIELD_COMMON_HLSLI
 
-// Fluid Field grid addressing.
-//
-// The grid covers GridRes x GridRes cells of CellSize world units, centred on the player.
-// A world cell `c` always lives in storage texel `c mod GridRes`, wherever the grid is,
-// so scrolling only changes GridMin and never moves texels (toroidal addressing).
-// "Logical" coordinates run 0..GridRes-1 from the grid's south-west corner (GridMin)
-// and are what every solver pass reasons in; storage coordinates are only used for loads
-// and stores. Logical +x is world east, logical +y is world north.
+// Fluid Field grid addressing: GridRes x GridRes cells of CellSize world units, centred on the player.
+// Toroidal: world cell c always lives in storage texel c mod GridRes, so scrolling only changes GridMin.
+// Solver passes work in logical coordinates (0..GridRes-1 from GridMin, the south-west corner; +x east,
+// +y north); storage coordinates are only for loads and stores.
 
 #define FLUIDFIELD_GROUP_SIZE 8
 

@@ -1,11 +1,6 @@
-// Fluid Field ground fog (D21): fog lying on the terrain around the player, moved by the field.
-//
-// The fog's amount comes from the fog layer on the wind grid (carried by the wind, carved and
-// stirred by actors, refilling), its shape from the ground height under the grid: a dense layer
-// lying on the ground with a soft top, taller where there is more fog, so banks stand out and
-// clearings dip. Each pixel marches its view ray up to the
-// scene's depth through that layer, after the opaque scene is lit and before water and effects,
-// and blends the fog in, lit by the sun (scattered forward) and the ambient light.
+// Fluid Field ground fog (D21): fog lying on the terrain around the player. Amount comes from the fog layer (FogCS),
+// shape from the ground height: a dense layer with a soft top, taller where there is more fog. Each pixel marches its
+// view ray to the scene depth, after opaque lighting and before water and effects, lit by the sun and ambient light.
 
 #include "Common/FrameBuffer.hlsli"
 #include "Common/Math.hlsli"
@@ -24,11 +19,11 @@ cbuffer GroundFogCB : register(b0)
 	uint StepCount;        // Samples along each ray
 	float3 Albedo;         // Colour of the fog's scattering, times its brightness
 	float MaxDistance;     // Rays stop here, world units (inside the ground map)
-	int2 GroundMin;        // World cell (of GroundCellSize) of the ground map's texel (0, 0); it covers the whole fog area
+	int2 GroundMin;        // World cell (of GroundCellSize) of the ground map's texel (0, 0); covers the whole fog area
 	uint GroundRes;        // Ground map texels per side, a power of two
 	float GroundCellSize;  // World units per ground map texel
 	float2 PatternOffset;  // How far the resting pattern has drifted with the weather's wind, world units
-	uint DebugMode;        // 0 normal, 1 static shape (no wind), 2 resting fog only, 3 fixed sample offsets, 4 no fog field at all (resting pattern, no wind, fixed offsets)
+	uint DebugMode;        // 0 normal, 1 no wind, 2 resting fog only, 3 fixed sample offsets, 4 = 1 + 2 + 3, 7 world height bands
 	float FogPad;
 };
 
@@ -38,13 +33,13 @@ Texture2D<float> GroundHeight : register(t2);
 Texture2D<float2> Wind : register(t3);
 RWTexture2D<float4> MainRW : register(u0);
 
-/** Fraction of the simulated area's width over which it hands over to the resting fog beyond it. */
+/** Fraction of the simulated area's width over which it hands over to the resting fog. */
 static const float EDGE_FADE = 0.2;
 /** Fraction of the ground map's width over which the fog fades out at the edge of the fog area. */
 static const float AREA_FADE = 0.15;
-/** Forward-scattering anisotropy (Henyey-Greenstein g): mist glows a little toward the sun. */
+/** Henyey-Greenstein g: mist glows a little toward the sun. */
 static const float PHASE_G = 0.25;
-/** Share of the sun in the fog's light; ground fog sits low and is mostly lit by the sky. */
+/** Sun's share of the fog's light: low ground fog is mostly sky-lit. */
 static const float SUN_SHARE = 0.15;
 /** Fraction of the layer's height over which its top softens into clear air. */
 static const float TOP_SOFTNESS = 0.5;
@@ -53,17 +48,17 @@ static const float PILE_RISE = 0.8;
 /** How much higher churning air lifts the fog's top, at LIFT_SPEED. */
 static const float LIFT = 0.6;
 static const float LIFT_SPEED = 150.0;
-/** World units across one wisp in the fog, and how much the wisps vary its density. */
+/** World units across one wisp, and how much wisps vary the density. */
 static const float WISP_SIZE = 70.0;
 static const float WISP_CONTRAST = 0.55;
-/** Seconds between restarts of each of the wisps' two phases as the wind carries them. */
+/** Seconds between restarts of each of the wisps' two advection phases. */
 static const float WISP_PERIOD = 2.0;
-/** World units across one billow of the layer's top, and how much the billows raise and lower it. */
+/** World units across one billow of the layer's top, and its relative height change. */
 static const float BILLOW_SIZE = 220.0;
 static const float BILLOW_HEIGHT = 0.35;
-/** How strongly the fog above a point shades it from the sky: the layer's base is darker than its top. */
+/** How strongly fog above a point shades it from the sky. */
 static const float SELF_SHADING = 1.0;
-/** Length of the first step from the ground end of a ray, world units: finer than the layer is thick. */
+/** First step length from each end of a ray, world units: finer than the layer is thick. */
 static const float FIRST_STEP = 4.0;
 
 /** Growth factor r for which `count` steps starting at 1 cover `ratio` (1 + r + ... + r^(count-1) = ratio). */
@@ -84,7 +79,7 @@ float StepGrowth(float ratio, uint count)
 	return r;
 }
 
-/** Fastest the wisps drift, world units per second, so fast gusts do not smear them. */
+/** Fastest wisp drift, world units per second, so gusts do not smear them. */
 static const float WISP_MAX_DRIFT = 200.0;
 /** Ground below this is unknown land: no fog there. */
 static const float NO_GROUND = -1.0e6;
@@ -107,10 +102,7 @@ float SampleGround(float2 worldXY, out float areaFade)
 	return any(g < NO_GROUND) ? NO_GROUND * 10.0 : lerp(lerp(g.x, g.y, t.x), lerp(g.z, g.w, t.x), t.y);
 }
 
-/**
- * How much fog lies at an absolute world position: the simulation inside the simulated area,
- * the resting pattern beyond it, handed over smoothly near its edge.
- */
+/** Fog amount at a world position: simulated inside the grid, resting pattern beyond, blended near the edge. */
 float SampleFog(float2 worldXY)
 {
 	const float resting = FogPattern::Resting(worldXY, PatternOffset);
@@ -143,10 +135,7 @@ float2 SampleWind(float2 worldXY)
 		lerp(Wind.Load(int3((c + int2(0, 1)) & mask, 0)), Wind.Load(int3((c + int2(1, 1)) & mask, 0)), t.x), t.y);
 }
 
-/**
- * Wisps inside the fog, carried by the wind (two phases restarted half a period apart, cross-faded
- * so neither restart shows): the fog's density varies around its mean, so its churning shows.
- */
+/** Wind-carried density noise, 0 to 1: two phases half a period apart, cross-faded so neither restart shows. */
 float Wisps(float3 position, float2 wind)
 {
 	const float2 drift = wind * min(1.0, WISP_MAX_DRIFT / max(length(wind), 1e-3)) * WISP_PERIOD / WISP_SIZE;
@@ -165,24 +154,20 @@ float HenyeyGreenstein(float cosTheta, float g)
 	return (1.0 - g2) / (4.0 * Math::PI * pow(max(1.0 + g2 - 2.0 * g * cosTheta, 1e-4), 1.5));
 }
 
-/**
- * Fog extinction at a world position, per world unit, and how much of the sky's light reaches it
- * through the fog above it (the base of the layer is darker than its top).
- */
+/** Fog extinction per world unit at a position, and the sky light reaching it through the fog above. */
 float FogAt(float3 position, float maxTop, out float shading)
 {
 	shading = 1.0;
 	float areaFade;
 	const float ground = SampleGround(position.xy, areaFade);
 	const float fog = SampleFog(position.xy) * areaFade;
-	// A layer on the ground with a soft top: taller where fog is packed, lifted where the air churns.
 	// Nothing below the ground (or the water surface the fog lies on)
 	const float height = position.z - ground;
 	if (fog <= 0.0 || height > maxTop || height < 0.0)
 		return 0.0;
 	const float2 wind = (DebugMode == 1 || DebugMode == 4) ? 0.0 : SampleWind(position.xy);
 	const float churn = saturate(length(wind) / LIFT_SPEED);
-	// Billows: the top rises and falls, drifting with the wind, so the layer is not a flat sheet
+	// Billows: the top rises and falls with the wind, so the layer is not a flat sheet
 	const float billow = Wisps(float3(position.xy * (WISP_SIZE / BILLOW_SIZE), 0.0), wind);
 	const float top = Thickness * lerp(0.4, 1.0, saturate(fog)) * (1.0 + PILE_RISE * saturate(fog - 1.0)) * (1.0 + LIFT * churn) *
 	                  lerp(1.0 - BILLOW_HEIGHT, 1.0 + BILLOW_HEIGHT, billow);
@@ -192,9 +177,8 @@ float FogAt(float3 position, float maxTop, out float shading)
 }
 
 /**
- * Marches the ray between two distances with half of StepCount steps, growing from FIRST_STEP at
- * the starting end (the far end when a_fromEnd). Returns the light scattered toward the camera
- * (rgb) and the transmittance (a) of that stretch.
+ * Marches the ray between two distances with StepCount / 2 steps growing from FIRST_STEP at the start (the far end when
+ * a_fromEnd). Returns in-scattered light (rgb) and transmittance (a).
  */
 float4 MarchHalf(float3 camera, float3 direction, float from, float to, bool a_fromEnd, float jitter, float3 light, float maxTop)
 {
@@ -252,9 +236,8 @@ float4 MarchHalf(float3 camera, float3 direction, float from, float to, bool a_f
 	const float3 direction = surface / max(surfaceDistance, 1e-3);
 	const float rayLength = min(depth >= 1.0 ? MaxDistance : surfaceDistance, MaxDistance);
 
-	// Clip the ray to the fog's band where it starts and where it ends: the layer is thin, so the
-	// band is taken from the ground under the camera and under the ray's end, not the highest
-	// ground around (which is a mountain and would leave the whole ray to march)
+	// Clip the ray to the fog band, from the ground under the camera and the ray's end, not the highest ground around
+	// (often a mountain, which would leave the whole ray to march)
 	const float3 camera = FrameBuffer::CameraPosAdjust.xyz;
 	const float maxTop = Thickness * (1.0 + PILE_RISE) * (1.0 + LIFT) * (1.0 + BILLOW_HEIGHT);
 	float fadeA, fadeB;
@@ -276,14 +259,12 @@ float4 MarchHalf(float3 camera, float3 direction, float from, float to, bool a_f
 
 	const float jitter = (DebugMode == 3 || DebugMode == 4) ? 0.5 : Random::InterleavedGradientNoise(float2(dispatchID.xy), SharedData::FrameCount);
 
-	// Light: the sun, scattered toward the eye, and the ambient light's average
+	// Light: the sun scattered toward the eye, and the ambient average
 	const float3 sun = SharedData::DirLightColor.xyz * HenyeyGreenstein(dot(direction, SharedData::DirLightDirection.xyz), PHASE_G) * 4.0 * Math::PI;
 	const float3 ambient = max(float3(SharedData::AmbientSHR.x, SharedData::AmbientSHG.x, SharedData::AmbientSHB.x), 0.0) * 0.886;
 	const float3 light = Albedo * (sun * SUN_SHARE * (1.0 - SharedData::InInterior) + ambient);
 
-	// Both ends of the ray can be in the fog (the camera standing in it, the ground the ray hits),
-	// so each half is marched from its own end with steps growing from FIRST_STEP: the near half out
-	// from the camera, the far half back from the ray's end. The near half lies in front.
+	// Both ends can be in the fog (camera and hit ground), so each half marches from its own end with fine first steps
 	const float middle = rayStart + 0.5 * span;
 	const float4 nearHalf = MarchHalf(camera, direction, rayStart, middle, false, jitter, light, maxTop);
 	const float4 farHalf = MarchHalf(camera, direction, middle, rayEnd, true, jitter, light, maxTop);

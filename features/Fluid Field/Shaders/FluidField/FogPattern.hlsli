@@ -1,16 +1,15 @@
 #ifndef FLUIDFIELD_FOGPATTERN_HLSLI
 #define FLUIDFIELD_FOGPATTERN_HLSLI
 
-// Fluid Field fog (D21): the resting pattern of the ground fog, banks and clearings, shared by the
-// fog layer's simulation (which settles toward it) and the ground fog pass (which draws it beyond
-// the simulated area), so the two meet without a seam. The pattern drifts with the weather's wind:
-// a_offset is how far it has drifted, world units.
+// Fluid Field fog (D21): the ground fog's resting pattern of banks and clearings. Shared by the fog simulation (which
+// settles toward it) and the ground fog pass (which draws it beyond the simulated area) so they meet without a seam.
+// a_offset: its drift with the weather's wind, world units.
 
 namespace FogPattern
 {
-	/** World units across one patch of the resting fog: fog lies in banks and clearings, not as a sheet. */
+	/** World units across one patch of banks and clearings. */
 	static const float PATCH_SIZE = 900.0;
-	/** Fog left in the clearings between banks, as a fraction of the banks'. */
+	/** Fog in the clearings, as a fraction of the banks'. */
 	static const float PATCH_FLOOR = 0.3;
 
 	float Hash(float2 p)

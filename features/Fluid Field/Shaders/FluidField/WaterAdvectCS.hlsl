@@ -1,5 +1,4 @@
-// Fluid Field water, pass 2: semi-Lagrangian advection of the staggered velocity, so currents
-// carry waves and wakes downstream.
+// Fluid Field water, pass 2: semi-Lagrangian advection of the staggered velocity, so currents carry waves downstream.
 
 #include "FluidField/WaterCommon.hlsli"
 

@@ -2,24 +2,21 @@
 #define FLUIDFIELD_WATERCOMMON_HLSLI
 
 // Fluid Field shallow water: shared constants, map sampling and staggered-grid helpers.
-//
-// State lives on the same toroidal grid as the wind (Common.hlsli):
+// State lives on the wind's toroidal grid (Common.hlsli):
 //   Depth    R32F:  water depth above the bed at the cell centre
 //   Velocity RG32F: staggered; R is u on the cell's west face, G is v on its south face
 //   CellMap  RG32F: per-cell bed height and vanilla depth, refreshed every step from WaterMap
-// WaterMap is a coarse, world-aligned, toroidal map built on the CPU: R is the bed height,
-// G the vanilla water surface height (NO_WATER where there is none), at MapSpacing intervals.
-// ObstacleMap is finer detail around structures (pillars, piers, rocks), from refined bed rays:
-// R the bed height, GB the texel's own fine lattice coordinates (so stale wrapped texels are
-// rejected), A the kind (0 none, 1 landscape, 2 mesh), at ObstacleSpacing intervals.
+// WaterMap: coarse, world-aligned, toroidal, built on the CPU at MapSpacing: R bed height, G vanilla surface height
+// (NO_WATER where none), B river flow scale. ObstacleMap: finer bed around structures at ObstacleSpacing: R bed height,
+// GB the texel's own lattice coordinates (to reject stale wrapped texels), A kind (0 none, 1 landscape, 2 mesh).
 
 #include "FluidField/Common.hlsli"
 
 cbuffer WaterCB : register(b1)
 {
 	float Gravity;            // World units per second squared
-	float MaxDepth;           // Depth used for transport is capped here, keeping waves shallow and the step stable
-	float MaxSpeed;           // Face velocities are clamped to this, world units per second
+	float MaxDepth;           // Transport depth cap: keeps waves shallow and the step stable
+	float MaxSpeed;           // Face velocity clamp, world units per second
 	float WetThreshold;       // Depth below which a cell counts as dry
 	float2 Current;           // Background current, world units per second
 	float CurrentRelax;       // Per-second rate at which velocity relaxes toward the current
@@ -38,7 +35,7 @@ cbuffer WaterCB : register(b1)
 	float SimTime;            // Seconds simulated since the last reset
 	float FoamStrength;       // Scales how much foam the foam pass makes (0: none)
 	float FoamMax;            // Most foam a cell holds
-	int2 SeedGridMin;         // Placement of the level that seeds foam for cells coming into this one
+	int2 SeedGridMin;         // World cell of the foam-seeding level's texel (0, 0)
 	uint SeedRes;             // Its texels per side (0: no seed)
 	float SeedCellSize;       // Its world units per texel
 	float2 PlungeOrigin;      // D44: world position of the plunge map's texel (0, 0)
@@ -52,13 +49,11 @@ static const float NO_WATER = -1.0e8;
 
 Texture2D<float4> WaterMap : register(t4);
 Texture2D<float4> ObstacleMap : register(t5);
-// Unified Water's world flowmap: 64 texels per cell, tiles stacked with the southern row last.
-// RG * 2 - 1 is the flow in world axes (east, north), with its length as the strength, and A an
-// intensity mask. B is 255 along the rivers checked, so it is not used (checked against the
-// White River at Riverwood, which flows north-east toward Whiterun, 2026-10-14).
+// Unified Water's world flowmap: 64 texels per cell, southern tile row last. RG * 2 - 1 is the flow in world axes
+// (east, north), its length the strength; A an intensity mask; B unused (255 along the rivers checked).
 Texture2D<float4> RiverFlowmap : register(t6);
-// D170: the falls' lips (FallSites::BuildLipMap), on the plunge map's lattice: the way and speed the river is drawn toward a
-// lip (xy, world units a second) and how strongly (z, 0 to 1)
+// D170: the falls' lips (FallSites::BuildLipMap) on the plunge map's lattice: draw velocity toward a lip (xy, world units/s)
+// and strength (z, 0 to 1)
 Texture2D<float4> LipMap : register(t10);
 
 /** @brief D170: the lips' draw on the water at a world position, bilinear; 0 without a map. */
@@ -111,7 +106,7 @@ float2 LoadMapLattice(int2 lattice)
 	return WaterMap[uint2(lattice & int(MapRes - 1))].xy;
 }
 
-/** @brief How much the water at a world position flows with the river current (its water type), bilinear. */
+/** @brief How much the water at a world position flows with the river current (from its water type), bilinear. */
 float SampleRiverFlowScale(float2 worldPos)
 {
 	float2 f = worldPos / MapSpacing;
@@ -130,7 +125,7 @@ bool HasWater(float surface)
 	return surface > NO_WATER * 0.5;
 }
 
-/** @brief Bed and vanilla surface at a world position. A surface is only interpolated between lattice points that all have water. */
+/** @brief Bed and vanilla surface at a world position. The surface is interpolated only where all four corners have water. */
 float2 SampleWaterMap(float2 worldPos)
 {
 	float2 f = worldPos / MapSpacing;
@@ -159,7 +154,7 @@ float2 CellWorldPos(int2 logical)
 	return (float2(GridMin + logical) + 0.5) * CellSize;
 }
 
-/** @brief Texels from the nearest grid edge, as a 0..1 weight that is 1 at the edge and 0 past EdgeWidth. */
+/** @brief Grid edge weight: 1 at the edge, 0 from EdgeWidth texels in. */
 float EdgeWeight(int2 logical)
 {
 	int2 fromEdge = min(logical, int(GridRes) - 1 - logical);
@@ -171,7 +166,6 @@ float LoadDepth(Texture2D<float> tex, int2 logical)
 	return tex[LogicalToStorage(clamp(logical, 0, int(GridRes) - 1))];
 }
 
-/** @brief Staggered u (west faces) sampled at a logical position in texel units. u of texel i sits at (i, j + 0.5). */
 /** @brief Catmull-Rom weights for the four samples around fractional position t. */
 float4 CatmullRomWeights(float t)
 {
@@ -180,10 +174,7 @@ float4 CatmullRomWeights(float t)
 	return 0.5 * float4(-t3 + 2.0 * t2 - t, 3.0 * t3 - 5.0 * t2 + 2.0, -3.0 * t3 + 4.0 * t2 + t, t3 - t2);
 }
 
-/**
- * @brief One staggered velocity component sampled bicubically (Catmull-Rom), clamped to the range of
- * the four nearest samples so it never overshoots. Keeps small eddies far longer than bilinear.
- */
+/** @brief One velocity component, Catmull-Rom sampled and clamped to the four nearest (no overshoot); keeps eddies longer than bilinear. */
 float SampleFace(Texture2D<float2> velocity, float2 f, uint component)
 {
 	float2 b = floor(f);

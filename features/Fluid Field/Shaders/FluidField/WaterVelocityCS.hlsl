@@ -1,6 +1,5 @@
-// Fluid Field water, pass 4: accelerate each face by the slope of the water surface. Faces between
-// two dry cells, or where water would have to climb onto a dry cell's higher bed, are closed, so
-// banks and rocks reflect waves.
+// Fluid Field water, pass 4: accelerate each face by the surface slope. Faces between dry cells, or climbing onto a dry
+// cell's higher bed, are closed so banks and rocks reflect waves.
 
 #include "FluidField/WaterCommon.hlsli"
 
