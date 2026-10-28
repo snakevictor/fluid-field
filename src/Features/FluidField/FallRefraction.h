@@ -64,6 +64,7 @@ namespace FluidFieldSim
 		struct DrawParams
 		{
 			ID3D11RenderTargetView* target = nullptr;
+			ID3D11RenderTargetView* motion = nullptr;         ///< The motion vectors: the river's shader writes the sheets' own (their wobble)
 			ID3D11Texture2D* targetTexture = nullptr;         ///< Copied before drawing: what the falls refract
 			ID3D11DepthStencilView* depth = nullptr;          ///< Read-only: tested, not written
 			ID3D11ShaderResourceView* sceneDepth = nullptr;   ///< The scene's depth, for the water's thickness behind the surface

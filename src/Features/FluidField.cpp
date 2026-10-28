@@ -71,6 +71,12 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	FallRefraction,
 	FallsRiverShader,
 	FallBlendedCopies,
+	UnifiedFalls,
+	BakeOtherFalls,
+	FallFoamStart,
+	FallAerationFoam,
+	FallAerationFrom,
+	FallAerationMilk,
 	FallLayerMask,
 	SprayAmount,
 	SpraySize,
@@ -141,9 +147,21 @@ void FluidField::DrawSettings()
 		tooltip(T(TKEY("waterfalls_tooltip"), "Waterfalls churn, push and foam the water they land in."));
 		ImGui::Checkbox(T(TKEY("ground_waterfalls"), "Flowing Waterfalls"), &settings.GroundWaterfalls);
 		tooltip(T(TKEY("ground_waterfalls_tooltip"), "Moves vanilla's waterfall textures with each fall's solved flow, so they part round rocks, and adds foam and spray. Off shows vanilla's waterfalls unchanged."));
+		ImGui::Checkbox(T(TKEY("unified_falls"), "Unified Falls"), &settings.UnifiedFalls);
+		tooltip(T(TKEY("unified_falls_tooltip"), "Draws each waterfall site that has a precomputed sheet as one continuous surface instead of its separate meshes. Off shows the separate meshes."));
+		ImGui::Checkbox(T(TKEY("bake_other_falls"), "Bake Other Falls"), &settings.BakeOtherFalls);
+		tooltip(T(TKEY("bake_other_falls_tooltip"), "Bakes the flow of waterfalls that have no precomputed sheet, as before. Off leaves them without baked flow (testing the precomputed sites alone; quicker to load)."));
 
 		ImGui::SeparatorText(T(TKEY("waterfall_look"), "Water"));
 		ImGui::Checkbox(T(TKEY("fall_whitening"), "Foam on the Falls"), &settings.FallWhitening);
+		ImGui::SliderFloat(T(TKEY("fall_foam_start"), "Foam Start Height"), &settings.FallFoamStart, 0.0f, 300.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("fall_foam_start_tooltip"), "How far the water falls, in world units, before it takes air or foam: the crest stays clear above it. Baked falls only."));
+		ImGui::SliderFloat(T(TKEY("fall_aeration_foam"), "Aeration Foam"), &settings.FallAerationFoam, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("fall_aeration_foam_tooltip"), "How much of the bake's aeration turns to white foam: higher makes the lower falls frothier."));
+		ImGui::SliderFloat(T(TKEY("fall_aeration_from"), "Aeration Threshold"), &settings.FallAerationFrom, 0.0f, 0.95f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("fall_aeration_from_tooltip"), "The bake's aeration where that foam begins: lower starts the foam higher up the drop."));
+		ImGui::SliderFloat(T(TKEY("fall_aeration_milk"), "Aeration Milk"), &settings.FallAerationMilk, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip(T(TKEY("fall_aeration_milk_tooltip"), "How milky aeration makes the clear water (0: stays clear)."));
 		tooltip(T(TKEY("fall_whitening_tooltip"), "White water on the falls where they strike rock, below rock, into the water below and as they run and fall."));
 		ImGui::SliderFloat(T(TKEY("fall_speed"), "Falls Speed"), &settings.FallSpeed, 0.5f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("fall_speed_tooltip"), "How fast the falls' water runs, against vanilla's own speed. The whole flow speeds up alike, so the texture never stretches."));
@@ -258,11 +276,20 @@ void FluidField::DrawSettings()
 	// Debug: views, toggles and counts
 	if (ImGui::CollapsingHeader(T(TKEY("debug"), "Debug"))) {
 		ImGui::PushID("DebugSection");
+		ImGui::SeparatorText(T(TKEY("debug_water"), "Water"));
+		{
+			const char* waterViews[] = { T(TKEY("water_debug_off"), "Off"), T(TKEY("water_debug_flow"), "Flow"), T(TKEY("water_debug_foam"), "Foam"),
+				T(TKEY("water_debug_height"), "Surface Height") };
+			ImGui::Combo(T(TKEY("water_debug_view"), "Water Debug View"), &waterDebugView, waterViews, IM_ARRAYSIZE(waterViews));
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::Text("%s", T(TKEY("water_debug_view_tooltip"), "Draws the shallow water simulation on the water itself: the flow (colour by direction, lines moving with it), its foam, or the surface's height (blue below rest, red above)."));
+		}
 		ImGui::SeparatorText(T(TKEY("debug_waterfalls"), "Waterfalls"));
 		{
 			const char* fallDebugModes[] = { T(TKEY("waterfall_debug_off"), "Off"), T(TKEY("waterfall_debug_bake"), "Mesh Flow Bake"), T(TKEY("waterfall_debug_direction"), "Flow Direction"),
-				T(TKEY("waterfall_debug_vanilla"), "Vanilla Texture (No Flow)"), T(TKEY("waterfall_debug_depth"), "Depth Behind (See-Through Falls)") };
-			settings.WaterfallDebug = std::clamp(settings.WaterfallDebug, 0, 4);
+				T(TKEY("waterfall_debug_vanilla"), "Vanilla Texture (No Flow)"), T(TKEY("waterfall_debug_depth"), "Depth Behind (See-Through Falls)"),
+				T(TKEY("waterfall_debug_quadrants"), "Quadrants (See-Through Falls)") };
+			settings.WaterfallDebug = std::clamp(settings.WaterfallDebug, 0, 5);
 			ImGui::Combo(T(TKEY("waterfall_debug"), "Waterfall Shading"), &settings.WaterfallDebug, fallDebugModes, IM_ARRAYSIZE(fallDebugModes));
 			tooltip(T(TKEY("waterfall_debug_tooltip"), "Paints the falling water with its flow. Mesh Flow Bake: red how the streaks spread, green the run time (a band per second), blue foam, white the wake of rock; dark magenta where a mesh has no bake. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster. Vanilla Texture: the falls without the flow. Depth Behind: with See-Through Falls, each sheet by the open water or air behind it to the first rock or ground: red under 50 units, yellow to 150, green to 300, blue to 600 (8.5 m), magenta where nothing was hit."));
 			const char* meshViews[] = { T(TKEY("fall_mesh_debug_off"), "Off"), T(TKEY("fall_mesh_debug_wireframe"), "Wireframe"), T(TKEY("fall_mesh_debug_flow"), "Flow"),
@@ -852,6 +879,8 @@ void FluidField::Prepass()
 			fallSites.SetHideEffects(hideFallEffects, settings.FallLayerMask);
 			// D91: the refractive pass draws the lit pieces itself, so the engine's are hidden; blended copies apply only to new copies
 			fallSites.SetBlendedCopies(settings.FallBlendedCopies && !settings.RefractiveFalls);
+			fallSites.SetUnifiedFalls(settings.UnifiedFalls);
+			fallSites.SetBakeOthers(settings.BakeOtherFalls);
 			fallSites.SetLitHidden(RefractiveFallsActive());
 			fallSurfaceTime += deltaTime;
 			// D67: one scroll for all falls at vanilla's averaged rate, so a cascade's meshes run on into each other;
@@ -1086,6 +1115,7 @@ FluidField::WaterShaderData FluidField::GetCommonBufferData() const
 	WaterShaderData data = waterShaderData;
 	data.WaterTint = settings.WaterTint;
 	data.Fade = waterFade;
+	data.DebugView = static_cast<uint32_t>(waterDebugView);
 	return data;
 }
 
@@ -1577,10 +1607,9 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	if (fallSites.GetFlowBakeVersion() != fallBakeVersion) {
 		fallBakeVersion = fallSites.GetFlowBakeVersion();
 		const auto& bakes = fallSites.GetFlowBakes();
-		std::erase_if(fallBakeSRVs, [&](const auto& a_entry) { return !bakes.contains(a_entry.first); });
+		// every one again: a bake changes in place (relinked, its plunges written in, a site bake hot-reloaded), not only new ones
+		fallBakeSRVs.clear();
 		for (const auto& [geometry, bake] : bakes) {
-			if (fallBakeSRVs.contains(geometry))
-				continue;
 			D3D11_TEXTURE2D_DESC bakeDesc{ .Width = bake.width, .Height = bake.height * static_cast<UINT>(bake.texels.size() / (static_cast<std::size_t>(bake.width) * bake.height * 4)), .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R32G32B32A32_FLOAT, .SampleDesc = { 1, 0 }, .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = 0 };
 			const D3D11_SUBRESOURCE_DATA bakeData{ bake.texels.data(), bake.width * 4 * sizeof(float), 0 };
 			winrt::com_ptr<ID3D11Texture2D> texture;
@@ -1628,8 +1657,12 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		}
 	}
 	fallGroundData = { { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u,
-		static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 4)), fallSurfaceTime, FALL_POOL_FOAM, {}, {}, {}, settings.FallWhitening ? 1u : 0u, UINT32_MAX,
+		static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 5)), fallSurfaceTime, FALL_POOL_FOAM, {}, {}, {}, settings.FallWhitening ? 1u : 0u, UINT32_MAX,
 		settings.HideUnderwaterFalls ? 1u : 0u, { 1.0f, 1.0f }, 0u, {}, {} };
+	fallGroundData.AerationLook[0] = settings.FallFoamStart;
+	fallGroundData.AerationLook[1] = settings.FallAerationFoam;
+	fallGroundData.AerationLook[2] = settings.FallAerationMilk;
+	fallGroundData.AerationLook[3] = settings.FallAerationFrom;
 }
 
 void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
@@ -1722,6 +1755,7 @@ void FluidField::PrepareFallGroundData(const RE::BSGeometry* a_geometry, RE::BSS
 	// D59: this mesh's flow bake, where it is solved
 	o_bake = nullptr;
 	fallGroundData.BakeOn = 0;
+	fallGroundData.BakeVelocity = fallSites.IsUnified(a_geometry) ? 1u : 0u;
 	if (const auto it = fallBakeSRVs.find(a_geometry); it != fallBakeSRVs.end()) {
 		const auto& bakes = fallSites.GetFlowBakes();
 		if (const auto bake = bakes.find(a_geometry); bake != bakes.end()) {
@@ -1784,7 +1818,7 @@ bool FluidField::RefractiveFallsActive() const
 {
 	// The debug views (D40) are drawn by the lit pass, so the lit pieces stay while one is on
 	return loaded && settings.Enabled && settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && settings.RefractiveFalls &&
-	       (settings.WaterfallDebug == 0 || settings.WaterfallDebug == 4) && fallGroundSRV && fallGroundOn && fallRefraction.IsUsable();  // D108: 4 is its own
+	       (settings.WaterfallDebug == 0 || settings.WaterfallDebug >= 4) && fallGroundSRV && fallGroundOn && fallRefraction.IsUsable();  // D108: 4 and 5 are its own
 }
 
 namespace
@@ -1971,6 +2005,7 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 
 	FluidFieldSim::FallRefraction::DrawParams params;
 	params.target = a_target;
+	params.motion = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR].RTV;
 	params.targetTexture = a_targetTexture;
 	params.frame = globals::state->frameCount;
 	params.time = fallSurfaceTime;

@@ -466,7 +466,8 @@ namespace SharedData
 		float FarCellSize;
 		uint FarEnabled;  // The far level has valid outputs this frame
 		float Fade;       // 0 to 1 over the first moments after a (re)start, so the water eases in
-		float2 farPad;
+		uint DebugView;   // Showcase view on the water: 0 off, 1 flow, 2 foam, 3 surface height
+		float farPad;
 	};
 
 	cbuffer FeatureData : register(b6)

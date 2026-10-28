@@ -100,6 +100,12 @@ struct FluidField : OverlayFeature
 		float FallRefraction = 0.5f;         ///< D91: how strongly the falls bend what is seen through them (D102: faint by default)
 		bool FallsRiverShader = true;        ///< D159: shade the see-through falls with Water.hlsl until FallSurface.hlsl's port is ready
 		bool FallBlendedCopies = false;      ///< D91 experiment: dense copies with a blended alpha property (falls built after it is set)
+		bool UnifiedFalls = true;            ///< Unified falls: a site's precomputed sheet where cached (off: per-mesh dense copies)
+		bool BakeOtherFalls = false;         ///< Unified falls testing: off, falls without a site sheet get no in-game bake
+		float FallFoamStart = 32.0f;         ///< World units the water falls (the bake's height fallen) before it takes air or foam
+		float FallAerationFoam = 1.0f;       ///< How much of the bake's aeration turns to white foam (0: none)
+		float FallAerationFrom = 0.3f;       ///< The bake's aeration where that foam begins (whole at 1)
+		float FallAerationMilk = 1.0f;       ///< Scales how milky aeration makes the clear water
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
 		int SprayAmount = 200;               ///< Spray droplets alive per emitter at once (D31)
 		float SpraySize = 1.4f;              ///< Spray droplet width, world units
@@ -151,8 +157,9 @@ struct FluidField : OverlayFeature
 		uint32_t FarGridRes = 0;
 		float FarCellSize = 0.0f;
 		uint32_t FarEnabled = 0;
-		float Fade = 0.0f;  ///< 0 to 1 over the first moments after a (re)start, so the water eases in
-		float farPad[2]{};
+		float Fade = 0.0f;       ///< 0 to 1 over the first moments after a (re)start, so the water eases in
+		uint32_t DebugView = 0;  ///< Showcase view on the water: 0 off, 1 flow, 2 foam, 3 surface height
+		float farPad = 0.0f;
 	};
 	static_assert(sizeof(WaterShaderData) % 16 == 0);
 	/** @brief This frame's water grid placement, or Enabled = 0 when the water outputs are not valid. */
@@ -320,12 +327,13 @@ private:
 		uint32_t HideUnderwater;
 		float InverseScale[2];
 		uint32_t BakeOn;
-		float PreviousPhase;  ///< D85: last frame's Scroll[0], for the wobble's motion vectors
-		float BlendAlpha;     ///< D91 experiment: how see-through a blended dense copy's clear water is (0: opaque)
-		float Pad;
+		float PreviousPhase;    ///< D85: last frame's Scroll[0], for the wobble's motion vectors
+		float BlendAlpha;       ///< D91 experiment: how see-through a blended dense copy's clear water is (0: opaque)
+		uint32_t BakeVelocity;  ///< A unified sheet: the flow's velocity from its bake's coordinates (its own uv is not vanilla's scale)
 		float BakeRect[4];
+		float AerationLook[4];  ///< x FallFoamStart, y FallAerationFoam, z FallAerationMilk, w FallAerationFrom
 	};
-	static_assert(sizeof(FallGroundData) == 112);
+	static_assert(sizeof(FallGroundData) == 128);
 	static constexpr float FALL_BLEND_TEST_ALPHA = 0.6f;  ///< D91 experiment: BlendAlpha for the dense copies built blended
 	/**
 	 * @brief D56-D85: fills fallGroundData for a grounded falls mesh (scroll removed, latched phase, vertex base); o_bake gets
@@ -393,6 +401,7 @@ private:
 	float plungeFoamRadius = 1.0f;                           ///< D176: tuning, the plunge foam's radius scale; not saved
 	float plungeFoamBuilt[2] = { 0.0f, 1.0f };               ///< D176: the values the plunge map was last built with
 	int fallMeshDebug = 0;                                   ///< D75: the falls' meshes debug overlay (FallSites::DrawMeshDebug: 1 wireframe, 2 flow, 3 both); not saved
+	int waterDebugView = 0;                                  ///< Showcase view drawn on the water (WaterShaderData::DebugView); not saved
 	bool hideFallEffects = true;                             ///< Debug: hides vanilla's mist, skirt, splash and rapids meshes; not saved
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 

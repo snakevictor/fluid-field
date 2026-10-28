@@ -94,7 +94,7 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 {
 	const FallSurfaceVertex v = Vertices[vertexID];
 	// Same move as the lit passes (Lighting.hlsl, Utility.hlsl)
-	const float3 model = v.Position + FallGround::Shift(vertexID, FallGround::Scroll.x);
+	const float3 model = v.Position + FallGround::Shift(vertexID, FallGround::Scroll.x, World[2].xyz);
 	const float3 world = mul(World, float4(model, 1.0));
 	const float3 relative = world - FrameBuffer::CameraPosAdjust.xyz;
 
@@ -108,7 +108,9 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 	// D98: as the cut (D71), pools foam a mesh only at its foot
 	output.Fade.z = (!FallGround::Enabled || FallGround::VertexBase == FallGround::NO_VERTEX_CLIP) ? 1.0 : fmod(FallGround::VertexClip[FallGround::VertexBase + vertexID].a.w, 2.0);  // D100: +2 marks an inward winding
 	output.Clip = FallGround::ClipDistance(relative, vertexID);
-	output.Behind = FallGround::Behind(vertexID);
+	// the depth behind moves with the vertex (pushed out along its normal the gap behind widens), as Water.hlsl's
+	const float3 shift = FallGround::Shift(vertexID, FallGround::Scroll.x, World[2].xyz);
+	output.Behind = max(FallGround::Behind(vertexID) + dot(shift, v.Normal) / max(dot(v.Normal, v.Normal), 1e-6) * length(World[0].xyz), 0.0);
 	// D138: "none" (NO_WATER, 1e4) clamped to 512 before interpolation, or a triangle mixing it drew a hard line
 	output.BelowSource = min(FallGround::BelowSource(vertexID), 512.0);
 	output.ToOtherSheet = min(FallGround::ToOtherSheet(vertexID), 512.0);
@@ -498,6 +500,25 @@ float4 PSMain(VSOutput input, bool frontFace : SV_IsFrontFace) : SV_Target
 	// D108, D110: "Depth Behind" debug in colour bands (FallShading::DepthBehindBand)
 	if (FallGround::DebugMode == 4) {
 		return float4(FallShading::DepthBehindBand(input.Behind) * 0.5, 1.0);
+	}
+	// Quadrants: four views split over the screen. Top left the mesh's uv (addresses the bake), a cell per 0.25; top right
+	// the bake's texture coordinates (across red, along green, a cell per unit, blue checker); bottom left the flow's
+	// direction (as DebugMode 2); bottom right the vertex inputs (red depth behind to 300, green seam fade, blue the cut)
+	if (FallGround::DebugMode == 5) {
+		const float2 screen = input.Position.xy * SharedData::BufferDim.zw * FrameBuffer::DynamicResolutionParams2.xy;  // render pixels to the screen's 0-1 (dynamic resolution)
+		float3 view;
+		if (screen.y < 0.5 && screen.x < 0.5) {
+			const float2 cell = input.TexCoord * 4.0;
+			view = float3(frac(cell), (uint(floor(cell.x)) + uint(floor(cell.y))) & 1u ? 0.6 : 0.0);
+		} else if (screen.y < 0.5) {
+			const float2 coords = flow.uvA + float2(0.0, FallGround::Scroll.x);
+			view = float3(frac(coords), (uint(floor(coords.x)) + uint(floor(coords.y))) & 1u ? 0.6 : 0.0);
+		} else if (screen.x < 0.5) {
+			view = (0.5 + 0.5 * flow.velocity / max(length(flow.velocity), 1e-3)) * saturate(length(flow.velocity) / FallGround::DEBUG_FLOW_SPEED);
+		} else {
+			view = float3(saturate(input.Behind / 300.0), saturate(input.Fade.x), saturate(input.Clip / 100.0));
+		}
+		return float4(view * 0.5, 1.0);
 	}
 	return float4(color * alpha, alpha);  // Premultiplied
 }

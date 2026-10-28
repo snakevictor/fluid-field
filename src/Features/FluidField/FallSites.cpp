@@ -488,6 +488,7 @@ namespace FluidFieldSim
 		}
 		litHidden.clear();
 		RemoveDense();
+		RemoveUnified();
 		grounded.clear();
 		clipQueue.clear();
 		bakeQueue.clear();
@@ -791,10 +792,44 @@ namespace FluidFieldSim
 		litMeshList.clear();
 		std::vector<RE::NiPointer<RE::BSGeometry>> toDensify;
 		std::unordered_set<const RE::BSGeometry*> denseSeen;
+		if (unifiedFalls && !unifiedLoaded)
+			LoadUnifiedCaches();
+		std::unordered_set<std::size_t> unifiedSeen;
+		const auto queueLit = [&](RE::BSGeometry* a_geometry, const std::shared_ptr<BakeField>& a_baked) {
+			litMeshes.insert(a_geometry);
+			litMeshList.push_back({ RE::NiPointer<RE::BSGeometry>(a_geometry) });
+			if (!vertexClipBase.contains(a_geometry) &&
+				std::none_of(clipQueue.begin(), clipQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }))
+				clipQueue.emplace_back(a_geometry);
+			// Baked offline: taken as a finished bake (linked, plunged and shaded as any), never baked here
+			if (a_baked) {
+				if (!bakeFields.contains(a_geometry)) {
+					bakeFields[a_geometry] = a_baked;
+					bakesCached++;
+					linkDue = true;
+				}
+				return;
+			}
+			if (!bakeFields.contains(a_geometry) && (!bakeJob || bakeJob->geometry.get() != a_geometry) &&
+				std::none_of(bakeQueue.begin(), bakeQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }) &&
+				std::none_of(bakesPending.begin(), bakesPending.end(), [&](const auto& a_pending) { return a_pending.first.get() == a_geometry; }))
+				bakeQueue.emplace_back(a_geometry);
+		};
 		for (const auto& site : sites) {
 			const FallCapture* capture = GetCapture(site);
 			if (!capture || !capture->IsComplete())
 				continue;
+			// Unified falls: a site whose cache's members are all here draws as one sheet (the members' lit meshes hidden, not copied)
+			std::size_t unifiedIndex = SIZE_MAX;
+			for (std::size_t c = 0; unifiedFalls && c < unifiedCaches.size() && unifiedIndex == SIZE_MAX; c++) {
+				const auto& wanted = unifiedCaches[c].members;
+				if (std::all_of(wanted.begin(), wanted.end(), [&](RE::FormID a_id) {
+						return std::any_of(site.members.begin(), site.members.end(), [&](uint32_t a_member) { return refs[a_member].formID == a_id && refs[a_member].cls == FxClass::Body; });
+					}))
+					unifiedIndex = c;
+			}
+			std::vector<RE::BSGeometry*> unifiedLit;
+			RE::NiNode* unifiedRoot = nullptr;
 			for (const uint32_t member : site.members) {
 				if (refs[member].cls != FxClass::Body)
 					continue;
@@ -802,6 +837,22 @@ namespace FluidFieldSim
 				auto* root = ref ? ref->Get3D() : nullptr;
 				if (!root)
 					continue;
+				if (unifiedIndex != SIZE_MAX && std::ranges::find(unifiedCaches[unifiedIndex].members, refs[member].formID) != unifiedCaches[unifiedIndex].members.end()) {
+					if (!unifiedRoot)
+						unifiedRoot = root->AsNode();
+					RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
+						// The sheet itself, and old dense copies (detached below: their originals go unseen)
+						auto* triShape = a_geometry->AsTriShape();
+						if (unifiedShapes.contains(a_geometry) || denseShapes.contains(a_geometry) || !triShape || triShape->GetTrishapeRuntimeData().triangleCount == 0)
+							return RE::BSVisit::BSVisitControl::kContinue;
+						if (netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get()))
+							unifiedLit.push_back(a_geometry);
+						else
+							grounded.insert(a_geometry);  // the effect layers ground as before
+						return RE::BSVisit::BSVisitControl::kContinue;
+					});
+					continue;
+				}
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
 					// D73: skip an original drawn by its dense copy (the copy is found as its sibling)
 					if (denseOf.contains(a_geometry)) {
@@ -825,7 +876,7 @@ namespace FluidFieldSim
 						if (!vertexClipBase.contains(a_geometry) &&
 							std::none_of(clipQueue.begin(), clipQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }))
 							clipQueue.emplace_back(a_geometry);
-						if (!bakeFields.contains(a_geometry) && (!bakeJob || bakeJob->geometry.get() != a_geometry) &&
+						if (bakeOthers && !bakeFields.contains(a_geometry) && (!bakeJob || bakeJob->geometry.get() != a_geometry) &&
 							std::none_of(bakeQueue.begin(), bakeQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }) &&
 							std::none_of(bakesPending.begin(), bakesPending.end(), [&](const auto& a_pending) { return a_pending.first.get() == a_geometry; }))
 							bakeQueue.emplace_back(a_geometry);
@@ -879,6 +930,37 @@ namespace FluidFieldSim
 					return RE::BSVisit::BSVisitControl::kContinue;
 				});
 			}
+			// Unified falls: the site's sheet (attached once), lit, clipped and baked as one mesh; its members' lit meshes hidden
+			if (unifiedIndex != SIZE_MAX && unifiedRoot && !unifiedLit.empty()) {
+				const auto found = unifiedOf.find(unifiedIndex);
+				RE::BSGeometry* sheet = found != unifiedOf.end() ? found->second.shape.get() : AttachUnified(unifiedIndex, unifiedRoot, unifiedLit.front());
+				if (sheet) {
+					unifiedSeen.insert(unifiedIndex);
+					auto& unified = unifiedOf[unifiedIndex];
+					for (auto* lit : unifiedLit) {
+						lit->SetAppCulled(true);
+						if (std::none_of(unified.hidden.begin(), unified.hidden.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_hidden) { return a_hidden.get() == lit; }))
+							unified.hidden.emplace_back(lit);
+					}
+					grounded.insert(sheet);
+					queueLit(sheet, unifiedCaches[unifiedIndex].bake);
+				}
+			}
+		}
+		// Unified falls: sheets whose site went away (cell unloaded) detached, their members shown again
+		for (auto it = unifiedOf.begin(); it != unifiedOf.end();) {
+			if (unifiedSeen.contains(it->first)) {
+				++it;
+				continue;
+			}
+			if (it->second.parent && it->second.shape)
+				it->second.parent->DetachChild(it->second.shape.get());
+			for (auto& original : it->second.hidden) {
+				if (original)
+					original->SetAppCulled(false);
+			}
+			unifiedShapes.erase(it->second.shape.get());
+			it = unifiedOf.erase(it);
 		}
 		// D73: drop copies whose original went away; new lit meshes get theirs, and grounding then uses the copies
 		for (auto it = denseOf.begin(); it != denseOf.end();) {
@@ -963,13 +1045,18 @@ namespace FluidFieldSim
 			for (const auto& lit : litMeshList)
 				current.insert(lit.geometry.get());
 		}
+		std::unordered_set<const RE::BSGeometry*> replaced;  // unified falls: the members' meshes a site sheet draws for
+		for (const auto& [index, unified] : unifiedOf) {
+			for (const auto& original : unified.hidden)
+				replaced.insert(original.get());
+		}
 		std::erase_if(litHidden, [&](const RE::NiPointer<RE::BSGeometry>& a_geometry) {
 			if (!a_geometry)
 				return true;
 			if (current.contains(a_geometry.get()))
 				return false;
-			// Not an original drawn by its copy, nor a layer the debug hides (RefreshHiddenEffects)
-			if (!denseOf.contains(a_geometry.get()) && !hiddenEffects.contains(a_geometry.get()))
+			// Not an original drawn by its copy or a site's sheet, nor a layer the debug hides (RefreshHiddenEffects)
+			if (!denseOf.contains(a_geometry.get()) && !replaced.contains(a_geometry.get()) && !hiddenEffects.contains(a_geometry.get()))
 				a_geometry->SetAppCulled(false);
 			return true;
 		});
@@ -1202,6 +1289,31 @@ namespace FluidFieldSim
 					}
 					field->swap(next);
 					next = *field;
+				}
+			}
+			// a unified sheet: its depth behind from its offline bake (the open space behind every texel, along the normal against the
+			// world's rock and land), at each vertex's uv: full resolution where the rays sampled one vertex in several
+			if (unifiedShapes.contains(job.geometry.get())) {
+				const auto baked = bakeFields.find(job.geometry.get());
+				const UnifiedCache* cache = nullptr;
+				for (const auto& [index, unified] : unifiedOf) {
+					if (unified.shape.get() == job.geometry.get() && index < unifiedCaches.size())
+						cache = &unifiedCaches[index];
+				}
+				if (baked != bakeFields.end() && baked->second && cache && cache->uvs.size() == count) {
+					const BakeField& bake = *baked->second;
+					const auto bw = static_cast<int32_t>(bake.width), bh = static_cast<int32_t>(bake.height);
+					if (bake.clearBack.size() == static_cast<std::size_t>(bw) * bh) {
+						for (std::size_t v = 0; v < count; v++) {
+							const float gx = std::clamp((cache->uvs[v].x - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(bw) - 0.5f, 0.0f, static_cast<float>(bw - 1));
+							const float gy = std::clamp((cache->uvs[v].y - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(bh) - 0.5f, 0.0f, static_cast<float>(bh - 1));
+							const int32_t x0 = std::min(static_cast<int32_t>(gx), bw - 1), y0 = std::min(static_cast<int32_t>(gy), bh - 1);
+							const int32_t x1 = std::min(x0 + 1, bw - 1), y1 = std::min(y0 + 1, bh - 1);
+							const float fx = gx - static_cast<float>(x0), fy = gy - static_cast<float>(y0);
+							const auto at = [&](int32_t a_x, int32_t a_y) { return bake.clearBack[static_cast<std::size_t>(a_y) * bw + a_x]; };
+							job.minus[v] = (at(x0, y0) * (1.0f - fx) + at(x1, y0) * fx) * (1.0f - fy) + (at(x0, y1) * (1.0f - fx) + at(x1, y1) * fx) * fy;
+						}
+					}
 				}
 			}
 			const auto base = vertexClipBase.find(job.geometry.get());
@@ -2095,6 +2207,200 @@ namespace FluidFieldSim
 		return clone;
 	}
 
+	void FallSites::LoadUnifiedCaches()
+	{
+		// Layout (little-endian), "UNFS" v2 (tools/unify/site_cache.py): member, vertex and triangle counts; per member its plugin
+		// (length, name) and local form ID and position; per vertex position, normal (f32 x 3 each), uv (f32 x 2), flags (u8),
+		// colour (u8 x 4: the members' water tint); the triangles (u16 x 3)
+		unifiedLoaded = true;
+		unifiedCaches.clear();
+		const auto directory = Util::PathHelpers::GetDataPath() / "SKSE" / "Plugins" / "CommunityShaders" / "FluidField" / "Sites";
+		std::error_code error;
+		if (!std::filesystem::is_directory(directory, error))
+			return;
+		auto* handler = RE::TESDataHandler::GetSingleton();
+		for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+			if (entry.path().extension() != ".unfs")
+				continue;
+			std::ifstream file(entry.path(), std::ios::binary);
+			uint32_t header[5]{};
+			if (!file.read(reinterpret_cast<char*>(header), sizeof(header)) || header[0] != 0x53464E55 || header[1] != 2 || header[3] == 0 || header[3] > 65535) {
+				logger::warn("[Fluid Field] Unified falls: '{}' is not a site cache this version reads", entry.path().filename().string());
+				continue;
+			}
+			UnifiedCache cache;
+			cache.path = entry.path().filename().string();
+			bool resolved = true;
+			for (uint32_t m = 0; m < header[2]; m++) {
+				uint8_t length = 0;
+				file.read(reinterpret_cast<char*>(&length), 1);
+				std::string plugin(length, '\0');
+				file.read(plugin.data(), length);
+				uint32_t local = 0;
+				float at[3]{};
+				file.read(reinterpret_cast<char*>(&local), 4);
+				file.read(reinterpret_cast<char*>(at), sizeof(at));
+				const RE::FormID id = handler ? handler->LookupFormID(local, plugin) : 0;
+				resolved = resolved && id != 0;
+				cache.members.push_back(id);
+			}
+			const uint32_t vertices = header[3], triangles = header[4];
+			cache.positions.resize(vertices);
+			cache.normals.resize(vertices);
+			cache.uvs.resize(vertices);
+			cache.flags.resize(vertices);
+			cache.colors.resize(vertices);
+			for (uint32_t v = 0; v < vertices; v++) {
+				float data[8]{};
+				uint8_t color[4]{};
+				file.read(reinterpret_cast<char*>(data), sizeof(data));
+				file.read(reinterpret_cast<char*>(&cache.flags[v]), 1);
+				file.read(reinterpret_cast<char*>(color), sizeof(color));
+				cache.colors[v] = RE::NiColorA(color[0] / 255.0f, color[1] / 255.0f, color[2] / 255.0f, color[3] / 255.0f);
+				cache.positions[v] = { data[0], data[1], data[2] };
+				cache.normals[v] = { data[3], data[4], data[5] };
+				cache.uvs[v] = { data[6], data[7] };
+			}
+			cache.indices.resize(static_cast<std::size_t>(triangles) * 3);
+			file.read(reinterpret_cast<char*>(cache.indices.data()), static_cast<std::streamsize>(cache.indices.size()) * sizeof(uint16_t));
+			if (!file || !resolved) {
+				logger::warn("[Fluid Field] Unified falls: '{}' {}", cache.path, !file ? "is cut short" : "names a reference this load order lacks");
+				continue;
+			}
+			// Its flow bake, baked offline in the game's bake format (tools/unify/bake_site.py), beside it
+			auto bakePath = entry.path();
+			bakePath.replace_extension(".ffbk");
+			cache.bake = std::filesystem::exists(bakePath, error) ? LoadBake(bakePath) : nullptr;
+			cache.bakePath = bakePath;
+			if (cache.bake)
+				cache.bakeTime = std::filesystem::last_write_time(bakePath, error);
+			logger::info("[Fluid Field] Unified falls: site cache '{}': {} members, {} vertices, {} triangles; flow bake {}", cache.path, cache.members.size(), vertices, triangles,
+				cache.bake ? std::format("{}x{} texels, baked offline", cache.bake->width, cache.bake->height) : std::string("baked here"));
+			unifiedCaches.push_back(std::move(cache));
+		}
+	}
+
+	void FallSites::ReloadChangedBakes()
+	{
+		// Once a second, and only while no worker reads the bakes
+		const auto now = std::chrono::steady_clock::now();
+		if (now - bakeCheckedAt < std::chrono::seconds(1))
+			return;
+		bakeCheckedAt = now;
+		for (std::size_t c = 0; c < unifiedCaches.size(); c++) {
+			auto& cache = unifiedCaches[c];
+			std::error_code error;
+			const auto time = cache.bakePath.empty() ? std::filesystem::file_time_type{} : std::filesystem::last_write_time(cache.bakePath, error);
+			if (error || time == cache.bakeTime)
+				continue;
+			auto field = LoadBake(cache.bakePath);
+			if (!field)
+				continue;  // still being written: tried again next second
+			cache.bake = std::move(field);
+			cache.bakeTime = time;
+			logger::info("[Fluid Field] Unified falls: '{}' bake reloaded ({}x{} texels)", cache.path, cache.bake->width, cache.bake->height);
+			const auto found = unifiedOf.find(c);
+			if (found == unifiedOf.end() || !found->second.shape)
+				continue;
+			RE::BSGeometry* sheet = found->second.shape.get();
+			bakeFields[sheet] = cache.bake;
+			linkDue = true;
+			if (std::none_of(depthQueue.begin(), depthQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == sheet; }))
+				depthQueue.emplace_back(sheet);
+		}
+	}
+
+	RE::BSTriShape* FallSites::AttachUnified(std::size_t a_cache, RE::NiNode* a_root, RE::BSGeometry* a_material)
+	{
+		// As AttachDense (the engine's builder, a cloned lit material), the sheet's world positions taken into a_root's space
+		const UnifiedCache& cache = unifiedCaches[a_cache];
+		auto* source = a_material ? a_material->GetGeometryRuntimeData().shaderProperty.get() : nullptr;
+		if (!a_root || !source)
+			return nullptr;
+		const RE::NiTransform toLocal = a_root->world.Invert();
+		const std::size_t count = cache.positions.size();
+		std::vector<RE::NiPoint3> positions(count), normals(count), tangents(count, RE::NiPoint3(0.0f, 0.0f, 0.0f)), bitangents(count, RE::NiPoint3(0.0f, 0.0f, 0.0f));
+		std::vector<RE::NiPoint2> uvs = cache.uvs;
+		std::vector<RE::NiColorA> colors = cache.colors;
+		for (std::size_t v = 0; v < count; v++) {
+			positions[v] = toLocal * cache.positions[v];
+			RE::NiPoint3 n = toLocal.rotate * cache.normals[v];
+			const float length = n.Length();
+			normals[v] = length > 1e-6f ? n / length : RE::NiPoint3(0.0f, 0.0f, 1.0f);
+		}
+		// Tangents from the uv chart, kept across the normal
+		for (std::size_t i = 0; i + 2 < cache.indices.size(); i += 3) {
+			const uint16_t a = cache.indices[i], b = cache.indices[i + 1], c = cache.indices[i + 2];
+			const RE::NiPoint3 e1 = positions[b] - positions[a], e2 = positions[c] - positions[a];
+			const float du1 = uvs[b].x - uvs[a].x, dv1 = uvs[b].y - uvs[a].y, du2 = uvs[c].x - uvs[a].x, dv2 = uvs[c].y - uvs[a].y;
+			const float det = du1 * dv2 - du2 * dv1;
+			if (std::abs(det) < 1e-12f)
+				continue;
+			const RE::NiPoint3 tu = (e1 * dv2 - e2 * dv1) / det, tv = (e2 * du1 - e1 * du2) / det;
+			for (const uint16_t k : { a, b, c }) {
+				tangents[k] += tu;
+				bitangents[k] += tv;
+			}
+		}
+		for (std::size_t v = 0; v < count; v++) {
+			const RE::NiPoint3& n = normals[v];
+			RE::NiPoint3 t = tangents[v] - n * n.Dot(tangents[v]);
+			if (t.Length() < 1e-6f)
+				t = n.Cross(std::abs(n.z) < 0.9f ? RE::NiPoint3(0.0f, 0.0f, 1.0f) : RE::NiPoint3(1.0f, 0.0f, 0.0f));
+			t = t / t.Length();
+			RE::NiPoint3 bt = n.Cross(t);
+			if (bt.Dot(bitangents[v]) < 0.0f)
+				bt = -bt;
+			tangents[v] = t;
+			bitangents[v] = bt;
+		}
+		RE::BSTriShape* shape = BuildDenseShape(static_cast<uint32_t>(cache.indices.size() / 3), cache.indices.data(), static_cast<uint32_t>(count), positions.data(), uvs.data(), normals.data(),
+			tangents.data(), bitangents.data(), colors.data());
+		if (!shape)
+			return nullptr;
+		RE::NiPointer<RE::BSTriShape> held(shape);
+		shape->name = std::format("FluidFieldUnified {}", cache.path).c_str();
+		RE::NiCloningProcess cloning;
+		auto* copy = static_cast<RE::BSShaderProperty*>(source->CreateClone(cloning));
+		if (!copy)
+			return nullptr;
+		shape->GetGeometryRuntimeData().shaderProperty.reset(copy);
+		shape->GetGeometryRuntimeData().alphaProperty = a_material->GetGeometryRuntimeData().alphaProperty;
+		copy->SetupGeometry(shape);
+		copy->FinishSetupGeometry(shape);
+		a_root->AttachChild(shape, true);
+		RE::NiUpdateData update;
+		shape->Update(update);
+		unifiedOf[a_cache] = { held, RE::NiPointer<RE::NiNode>(a_root), {} };
+		unifiedShapes.insert(shape);
+		logger::info("[Fluid Field] Unified falls: site '{}' drawn as one sheet ({} vertices, {} triangles)", cache.path, count, cache.indices.size() / 3);
+		return shape;
+	}
+
+	void FallSites::RemoveUnified()
+	{
+		for (auto& [index, unified] : unifiedOf) {
+			if (unified.parent && unified.shape)
+				unified.parent->DetachChild(unified.shape.get());
+			for (auto& original : unified.hidden) {
+				if (original)
+					original->SetAppCulled(false);
+			}
+		}
+		unifiedOf.clear();
+		unifiedShapes.clear();
+	}
+
+	void FallSites::SetUnifiedFalls(bool a_on)
+	{
+		if (a_on == unifiedFalls)
+			return;
+		unifiedFalls = a_on;
+		RemoveUnified();
+		unifiedLoaded = false;  // turned on again: the site caches read anew (they may have been rebuilt)
+		RefreshGrounded();
+	}
+
 	void FallSites::RemoveDense()
 	{
 		for (auto& [original, copy] : denseOf) {
@@ -2935,6 +3241,7 @@ namespace FluidFieldSim
 		logger::info("[Fluid Field]   {} vertices under the river's water by its bed, cut; cleanup: {} orphan pieces ({} triangles, {} vertices) cut, {} small enclosed holes ({} vertices) restored",
 			submerged, job.islands, job.islandTriangles, job.islandVertices, job.holes, job.holeVertices);
 		cullJob.reset();
+		DumpUnifyInputs();
 		// D126: the spray, plunges and lips come only from the shell (ComputePlunges reads VertexInShell)
 		if (!bakeFields.empty())
 			plungesDue = true;  // D172: ComputePlunges on a worker (Update)
@@ -3997,6 +4304,22 @@ namespace FluidFieldSim
 		get(field->clearBack);
 		get(field->fallen);  // D189
 		get(field->calm);    // D190
+		// an offline site bake may add its flow direction (tools/unify/bake_site.py); the game's own bakes end here
+		if (ok && file.peek() != std::char_traits<char>::eof()) {
+			get(field->flow);
+			if (!ok) {
+				field->flow.clear();
+				ok = true;
+			}
+		}
+		// and then its streaks left (tools/unify/layers_to_ffbk.py)
+		if (ok && !field->flow.empty() && file.peek() != std::char_traits<char>::eof()) {
+			get(field->streak);
+			if (!ok) {
+				field->streak.clear();
+				ok = true;
+			}
+		}
 		return ok ? field : nullptr;
 	}
 
@@ -4390,6 +4713,15 @@ namespace FluidFieldSim
 			// The wobble's size and the swell's push per vertex (world units along the normal): none on open edges, in rock or without
 			// a normal. D99: each then held to a slope (limitSlope): spikes beside rock (D89, D84's pillow) and open edges made saw teeth.
 			std::vector<float> wobbleSize(counts.vertexCount, 0.0f), swellPush(counts.vertexCount, 0.0f), wobbleWeight(counts.vertexCount, 0.0f);
+			std::vector<float> bounce(counts.vertexCount, 0.0f);  // a unified sheet's vertical bob where aerated water faces up (crashing lips)
+			const bool unified = unifiedShapes.contains(geometry);
+			const auto aeratedAt = [&](float a_u, float a_v) {
+				if (bake.wake.empty())
+					return 0.0f;
+				const float gx = std::clamp((a_u - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(w) - 0.5f, 0.0f, static_cast<float>(w - 1));
+				const float gy = std::clamp((a_v - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(h) - 0.5f, 0.0f, static_cast<float>(h - 1));
+				return bake.wake[static_cast<std::size_t>(std::lround(gy)) * w + std::lround(gx)];
+			};
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
 				if (open[v] || inRock[v] || normals[v].Length() < 1e-6f)
 					continue;
@@ -4403,7 +4735,25 @@ namespace FluidFieldSim
 					wobbleWeight[v] = inland * inland * (3.0f - 2.0f * inland);
 				}
 				const float t = std::clamp((swellAt(uvs[v][0], uvs[v][1]) - PUSH_FROM) / (PUSH_FULL - PUSH_FROM), 0.0f, 1.0f);
-				swellPush[v] = PUSH_MOST * t * t * (3.0f - 2.0f * t);
+				swellPush[v] = (unified ? UNIFIED_POOL_MOST : PUSH_MOST) * t * t * (3.0f - 2.0f * t);
+				// a unified sheet: its baked turbulence (disturbance over TURB_SPAN) heaves the churned water on top of the rest, fading only
+				// close to rock and the edges (the churn lies beside them)
+				if (unified && linked != flowBakes.end()) {
+					const float turb = std::clamp(stirredAt(uvs[v][0], uvs[v][1]) / TURB_SPAN, 0.0f, 1.0f);
+					const float edgeAway = std::clamp(fromEdge[v] / (WOBBLE_EDGE_REACH * TURB_EDGE_SHARE), 0.0f, 1.0f);
+					const float fade = edgeAway * edgeAway * (3.0f - 2.0f * edgeAway);
+					const float churn = turb * turb * (3.0f - 2.0f * turb) * fade;
+					wobbleSize[v] += TURB_WOBBLE * churn;
+					wobbleWeight[v] = std::max(wobbleWeight[v], fade);
+					swellPush[v] += TURB_PUSH * churn;
+					// aerated water facing up or down (its world normal near vertical: lips and lobes, not plunging sheets) bobs vertically
+					const RE::NiPoint3 worldNormal = geometry->world.rotate * normals[v];
+					const float facing = std::abs(worldNormal.z) / std::max(worldNormal.Length(), 1e-6f);
+					const float up = std::clamp((facing - BOUNCE_FACING[0]) / (BOUNCE_FACING[1] - BOUNCE_FACING[0]), 0.0f, 1.0f);
+					const float aerated = std::clamp((aeratedAt(uvs[v][0], uvs[v][1]) - BOUNCE_AERATION[0]) / (BOUNCE_AERATION[1] - BOUNCE_AERATION[0]), 0.0f, 1.0f);
+					bounce[v] = BOUNCE_MOST * aerated * aerated * (3.0f - 2.0f * aerated) * up * up * (3.0f - 2.0f * up) * fade;
+					wobbleSize[v] *= UNIFIED_WOBBLE;
+				}
 			}
 			// D186: none in a band along the rock, then rising off it by distance along the mesh (smooth, unlike the per-vertex rock mask,
 			// which sawtoothed every contact on the fine mesh); then softened ROCK_FIELD_PASSES times, then held to their slopes
@@ -4411,12 +4761,15 @@ namespace FluidFieldSim
 				const float t = std::clamp((fromRock[v] - ROCK_CONTACT) / ROCK_RAMP, 0.0f, 1.0f);
 				const float ramp = t * t * (3.0f - 2.0f * t);
 				wobbleSize[v] *= ramp;
+				bounce[v] *= ramp;
 				wobbleWeight[v] *= ramp;
-				swellPush[v] *= ramp;
+				// (a unified sheet's swell is its pooling: piled up against the rock, it bulges there rather than dipping into the corner)
+				if (!unified)
+					swellPush[v] *= ramp;
 			}
 			// D186: widely (water is smooth however stirred; it deforms by area, not locally): many passes, so it spreads tens of units
 			for (int pass = 0; pass < ROCK_FIELD_PASSES; pass++) {
-				for (auto* values : { &wobbleSize, &swellPush }) {
+				for (auto* values : { &wobbleSize, &swellPush, &bounce }) {
 					std::vector<float> softened = *values;
 					for (uint32_t v = 0; v < counts.vertexCount; v++) {
 						if (open[v] || inRock[v] || next[v].empty())
@@ -4471,21 +4824,25 @@ namespace FluidFieldSim
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
 				const float length = normals[v].Length();
 				impact.uv[v] = { uvs[v][0], uvs[v][1] };
-				if (wobbleSize[v] > 0.0f && length > 1e-6f) {
-					impact.size[v] = wobbleSize[v];
-					impact.direction[v] = normals[v] / (length * scale);
+				// the wobble along the normal, and the bounce straight up (world), as one vector per unit of size
+				const float total = wobbleSize[v] + bounce[v];
+				const RE::NiPoint3 upLocal = geometry->world.rotate.Transpose() * RE::NiPoint3(0.0f, 0.0f, 1.0f);
+				const RE::NiPoint3 wobbleWay = total > 0.0f && length > 1e-6f ? (normals[v] * (wobbleSize[v] / length) + upLocal * bounce[v]) / (total * scale) : RE::NiPoint3();
+				if (total > 0.0f && length > 1e-6f) {
+					impact.size[v] = total;
+					impact.direction[v] = wobbleWay;
 				}
 				if (base + v < vertexClips.size()) {
 					auto& value = vertexClips[base + v];
 					value[7] = value[8] = value[9] = value[10] = value[11] = 0.0f;
 					value[12] = std::isfinite(runScale[v]) ? std::clamp(runScale[v], 0.0f, 4096.0f) : 0.0f;
 					// D106: the depth behind (value[13]) comes from DepthStep's rays
-					if (wobbleSize[v] > 0.0f) {
+					if (total > 0.0f && length > 1e-6f) {
 						const float across = wobbleAcross[v], along = wobbleAlong[v];
-						const RE::NiPoint3 wobble = normals[v] * (wobbleSize[v] / (length * scale));
+						const RE::NiPoint3 wobble = wobbleWay * total;
 						value[7] = across;
 						wobbled++;
-						mostWobble = std::max(mostWobble, wobbleSize[v]);
+						mostWobble = std::max(mostWobble, total);
 						value[8] = wobble.x;
 						value[9] = wobble.y;
 						value[10] = wobble.z;
@@ -4565,6 +4922,8 @@ namespace FluidFieldSim
 			bool continues = false;                                   ///< D190: continues its feeder's fall (the tangent carried on)
 			float foot = FLT_MAX;                                     ///< D190: the lowest its fall reaches, down the meshes it runs into
 			float arriving = 0.0f;                                    ///< D190: the recent fall its water arrives with (for the log)
+			bool unified = false;                                     ///< A site's unified sheet: across is its own flow uv
+			std::vector<float> column;                                ///< A unified sheet's streak columns (its bake's seed, as u)
 		};
 		std::vector<Node> nodes;
 		for (const auto& [geometry, field] : bakeFields) {
@@ -4573,6 +4932,7 @@ namespace FluidFieldSim
 			Node node;
 			node.geometry = geometry;
 			node.field = field.get();
+			node.unified = linkUnified.contains(geometry);
 			const auto w = static_cast<int32_t>(field->width), h = static_cast<int32_t>(field->height);
 			node.first.assign(w, -1);
 			node.last.assign(w, -1);
@@ -4745,7 +5105,13 @@ namespace FluidFieldSim
 			a_node.fallen.assign(count, 0.0f);
 			for (std::size_t i = 0; i < count; i++) {
 				const float seed = field.seed.size() == count ? field.seed[i] : static_cast<float>(i % w);
-				a_node.across[i] = atLip(across0, seed);
+				// A unified sheet: across is its own flow uv (even: the textures keep their scale), and its streaks' columns (the offline
+				// bake's seed: straight down, parted by rock) go to the ribbons alone (FallGround's column), where uneven spacing does no harm
+				a_node.across[i] = a_node.unified ? u(static_cast<int32_t>(i % w)) : atLip(across0, seed);
+				if (a_node.unified) {
+					a_node.column.resize(count);
+					a_node.column[i] = atLip(across0, seed);
+				}
 				a_node.along[i] = atLip(along0, seed) + (field.along.size() == count ? field.along[i] : 0.0f);
 				// D190: what it carried in clears over its calm runs here, as the strands' own fall does
 				const float calm = field.calm.size() == count ? field.calm[i] : 0.0f;
@@ -4849,6 +5215,14 @@ namespace FluidFieldSim
 						const std::size_t i = static_cast<std::size_t>(y) * w + x;
 						if (!field.covered[i])
 							continue;
+						// a unified sheet's baked flow direction (offline: the strands' own way, smoothed), where it has one
+						if (field.flow.size() == count) {
+							const float length = field.flow[i].Length();
+							if (std::isfinite(length) && length > 1e-6f) {
+								frame[i] = field.flow[i] / length;
+								continue;
+							}
+						}
 						const int32_t l = reach(x, y, -1, 0), r = reach(x, y, 1, 0), above = reach(x, y, 0, -1), d = reach(x, y, 0, 1);
 						if (l + r == 0 || above + d == 0)
 							continue;
@@ -4897,7 +5271,8 @@ namespace FluidFieldSim
 			for (std::size_t i = 0; i < count; i++) {
 				bake.texels[i * 4] = a_node.across[i];
 				bake.texels[i * 4 + 1] = a_node.along[i];
-				bake.texels[i * 4 + 2] = std::clamp(field.wake[i], 0.0f, 1.0f);
+				// a unified sheet's third channel holds its streak columns (its wake is the aeration, also in the fields' w)
+				bake.texels[i * 4 + 2] = a_node.unified && a_node.column.size() == count ? a_node.column[i] : std::clamp(field.wake[i], 0.0f, 1.0f);
 				bake.texels[i * 4 + 3] = std::clamp(field.foam[i], 0.0f, 1.0f);
 				float* extra = &bake.texels[(count + i) * 4];
 				extra[0] = fieldAt(field.speed, i, 1.0f);
@@ -4905,8 +5280,8 @@ namespace FluidFieldSim
 				extra[2] = fieldAt(field.disturbance, i, 0.0f);
 				extra[3] = std::clamp(fieldAt(field.wake, i, 0.0f), 0.0f, 1.0f);
 				float* third = &bake.texels[(count * 2 + i) * 4];
-				third[0] = stretch[i];
-				third[1] = frame[i].x;  // D186: the flow's frame, world axes (zero: none)
+				third[0] = a_node.unified && field.streak.size() == count ? field.streak[i] : stretch[i];  // (a unified sheet's stretch is the shader's own)
+				third[1] = frame[i].x;                                                                     // D186: the flow's frame, world axes (zero: none)
 				third[2] = frame[i].y;
 				third[3] = frame[i].z;
 				float* fourth = &bake.texels[(count * 3 + i) * 4];
@@ -5200,6 +5575,7 @@ namespace FluidFieldSim
 				bakesSolved, bakedTexels, bakedRockTexels);
 			logger::info("[Fluid Field]   {} more texels took their tested neighbours' answer (D185)", bakedFilled);
 			// D172: on a worker (1.2 s on one frame); its plunges after it, on the render thread
+			linkUnified = unifiedShapes;  // read by the worker, so a copy
 			heavyWork = std::async(std::launch::async, [this]() {
 				const auto start = std::chrono::steady_clock::now();
 				LinkBakes();
@@ -5209,7 +5585,161 @@ namespace FluidFieldSim
 		}
 	}
 
-	void FallSites::GatherOccluders(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<FallVisibility::Triangle>& o_triangles) const
+	void FallSites::DumpUnifyInputs() const
+	{
+		// Layout (little-endian): "UNIF" v2. Per mesh file: vertex and triangle counts, world rotation (9), translation (3), scale,
+		// then per vertex model position (3), uv (2), its 16 vertexClips floats; then the triangles (3 x uint16). Then the untrimmed
+		// triangles (count, 3 x uint16 each); the vanilla source (vertex and triangle counts; if any, its transform (13), per vertex
+		// model position (3) and uv (2), its triangles); the reference's form ID and model path (length, characters).
+		// The solids file: the statics' triangles (9 floats each) round all meshes, then a landscape height grid; beside it
+		// FluidField_unify_refs.tsv, what each reference round the falls gave.
+		const auto directory = logger::log_directory();
+		if (!directory || litMeshList.empty())
+			return;
+		constexpr uint32_t MAGIC = 0x46494E55;  // "UNIF"
+		constexpr uint32_t VERSION = 2;         // v2: untrimmed triangles, the vanilla source and its model path after each mesh
+		float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
+		uint32_t written = 0;
+		for (const auto& lit : litMeshList) {
+			auto* geometry = lit.geometry.get();
+			auto* triShape = geometry ? geometry->AsTriShape() : nullptr;
+			auto* renderer = geometry ? geometry->GetGeometryRuntimeData().rendererData : nullptr;
+			const auto base = geometry ? vertexClipBase.find(geometry) : vertexClipBase.end();
+			if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || base == vertexClipBase.end() ||
+				!renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV))
+				continue;
+			const auto& counts = triShape->GetTrishapeRuntimeData();
+			if (base->second + counts.vertexCount > vertexClips.size())
+				continue;
+			const uint32_t stride = renderer->vertexDesc.GetSize();
+			const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+			const uint32_t uvOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
+			std::ofstream file(*directory / std::format("FluidField_unify_mesh{}.bin", written), std::ios::binary);
+			if (!file)
+				continue;
+			const uint32_t header[4] = { MAGIC, VERSION, counts.vertexCount, counts.triangleCount };
+			file.write(reinterpret_cast<const char*>(header), sizeof(header));
+			const auto& world = geometry->world;
+			float transform[13];
+			for (int r = 0; r < 3; r++) {
+				for (int c = 0; c < 3; c++)
+					transform[r * 3 + c] = world.rotate.entry[r][c];
+			}
+			transform[9] = world.translate.x;
+			transform[10] = world.translate.y;
+			transform[11] = world.translate.z;
+			transform[12] = world.scale;
+			file.write(reinterpret_cast<const char*>(transform), sizeof(transform));
+			for (uint32_t v = 0; v < counts.vertexCount; v++) {
+				const uint8_t* data = renderer->rawVertexData + static_cast<std::size_t>(v) * stride;
+				float vertex[5];
+				std::memcpy(vertex, data + positionOffset, sizeof(float) * 3);
+				const auto* uv = reinterpret_cast<const uint16_t*>(data + uvOffset);
+				vertex[3] = DirectX::PackedVector::XMConvertHalfToFloat(uv[0]);
+				vertex[4] = DirectX::PackedVector::XMConvertHalfToFloat(uv[1]);
+				file.write(reinterpret_cast<const char*>(vertex), sizeof(vertex));
+				file.write(reinterpret_cast<const char*>(vertexClips[base->second + v].data()), sizeof(float) * 16);
+				const RE::NiPoint3 at = world * RE::NiPoint3(vertex[0], vertex[1], vertex[2]);
+				lo[0] = std::min(lo[0], at.x);
+				lo[1] = std::min(lo[1], at.y);
+				hi[0] = std::max(hi[0], at.x);
+				hi[1] = std::max(hi[1], at.y);
+			}
+			file.write(reinterpret_cast<const char*>(renderer->rawIndexData), static_cast<std::streamsize>(counts.triangleCount) * 3 * sizeof(uint16_t));
+			// v2: the bake's untrimmed triangles (D172: the copy before the landscape cut)
+			const auto untrimmed = untrimmedIndices.find(geometry);
+			const uint32_t untrimmedCount = untrimmed != untrimmedIndices.end() ? static_cast<uint32_t>(untrimmed->second.size() / 3) : 0;
+			file.write(reinterpret_cast<const char*>(&untrimmedCount), sizeof(untrimmedCount));
+			if (untrimmedCount)
+				file.write(reinterpret_cast<const char*>(untrimmed->second.data()), static_cast<std::streamsize>(untrimmed->second.size()) * sizeof(uint16_t));
+			// v2: the vanilla mesh the copy was made from (counts, world transform, model position and uv per vertex, triangles)
+			RE::BSGeometry* source = nullptr;
+			for (const auto& [original, copy] : denseOf) {
+				if (copy.shape.get() == triShape) {
+					source = copy.original.get();
+					break;
+				}
+			}
+			auto* sourceShape = source ? source->AsTriShape() : nullptr;
+			auto* sourceRenderer = source ? source->GetGeometryRuntimeData().rendererData : nullptr;
+			const bool haveSource = sourceShape && sourceRenderer && sourceRenderer->rawVertexData && sourceRenderer->rawIndexData &&
+			                        sourceRenderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV);
+			const auto& sourceCounts = haveSource ? sourceShape->GetTrishapeRuntimeData() : counts;
+			const uint32_t sourceHeader[2] = { haveSource ? sourceCounts.vertexCount : 0u, haveSource ? static_cast<uint32_t>(sourceCounts.triangleCount) : 0u };
+			file.write(reinterpret_cast<const char*>(sourceHeader), sizeof(sourceHeader));
+			if (haveSource) {
+				const auto& sourceWorld = source->world;
+				float sourceTransform[13];
+				for (int r = 0; r < 3; r++) {
+					for (int c = 0; c < 3; c++)
+						sourceTransform[r * 3 + c] = sourceWorld.rotate.entry[r][c];
+				}
+				sourceTransform[9] = sourceWorld.translate.x;
+				sourceTransform[10] = sourceWorld.translate.y;
+				sourceTransform[11] = sourceWorld.translate.z;
+				sourceTransform[12] = sourceWorld.scale;
+				file.write(reinterpret_cast<const char*>(sourceTransform), sizeof(sourceTransform));
+				const uint32_t sourceStride = sourceRenderer->vertexDesc.GetSize();
+				const uint32_t sourcePosition = sourceRenderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+				const uint32_t sourceUv = sourceRenderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
+				for (uint32_t v = 0; v < sourceCounts.vertexCount; v++) {
+					const uint8_t* data = sourceRenderer->rawVertexData + static_cast<std::size_t>(v) * sourceStride;
+					float vertex[5];
+					std::memcpy(vertex, data + sourcePosition, sizeof(float) * 3);
+					const auto* uv = reinterpret_cast<const uint16_t*>(data + sourceUv);
+					vertex[3] = DirectX::PackedVector::XMConvertHalfToFloat(uv[0]);
+					vertex[4] = DirectX::PackedVector::XMConvertHalfToFloat(uv[1]);
+					file.write(reinterpret_cast<const char*>(vertex), sizeof(vertex));
+				}
+				file.write(reinterpret_cast<const char*>(sourceRenderer->rawIndexData), static_cast<std::streamsize>(sourceCounts.triangleCount) * 3 * sizeof(uint16_t));
+			}
+			// v2: the reference's form ID and model path (u32 length, then the characters)
+			RE::TESObjectREFR* ref = nullptr;
+			for (RE::NiAVObject* object = source ? static_cast<RE::NiAVObject*>(source) : geometry; object && !ref; object = object->parent)
+				ref = object->GetUserData();
+			const uint32_t formID = ref ? ref->GetFormID() : 0;
+			const std::string model = ref ? (ModelOf(ref->GetBaseObject()) ? ModelOf(ref->GetBaseObject()) : "") : "";
+			const uint32_t modelLength = static_cast<uint32_t>(model.size());
+			file.write(reinterpret_cast<const char*>(&formID), sizeof(formID));
+			file.write(reinterpret_cast<const char*>(&modelLength), sizeof(modelLength));
+			file.write(model.data(), modelLength);
+			written++;
+		}
+		if (!written)
+			return;
+		constexpr float MARGIN = 256.0f;  // world units round the meshes
+		constexpr float LAND_STEP = 32.0f;
+		std::vector<FallVisibility::Triangle> statics;
+		std::string report = "form\ttype\tmodel\tposition\tbound\ttaken\tskipped\n";
+		GatherOccluders(lo[0] - MARGIN, lo[1] - MARGIN, hi[0] + MARGIN, hi[1] + MARGIN, statics, &report);
+		if (std::ofstream refsFile(*directory / "FluidField_unify_refs.tsv"); refsFile)
+			refsFile << report;
+		std::ofstream file(*directory / "FluidField_unify_solids.bin", std::ios::binary);
+		if (!file)
+			return;
+		const uint32_t header[3] = { MAGIC, VERSION, static_cast<uint32_t>(statics.size()) };
+		file.write(reinterpret_cast<const char*>(header), sizeof(header));
+		for (const auto& triangle : statics)
+			file.write(reinterpret_cast<const char*>(triangle.data()), sizeof(RE::NiPoint3) * 3);
+		// Landscape: origin, step, size, then heights row by row (-1e9 where none)
+		const auto nx = static_cast<uint32_t>((hi[0] - lo[0] + 2.0f * MARGIN) / LAND_STEP) + 1;
+		const auto ny = static_cast<uint32_t>((hi[1] - lo[1] + 2.0f * MARGIN) / LAND_STEP) + 1;
+		const float grid[3] = { lo[0] - MARGIN, lo[1] - MARGIN, LAND_STEP };
+		const uint32_t size[2] = { nx, ny };
+		file.write(reinterpret_cast<const char*>(grid), sizeof(grid));
+		file.write(reinterpret_cast<const char*>(size), sizeof(size));
+		for (uint32_t y = 0; y < ny; y++) {
+			for (uint32_t x = 0; x < nx; x++) {
+				float height = -1e9f;
+				if (landscape && !landscape->SampleHeight(grid[0] + x * LAND_STEP, grid[1] + y * LAND_STEP, height))
+					height = -1e9f;
+				file.write(reinterpret_cast<const char*>(&height), sizeof(height));
+			}
+		}
+		logger::info("[Fluid Field] Unified falls inputs: {} meshes, {} static triangles, {}x{} landscape heights, next to the log", written, statics.size(), nx, ny);
+	}
+
+	void FallSites::GatherOccluders(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<FallVisibility::Triangle>& o_triangles, std::string* o_report) const
 	{
 		// D173: like GatherSolids: the statics' render triangles over the area, not the falls' own models (their copies are added
 		// below, this batch's by TrimHidden)
@@ -5217,11 +5747,23 @@ namespace FluidFieldSim
 		if (!tes)
 			return;
 		const auto inArea = [&](const RE::NiPoint3& a_p) { return a_p.x >= a_minX && a_p.x <= a_maxX && a_p.y >= a_minY && a_p.y <= a_maxY; };
+		// the report's tally for the reference being visited: triangles taken, geometries skipped by reason
+		std::size_t taken = 0, noShape = 0, noData = 0, skinned = 0, otherShader = 0;
 		const auto addGeometry = [&](RE::BSGeometry* a_geometry) {
 			auto* triShape = a_geometry ? a_geometry->AsTriShape() : nullptr;
 			auto* renderer = a_geometry ? a_geometry->GetGeometryRuntimeData().rendererData : nullptr;
-			if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_SKINNED))
+			if (!triShape || !renderer) {
+				noShape++;
 				return;
+			}
+			if (!renderer->rawVertexData || !renderer->rawIndexData) {
+				noData++;
+				return;
+			}
+			if (renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_SKINNED)) {
+				skinned++;
+				return;
+			}
 			const auto& counts = triShape->GetTrishapeRuntimeData();
 			const uint32_t stride = renderer->vertexDesc.GetSize();
 			const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
@@ -5238,8 +5780,13 @@ namespace FluidFieldSim
 				if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
 					continue;
 				const FallVisibility::Triangle tri = { world[index[0]], world[index[1]], world[index[2]] };
-				if (inArea(tri[0]) || inArea(tri[1]) || inArea(tri[2]))
+				// the report's: a triangle spanning the area with no corner in it counts too (a large boulder face)
+				const bool spans = o_report && std::max({ tri[0].x, tri[1].x, tri[2].x }) >= a_minX && std::min({ tri[0].x, tri[1].x, tri[2].x }) <= a_maxX &&
+				                   std::max({ tri[0].y, tri[1].y, tri[2].y }) >= a_minY && std::min({ tri[0].y, tri[1].y, tri[2].y }) <= a_maxY;
+				if (inArea(tri[0]) || inArea(tri[1]) || inArea(tri[2]) || spans) {
 					o_triangles.push_back(tri);
+					taken++;
+				}
 			}
 		};
 		const auto visitCell = [&](RE::TESObjectCELL* a_cell, bool a_requireAttached) {
@@ -5247,7 +5794,8 @@ namespace FluidFieldSim
 				return;
 			a_cell->ForEachReference([&](RE::TESObjectREFR* a_ref) {
 				auto* base = a_ref ? a_ref->GetBaseObject() : nullptr;
-				if (!base || a_ref->IsDisabled() || a_ref->IsDeleted() || (base->GetFormType() != RE::FormType::Static && base->GetFormType() != RE::FormType::MovableStatic))
+				const bool staticType = base && (base->GetFormType() == RE::FormType::Static || base->GetFormType() == RE::FormType::MovableStatic);
+				if (!base || a_ref->IsDisabled() || a_ref->IsDeleted() || (!staticType && !o_report) || a_ref->Is(RE::FormType::ActorCharacter))
 					return RE::BSContainer::ForEachResult::kContinue;
 				auto* root = a_ref->Get3D();
 				if (!root)
@@ -5258,11 +5806,22 @@ namespace FluidFieldSim
 				const std::string model = Lowercase(ModelOf(base));
 				if (model.find("fxwaterfall") != std::string::npos || model.find("fxrapids") != std::string::npos)
 					return RE::BSContainer::ForEachResult::kContinue;
+				taken = noShape = noData = skinned = otherShader = 0;
+				std::size_t hidden = 0;
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-					if (netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get()))
+					if (o_report && a_geometry->GetAppCulled())  // markers' editor-only geometry, with every reference type taken
+						hidden++;
+					else if (netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get()))
 						addGeometry(a_geometry);
+					else
+						otherShader++;
 					return RE::BSVisit::BSVisitControl::kContinue;
 				});
+				if (o_report) {
+					const auto& at = a_ref->GetPosition();
+					*o_report += std::format("{:08X}\t{}\t{}\t{:.0f} {:.0f} {:.0f}\tradius {:.0f}\ttriangles {}\tskipped: no shape {}, no CPU data {}, skinned {}, other shader {}, hidden {}\n",
+						a_ref->GetFormID(), static_cast<int>(base->GetFormType()), model, at.x, at.y, at.z, bound.radius, taken, noShape, noData, skinned, otherShader, hidden);
+				}
 				return RE::BSContainer::ForEachResult::kContinue;
 			});
 		};
@@ -5797,6 +6356,8 @@ namespace FluidFieldSim
 				FinishDenseWork();
 			if (!Busy() && wobbleImpactsDue)
 				ApplyWobbleImpacts();
+			if (!Busy() && unifiedLoaded)
+				ReloadChangedBakes();
 		});
 		if (!Busy() && plungesDue) {
 			// D172: the plunges on a worker (up to 150 ms on the render thread, three to five times a load)

@@ -157,8 +157,8 @@ VS_OUTPUT main(VS_INPUT input)
 #	if defined(FLUID_FIELD)
 	// Fluid Field (D69, D85): a falls seam's edge moved across its gap and its wobble, identical in the depth pre-pass (Utility.hlsl);
 	// also a frame ago, for the motion vector
-	const float3 fallShift = FallGround::Shift(input.VertexID, FallGround::Scroll.x);
-	const float3 fallShiftPrevious = FallGround::Shift(input.VertexID, FallGround::PreviousPhase);
+	const float3 fallShift = FallGround::Shift(input.VertexID, FallGround::Scroll.x, World[2].xyz);
+	const float3 fallShiftPrevious = FallGround::Shift(input.VertexID, FallGround::PreviousPhase, World[2].xyz);
 	input.Position.xyz += fallShift;
 #	endif
 	precise float4 inputPosition = float4(input.Position.xyz, 1.0);

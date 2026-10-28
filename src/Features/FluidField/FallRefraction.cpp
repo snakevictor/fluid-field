@@ -244,6 +244,10 @@ namespace FluidFieldSim
 		target.DestBlendAlpha = D3D11_BLEND_ONE;
 		target.BlendOpAlpha = D3D11_BLEND_OP_ADD;
 		target.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
+		// the motion vectors (the river's shader, second target): written as they are, not blended by the foam's alpha
+		blendDesc.IndependentBlendEnable = TRUE;
+		blendDesc.RenderTarget[1].BlendEnable = FALSE;
+		blendDesc.RenderTarget[1].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN;
 		D3D11_DEPTH_STENCIL_DESC depthDesc{};
 		depthDesc.DepthEnable = TRUE;
 		depthDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;  // D177: the passes after read the falls' surface, not what lies behind it
@@ -607,7 +611,10 @@ namespace FluidFieldSim
 			a_context->CopyResource(sceneCopy.get(), a_params.targetTexture);
 		globals::profiler->EndPass();
 
-		a_context->OMSetRenderTargets(1, &a_params.target, a_params.depth);
+		// the river's shader writes the sheets' motion vectors too (FallSurface.hlsl writes colour only)
+		ID3D11RenderTargetView* const targets[2] = { a_params.target, a_params.motion };
+		const UINT targetCount = riverShader && a_params.motion ? 2u : 1u;
+		a_context->OMSetRenderTargets(targetCount, targets, a_params.depth);
 		const float factor[4] = {};
 		a_context->OMSetBlendState(blend.get(), factor, 0xFFFFFFFF);
 		a_context->OMSetDepthStencilState(depthState.get(), 0);
@@ -772,7 +779,7 @@ namespace FluidFieldSim
 				a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, noFront);
 				behind = behindDepthSRV.get();
 			}
-			a_context->OMSetRenderTargets(1, &a_params.target, a_params.depth);
+			a_context->OMSetRenderTargets(targetCount, targets, a_params.depth);
 			a_context->OMSetDepthStencilState(depthState.get(), 0);
 			a_context->PSSetShader(shader, nullptr, 0);
 			front = frontDepthSRV.get();

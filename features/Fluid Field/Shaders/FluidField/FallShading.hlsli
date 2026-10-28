@@ -369,6 +369,177 @@ namespace FallShading
 	static const float RIBBON_HAZE_REACH = 0.3;
 	static const float RIBBON_HAZE_MILK = 0.3;
 	static const float RIBBON_HAZE_OPACITY = 0.5;
+	/** Baked falls: the clear sheet's opacity at most (its colour over what lies behind), and how far what lies behind takes the water's hue. */
+	static const float BAKED_CLEAR_OPACITY = 0.8;
+	static const float BAKED_CLEAR_TINT = 0.6;
+	/** Baked falls: how far the ribbons merge at most (1: a solid white sheet), so the most aerated water keeps clear gaps. */
+	static const float RIBBON_MOST_REACH = 0.6;  // at 0.85 the threshold let nearly all the field through: no gaps
+	/** Baked falls: share of the bake's aeration foam kept in the ribbons' gaps (outside their haze), so the gaps stay clear. */
+	static const float RIBBON_GAP_FOAM = 0.15;
+	/** Baked falls: the bake's speed (over 300 units a second) over which the water leaves the river plane's look for the falls'. */
+	static const float2 MOTION_SPEED = float2(0.8, 2.0);
+	/** Baked falls: the depth of river (world units) the calm water's tint reads as, whatever lies just behind the sheet. */
+	static const float RIVER_LOOK_DEPTH = 256.0;
+	/** Baked falls: world units fallen over which the crest leaves the river plane's own shading for the falls'. */
+	static const float CREST_RIVER_FALL = 48.0;
+	/** Baked falls: world units fallen past Foam Start Height over which the water counts as wholly dropped. */
+	static const float BAKED_DROP_FULL = 240.0;
+	/**
+	 * Baked falls: the churn breaking the ribbons up low down and where stirred: its cells (across, along per flow unit; along whole),
+	 * drift (cells a second across), the fall over which it comes in (world units), the bake's stirring that brings it too, and
+	 * its share of the field at most.
+	 */
+	static const float2 CHURN_FREQUENCY = float2(28.0, 3.0);
+	static const float CHURN_DRIFT = 0.35;
+	static const float CHURN_FROM = 250.0;
+	static const float CHURN_FULL = 700.0;
+	static const float CHURN_STIRRED = 0.15;
+	/** Baked falls: the bake's stirring over which the ribbons hand over to the foam's pattern (its p75 1.2, p90 8). */
+	static const float STIR_FROM = 1.5;
+	static const float STIR_FULL = 6.0;
+	/** Baked falls: how far stirred water turns to plain foam. */
+	static const float STIR_WHITE = 0.8;
+	/** Baked falls: seconds each layout of the foam's grain lives (it churns as it runs). */
+	static const float FOAM_MORPH_SECONDS = 1.6;
+	/** Baked falls: world units fallen (past Foam Start Height) over which the water whitens by e. */
+	static const float WHITE_BREAKUP = 260.0;
+	/** Baked falls: the ribbons' reach scaled from x to y by a noise riding the water, over its cells (across, along per flow unit; whole). */
+	static const float2 REACH_RIDE = float2(0.35, 1.55);
+	static const float2 REACH_RIDE_CELLS = float2(10.0, 3.0);
+	static const float CHURN_SHARE = 0.85;
+	/**
+	 * Baked falls: the pockets between merged ribbons: the reach their curving starts at (whole at RIBBON_MOST_REACH), their warp across
+	 * the flow (flow units at most), its noise's cells (across, along per flow unit; along whole) and drift (cells a second), and the
+	 * pockets' own cells (rounder than the churn's; along whole).
+	 */
+	static const float POCKET_CURVE_FROM = 0.3;
+	static const float POCKET_WARP = 0.06;
+	static const float2 POCKET_WARP_CELLS = float2(5.0, 2.0);
+	static const float POCKET_WARP_DRIFT = 0.15;
+	static const float2 POCKET_FREQUENCY = float2(14.0, 5.0);
+	/** Baked falls: world units above the pool below over which the pockets close (shut by x, open from y). */
+	static const float2 POCKET_CLOSE = float2(40.0, 160.0);
+	/**
+	 * Baked falls: the streaks from the drop: their cells (across, along per flow unit; along whole), seconds each streak takes to fade
+	 * in or out, and how far its field dims and lifts (faded streaks fall under the ribbons' threshold, lit ones over).
+	 */
+	static const float2 STREAK_FREQUENCY = float2(34.0, 4.0);  // along: 1 cell spanned the whole fall (static stripes, the texture sliding under)
+	static const float STREAK_LIFE = 2.09;
+	static const float STREAK_FADE_LOW = 0.3;
+	static const float STREAK_FADE_HIGH = 1.35;
+	/** Baked falls: the streaks' on/off window (life noise either side of half), their reach before the aeration has built (ribbon
+	 * reach), the drop it comes in over past Foam Start Height (world units), and how much crisper a fully on streak's edge is. */
+	static const float STREAK_SWITCH = 0.1;
+	/** Baked falls: the share of time a streak is on (its life noise over 1 minus this). */
+	static const float STREAK_ON_SHARE = 0.67;
+	/** Baked falls (unified): the aeration from which the surface whitens (below it only milk and bubbles under the surface). */
+	static const float SURFACE_WHITE_FROM = 0.95;
+	/** Baked falls: the clear water's opacity over rock close behind and over a gap, and the depth behind (world units) between. */
+	static const float CLEAR_OVER_ROCK = 0.2;
+	static const float CLEAR_OVER_GAP = 0.95;
+	static const float2 CLEAR_GAP = float2(15.0, 260.0);
+	/** Baked falls: along CLEAR_GAP, where the film starts thickening and where it is full (shallow holds, then deepens fast). */
+	static const float2 CLEAR_KNEE = float2(0.2, 0.6);
+	/** Baked falls (unified): the aeration over which the streaks widen into one another (merged by y). */
+	static const float2 STREAK_MERGE = float2(0.45, 0.8);
+	static const float STREAK_TOP_REACH = 0.3;
+	static const float STREAK_RISE = 300.0;
+	/** Baked falls: how much further down (world units of drop) a streak may start than the first (each its own, by its column). */
+	static const float STREAK_START_SPREAD = 180.0;
+	/** Baked falls (unified): the depth behind (world units) over which the water comes to lie on rock or land, and how white its
+	 * churn foams there. */
+	static const float2 ON_ROCK = float2(60.0, 150.0);
+	static const float ROCK_CHURN_FOAM = 0.9;
+	/** Baked falls (unified): only the streaks foam (no contact, landing, baked, churn or aeration foam), while the streaks are tuned. */
+	static const bool STREAKS_ONLY_FOAM = true;
+	/** Baked falls (unified): the falls' own normal map alone, without the river's three (trying the look). */
+	static const bool FALLS_NORMALS_ONLY = true;
+	/** Baked falls (unified): contact foam at its edges (only where they run level: CONTACT_LEVEL, of the edge gradient's vertical share)
+	 * and at its lower lip. */
+	static const float CONTACT_EDGE = 0.0;  // off until it is baked (screen-depth bands changed with the view)
+	static const int UNIFIED_AERATION_LAYERS = 1;
+	/** Unified: its streaks' foam as the aeration's (the same soft cover, so they blend), driven this hard, clumped down to 1 - STREAK_CLUMP
+	 * by the aeration's clumping noise, and at most STREAK_OPACITY (a little see-through). */
+	/** Unified: its foam wet (FOAM_REFLECT of the reflection, by fresnel; a broad sun sheen) and lit through: backlit into the sun
+	 * (FOAM_SSS_BACK, narrowed by FOAM_SSS_POWER), wrapped round its shaded side, toward the water's hue by FOAM_SSS_TINT, down to
+	 * FOAM_SSS_THICK where it is dense. */
+	static const float FOAM_REFLECT = 0.15;
+	/** Unified: its foam diffuse (FOAM_DIFFUSE of its light by the sun's angle to it), wrapped FOAM_WRAP past the terminator (the light
+	 * scattered inside it). */
+	static const float FOAM_DIFFUSE = 0.55;
+	static const float FOAM_WRAP = 1.0;
+	static const float FOAM_SHEEN = 0.25;
+	static const float FOAM_SHEEN_POWER = 12.0;
+	static const float FOAM_SSS_BACK = 0.35;
+	static const float FOAM_SSS_POWER = 2.0;
+	static const float FOAM_SSS_WRAP = 0.9;
+	static const float FOAM_SSS_WRAP_LIGHT = 0.1;
+	static const float FOAM_SSS_TINT = 0.6;
+	static const float FOAM_SSS_THICK = 0.4;
+	static const float STREAK_FOAM_DRIVE = 1.4;
+	static const float STREAK_CLUMP = 0.675;
+	static const float STREAK_OPACITY = 0.85;
+	static const float2 UNIFIED_AERATION_DRIVE = float2(0.3, 0.8);  ///< its baked aeration (tops out near 0.8) from none to whole aeration foam
+	/** Unified: brief clear patches in the aeration (tall cells, across and along its flow, morphing open and shut in place): the share
+	 * of the time open and the softness of their edges. */
+	static const float2 AERATION_GAP_CELLS = float2(22.0, 14.0);    ///< per uv unit, across and along (the flow uv runs ~4 x longer along per world unit: half corrected, they stay long) (two lattices, the second 1.6 x finer)
+	static const float AERATION_GAP_PERIOD = 6.0;                   ///< seconds between a cell's patches
+	static const float AERATION_GAP_LIFE = 0.35;                    ///< of the period a patch is open
+	static const float AERATION_GAP_CHANCE = 0.3;                   ///< of a cell's cycles that open one
+	static const int AERATION_GAP_LATTICES = 1;                     ///< 2: a second, finer lattice too
+	static const float2 AERATION_GAP_SIZE = float2(0.18, 0.38);     ///< radius across (cells), smallest to largest
+	static const float AERATION_GAP_STRETCH = 1.8;                  ///< its length along over its width
+	static const float AERATION_GAP_DRIFT = 0.8;                    ///< cells along it may drift on its own over its life (each its own speed)
+	static const float AERATION_GAP_RAGGED = 0.6;                   ///< its rim broken by this share of its radius (two scales of noise)
+	static const float2 AERATION_GAP_STRENGTH = float2(0.35, 1.0);  ///< how clear a patch gets at most (each its own)
+	static const float AERATION_GAP_MOTTLE = 0.5;                   ///< its inside thinned unevenly by this much noise
+	/** Unified: the aeration clumped by a slow noise (cells across and along), down to 1 - AERATION_CLUMP between clumps. */
+	static const float2 AERATION_CLUMP_CELLS = float2(40.0, 12.0);
+	/** Unified: from this baked aeration to the next its most aerated water is nearly covered (drive past whole, less clumping and gaps). */
+	static const float2 AERATION_HEAVY = float2(0.65, 0.78);
+	static const float AERATION_HEAVY_DRIVE = 1.5;     // (more drove every grain value past the cover: a flat sheet)
+	static const float AERATION_LAYER_OPACITY = 1.06;  ///< the top layer's cover, at most ~85% (the volume's own is 0.7)
+	static const float AERATION_CLUMP = 0.6;
+	/** Unified: seconds per layout of the foam grain (two crossfaded, each jumping across while unseen: it churns, not slides). */
+	static const float FOAM_CHURN_SECONDS = 1.6;
+
+	/** Unified: two churn layouts' values blended at FoamChurn's weight, their contrast kept (a plain crossfade halved it mid-way: the
+	 * cover thresholded on it pulsed twice a cycle). */
+	float ChurnBlend(float a_b, float a_a, float a_weight)
+	{
+		const float w = a_weight;
+		return 0.5 + (lerp(a_b, a_a, w) - 0.5) * rsqrt(max(w * w + (1.0 - w) * (1.0 - w), 0.5));
+	}
+
+	/** Unified: a_uv's churn offsets, the weight of the first, for FOAM_CHURN_SECONDS. */
+	float FoamChurn(float a_time, out float2 a_jumpA, out float2 a_jumpB)
+	{
+		const float cycle = a_time / FOAM_CHURN_SECONDS;
+		a_jumpA = float2(BubbleHash(float2(floor(cycle), 4.3)) * 7.0, 0.0);
+		a_jumpB = float2(BubbleHash(float2(floor(cycle + 0.5), 9.1)) * 7.0, 0.0);
+		return 1.0 - abs(frac(cycle) * 2.0 - 1.0);
+	}  ///< of AERATION_LAYERS: only the top one, while the look is built up  ///< every foam on the one grain (the streaks'), moving and looking alike
+	static const float CONTACT_LIP = 0.0;  // off with the edges until contact foam is baked
+	static const float2 CONTACT_LEVEL = float2(0.5, 0.85);
+	static const float STREAK_CRISP = 0.8;
+	/** Baked falls: a streak's brightness (by its column), less while it fades; its edge and core light (by how far inside it), and
+	 * its grain's swing (the flow-stretched foam pattern). */
+	static const float2 STREAK_TONE = float2(0.61, 1.14);
+	static const float STREAK_FADING_TONE = 0.8;
+	static const float2 STREAK_CORE = float2(0.55, 0.95);
+	static const float STREAK_EDGE_LIGHT = 0.75;
+	static const float STREAK_CORE_LIGHT = 1.1;
+	static const float STREAK_GRAIN = 0.25;
+	/** Baked falls: a ribbon's frayed edge: solid from STREAK_SOLID (of its coverage) in, fibres (the flow-stretched foam pattern at
+	 * STREAK_FIBRE_ACROSS tiles across, its STREAK_FIBRE span kept) toward the edge. */
+	static const float2 STREAK_SOLID = float2(0.55, 0.95);
+	static const float STREAK_FIBRE_ACROSS = 12.0;
+	static const float2 STREAK_FIBRE = float2(0.35, 0.75);
+	/** Baked falls: the ribbons' bubbly holes: the foam pattern at STREAK_BUBBLE_SCALE times its tiling, its STREAK_BUBBLES span kept;
+	 * inside a ribbon only STREAK_BUBBLES_INSIDE of them. */
+	static const float STREAK_BUBBLE_SCALE = 2.5;
+	static const float2 STREAK_BUBBLES = float2(0.2, 0.6);
+	static const float STREAK_BUBBLES_INSIDE = 0.35;
 	/** D191: share of the dropped water's milk, aeration and bubbles kept between ribbons. */
 	static const float RIBBON_GAP = 0.25;
 
@@ -390,6 +561,80 @@ namespace FallShading
 	{
 		const float2 p = a_flowUv * a_cells + a_offset;
 		return 0.65 * RibbonNoise(p, a_cells.y) + 0.35 * RibbonNoise(p * float2(2.3, 2.0) + float2(5.1, 0.0), a_cells.y * 2.0);
+	}
+
+	/** Baked falls: seconds a churn or pocket pattern lives (it fades in and out over that, in place). */
+	static const float MORPH_SECONDS = 2.5;
+
+	/**
+	 * Unified: brief clear patches in the aeration (1: clear). Ragged ellipses on two lattices riding the flow (a_flowUv), each cell's
+	 * patch opening at its own time for AERATION_GAP_LIFE of the period and drifting on at its own speed; one per cell at a time.
+	 */
+	float AerationGaps(float2 a_flowUv, float a_time)
+	{
+		float gap = 0.0;
+		[unroll] for (int k = 0; k < AERATION_GAP_LATTICES; k++)
+		{
+			const float2 cells = AERATION_GAP_CELLS * (k == 0 ? 1.0 : 1.6);
+			const float2 p = a_flowUv * cells + float2(0.43, 0.71) * k;
+			const float2 cell = floor(p);
+			[unroll] for (int j = -1; j <= 0; j++)  // a patch drifts down into the next cell along
+			{
+				const float2 c = cell + float2(0.0, j);
+				// its id wrapped along like the noises (the flow uv jumps a whole repeat as the scroll wraps: unwrapped, every patch swapped)
+				const float2 id = float2(c.x, c.y - cells.y * floor(c.y / cells.y)) + 31.7 * k;
+				const float cycle = a_time / AERATION_GAP_PERIOD + BubbleHash(id + 5.3);
+				const float t = frac(cycle);
+				// only some cycles open one (each cycle its own draw, so the spots do not repeat)
+				if (t > AERATION_GAP_LIFE || BubbleHash(id + floor(cycle) * 1.913) > AERATION_GAP_CHANCE)
+					continue;
+				const float life = t / AERATION_GAP_LIFE;
+				// it opens, holds, then closes up to nothing (its rim shrinking in, never fading out where it stands)
+				const float open = smoothstep(0.0, 0.25, life) * (1.0 - smoothstep(0.55, 0.9, life));
+				const float2 centre = c + float2(lerp(0.25, 0.75, BubbleHash(id)), lerp(0.2, 0.5, BubbleHash(id + 7.3)) + life * AERATION_GAP_DRIFT * BubbleHash(id + 2.9));
+				const float radius = lerp(AERATION_GAP_SIZE.x, AERATION_GAP_SIZE.y, BubbleHash(id + 3.1)) * open;
+				const float2 d = (p - centre) / max(float2(radius, radius * AERATION_GAP_STRETCH), 1e-4);
+				const float2 q = (p - centre) + BubbleHash(id + 9.7) * 37.0;
+				const float ragged = ((RibbonNoise(q * 5.0, 1e4) - 0.5) * 1.4 + (RibbonNoise(q * 13.0 + 3.3, 1e4) - 0.5) * 0.6) * AERATION_GAP_RAGGED;
+				const float shape = open > 0.01 ? 1.0 - smoothstep(0.25, 1.0, length(d) + ragged) : 0.0;  // a long soft rim, not an edge
+				const float mottle = lerp(1.0 - AERATION_GAP_MOTTLE, 1.0, RibbonNoise(q * 9.0 + 7.1, 1e4));
+				gap = max(gap, shape * mottle * lerp(AERATION_GAP_STRENGTH.x, AERATION_GAP_STRENGTH.y, BubbleHash(id + 4.4)));
+			}
+		}
+		return gap;
+	}
+
+	/**
+	 * Baked falls: RibbonOctaves foaming in and out in place: two patterns crossfaded, each jumping to a new random layout while it is
+	 * wholly faded out (no drift, so nothing slides across the surface).
+	 */
+	float Morphing(float2 a_flowUv, float2 a_cells, float a_time)
+	{
+		const float cycle = a_time / MORPH_SECONDS;
+		const float phase0 = frac(cycle), phase1 = frac(cycle + 0.5);
+		const float2 jump0 = float2(BubbleHash(float2(floor(cycle), 3.1)), BubbleHash(float2(floor(cycle), 7.7))) * 97.0;
+		const float2 jump1 = float2(BubbleHash(float2(floor(cycle + 0.5), 5.3)), BubbleHash(float2(floor(cycle + 0.5), 1.9))) * 97.0;
+		// whole cells along keep the noise repeating with the scroll
+		const float a = RibbonOctaves(a_flowUv, a_cells, float2(jump0.x, floor(jump0.y)));
+		const float b = RibbonOctaves(a_flowUv, a_cells, float2(jump1.x, floor(jump1.y)));
+		const float w = abs(phase0 * 2.0 - 1.0);  // a's weight is 0 where it jumps (phase0 0), b's where it does (phase0 0.5)
+		const float blend = lerp(b, a, 1.0 - w);
+		return 0.5 + (blend - 0.5) * rsqrt(max(w * w + (1.0 - w) * (1.0 - w), 0.5));
+	}
+
+	/** Baked falls: Morphing for the streaks: one octave of column noise (the second, rounder octave drew blotches round them). */
+	float MorphingColumns(float2 a_flowUv, float2 a_cells, float a_time)
+	{
+		const float cycle = a_time / MORPH_SECONDS;
+		const float phase0 = frac(cycle);
+		const float2 jump0 = float2(BubbleHash(float2(floor(cycle), 3.1)), BubbleHash(float2(floor(cycle), 7.7))) * 97.0;
+		const float2 jump1 = float2(BubbleHash(float2(floor(cycle + 0.5), 5.3)), BubbleHash(float2(floor(cycle + 0.5), 1.9))) * 97.0;
+		const float2 p = a_flowUv * a_cells;
+		const float a = RibbonNoise(p + float2(jump0.x, floor(jump0.y)), a_cells.y);
+		const float b = RibbonNoise(p + float2(jump1.x, floor(jump1.y)), a_cells.y);
+		const float w = abs(phase0 * 2.0 - 1.0);
+		const float blend = lerp(b, a, 1.0 - w);
+		return 0.5 + (blend - 0.5) * rsqrt(max(w * w + (1.0 - w) * (1.0 - w), 0.5));
 	}
 
 	/** D191: the ribbons' field (0 to 1) at a_time (s); a_streaks: the fine streaks (FlowFoamPattern drawn out along the flow). */
@@ -423,6 +668,43 @@ namespace FallShading
 		const float start = smoothstep(0.0, 0.08, a_reach);
 		return float2(smoothstep(threshold - RIBBON_EDGE, threshold + RIBBON_EDGE, a_field), smoothstep(threshold - RIBBON_HAZE_REACH, threshold, a_field)) * start;
 	}
+
+	/** Baked falls: the ribbons' edge (field units either side, softer than RIBBON_EDGE) and how far the fine streaks break it up. */
+	static const float RIBBON_EDGE_SOFT = 0.22;
+	static const float EDGE_BREAK = 0.45;
+
+	/** Baked falls: Ribbons with RIBBON_EDGE_SOFT (feathered, ragged edges). */
+	/** Baked falls: Ribbons over an edge of a_edge field units either side. */
+	float2 RibbonsEdge(float a_field, float a_reach, float a_edge)
+	{
+		if (a_reach <= 0.0)
+			return 0.0;
+		const float threshold = lerp(RIBBON_THRESHOLD_TOP, RIBBON_THRESHOLD_MERGED - a_edge, a_reach);
+		const float start = smoothstep(0.0, 0.08, a_reach);
+		return float2(smoothstep(threshold - a_edge, threshold + a_edge, a_field), smoothstep(threshold - RIBBON_HAZE_REACH - a_edge, threshold, a_field)) * start;
+	}
+
+	float2 RibbonsSoft(float a_field, float a_reach)
+	{
+		if (a_reach <= 0.0)
+			return 0.0;
+		const float threshold = lerp(RIBBON_THRESHOLD_TOP, RIBBON_THRESHOLD_MERGED - RIBBON_EDGE_SOFT, a_reach);
+		const float start = smoothstep(0.0, 0.08, a_reach);
+		return float2(smoothstep(threshold - RIBBON_EDGE_SOFT, threshold + RIBBON_EDGE_SOFT, a_field), smoothstep(threshold - RIBBON_HAZE_REACH - RIBBON_EDGE_SOFT, threshold, a_field)) * start;
+	}
+
+	/**
+	 * Baked falls: the white water's lumps: cells (across, along per flow unit; along whole), the step toward the sun they are read at
+	 * (in the sun's flow-coordinate direction), and their shading: base light, the sun-facing contrast, and the body's own swell.
+	 */
+	static const float2 LUMP_FREQUENCY = float2(16.0, 4.0);
+	static const float LUMP_SUN_STEP = 6.0;
+	static const float LUMP_BASE = 0.85;
+	static const float LUMP_CONTRAST = 2.6;
+	static const float LUMP_BODY = 0.5;
+	/** Baked falls: how far the ribbons' thin edges take the water's colour, and its brightness there. */
+	static const float EDGE_WATER = 0.6;
+	static const float EDGE_WATER_LIGHT = 1.3;
 
 	/** D191: the crest's glow (the sheet thins over the lip and brightens): how much, over a progress band above the tangent. */
 	static const float CREST_GLOW = 0.0;  // off: the tangent lies well below the visible crest, so it drew a grey band across curtains
@@ -534,6 +816,37 @@ namespace FallShading
 		return contact * contact * saturate(1.0 + a_aboveWater / WATER_FOAM_SINK);
 	}
 
+	/**
+	 * A unified sheet's contact foam, by kind: x the edges (other sheets, rock or ground behind, the cut), y the lower lip (the water
+	 * below). Unsquared; ContactStrength's terms.
+	 */
+	float2 ContactParts(float a_sheetGap, float a_sceneGap, float a_aboveWater, float a_lip, float a_clip, float a_rockShare, float a_cutShare)
+	{
+		if (!FallGround::Whitening)
+			return 0.0;
+		float edge = 1.0 - saturate(a_sheetGap / MEET_FOAM_REACH);
+		edge = max(edge, (1.0 - saturate(a_sceneGap / CONTACT_FOAM_REACH)) * a_rockShare);
+		edge = max(edge, (1.0 - saturate(a_clip / CUT_FOAM_REACH)) * a_cutShare);
+		const float lip = 1.0 - saturate(max(a_aboveWater, 0.0) / WATER_FOAM_REACH);
+		return float2(edge, lip) * a_lip * saturate(1.0 + a_aboveWater / WATER_FOAM_SINK);
+	}
+
+	/** How level an edge of a_value runs in the world (1: its gradient is vertical, the edge horizontal; 0: an upright edge). */
+	float EdgeLevel(float a_value, float3 a_position)
+	{
+		const float3 dpx = ddx(a_position), dpy = ddy(a_position);
+		const float dvx = ddx(a_value), dvy = ddy(a_value);
+		// the gradient in the surface's plane: g = a dpx + b dpy with g.dpx = dvx, g.dpy = dvy
+		const float xx = dot(dpx, dpx), xy = dot(dpx, dpy), yy = dot(dpy, dpy);
+		const float det = xx * yy - xy * xy;
+		if (abs(det) < 1e-12)
+			return 0.0;
+		const float a = (dvx * yy - dvy * xy) / det, b = (dvy * xx - dvx * xy) / det;
+		const float3 g = a * dpx + b * dpy;
+		const float len = length(g);
+		return len > 1e-6 ? smoothstep(CONTACT_LEVEL.x, CONTACT_LEVEL.y, abs(g.z) / len) : 0.0;
+	}
+
 	/** D174: the river's foam pattern on a fixed world plane (axes a_u, a_v): two phases drifting at a_drift (units/s) and restarting. */
 	float FoamPlane(Texture2D<float4> a_tex, SamplerState a_sampler, float3 a_world, float3 a_u, float3 a_v, float2 a_drift, float a_time, float a_mipBias)
 	{
@@ -616,15 +929,21 @@ namespace FallShading
 	 * D188: a_normal tilted by the slope of the vertex wobble (FallGround::Wobble, along a_up), by central differences over its
 	 * streak and run. a_wobble: FallGround::WobbleAt (z in world units, w world units per run unit); a_frame: the run's direction.
 	 */
-	float3 WobbleNormal(float3 a_normal, float3 a_up, float3 a_frame, float4 a_wobble, float a_stretch)
+	/** The surface's height by the wobble (a_sizes: along the surface, and a unified sheet's vertical bob along the normal; world units). */
+	float WobbleHeight(float a_across, float a_run, float2 a_sizes)
 	{
-		if (a_wobble.z <= 0.01 || a_wobble.w <= 1e-3)
+		return a_sizes.x * FallGround::Wobble(a_across, a_run) + (a_sizes.y > 0.0 ? a_sizes.y * FallGround::BobLayers(a_across, a_run) : 0.0);
+	}
+
+	float3 WobbleNormal(float3 a_normal, float3 a_up, float3 a_frame, float4 a_wobble, float2 a_sizes, float a_stretch)
+	{
+		if (a_sizes.x + a_sizes.y <= 0.01 || a_wobble.w <= 1e-3)
 			return a_normal;
 		static const float STEP = 0.01;
-		const float dRun = (FallGround::Wobble(a_wobble.x, a_wobble.y + STEP) - FallGround::Wobble(a_wobble.x, a_wobble.y - STEP)) / (2.0 * STEP);
-		const float dAcross = (FallGround::Wobble(a_wobble.x + STEP, a_wobble.y) - FallGround::Wobble(a_wobble.x - STEP, a_wobble.y)) / (2.0 * STEP);
+		const float dRun = (WobbleHeight(a_wobble.x, a_wobble.y + STEP, a_sizes) - WobbleHeight(a_wobble.x, a_wobble.y - STEP, a_sizes)) / (2.0 * STEP);
+		const float dAcross = (WobbleHeight(a_wobble.x + STEP, a_wobble.y, a_sizes) - WobbleHeight(a_wobble.x - STEP, a_wobble.y, a_sizes)) / (2.0 * STEP);
 		const float runScale = a_wobble.w, acrossScale = a_wobble.w / max(a_stretch, 0.25);
-		float2 slope = float2(dAcross / acrossScale, dRun / runScale) * a_wobble.z * WOBBLE_LIGHT;
+		float2 slope = float2(dAcross / acrossScale, dRun / runScale) * WOBBLE_LIGHT;
 		const float tilt = length(slope);
 		slope *= tilt > WOBBLE_MOST_TILT ? WOBBLE_MOST_TILT / tilt : 1.0;
 		const float3 along = SafeNormalize(a_frame - a_up * dot(a_frame, a_up), cross(a_up, float3(1.0, 0.0, 0.0)));
@@ -705,7 +1024,8 @@ namespace FallShading
 	/** D181: foam break-up mask (0 to 1, a strength multiplier): the pattern at a quarter frequency, so dense foam isn't an even sheet. */
 	float FoamBreakup(Texture2D<float4> a_tex, SamplerState a_sampler, float2 a_flowUv, float a_mipBias, float a_stretch)
 	{
-		const float2 uv = float2(a_flowUv.x, a_flowUv.y * a_stretch) * FlowScale(FOAM_TILE * 4.0) + 0.13;
+		// widened across by the stretch, not drawn out along: a varying stretch along broke its tiling, so it jumped as the scroll wrapped
+		const float2 uv = float2(a_flowUv.x / max(a_stretch, 0.25), a_flowUv.y) * FlowScale(FOAM_TILE * 4.0) + 0.13;
 		// Four mips down: the sharp mask flickered in shards
 		const float n = length(a_tex.SampleBias(a_sampler, uv, a_mipBias + 4.0).xy * 2.0 - 1.0) * 1.4;
 		return lerp(FOAM_BREAKUP_LEAST, 1.0, smoothstep(0.1, 0.9, n));
@@ -735,7 +1055,8 @@ namespace FallShading
 	static const float AERATION_DEEP_TINT = 0.6;
 
 	/** D189: x cover (0 to 1), y light over the surface's; D190: z mean depth of the cover (0 first layer, 1 last). a_drive: AerationCover's. */
-	float3 AerationVolume(Texture2D<float4> a_tex, SamplerState a_sampler, float2 a_flowUv, float2 a_viewShift, float a_drive, float a_mipBias, float a_stretch)
+	float3 AerationVolume(Texture2D<float4> a_tex, SamplerState a_sampler, float2 a_flowUv, float2 a_viewShift, float a_drive, float a_mipBias, float a_stretch, int a_layers = AERATION_LAYERS,
+		float a_frontCover = AERATION_FRONT_COVER, float a_layerOpacity = 0.7)
 	{
 		// Gradients outside the branch (the layers share tiles, shifted)
 		const float2 tiles = a_flowUv * FlowScale(FOAM_TILE);
@@ -745,12 +1066,14 @@ namespace FallShading
 		{
 			[unroll] for (int k = 0; k < AERATION_LAYERS; k++)
 			{
+				if (k >= a_layers)
+					break;
 				const float t = k / max(AERATION_LAYERS - 1.0, 1.0);
 				const float depth = lerp(AERATION_DEPTH_FIRST, AERATION_DEPTH_LAST, t * t);
 				const float pattern = FlowFoamPatternGrad(a_tex, a_sampler, a_flowUv + a_viewShift * depth + float2(0.37, 0.19) * k, tilesDx, tilesDy,
 					a_mipBias + t * AERATION_DEEP_BLUR, a_stretch);
-				const float share = lerp(AERATION_FRONT_COVER, 1.0, smoothstep(0.0, 0.4, t)) * lerp(1.0, AERATION_DEEP_COVER, t);
-				const float layer = AerationCover(a_drive * lerp(1.0, 0.8, t), pattern) * 0.7 * share;
+				const float share = lerp(a_frontCover, 1.0, smoothstep(0.0, 0.4, t)) * lerp(1.0, AERATION_DEEP_COVER, t);
+				const float layer = saturate(AerationCover(a_drive * lerp(1.0, 0.8, t), pattern) * a_layerOpacity * share);
 				cover += through * layer;
 				light += through * layer * lerp(1.0, AERATION_DEEP_LIGHT, t);
 				deep += through * layer * t;

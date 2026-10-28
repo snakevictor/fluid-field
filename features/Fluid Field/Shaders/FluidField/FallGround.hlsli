@@ -13,7 +13,7 @@ namespace FallGround
 		float InverseCell;     // Texels per world unit
 		float Size;            // Texels per side
 		uint Enabled;          // This draw is a grounded mesh
-		uint DebugMode;        // 0 off; 1 bake; 2 flow direction; 3 vanilla's texture
+		uint DebugMode;        // 0 off; 1 bake; 2 flow direction; 3 vanilla's texture; 4 depth behind; 5 quadrants
 		float Time;            // Seconds
 		float PoolFoamHeight;  // World units above the water below over which the falls foam into it
 		float2 Scroll;         // D67: the falls' shared scroll (texture coordinates, at most one repeat) and its rate per second
@@ -26,8 +26,9 @@ namespace FallGround
 		uint BakeOn;           // D59: this mesh has a FlowBake
 		float PreviousPhase;   // D85: last frame's Scroll.x, for the wobble's motion vectors
 		float BlendAlpha;      // D91 experiment: a blended dense copy's clear-water transparency (0: opaque, every other draw)
-		float GroundPad;
-		float4 BakeRect;  // D59: the bake's least u and v, and one over its extent
+		uint BakeVelocity;     // A unified sheet: the velocity from the bake's coordinates (its uv only addresses the bake)
+		float4 BakeRect;       // D59: the bake's least u and v, and one over its extent
+		float4 AerationLook;   // x height fallen before air or foam; y the bake's aeration to foam; z milk scale; w the aeration foam starts at
 	};
 
 	Texture2D<float2> Heights : register(t120);  // Captured rock (x, unused here) and the pools' surface (y, D36)
@@ -155,14 +156,25 @@ namespace FallGround
 	 * D85: the falls' wobble at (streak, run less phase): waves across the flow riding down with the texture, broken
 	 * by noise. Periodic per texture repeat so the phase's wrap never jumps. D88: -0.15 to 0.85 (mostly up).
 	 */
-	float Wobble(float a_across, float a_run)
+	/** A wobble of a_waves whole crests per texture repeat (D91: whole, or it jumps at the phase wrap), noised at a_cells (whole). */
+	float WobbleWave(float a_across, float a_run, float a_waves, float2 a_bendCells, float2 a_noiseCells)
 	{
-		static const float WAVES = 2.0;  // Crests per texture repeat. D90: shorter waves folded triangles; D91: whole, or it jumps at the phase wrap
-		const float wave = sin(6.2831853 * WAVES * a_run + 1.7 * WobbleNoise(float2(a_across, a_run), float2(2.0, 2.0)));
-		const float wobble = 0.65 * wave + 0.35 * WobbleNoise(float2(a_across, a_run), float2(3.0, 4.0));
+		const float wave = sin(6.2831853 * a_waves * a_run + 1.7 * WobbleNoise(float2(a_across, a_run), a_bendCells));
+		const float wobble = 0.65 * wave + 0.35 * WobbleNoise(float2(a_across, a_run), a_noiseCells);
 		// D88: mostly outward; dipping far sank the water into its banks
 		return 0.5 * wobble + 0.35;
 	}
+
+	float Wobble(float a_across, float a_run)
+	{
+		return WobbleWave(a_across, a_run, 2.0, float2(2.0, 2.0), float2(3.0, 4.0));  // D90: shorter waves folded triangles
+	}
+
+	/** A unified sheet's vertical motion: a slow swell (one crest per repeat) and a finer, quicker bubbling over it, their shares. */
+	static const float Z_SLOW_SHARE = 0.55;
+	static const float Z_FINE_SHARE = 0.3;
+	static const float Z_MICRO_SHARE = 0.18;  ///< and a smaller, quicker one still
+	static const float Z_MOST = 25.0;         ///< world units its vertical motion reaches at most
 
 	/** D124: a vertex's depth under the water its fall pours from; NO_WATER where none. */
 	float BelowSource(uint a_vertex)
@@ -221,12 +233,55 @@ namespace FallGround
 	}
 
 	/** D69, D82, D85: a falls vertex's move (seam gap, swell, wobble at phase a_phase), mesh space; 0 on other draws. */
-	float3 Shift(uint a_vertex, float a_phase)
+	/** A unified sheet's vertical layers at (a_across, a_run): the slow swell, the finer bubbling and the smaller one over it. */
+	float BobLayers(float a_across, float a_run)
+	{
+		return Z_SLOW_SHARE * WobbleWave(a_across, a_run, 1.0, float2(2.0, 1.0), float2(3.0, 2.0)) +
+		       Z_FINE_SHARE * WobbleWave(a_across * 3.0, a_run, 5.0, float2(5.0, 5.0), float2(7.0, 10.0)) +
+		       Z_MICRO_SHARE * WobbleWave(a_across * 7.0, a_run, 11.0, float2(11.0, 11.0), float2(13.0, 18.0));
+	}
+
+	/** A unified sheet's wobble split (a_up: world up in model space): its vertical part, and the Z_MOST clamp's scale at a_run. */
+	void SplitWobble(FallVertex a_vertex, float a_run, float3 a_up, out float3 o_vertical, out float o_clamp)
+	{
+		const float3 up = normalize(a_up);
+		o_vertical = up * dot(a_vertex.c.xyz, up);
+		const float reach = length(o_vertical) * abs(BobLayers(a_vertex.b.w, a_run));
+		const float most = Z_MOST / length(a_up);  // (a_up's length is the model's scale)
+		o_clamp = reach > most ? most / reach : 1.0;
+	}
+
+	/** a_up: world up in the model's space (its model-to-world matrix's third row): a unified sheet's wobble splits off its vertical part. */
+	float3 Shift(uint a_vertex, float a_phase, float3 a_up)
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
 			return 0.0;
 		const FallVertex fallVertex = VertexClip[VertexBase + a_vertex];
-		return fallVertex.b.xyz + fallVertex.c.xyz * Wobble(fallVertex.b.w, fallVertex.c.w - a_phase);
+		const float across = fallVertex.b.w, run = fallVertex.c.w - a_phase;
+		if (!BakeVelocity || dot(a_up, a_up) < 1e-8)
+			return fallVertex.b.xyz + fallVertex.c.xyz * Wobble(across, run);
+		float3 vertical;
+		float clampScale;
+		SplitWobble(fallVertex, run, a_up, vertical, clampScale);
+		return fallVertex.b.xyz + (fallVertex.c.xyz - vertical) * Wobble(across, run) + vertical * BobLayers(across, run) * clampScale;
+	}
+
+	/**
+	 * For the lighting (FallShading::WobbleNormal): a vertex's wobble along its surface, and its vertical bob's share along its normal
+	 * (a_normal: model space), model units; a sheet that is not unified has all its wobble in x.
+	 */
+	float2 WobbleSizes(uint a_vertex, float a_phase, float3 a_up, float3 a_normal)
+	{
+		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
+			return 0.0;
+		const FallVertex fallVertex = VertexClip[VertexBase + a_vertex];
+		if (!BakeVelocity || dot(a_up, a_up) < 1e-8)
+			return float2(length(fallVertex.c.xyz), 0.0);
+		float3 vertical;
+		float clampScale;
+		SplitWobble(fallVertex, fallVertex.c.w - a_phase, a_up, vertical, clampScale);
+		const float facing = abs(dot(normalize(a_up), a_normal / max(length(a_normal), 1e-6)));
+		return float2(length(fallVertex.c.xyz - vertical), length(vertical) * clampScale * facing);
 	}
 
 	/**
@@ -255,6 +310,8 @@ namespace FallGround
 		float3 frame;     // D186: world direction of the along coordinate (the normal maps' frame); zero where unknown
 		float4 plunge;    // D188: x landing strength, y foam left after it; D189: z height fallen; D190: w progress of its own drop
 		float stretch;    // D181: BakeStretchAt
+		float streak;     // a unified sheet's streaks left (0 once its water has met rock); 1 elsewhere
+		float column;     // A unified sheet's streak columns (across for the ribbons; uvA.x elsewhere)
 	};
 
 	/**
@@ -298,30 +355,73 @@ namespace FallGround
 	 * bend round rock, speed up with the water and run on into the next mesh; only the scroll moves in time, so the
 	 * texture cannot pulse or run back. Without a bake, vanilla's coordinates under the same scroll.
 	 */
+	/** A unified sheet: the fastest its textures run (world units/s; the bake's speed reaches 600+, which spun the foam). */
+	static const float UNIFIED_SPEED_MOST = 250.0;
+
 	FlowSample Flow(float2 a_uv, float3 a_position)
 	{
 		FlowSample result;
 		const float2 uvStill = (a_uv - TexOffset) * InverseScale;
 		const float4 baked = BakeAt(uvStill);
 		result.foam = baked.w;
-		result.wake = baked.z;
+		const bool unifiedSheet = BakeOn && BakeVelocity;
+		result.wake = unifiedSheet ? 0.0 : baked.z;  // a unified sheet keeps its streak columns there
 		result.runTime = BakeOn ? max(baked.y, 0.0) / max(Scroll.y, 1e-3) : 0.0;
 		result.fields = BakeFieldsAt(uvStill);
 		const float4 third = BakeOn ? BakeRowsAt(uvStill, 2) : float4(1.0, 0.0, 0.0, 0.0);
 		result.stretch = max(third.x, 0.25);
+		result.streak = unifiedSheet ? saturate(third.x) : 1.0;  // (its own stretch is set below, so the bake keeps its streaks there)
 		result.frame = third.yzw;
 		result.plunge = BakeOn ? BakeRowsAt(uvStill, 3) : 0.0;
-		const float2 uvBase = (BakeOn ? baked.xy : uvStill) - float2(0.0, Scroll.x);
+		float2 uvBase = (BakeOn ? baked.xy : uvStill) - float2(0.0, Scroll.x);
+		// a unified sheet: across is its flow's streamlines (the bake's columns, mapped to u), along its travel time, so every texture on
+		// these coordinates follows the flow; its stretch the travel time's (speed over the scroll) against the uv's own scale
+		if (unifiedSheet) {
+			uvBase.x = baked.z;
+			result.stretch = clamp(min(result.fields.x * 300.0, UNIFIED_SPEED_MOST) / max(Scroll.y * 968.0, 1e-3), 0.25, 4.0);
+		}
 		result.uvA = uvBase;
+		result.column = unifiedSheet ? baked.z : uvBase.x;
 		result.velocity = 0.0;
 		const float3 dpx = ddx(a_position);
 		const float3 dpy = ddy(a_position);
-		const float2 dux = ddx(a_uv);
-		const float2 duy = ddy(a_uv);
+		const float2 dux = BakeVelocity && BakeOn ? ddx(baked.xy) : ddx(a_uv);
+		const float2 duy = BakeVelocity && BakeOn ? ddy(baked.xy) : ddy(a_uv);
 		const float det = dux.x * duy.y - dux.y * duy.x;
 		if (abs(det) > 1e-12)
 			result.velocity = (dpy * dux.x - dpx * duy.x) / det * Scroll.y;
+		// a unified sheet: its baked flow direction at the bake's speed (world units/s)
+		if (unifiedSheet && dot(result.frame, result.frame) > 0.25)
+			result.velocity = normalize(result.frame) * min(result.fields.x * 300.0, UNIFIED_SPEED_MOST);
 		return result;
+	}
+
+	/** A unified sheet's flow-mapping: the advection's seconds per phase, and the most a phase carries (world units). */
+	static const float ADVECT_SECONDS = 0.35;
+	static const float ADVECT_MOST = 160.0;
+
+	/**
+	 * A unified sheet's texture carried along its baked flow (two phases half a cycle apart, crossfaded, each reset while unseen): the
+	 * two coordinates on the mesh's own even uv (a_uv, its 1 per FALLS_UV world units), and the first's weight. The velocity becomes
+	 * mesh uv per second through the screen derivatives of the position and the uv (both smooth on the sheet).
+	 */
+	float AdvectedUv(float2 a_uv, float3 a_velocity, float3 a_position, float a_time, out float2 o_uv0, out float2 o_uv1)
+	{
+		const float3 dpx = ddx(a_position), dpy = ddy(a_position);
+		const float2 dux = ddx(a_uv), duy = ddy(a_uv);
+		const float pxx = dot(dpx, dpx), pxy = dot(dpx, dpy), pyy = dot(dpy, dpy);
+		const float det = pxx * pyy - pxy * pxy;
+		const float2 ab = abs(det) > 1e-12 ? float2(pyy * dot(a_velocity, dpx) - pxy * dot(a_velocity, dpy), pxx * dot(a_velocity, dpy) - pxy * dot(a_velocity, dpx)) / det : 0.0;
+		float2 uvVelocity = dux * ab.x + duy * ab.y;
+		// the most a phase carries, in the uv's own scale (from the same derivatives)
+		const float uvPerUnit = length(dux) / max(length(dpx), 1e-4) * 0.5 + length(duy) / max(length(dpy), 1e-4) * 0.5;
+		const float most = ADVECT_MOST * uvPerUnit / ADVECT_SECONDS;
+		const float speed = length(uvVelocity);
+		uvVelocity *= speed > most ? most / speed : 1.0;
+		const float phase0 = frac(a_time / ADVECT_SECONDS), phase1 = frac(a_time / ADVECT_SECONDS + 0.5);
+		o_uv0 = a_uv - uvVelocity * phase0 * ADVECT_SECONDS + 0.37 * floor(a_time / ADVECT_SECONDS);
+		o_uv1 = a_uv - uvVelocity * phase1 * ADVECT_SECONDS + 0.53 * floor(a_time / ADVECT_SECONDS + 0.5);
+		return 1.0 - abs(2.0 * phase0 - 1.0);
 	}
 
 	float LaceHash(float2 a_p)

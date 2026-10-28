@@ -306,6 +306,49 @@ namespace FluidField
 	}
 
 	/** D181: most foam cover (river, falls and pools), slightly see-through. */
+	/** Showcase views drawn on the water itself (fluidFieldSettings.DebugView): 1 flow, 2 foam, 3 surface height. */
+	static const float DEBUG_FLOW_FULL = 300.0;    // World units/s at full brightness
+	static const float DEBUG_LINE_SPACING = 48.0;  // World units between the flow view's moving lines
+	static const float DEBUG_HEIGHT_FULL = 8.0;    // World units of height offset at full colour
+	static const float DEBUG_CONTOUR = 2.0;        // World units between height contours
+	static const float DEBUG_BLEND = 0.85;         // Share of the view over the shaded water
+
+	float3 DebugHue(float a_turns)
+	{
+		return saturate(abs(frac(a_turns + float3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0);
+	}
+
+	float3 DebugColor(float3 a_worldPosition, float3 a_shaded, uint a_view)
+	{
+		float4 surface;
+		if (!SampleSurface(a_worldPosition, surface))
+			return a_shaded;
+		const float4 flowFoam = FlowFoamAtWorld(a_worldPosition.xy);
+		float3 view = 0.0;
+		if (a_view == 1) {
+			// Hue by direction, brightness by speed, lines moving with the water
+			const float speed = length(flowFoam.xy);
+			const float2 way = speed > 1e-3 ? flowFoam.xy / speed : float2(0.0, 1.0);
+			const float hue = atan2(way.y, way.x) / 6.2831853 + 0.5;
+			const float phase = frac((dot(a_worldPosition.xy, way) - SharedData::Timer * speed) / DEBUG_LINE_SPACING);
+			const float stripe = smoothstep(0.0, 0.08, phase) * (1.0 - smoothstep(0.12, 0.25, phase));
+			const float bright = saturate(speed / DEBUG_FLOW_FULL);
+			view = DebugHue(hue) * (0.25 + 0.75 * bright) + stripe * bright * 0.6;
+		} else if (a_view == 2) {
+			// Foam: dark blue to white
+			const float foam = saturate(flowFoam.z);
+			view = lerp(float3(0.02, 0.05, 0.15), float3(1.0, 1.0, 1.0), foam) + float3(0.6, 0.3, 0.0) * smoothstep(0.85, 1.0, foam);
+		} else {
+			// Height offset from the resting surface: blue below, red above, with contour lines
+			const float h = surface.z;
+			const float t = saturate(abs(h) / DEBUG_HEIGHT_FULL);
+			view = lerp(float3(0.9, 0.9, 0.9), h < 0.0 ? float3(0.1, 0.3, 1.0) : float3(1.0, 0.25, 0.1), t);
+			const float contour = abs(frac(h / DEBUG_CONTOUR + 0.5) - 0.5) * DEBUG_CONTOUR;
+			view *= lerp(0.35, 1.0, smoothstep(0.0, 0.15, contour));
+		}
+		return lerp(a_shaded, view, DEBUG_BLEND * saturate(surface.w));
+	}
+
 	static const float FOAM_OPACITY = 0.8;
 	/** World units one tile of the foam's breakup pattern covers. */
 	static const float FOAM_TILE = 160.0;

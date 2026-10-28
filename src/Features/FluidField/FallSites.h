@@ -118,6 +118,9 @@ namespace FluidFieldSim
 		 * (SV_ClipDistance; negative inside); D67: overlap visibility (1 whole, 0 gone; edges over a leading mesh dither out
 		 * so the two blend); D68: height above the water below (NO_WATER: none); D69: the move, in mesh space, closing a gap.
 		 */
+		/** A site's unified sheet (its uv addresses its bake only; the flow's scale comes from the bake). */
+		bool IsUnified(const RE::BSGeometry* a_geometry) const { return unifiedShapes.contains(a_geometry); }
+
 		bool GetVertexClip(const RE::BSGeometry* a_geometry, uint32_t& a_base) const
 		{
 			const auto it = vertexClipBase.find(a_geometry);
@@ -144,6 +147,10 @@ namespace FluidFieldSim
 		 * engine setup, so they may join the blended pass (realtime-integration-design.md 5.2, cause 1). Built copies keep theirs.
 		 */
 		void SetBlendedCopies(bool a_on) { blendedCopies = a_on; }
+		/** @brief Unified falls: draws a site's precomputed sheet where one is cached (off: the per-mesh dense copies). */
+		void SetUnifiedFalls(bool a_on);
+		/** @brief Off: falls without a precomputed site sheet get no in-game bake (testing the unified sites alone). */
+		void SetBakeOthers(bool a_on) { bakeOthers = a_on; }
 		/** @brief D91: the alpha flags the falls' effect layers carry: blended, SrcAlpha / InvSrcAlpha. */
 		static constexpr uint16_t BLENDED_ALPHA_FLAGS = 0x10ED;
 		/** @brief D61: the pool surface over a world point (D78: ComputePools), or false where there is none yet. */
@@ -612,7 +619,7 @@ namespace FluidFieldSim
 		static constexpr float CLIP_RANGE = 32.0f;            ///< The most a vertex counts as in or out, so the cut stays near the rock's face
 		static constexpr double CLIP_BUDGET_MS = 3.0;
 		static constexpr float BAKE_TEXEL = 8.0f;          ///< D59: world units per bake texel (D181, D183: steps vs cost)
-		static constexpr uint32_t BAKE_MOST_SIDE = 256;    ///< ...and the most texels along a side (D181, D183)
+		static constexpr uint32_t BAKE_MOST_SIDE = 512;    ///< ...and the most texels along a side (D181, D183; unified falls: a whole site)
 		static constexpr float BAKE_ROCK_MARGIN = 24.0f;   ///< A texel this far inside rock is still water (vanilla's sheets dip into the rock they lie on)
 		static constexpr double BAKE_BUDGET_MS = 5.0;      ///< D185: bake work per frame, ms (its rock tests set a cold load's pace)
 		static constexpr float CLEAR_AGREE = 16.0f;        ///< D185: tested neighbours' clearances this close agree: the texels between take their mean
@@ -657,6 +664,47 @@ namespace FluidFieldSim
 		};
 		std::unordered_map<const RE::BSGeometry*, DenseCopy> denseOf;  ///< By original
 		std::unordered_set<const RE::BSGeometry*> denseShapes;
+		/**
+		 * @brief Unified falls: a site's precomputed sheet (tools/unify, offline: one continuous surface for all its falls meshes,
+		 * rock never cutting it), from FluidField/Sites/*.unfs, drawn in place of its members' lit meshes and their dense copies.
+		 */
+		struct BakeField;
+		struct UnifiedCache
+		{
+			std::string path;
+			std::vector<RE::FormID> members;      ///< The site's falls references (resolved from plugin and local ID)
+			std::vector<RE::NiPoint3> positions;  ///< World space
+			std::vector<RE::NiPoint3> normals;    ///< Toward the viewer
+			std::vector<RE::NiPoint2> uvs;        ///< One chart: the bake's grid
+			std::vector<uint8_t> flags;           ///< +1 inside rock (the bake ignores it)
+			std::vector<RE::NiColorA> colors;     ///< The members' vertex colours (vanilla's water tint)
+			std::vector<uint16_t> indices;
+			std::shared_ptr<BakeField> bake;  ///< Its flow bake, baked offline (beside it as .ffbk), or null (baked here)
+			std::filesystem::path bakePath;
+			std::filesystem::file_time_type bakeTime{};  ///< When the bake read was written (hot reload: a newer one is read again)
+		};
+		struct UnifiedShape
+		{
+			RE::NiPointer<RE::BSTriShape> shape;
+			RE::NiPointer<RE::NiNode> parent;
+			std::vector<RE::NiPointer<RE::BSGeometry>> hidden;  ///< The members' lit meshes it replaces (app-culled)
+		};
+		std::vector<UnifiedCache> unifiedCaches;
+		bool unifiedLoaded = false;
+		bool unifiedFalls = true;
+		bool bakeOthers = true;                                   ///< Off: falls without a site cache are not baked here (drawn and culled, no flow)
+		std::unordered_map<std::size_t, UnifiedShape> unifiedOf;  ///< By cache index
+		std::unordered_set<const RE::BSGeometry*> unifiedShapes;
+		std::unordered_set<const RE::BSGeometry*> linkUnified;  ///< unifiedShapes as LinkBakes' worker started
+		/** @brief Unified falls: reads every site cache once (members resolved through the data handler). */
+		void LoadUnifiedCaches();
+		/** @brief Unified falls: a site bake rewritten on disk read again and relinked, its sheet's depth behind redone (hot reload). */
+		void ReloadChangedBakes();
+		std::chrono::steady_clock::time_point bakeCheckedAt{};
+		/** @brief Unified falls: the cache's engine shape under a_root (a member's model root), a_material's lit property cloned. */
+		RE::BSTriShape* AttachUnified(std::size_t a_cache, RE::NiNode* a_root, RE::BSGeometry* a_material);
+		/** @brief Unified falls: detaches every site shape and shows the members' meshes again. */
+		void RemoveUnified();
 		bool refreshing = false;
 		static constexpr bool DENSE = true;
 		static constexpr float DENSE_TRIM_UNDER = 24.0f;         ///< D172: the dense copies are cut this far under the landscape (BURY_LAND: the cut line stays in the ground)
@@ -702,8 +750,12 @@ namespace FluidFieldSim
 			bool interior = false;
 			double gatherMs = 0.0;
 		};
-		/** @brief D173: the statics' render triangles over an area (not the falls' models) and the dense copies made before. */
-		void GatherOccluders(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<FallVisibility::Triangle>& o_triangles) const;
+		/** @brief D173: the statics' render triangles over an area (not the falls' models) and the dense copies made before.
+		 * With a report (the unified-falls dump): every reference type and lit shader, triangles spanning the area too, and a line per
+		 * reference of what was taken or skipped and why. */
+		void GatherOccluders(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<FallVisibility::Triangle>& o_triangles, std::string* o_report = nullptr) const;
+		/** @brief Unified falls, phase 0: each lit mesh, the statics and the landscape round them, next to the log (offline harness input). */
+		void DumpUnifyInputs() const;
 		/** @brief D173: on the worker, after the batch's copies are made: their triangles seen from nowhere dropped. */
 		static void TrimHidden(const std::vector<DenseJob*>& a_jobs, const ShellInput& a_shell);
 		static constexpr float OCCLUDER_REACH = 1024.0f;  ///< D173: world units round a batch its statics are gathered
@@ -741,6 +793,8 @@ namespace FluidFieldSim
 			std::vector<float> disturbance;            ///< D85: how stirred the water is there (the wobble's size), softened
 			std::vector<float> fallen;                 ///< D189: world units its water has fallen down steep faces, softened (the shading's drop); D190: recently
 			std::vector<float> calm;                   ///< D190: world units run on calm water from the lip, softened (what it carried in clears by them)
+			std::vector<RE::NiPoint3> flow;            ///< A unified sheet's flow direction (world, unit), baked offline; empty elsewhere
+			std::vector<float> streak;                 ///< A unified sheet's streaks left (1, to 0 once its water has met rock), baked offline
 			std::vector<float> clearFront, clearBack;  ///< D104: as BakeJob's: the open water or air on each side of the sheet (its depth behind, once its outer side is known)
 		};
 		static constexpr float PLUNGE_WHITE_HEIGHT = 300.0f;  ///< D190: world units from its tangent to its foot over which a fall whitens fully: shorter ones only partly
@@ -759,36 +813,45 @@ namespace FluidFieldSim
 		 * in its own space, broad shapes only; none at its open edges (cracks between meshes)
 		 */
 		void ComputePushes();
-		static constexpr float PUSH_MOST = 20.0f;            ///< D82: world units the water swells out at most (D83)
-		static constexpr float PUSH_FROM = 1.0f;             ///< D82: swell the push starts at (the sheet mostly runs 0 to 2.5)...
-		static constexpr float PUSH_FULL = 3.0f;             ///< D82: ...and is whole at (piling against or squeezing between rocks: 5 to 20; D83)
-		static constexpr int32_t LEAD_TEST_REACH = 12;       ///< D83: hidden lead-in texels this far across from running water still get the rock test
-		static constexpr int PUSH_BLUR = 2;                  ///< D82: passes softening the swell (D84: few: steeper, rounder mounds)
-		static constexpr float WOBBLE_MOST = 28.0f;          ///< D85: world units the water wobbles at most, where most stirred (D90)...
-		static constexpr float WOBBLE_CALM = 10.0f;          ///< D85: ...and everywhere else (its breathing; D90)
-		static constexpr float WOBBLE_STIRRED = 1.5f;        ///< D85: disturbance at which the wobble is whole
-		static constexpr float WOBBLE_CRASH = 36.0f;         ///< D191: world units more where a plunge crashes white (the bake's progress down its fall)
-		static constexpr float WOBBLE_CRASH_FROM = 0.25f;    ///< D191: the fall's progress where that starts...
-		static constexpr float WOBBLE_CRASH_FULL = 0.7f;     ///< D191: ...and where it is whole
-		static constexpr float PROGRESS_ABOVE_MOST = 0.98f;  ///< D191: the most a fall's progress runs above its tangent (-1 is a mesh with no fall)
-		static constexpr int PROGRESS_SOFTEN_PASSES = 6;     ///< D191: passes softening the progress over the texels (it came in in blocks)
-		static constexpr float POOL_LINK_TOP = 64.0f;        ///< D191: world units a fall's top lies within of its pool's surface to pour out of it (and the most a lander's foot may lie over it)
-		static constexpr float POOL_LINK_ABOVE = 200.0f;     ///< D191: world units a fall's crest may stand over the water it pours out of (vanilla's: up to ~120)
-		static constexpr float POOL_LINK_LEVEL = 16.0f;      ///< D191: world units two pools' surfaces may differ by and be the same pool
-		static constexpr float POOL_LINK_REACH = 1500.0f;    ///< D191: world units across the pool a fall's landing may lie from where another pours out
-		static constexpr float POOL_CARRY_RUN = 800.0f;      ///< D191: world units across a pool over which the white water carried fades by e
-		static constexpr float WOBBLE_IMPACT = 36.0f;        ///< D191: world units more where a plunge's water lands (its impact, ComputePlunges: ApplyWobbleImpacts)
-		static constexpr float WOBBLE_EDGE_REACH = 50.0f;    ///< D88: wobble fade-in from open edges (D89: and rock), world units (D90)
-		static constexpr float WOBBLE_SLOPE = 0.5f;          ///< D99: the wobble's size climbs at most this many units per unit along the mesh...
-		static constexpr float PUSH_SLOPE = 0.5f;            ///< D99: ...and the swell's push likewise (from 0 at open edges and rock: no spikes over one triangle)
-		static constexpr float DENSE_FINE_EDGE = 12.0f;      ///< D186: world units under which a copy's edge is fine (split near a solid, DENSE_EDGE_NEAR)...
-		static constexpr float PUSH_SLOPE_FINE = 0.35f;      ///< D186: ...where the swell's push may climb this steeply (a pile-up against the rock within a few edges)
-		static constexpr float WOBBLE_SLOPE_FINE = 0.35f;    ///< D186: ...and the wobble's size
-		static constexpr float ROCK_REACH = 60.0f;           ///< D186: world units from rock its distance is measured over (the push's ramp off it)
-		static constexpr float ROCK_CONTACT = 6.0f;          ///< D186: world units off rock where neither swell nor wobble moves the sheet...
-		static constexpr float ROCK_RAMP = 30.0f;            ///< D186: ...rising to whole over this far
-		static constexpr int ROCK_FIELD_PASSES = 24;         ///< D186: passes softening push and wobble size (many: deform over an area)
-		static constexpr int WOBBLE_COORD_PASSES = 12;       ///< D186: passes softening the wobble's coordinates
+		static constexpr float PUSH_MOST = 20.0f;                     ///< D82: world units the water swells out at most (D83)
+		static constexpr float PUSH_FROM = 1.0f;                      ///< D82: swell the push starts at (the sheet mostly runs 0 to 2.5)...
+		static constexpr float PUSH_FULL = 3.0f;                      ///< D82: ...and is whole at (piling against or squeezing between rocks: 5 to 20; D83)
+		static constexpr int32_t LEAD_TEST_REACH = 12;                ///< D83: hidden lead-in texels this far across from running water still get the rock test
+		static constexpr int PUSH_BLUR = 2;                           ///< D82: passes softening the swell (D84: few: steeper, rounder mounds)
+		static constexpr float WOBBLE_MOST = 28.0f;                   ///< D85: world units the water wobbles at most, where most stirred (D90)...
+		static constexpr float WOBBLE_CALM = 10.0f;                   ///< D85: ...and everywhere else (its breathing; D90)
+		static constexpr float WOBBLE_STIRRED = 1.5f;                 ///< D85: disturbance at which the wobble is whole
+		static constexpr float BOUNCE_MOST = 45.0f;                   ///< A unified sheet: world units its most aerated, level water bobs up and down
+		static constexpr float BOUNCE_AERATION[2] = { 0.35f, 0.8f };  ///< ...over this baked aeration
+		static constexpr float BOUNCE_FACING[2] = { 0.45f, 0.85f };   ///< ...and this facing (|world normal z|: plunging sheets get none)
+		static constexpr float UNIFIED_POOL_MOST = 35.0f;             ///< A unified sheet: world units its baked pooling (its swell) pushes out at most
+		static constexpr float UNIFIED_WOBBLE = 0.8f;                 ///< A unified sheet: its wobble along the normal, of the falls' (its bounce up more)
+		static constexpr float TURB_SPAN = 8.0f;                      ///< A unified sheet's bake: disturbance of whole turbulence (tools/unify/layers_to_ffbk.py)
+		static constexpr float TURB_WOBBLE = 40.0f;                   ///< World units more wobble where wholly turbulent...
+		static constexpr float TURB_PUSH = 15.0f;                     ///< ...and swell outward
+		static constexpr float TURB_EDGE_SHARE = 0.4f;                ///< Share of WOBBLE_EDGE_REACH over which that fades toward rock and the edges
+		static constexpr float WOBBLE_CRASH = 36.0f;                  ///< D191: world units more where a plunge crashes white (the bake's progress down its fall)
+		static constexpr float WOBBLE_CRASH_FROM = 0.25f;             ///< D191: the fall's progress where that starts...
+		static constexpr float WOBBLE_CRASH_FULL = 0.7f;              ///< D191: ...and where it is whole
+		static constexpr float PROGRESS_ABOVE_MOST = 0.98f;           ///< D191: the most a fall's progress runs above its tangent (-1 is a mesh with no fall)
+		static constexpr int PROGRESS_SOFTEN_PASSES = 6;              ///< D191: passes softening the progress over the texels (it came in in blocks)
+		static constexpr float POOL_LINK_TOP = 64.0f;                 ///< D191: world units a fall's top lies within of its pool's surface to pour out of it (and the most a lander's foot may lie over it)
+		static constexpr float POOL_LINK_ABOVE = 200.0f;              ///< D191: world units a fall's crest may stand over the water it pours out of (vanilla's: up to ~120)
+		static constexpr float POOL_LINK_LEVEL = 16.0f;               ///< D191: world units two pools' surfaces may differ by and be the same pool
+		static constexpr float POOL_LINK_REACH = 1500.0f;             ///< D191: world units across the pool a fall's landing may lie from where another pours out
+		static constexpr float POOL_CARRY_RUN = 800.0f;               ///< D191: world units across a pool over which the white water carried fades by e
+		static constexpr float WOBBLE_IMPACT = 36.0f;                 ///< D191: world units more where a plunge's water lands (its impact, ComputePlunges: ApplyWobbleImpacts)
+		static constexpr float WOBBLE_EDGE_REACH = 50.0f;             ///< D88: wobble fade-in from open edges (D89: and rock), world units (D90)
+		static constexpr float WOBBLE_SLOPE = 0.5f;                   ///< D99: the wobble's size climbs at most this many units per unit along the mesh...
+		static constexpr float PUSH_SLOPE = 0.5f;                     ///< D99: ...and the swell's push likewise (from 0 at open edges and rock: no spikes over one triangle)
+		static constexpr float DENSE_FINE_EDGE = 12.0f;               ///< D186: world units under which a copy's edge is fine (split near a solid, DENSE_EDGE_NEAR)...
+		static constexpr float PUSH_SLOPE_FINE = 0.35f;               ///< D186: ...where the swell's push may climb this steeply (a pile-up against the rock within a few edges)
+		static constexpr float WOBBLE_SLOPE_FINE = 0.35f;             ///< D186: ...and the wobble's size
+		static constexpr float ROCK_REACH = 60.0f;                    ///< D186: world units from rock its distance is measured over (the push's ramp off it)
+		static constexpr float ROCK_CONTACT = 6.0f;                   ///< D186: world units off rock where neither swell nor wobble moves the sheet...
+		static constexpr float ROCK_RAMP = 30.0f;                     ///< D186: ...rising to whole over this far
+		static constexpr int ROCK_FIELD_PASSES = 24;                  ///< D186: passes softening push and wobble size (many: deform over an area)
+		static constexpr int WOBBLE_COORD_PASSES = 12;                ///< D186: passes softening the wobble's coordinates
 		/** @brief D82: the vertex shifts the shaders read (vertexClips 4-6): the seams' gap shift (D69) and the push together. */
 		void ComposeShifts();
 		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> shiftedNormals;  ///< D186: each mesh's normals as its pushes leave it (model space)
