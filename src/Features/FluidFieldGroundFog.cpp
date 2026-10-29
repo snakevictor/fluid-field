@@ -238,7 +238,7 @@ void FluidFieldGroundFog::Prepass()
 	};
 
 	// Moving actors push the air (D21), one slot short of the most
-	const std::vector<FluidFieldSim::Emitter> windEmitters = airSources.Update(playerPos, gridMin, cellSize, settings.GridResolution, deltaTime, settings.FogStir,
+	const std::vector<FluidFieldSim::Emitter>& windEmitters = airSources.Update(playerPos, gridMin, cellSize, settings.GridResolution, deltaTime, settings.FogStir,
 		FluidFieldSim::WindSolver::MAX_EMITTERS - 1);
 
 	// The fog: carried by the wind and the weather's own wind, refilling behind actors
