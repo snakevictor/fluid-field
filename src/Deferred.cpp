@@ -666,7 +666,7 @@ void Deferred::Hooks::Main_RenderWorld::thunk(bool a1)
 	state->inWorld = true;
 	func(a1);
 
-	// Fluid Field's falls and ground fog go over the finished world, water included
+	// Waterfalls and Ground Fog draw over the finished world, water included
 	if (FluidFieldSim::Field::AnyActive())
 		FluidFieldSim::Field::Get().DrawAfterWorld();
 
