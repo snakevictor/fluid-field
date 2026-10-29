@@ -953,7 +953,7 @@
     "feature.fluid_field_waterfalls.fall_aeration_milk": "Aeration Milk",
     "feature.fluid_field_waterfalls.fall_aeration_milk_tooltip": "How milky aeration makes the clear water (0: stays clear).",
     "feature.fluid_field_waterfalls.fall_foam_start": "Foam Start Height",
-    "feature.fluid_field_waterfalls.fall_foam_start_tooltip": "How far the water falls, in world units, before it takes air or foam: the crest stays clear above it. Baked falls only.",
+    "feature.fluid_field_waterfalls.fall_foam_start_tooltip": "How far the water falls, in world units, before it takes air or foam: the crest stays clear above it.",
     "feature.fluid_field_waterfalls.fall_speed": "Falls Speed",
     "feature.fluid_field_waterfalls.fall_speed_tooltip": "How fast the falls' water runs, against vanilla's own speed. The whole flow speeds up alike, so the texture never stretches.",
     "feature.fluid_field_waterfalls.hide_underwater_falls": "Hide Buried Falls",
