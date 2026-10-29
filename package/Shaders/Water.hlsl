@@ -223,7 +223,8 @@ VS_OUTPUT main(uint vertexID : SV_VertexID)
 	vsout.NormalsScale = NormalsScale;
 
 	const FallSurfaceVertex fallVertex = FallVertices[vertexID];
-	const float3 model = fallVertex.Position + FallGround::Shift(vertexID, FallGround::Scroll.x, FallWorld[2].xyz);
+	const float3 fallShift = FallGround::Shift(vertexID, FallGround::Scroll.x, FallWorld[2].xyz);
+	const float3 model = fallVertex.Position + fallShift;
 	const float3 relative = mul(FallWorld, float4(model, 1.0)) - FrameBuffer::CameraPosAdjust.xyz;
 	const float4 worldViewPos = mul(FrameBuffer::CameraViewProj, float4(relative, 1.0));
 	vsout.HPosition = worldViewPos;
@@ -251,7 +252,6 @@ VS_OUTPUT main(uint vertexID : SV_VertexID)
 	vsout.FallFade.y = min(vsout.FallFade.y, 512.0);  // D139: the "none" value held before interpolation
 	vsout.FallFade.z = (!FallGround::Enabled || FallGround::VertexBase == FallGround::NO_VERTEX_CLIP) ? 1.0 : fmod(FallGround::VertexClip[FallGround::VertexBase + vertexID].a.w, 2.0);
 	// the depth behind moves with the vertex: pushed out along its normal (swell, wobble) the gap behind it widens, pulled in it narrows
-	const float3 fallShift = FallGround::Shift(vertexID, FallGround::Scroll.x, FallWorld[2].xyz);
 	const float fallShiftOut = dot(fallShift, fallVertex.Normal) / max(dot(fallVertex.Normal, fallVertex.Normal), 1e-6) * length(FallWorld[0].xyz);
 	vsout.FallData = float4(max(FallGround::Behind(vertexID) + fallShiftOut, 0.0), min(FallGround::BelowSource(vertexID), 512.0), min(FallGround::ToOtherSheet(vertexID), 512.0), fallShiftOut);  // (w: its push out)
 	vsout.FallOutward = float4(vsout.FallNormal * FallGround::OutwardSign(vertexID), FallGround::InnerCovered(vertexID));
@@ -1426,7 +1426,9 @@ PS_OUTPUT main(PS_INPUT input)
 		const float big = lerp(1.0 - FallShading::LUMP_BIG, 1.0 + 0.4 * FallShading::LUMP_BIG, FallShading::Morphing(fallFlow.uvA, FallShading::LUMP_BIG_CELLS, boil + 8.3));
 		fallLumpEdge = lerp(1.0, fine * big, lumps);
 	}
-	const float fallFoamDrive = fallFoamSource * fallLumpEdge * lerp(FallShading::FoamBreakup(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, 1.0), 1.0, smoothstep(0.45, 0.85, fallFoamSource));
+	// The foam's breakup, shared by its kinds
+	const float fallBreakup = FallShading::FoamBreakup(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, 1.0);
+	const float fallFoamDrive = fallFoamSource * fallLumpEdge * lerp(fallBreakup, 1.0, smoothstep(0.45, 0.85, fallFoamSource));
 	// D190: read where the view meets the raised lumps (parallax)
 	const float2 fallFoamUv = FallShading::FoamParallax(FallFoamTex, Normals01Sampler, fallFlow.uvA, fallViewShift, SharedData::MipBias, fallFoamStretch);
 	// All the foam one layer on the streaks' grain, churning in place (two layouts crossfaded): the flow coordinates already bend
@@ -1454,7 +1456,7 @@ PS_OUTPUT main(PS_INPUT input)
 		fallAerationGap = gap;
 		const float clump = lerp(lerp(1.0 - FallShading::AERATION_CLUMP, 1.0, FallShading::Morphing(fallFlow.uvA, FallShading::AERATION_CLUMP_CELLS, FallGround::Time + 5.1)), 1.0, heavy);
 		const float drive = smoothstep(FallShading::UNIFIED_AERATION_DRIVE.x, FallShading::UNIFIED_AERATION_DRIVE.y, fallFlow.fields.w) * lerp(1.0, FallShading::AERATION_HEAVY_DRIVE, heavy) *
-		                    fallLip * (1.0 - gap) * clump * fallLumpEdge * lerp(FallShading::FoamBreakup(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, 1.0), 1.0, heavy);
+		                    fallLip * (1.0 - gap) * clump * fallLumpEdge * lerp(fallBreakup, 1.0, heavy);
 		fallUnifiedAerationDrive = drive;
 		float2 jumpA, jumpB;
 		const float churnWeight = FallShading::FoamChurn(FallGround::Time, jumpA, jumpB);
@@ -1483,7 +1485,7 @@ PS_OUTPUT main(PS_INPUT input)
 		const float head = 1.0 - smoothstep(FallShading::CONTACT_HEAD.x, FallShading::CONTACT_HEAD.y, fallFlow.contact.x);
 		const float band = max(head, tail);
 		const float solid = 1.0 - smoothstep(0.0, FallShading::CONTACT_SOLID, tailDistance);
-		const float contactBreakup = FallShading::FoamBreakup(FallFoamTex, Normals01Sampler, fallFlow.uvA, SharedData::MipBias, 1.0) * (1.0 - fallAerationGap);
+		const float contactBreakup = fallBreakup * (1.0 - fallAerationGap);
 		const float contactFoam = band * lerp(contactBreakup, 1.0, solid * downstream) * FallShading::CONTACT_FOAM_DRIVE * fallLumpEdge * fallLip;
 		const float other = max(fallUnifiedAerationDrive, contactFoam);
 		const float joined = max(streakDrive, other) + FallShading::FOAM_JOIN * min(streakDrive, other);
