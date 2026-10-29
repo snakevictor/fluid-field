@@ -178,7 +178,13 @@ private:
 	uint32_t fallClipCapacity = 0;  ///< Elements fallClipBuffer holds
 	uint32_t fallClipCount = 0;     ///< Elements fallClipSRV shows
 	uint64_t fallClipVersion = UINT64_MAX;
-	std::unordered_map<const RE::BSGeometry*, winrt::com_ptr<ID3D11ShaderResourceView>> fallBakeSRVs;  ///< D59: each lit falls mesh's flow bake
+	/** @brief D59: a lit falls mesh's flow bake on the GPU, and the FlowBake::stamp it was made from. */
+	struct FallBakeView
+	{
+		winrt::com_ptr<ID3D11ShaderResourceView> view;
+		uint64_t stamp = 0;
+	};
+	std::unordered_map<const RE::BSGeometry*, FallBakeView> fallBakeSRVs;
 	uint64_t fallBakeVersion = UINT64_MAX;
 	/** @brief D56: vanilla's scroll of a falls material, measured from its texture offset over time. */
 	struct FallScroll

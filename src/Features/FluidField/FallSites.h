@@ -171,6 +171,7 @@ namespace FluidFieldSim
 			float uvMin[2]{};
 			float uvSize[2]{};
 			std::vector<float> texels;  ///< RGBA32F, w x (h x 5): D179 flow and fields; D181 stretch (D186: + frame); D188 plunges; contact
+			uint64_t stamp = 0;         ///< A new value whenever the texels change on the render thread (0: not yet stamped)
 		};
 		const std::unordered_map<const RE::BSGeometry*, FlowBake>& GetFlowBakes() const { return flowBakes; }
 		/** @brief Changes whenever GetFlowBakes changes. */
@@ -676,6 +677,7 @@ namespace FluidFieldSim
 		static constexpr float PLUNGE_CARRY = 0.9f;       ///< D188: the landing foam carried on per texel (D189: up the sheet from the waterline, 8 units a texel)
 		static constexpr int PLUNGE_WIDEN = 2;            ///< D189: texels the waterline's impact is widened by each way before it is softened
 		uint64_t flowBakeVersion = 0;
+		uint64_t flowBakeStamp = 0;  ///< The last FlowBake::stamp given
 		/** @brief D67: links the bakes on a worker once they are in. */
 		void BakeStep();
 		bool linkDue = false;  ///< D83: a bake landed since the last link

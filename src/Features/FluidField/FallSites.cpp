@@ -3979,6 +3979,9 @@ namespace FluidFieldSim
 		vertexClipVersion++;
 		if (linkedDue) {
 			linkedDue = false;
+			// Linking rewrites every bake
+			for (auto& bake : flowBakes | std::views::values)
+				bake.stamp = ++flowBakeStamp;
 			flowBakeVersion++;
 			plungesDue = true;  // D172: ComputePlunges on a worker (Update)
 		}
@@ -4584,6 +4587,7 @@ namespace FluidFieldSim
 				fourth[0] = impact[i];
 				fourth[1] = landing->second[i];
 			}
+			bake->second.stamp = ++flowBakeStamp;
 			plunged = true;
 		}
 		if (plunged) {

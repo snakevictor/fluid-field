@@ -331,13 +331,16 @@ void FluidFieldWaterfalls::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		}
 	}
 
-	// D59: the lit meshes' flow bakes, one texture each
+	// D59: the lit meshes' flow bakes, one texture each, made again only when its texels changed (FlowBake::stamp)
 	if (fallSites.GetFlowBakeVersion() != fallBakeVersion) {
 		fallBakeVersion = fallSites.GetFlowBakeVersion();
 		const auto& bakes = fallSites.GetFlowBakes();
-		// every one again: a bake changes in place (relinked, its plunges written in, a site bake hot-reloaded), not only new ones
-		fallBakeSRVs.clear();
+		std::erase_if(fallBakeSRVs, [&](const auto& a_entry) { return !bakes.contains(a_entry.first); });
 		for (const auto& [geometry, bake] : bakes) {
+			// An unstamped bake (still being linked) is made again every time
+			if (const auto it = fallBakeSRVs.find(geometry); it != fallBakeSRVs.end() && bake.stamp != 0 && it->second.stamp == bake.stamp)
+				continue;
+			fallBakeSRVs.erase(geometry);
 			D3D11_TEXTURE2D_DESC bakeDesc{ .Width = bake.width, .Height = bake.height * static_cast<UINT>(bake.texels.size() / (static_cast<std::size_t>(bake.width) * bake.height * 4)), .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R32G32B32A32_FLOAT, .SampleDesc = { 1, 0 }, .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = 0 };
 			const D3D11_SUBRESOURCE_DATA bakeData{ bake.texels.data(), bake.width * 4 * sizeof(float), 0 };
 			winrt::com_ptr<ID3D11Texture2D> texture;
@@ -346,7 +349,7 @@ void FluidFieldWaterfalls::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 				continue;
 			Util::SetResourceName(texture.get(), "FluidFieldWaterfalls::FallFlowBake");
 			Util::SetResourceName(view.get(), "FluidFieldWaterfalls::FallFlowBake SRV");
-			fallBakeSRVs[geometry] = view;
+			fallBakeSRVs[geometry] = { view, bake.stamp };
 		}
 	}
 
@@ -451,7 +454,7 @@ void FluidFieldWaterfalls::PrepareFallGroundData(const RE::BSGeometry* a_geometr
 	if (const auto it = fallBakeSRVs.find(a_geometry); it != fallBakeSRVs.end()) {
 		const auto& bakes = fallSites.GetFlowBakes();
 		if (const auto bake = bakes.find(a_geometry); bake != bakes.end()) {
-			o_bake = it->second.get();
+			o_bake = it->second.view.get();
 			fallGroundData.BakeOn = 1;
 			fallGroundData.BakeRect[0] = bake->second.uvMin[0];
 			fallGroundData.BakeRect[1] = bake->second.uvMin[1];
