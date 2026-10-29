@@ -39,6 +39,7 @@ struct FluidFieldWaterfalls : Feature
 		float FallAerationFrom = 0.3f;    ///< The bake's aeration where that foam begins (whole at 1)
 		float FallAerationMilk = 1.0f;    ///< Scales how milky aeration makes the clear water
 		bool ExportSiteInputs = false;    ///< Writes each cached site's sheets, statics and landscape next to the log for tools/unify (JSON only)
+		bool HotReloadBakes = false;      ///< Dev: re-reads a unified site's bake when its file changes (JSON only)
 	};
 
 	Settings settings;

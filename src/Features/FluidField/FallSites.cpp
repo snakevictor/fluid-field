@@ -4125,7 +4125,7 @@ namespace FluidFieldSim
 			FinishHeavyWork();
 			if (!Busy() && wobbleImpactsDue)
 				ApplyWobbleImpacts();
-			if (!Busy() && unifiedLoaded)
+			if (!Busy() && unifiedLoaded && hotReloadBakes)
 				ReloadChangedBakes();
 		});
 		if (!Busy() && plungesDue) {

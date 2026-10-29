@@ -26,7 +26,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	FallAerationFoam,
 	FallAerationFrom,
 	FallAerationMilk,
-	ExportSiteInputs)
+	ExportSiteInputs,
+	HotReloadBakes)
 
 void FluidFieldWaterfalls::DrawSettings()
 {
@@ -152,6 +153,7 @@ void FluidFieldWaterfalls::Prepass()
 
 	// Waterfall sites reconstructed from vanilla's layout (D25)
 	fallSites.SetExportSiteInputs(settings.ExportSiteInputs);
+	fallSites.SetHotReloadBakes(settings.HotReloadBakes);
 	// Vanilla's pieces at the cached sites hide while our pass draws their falls
 	if (!RefractiveFallsActive())
 		fallsShown = false;

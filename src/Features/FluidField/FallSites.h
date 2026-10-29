@@ -222,6 +222,8 @@ namespace FluidFieldSim
 
 		/** @brief Writes each cached site's sheets, statics, landscape and captured rock next to the log, for tools/unify. */
 		void SetExportSiteInputs(bool a_on) { exportSiteInputs = a_on; }
+		/** @brief Dev: reads a unified site's bake again when its file changes on disk (checked once a second). */
+		void SetHotReloadBakes(bool a_on) { hotReloadBakes = a_on; }
 
 		static constexpr float CLUSTER_RADIUS = 512.0f;
 		static constexpr float RAPIDS_CLUSTER_RADIUS = 128.0f;  ///< Rapids and splashes away from any fall cluster only this close
@@ -250,6 +252,7 @@ namespace FluidFieldSim
 		uint64_t waterSignature = 0;
 		uint32_t updatesUntilScan = 0;
 		bool exportSiteInputs = false;
+		bool hotReloadBakes = false;
 		std::unordered_map<uint64_t, std::string> cellSummaries;  ///< Last summary logged per cell
 		std::unordered_map<uint64_t, FallCapture> captures;       ///< By Site::captureKey
 		std::unordered_set<const RE::BSGeometry*> grounded;
