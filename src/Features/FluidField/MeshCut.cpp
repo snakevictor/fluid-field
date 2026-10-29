@@ -46,7 +46,7 @@ namespace FluidFieldSim
 			}
 		}
 
-		/** @brief D176: waterfall and rapids effects (drawn as water) are never solid; cut, they left dry cells along each fall's foot. */
+		/** @brief D176: waterfall and rapids effects are never solid, or they leave dry cells along each fall's foot. */
 		bool IsFallingWater(const RE::TESBoundObject* a_base)
 		{
 			const auto* model = a_base ? a_base->As<RE::TESModel>() : nullptr;
@@ -289,7 +289,7 @@ namespace FluidFieldSim
 				for (uint32_t gy = 0; gy < grid->length; gy++)
 					visitCell(GetGridCell(grid, gx, gy), true);
 			}
-			// Persistent references (e.g. Riverwood's stone bridge) live in the worldspace's persistent cell; only loaded 3D passes
+			// Persistent references (e.g. Riverwood's stone bridge) live in the persistent cell; only loaded 3D passes
 			auto* player = RE::PlayerCharacter::GetSingleton();
 			if (auto* worldspace = player ? player->GetWorldspace() : nullptr)
 				visitCell(worldspace->persistentCell, false);

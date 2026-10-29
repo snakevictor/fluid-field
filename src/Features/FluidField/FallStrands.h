@@ -5,7 +5,7 @@
 
 namespace FluidFieldSim::FallStrands
 {
-	/** D190: calm, level run (world units) over which the recent fall clears by e. */
+	/** @brief D190: calm, level run (world units) over which the recent fall clears by e. */
 	inline constexpr float CALM_RUN = 200.0f;
 
 	/** @brief D80: a falls mesh's texture grid as rasterised by its bake (v runs downstream). */

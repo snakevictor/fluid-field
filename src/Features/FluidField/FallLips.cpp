@@ -7,19 +7,19 @@
 #include <cmath>
 #include <vector>
 
-// D170: lip map for the shallow-water solver. Where a falls column climbs a hidden lead-in out of its river (D79), the river
-// is drawn toward the crest up to the texture's crest speed: the drawdown before a drop. Continuity thins it as it speeds up.
+// D170: lip map for the shallow-water solver: where a falls column climbs a hidden lead-in out of its river, the river is
+// drawn toward the crest (the drawdown before a drop).
 
 namespace FluidFieldSim
 {
 	namespace
 	{
-		constexpr float LIP_SPEED = 200.0f;      ///< World units/s at the crest; matches FallStrands' CREST_SPEED
+		constexpr float LIP_SPEED = 200.0f;      ///< World units/s at the crest
 		constexpr float LIP_REACH = 320.0f;      ///< World units upstream of a crest the river starts to speed up
 		constexpr float LIP_PAST = 48.0f;        ///< World units past the crest still drawn on
 		constexpr float LIP_SIDE = 64.0f;        ///< World units to either side of a lip point it reaches
-		constexpr float LIP_WATER_BAND = 40.0f;  ///< A crest this near the water over it is that water's lip (FallSites::LIP_BAND)
-		constexpr float LIP_DROP_FROM = 24.0f;   ///< World units of drop below the crest at which the draw starts...
+		constexpr float LIP_WATER_BAND = 40.0f;  ///< A crest this near the water over it is that water's lip
+		constexpr float LIP_DROP_FROM = 24.0f;   ///< World units of drop below the crest where the draw starts...
 		constexpr float LIP_DROP_FULL = 160.0f;  ///< ...and is full, so a small step barely draws the river on
 
 		float Smoothstep(float a_from, float a_to, float a_x)
@@ -50,7 +50,7 @@ namespace FluidFieldSim
 			const std::size_t count = static_cast<std::size_t>(w) * h;
 			if (w < 2 || h < 3 || field->position.size() != count || field->covered.size() != count)
 				continue;
-			// D126: only shell crests, as in BuildPlunges; none from parts inside rock or another sheet
+			// D126: shell crests only, none inside rock or another sheet
 			std::vector<uint8_t> shell;
 			{
 				const float uvMin[2] = { field->uvMin[0], field->uvMin[1] }, uvSize[2] = { field->uvSize[0], field->uvSize[1] };

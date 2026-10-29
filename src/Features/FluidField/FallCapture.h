@@ -7,10 +7,10 @@
 namespace FluidFieldSim
 {
 	/**
-	 * @brief The rock under one waterfall site (D25 stage S4, used by D26's grounding).
+	 * @brief D25: the rock under one waterfall site, a heightfield from downward Havok rays over the site plus MARGIN.
 	 *
-	 * Heightfield over the site plus MARGIN from downward Havok rays that start only CEILING above the site's top, so
-	 * bridges and arches don't become dams. Cast within a time budget; holes filled from neighbours, spikes removed by a 3x3 median.
+	 * Rays start only CEILING above the site's top so bridges and arches don't become dams. Cast within a time budget;
+	 * holes filled from neighbours, spikes removed by a 3x3 median.
 	 */
 	class FallCapture
 	{
