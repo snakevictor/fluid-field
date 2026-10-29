@@ -80,7 +80,8 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 {
 	const FallSurfaceVertex v = Vertices[vertexID];
 	// Same move as the falls drawn by Water.hlsl
-	const float3 model = v.Position + FallGround::Shift(vertexID, FallGround::Scroll.x, World[2].xyz);
+	const float3 shift = FallGround::Shift(vertexID, FallGround::Scroll.x, World[2].xyz);
+	const float3 model = v.Position + shift;
 	const float3 world = mul(World, float4(model, 1.0));
 	const float3 relative = world - FrameBuffer::CameraPosAdjust.xyz;
 
@@ -95,7 +96,6 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 	output.Fade.z = (!FallGround::Enabled || FallGround::VertexBase == FallGround::NO_VERTEX_CLIP) ? 1.0 : fmod(FallGround::VertexClip[FallGround::VertexBase + vertexID].a.w, 2.0);  // D100: +2 marks an inward winding
 	output.Clip = FallGround::ClipDistance(relative, vertexID);
 	// the depth behind moves with the vertex (pushed out along its normal the gap behind widens), as Water.hlsl's
-	const float3 shift = FallGround::Shift(vertexID, FallGround::Scroll.x, World[2].xyz);
 	output.Behind = max(FallGround::Behind(vertexID) + dot(shift, v.Normal) / max(dot(v.Normal, v.Normal), 1e-6) * length(World[0].xyz), 0.0);
 	// D138: "none" (NO_WATER, 1e4) clamped to 512 before interpolation, or a triangle mixing it drew a hard line
 	output.BelowSource = min(FallGround::BelowSource(vertexID), 512.0);
