@@ -1,4 +1,4 @@
-// Fluid Field's simulated water in the vanilla water shader (D8 step 2, D17).
+// Fluid Field's simulated water in the vanilla water shader (D17).
 // Near level (t66/t67) and coarser far level (t68/t69), stored toroidally: cell c in texel c & (GridRes - 1).
 // Surface texel: slopes, height above vanilla, coverage (0 on dry cells, fading to 0 at the level's edge).
 // Near fades into far, far into vanilla.
@@ -18,10 +18,7 @@ namespace FluidField
 	static const float FLOW_DETAIL_PERIOD = 0.6;
 	/** Fastest detail drift (world units/s). */
 	static const float FLOW_DETAIL_MAX_DRIFT = 120.0;
-	/**
-	 * D170: fastest detail and foam drift at a fall's lip (flow's w), so the surface speeds up and stretches into the drop.
-	 * FallStrands' CREST_SPEED (200) is where the falls' texture takes over.
-	 */
+	/** D170: fastest detail and foam drift at a fall's lip (flow's w), so the surface speeds up into the drop. */
 	static const float LIP_MAX_DRIFT = 240.0;
 
 	/** D170: the drift cap, raised from FLOW_DETAIL_MAX_DRIFT toward a fall's lip. */
@@ -341,10 +338,7 @@ namespace FluidField
 		return smoothstep(threshold, threshold + 0.25, foam) * FOAM_OPACITY;
 	}
 
-	/**
-	 * The river's foam in the falls' lobe foam look (FoamLook): the lobes' foam on a flow coordinate the sim's flow carries (two phases
-	 * dragged along it and restarted), its foam as their aeration.
-	 */
+	/** The river's foam in the falls' lobe look (FoamLook), on two flow-dragged phases, its foam as their aeration. */
 	FoamLook::Sample FoamLookAt(float3 a_worldPosition)
 	{
 		FoamLook::Sample none = (FoamLook::Sample)0;
@@ -368,7 +362,7 @@ namespace FluidField
 		const float aeration = lerp(FoamLook::AERATION_FROM_FOAM.x, FoamLook::AERATION_FROM_FOAM.y, saturate(foam));
 		const FoamLook::Sample a = FoamLook::At(Normals01Tex, Normals01Sampler, (a_worldPosition.xy - drift * phase0) / FoamLook::UV_WORLD, aeration, SharedData::MipBias, SharedData::Timer);
 		const FoamLook::Sample b = FoamLook::At(Normals01Tex, Normals01Sampler, (a_worldPosition.xy - drift * phase1) / FoamLook::UV_WORLD + 0.37, aeration, SharedData::MipBias, SharedData::Timer);
-		const float w = abs(phase0 * 2.0 - 1.0);  // (each phase's weight 0 where it restarts)
+		const float w = abs(phase0 * 2.0 - 1.0);  // Each phase's weight is 0 where it restarts
 		FoamLook::Sample r;
 		r.cover = lerp(a.cover, b.cover, w);
 		r.billow = lerp(a.billow, b.billow, w);

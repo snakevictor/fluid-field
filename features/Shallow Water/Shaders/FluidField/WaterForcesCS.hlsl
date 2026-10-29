@@ -163,21 +163,19 @@ float2 StirVelocity(float2 worldPos)
 		float riverSpeed = length(restVelocity);
 		if (riverSpeed > 1.0)
 			velocity += StirVelocity(worldPos) * riverSpeed * STIR_STRENGTH * Vorticity * DeltaTime;
-		// No per-cell random nudge: it rings shores at the grid frequency; the smooth stirring sheds vortices instead
+		// Not a per-cell random nudge: that rings shores at the grid frequency
 	}
 
 	velocity = lerp(velocity, restVelocity, saturate(CurrentRelax * DeltaTime));
-	// D170: drawdown: water is pulled toward a fall's lip, at least as fast as its texture leaves the crest, harder nearer
-	// it. Continuity thins it as it speeds up, and its rest level drops toward the brink (a free overfall passes critical
-	// depth, about two thirds of the upstream depth, just before the edge)
+	// D170: drawdown: water is pulled toward a fall's lip, harder nearer it, and its rest level drops toward the brink (a
+	// free overfall passes critical depth, about two thirds of the upstream depth, just before the edge)
 	float levelDepth = vanillaDepth;
 	if (depth > WetThreshold) {
 		const float4 lip = LipAt(worldPos);
 		if (lip.z > 1e-3) {
 			const float speed = length(lip.xy);
 			const float2 way = lip.xy / max(speed, 1e-3);
-			// D179: target speed rises from the river's own current to the lip's at the brink; pulling to the lip's speed
-			// everywhere it reached sped up whole cascades, since every stretch lies near some lip
+			// D179: target speed ramps from the river's own to the lip's at the brink: every stretch of a cascade lies near some lip
 			const float own = max(dot(restVelocity, way), 0.0);
 			const float2 target = way * max(lerp(own, speed, saturate(lip.z)), dot(velocity, way));
 			velocity = lerp(velocity, target, sqrt(saturate(lip.z)) * saturate(LIP_PULL * DeltaTime));

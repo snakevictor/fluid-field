@@ -50,10 +50,9 @@ static const float NO_WATER = -1.0e8;
 Texture2D<float4> WaterMap : register(t4);
 Texture2D<float4> ObstacleMap : register(t5);
 // Unified Water's world flowmap: 64 texels per cell, southern tile row last. RG * 2 - 1 is the flow in world axes
-// (east, north), its length the strength; A an intensity mask; B unused (255 along the rivers checked).
+// (east, north), its length the strength; A an intensity mask; B unused.
 Texture2D<float4> RiverFlowmap : register(t6);
-// D170: the falls' lips (FallSites::BuildLipMap) on the plunge map's lattice: draw velocity toward a lip (xy, world units/s)
-// and strength (z, 0 to 1)
+// D170: the falls' lips (FallSites::BuildLipMap) on the plunge lattice: xy draw toward a lip (world units/s), z strength (0 to 1)
 Texture2D<float4> LipMap : register(t10);
 
 /** @brief D170: the lips' draw on the water at a world position, bilinear; 0 without a map. */

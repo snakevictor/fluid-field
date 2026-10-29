@@ -147,6 +147,6 @@ float Swirl(int2 logical)
 		foam += 0.125 * Foam[LogicalToStorage(clamp(logical + int2(0, -1), 0, int(GridRes) - 1))];
 	}
 	// With a far level, foam is not edge-faded: the water shader cross-fades it, and fading here too leaves a seam.
-	// D170: w is the lip draw (the water shader runs and stretches its detail faster there)
+	// D170: w is the lip draw (the water shader speeds up its detail there)
 	FlowOut[id] = float4(flow, SeedRes != 0 ? foam : foam * edgeFade, wet ? saturate(LipAt(CellWorldPos(logical)).z) : 0.0);
 }

@@ -1,5 +1,4 @@
-// Fluid Field water, pass 3: depth update from the face fluxes, with upwind depth capped at MaxDepth
-// (conservative, and keeps depth non-negative in practice).
+// Fluid Field water, pass 3: conservative depth update from the face fluxes, upwind depth capped at MaxDepth.
 
 #include "FluidField/WaterCommon.hlsli"
 

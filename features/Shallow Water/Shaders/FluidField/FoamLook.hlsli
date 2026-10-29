@@ -1,16 +1,15 @@
-// The unified falls' lobe foam on the river's own foam (FluidField::FoamLookAt): FallShading's own functions and values, copied as
-// they are (the falls' header needs their constant buffer), run at the unified sheet's scale on a flow coordinate the river sim's flow
-// carries (not a bake). Kept apart from the falls: tune the river here.
+// The falls' lobe foam on the river's foam (FluidField::FoamLookAt), on a flow coordinate the river sim carries. FallShading's
+// functions and values, copied because FallShading needs the falls' constant buffer. Tune the river here.
 
 namespace FoamLook
 {
 
-	/** World units one flow-uv unit spans on the unified sheet (its noises' cells are per such unit). */
+	/** World units one flow-uv unit spans on a falls sheet (the noises' cells are per such unit). */
 	static const float UV_WORLD = 968.0;
 	/** The river sim's foam (0 to 1) as the lobes' baked aeration: its least foam where theirs starts, its densest past their heavy cover. */
 	static const float2 AERATION_FROM_FOAM = float2(0.2, 0.9);
 
-	// FallShading's, as they are
+	// Copied from FallShading
 	static const float FALLS_UV_WORLD = 512.0;
 	static const float FOAM_TILE = 160.0;
 	static const float FOAM_OPACITY = 0.8;
@@ -173,13 +172,13 @@ namespace FoamLook
 		float whole;   // how whole the foam is (its mounds' height share)
 	};
 
-	/** The lobes' aeration foam at flow uv a_uv for the aeration a_aeration, as Water.hlsl draws it on a unified sheet. */
+	/** The lobes' aeration foam at flow uv a_uv for the aeration a_aeration, as Water.hlsl draws it on the falls. */
 	Sample At(Texture2D<float4> a_tex, SamplerState a_sampler, float2 a_uv, float a_aeration, float a_mipBias, float a_time)
 	{
 		Sample s;
 		const float2 tiles = a_uv * FlowScale(FOAM_TILE);
 		const float2 tilesDx = ddx(tiles), tilesDy = ddy(tiles);
-		// its lumps (the lobes' timed by their streaks: none here, so whole) and billows
+		// Lumps (always whole: no streaks here to time them) and billows
 		const float boil = a_time * BILLOW_BOIL;
 		const float fine = lerp(1.0 - LUMP_EDGE, 1.0 + 0.5 * LUMP_EDGE, Morphing(a_uv, LUMP_EDGE_CELLS, boil * LUMP_EDGE_RATE + 3.1));
 		const float big = lerp(1.0 - LUMP_BIG, 1.0 + 0.4 * LUMP_BIG, Morphing(a_uv, LUMP_BIG_CELLS, boil + 8.3));
@@ -188,13 +187,13 @@ namespace FoamLook
 		const float2 step = 0.25 / BILLOW_CELLS;
 		s.slope = float2(Morphing(a_uv + float2(step.x, 0.0), BILLOW_CELLS, boil) - raw, Morphing(a_uv + float2(0.0, step.y), BILLOW_CELLS, boil) - raw) / step / FALLS_UV_WORLD;
 		s.billow = smoothstep(0.2, 0.8, raw);
-		// its drive: heavy cover, clear patches, clumps, breakup
+		// Drive: heavy cover, clear patches, clumps, breakup
 		const float heavy = smoothstep(AERATION_HEAVY.x, AERATION_HEAVY.y, a_aeration);
 		const float gap = AerationGaps(a_uv, a_time) * (1.0 - 0.7 * heavy);
 		const float clump = lerp(lerp(1.0 - AERATION_CLUMP, 1.0, Morphing(a_uv, AERATION_CLUMP_CELLS, a_time + 5.1)), 1.0, heavy);
 		const float drive = smoothstep(UNIFIED_AERATION_DRIVE.x, UNIFIED_AERATION_DRIVE.y, a_aeration) * lerp(1.0, AERATION_HEAVY_DRIVE, heavy) * (1.0 - gap) * clump * lumpEdge *
 		                    lerp(FoamBreakup(a_tex, a_sampler, a_uv, a_mipBias), 1.0, heavy);
-		// its top layer, its grain churning in place
+		// Top layer, its grain churning in place
 		float2 jumpA, jumpB;
 		const float weight = FoamChurn(a_time, jumpA, jumpB);
 		const float coverB = saturate(AerationCover(drive, FlowFoamPatternGrad(a_tex, a_sampler, a_uv + jumpB, tilesDx, tilesDy, a_mipBias)) * AERATION_LAYER_OPACITY);
@@ -204,7 +203,7 @@ namespace FoamLook
 		return s;
 	}
 
-	/** As the lobes' foam is lit (Water.hlsl's unified block): diffuse round its mounds, hollows, two tone, reflection, light through, ceiling. */
+	/** Lit as Water.hlsl lights the falls' foam: diffuse round its mounds, hollows, two tone, reflection, light through, ceiling. */
 	float3 Light(Sample a_s, float3 a_light, float3 a_normal, float3 a_viewDirection, float3 a_toSun, float3 a_sunLight, float3 a_ambient,
 		float3 a_water, float3 a_reflection, float a_fresnel)
 	{

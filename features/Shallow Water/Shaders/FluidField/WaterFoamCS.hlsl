@@ -67,10 +67,10 @@ static const float WALL_RATE = 0.3;
 static const float BREAKING_RATE = 0.15;
 static const float WAKE_RATE = 1.5;
 static const float SPLASH_RATE = 6.0;
-/** D44: foam per second where a waterfall plunges in at full strength. */
-static const float PLUNGE_RATE = 2.2;  // D191: raised so the pools under falls read white; rim unchanged (D48, D56)
+/** D44: foam per second where a waterfall plunges in at full strength; enough for the pools under falls to read white. */
+static const float PLUNGE_RATE = 2.2;
 /** D49: extra foam where the falls meet the water (plunge near 1), solid to hide the falls' cut. */
-static const float PLUNGE_RIM_RATE = 2.0;  // D48, D56: higher saturates the pool into a flat white or grey band
+static const float PLUNGE_RIM_RATE = 2.0;  // Higher saturates the pool into a flat band
 
 /** Eight neighbour directions, for finding obstacles. */
 static const int2 NEIGHBOURS[8] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1), int2(1, 1), int2(-1, 1), int2(1, -1), int2(-1, -1) };
@@ -170,8 +170,8 @@ float SampleFoam(float2 position)
 	}
 
 	foam = min(foam + made * FoamStrength * DeltaTime, FoamMax);
-	// Without a far level, fade foam at the border so none piles up where water eases back to vanilla; with one, keep it
-	// to the edge for the water shader's cross-fade
+	// Without a far level, fade foam at the border so none piles up where water eases back to vanilla; with one, the water
+	// shader cross-fades it
 	if (SeedRes == 0)
 		foam *= 1.0 - EdgeWeight(logical);
 	FoamOut[id] = foam;
