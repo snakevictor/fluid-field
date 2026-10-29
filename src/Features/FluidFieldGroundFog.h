@@ -18,7 +18,7 @@ struct FluidFieldGroundFog : Feature
 	virtual inline std::string GetShortName() override { return "FluidFieldGroundFog"; }
 	virtual std::string_view GetCategory() const override { return FeatureCategories::kFluidField; }
 
-	/** @brief Returns a localized description and list of key features for the UI summary panel. */
+	/** @brief The UI summary panel's description and key features. */
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
 		return { T("feature.fluid_field_ground_fog.description", "Low fog lying on the ground around the player, in banks and clearings."),
@@ -58,7 +58,7 @@ struct FluidFieldGroundFog : Feature
 	/** @brief Registers the shared loading-screen listener. */
 	virtual void PostPostLoad() override;
 
-	/** @brief Steps the wind and fog once per frame. */
+	/** @brief Steps the wind and fog. */
 	virtual void Prepass() override;
 
 	/** @brief Drops the wind and fog shaders so they recompile. */
@@ -70,14 +70,11 @@ struct FluidFieldGroundFog : Feature
 	/** @brief Loaded and enabled. */
 	bool IsActive() const { return loaded && settings.Enabled; }
 
-	/**
-	 * @brief D21: draws the ground fog after the world (water and transparents included), before first person, TAA,
-	 * upscaling and tonemapping.
-	 */
+	/** @brief D21: draws the fog over the finished world, before first person, TAA and tonemapping. */
 	void DrawAfterWorld();
 
 private:
-	/** @brief Creates GPU resources and shaders as needed. Returns false if the solver cannot run. */
+	/** @brief Creates GPU resources and shaders as needed; false if the solver cannot run. */
 	bool EnsureSolver();
 	/** @brief Releases the wind, the fog's ground map and its pass. */
 	void Release();

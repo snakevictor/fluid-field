@@ -51,7 +51,6 @@ void FluidFieldGroundFog::DrawSettings()
 	ImGui::SliderFloat(T(TKEY("fog_refill"), "Refill"), &settings.FogRefillSeconds, 0.5f, 30.0f, "%.1f s", ImGuiSliderFlags_AlwaysClamp);
 	tooltip(T(TKEY("fog_refill_tooltip"), "How long shoved fog takes to settle back."));
 
-	// Quality: the wind grid the fog rides on
 	if (ImGui::CollapsingHeader(T(TKEY("quality"), "Quality"))) {
 		ImGui::PushID("QualitySection");
 		ImGui::SeparatorText(T(TKEY("wind"), "Wind and Fog Grid"));
@@ -186,7 +185,7 @@ void FluidFieldGroundFog::Prepass()
 {
 	auto& field = FluidFieldSim::Field::Get();
 	if (!settings.Enabled) {
-		// Disabled costs nothing: released once, then no textures, no shaders, no dispatches
+		// Released once, so disabled costs nothing
 		if (!released) {
 			Release();
 			released = true;
