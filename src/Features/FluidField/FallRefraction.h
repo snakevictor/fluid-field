@@ -181,7 +181,8 @@ namespace FluidFieldSim
 		static_assert(sizeof(Constants) == 240);
 
 		std::unordered_map<const RE::BSGeometry*, MeshBuffers> meshes;
-		std::unordered_set<const RE::BSGeometry*> failedMeshes;  ///< No CPU copy: not tried again
+		std::unordered_set<const RE::BSGeometry*> failedMeshes;                ///< No CPU copy: not tried again
+		std::vector<std::pair<const MeshDraw*, const MeshBuffers*>> drawable;  ///< Draw's pieces this frame (kept to reuse its memory)
 
 		winrt::com_ptr<ID3D11Texture2D> sceneCopy;
 		winrt::com_ptr<ID3D11ShaderResourceView> sceneCopySRV;

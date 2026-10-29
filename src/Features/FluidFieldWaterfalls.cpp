@@ -629,13 +629,19 @@ bool FluidFieldWaterfalls::DrawRefractiveFalls(ID3D11RenderTargetView* a_target,
 		return false;
 	// Every lit piece's constants first (each MeshDraw points into this), then its draw
 	const auto& lit = fallSites.GetLitMeshes();
-	std::vector<FallGroundData> grounds;
+	auto& grounds = fallDrawGrounds;
+	auto& draws = fallDraws;
+	auto& drawWaters = fallDrawWaters;
+	auto& keep = fallDrawKeep;
+	auto& looks = fallDrawLooks;
+	grounds.clear();
+	draws.clear();
+	drawWaters.clear();
+	keep.clear();
+	looks.clear();
 	grounds.reserve(lit.size());
-	std::vector<FluidFieldSim::FallRefraction::MeshDraw> draws;
 	draws.reserve(lit.size());
-	std::vector<const RE::TESWaterForm*> drawWaters;  // D171: each draw's water type
 	drawWaters.reserve(lit.size());
-	std::unordered_set<const RE::BSGeometry*> keep;
 	// D98: each piece takes its source water's look (re-looked up every few seconds)
 	if (++fallWaterTypesAge >= FALL_WATER_REFRESH) {
 		fallWaterTypesAge = 0;
@@ -648,7 +654,6 @@ bool FluidFieldWaterfalls::DrawRefractiveFalls(ID3D11RenderTargetView* a_target,
 		multiplier[1] = color.green;
 		multiplier[2] = color.blue;
 	}
-	std::unordered_map<const RE::TESWaterForm*, FluidFieldSim::FallRefraction::WaterLook> looks;
 	for (const auto& piece : lit) {
 		auto* geometry = piece.geometry.get();
 		auto* property = geometry ? geometry->GetGeometryRuntimeData().shaderProperty.get() : nullptr;

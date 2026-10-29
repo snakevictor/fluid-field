@@ -540,7 +540,7 @@ namespace FluidFieldSim
 			return false;
 
 		// The pieces' buffers, built once each (a piece whose address now holds other geometry is built again)
-		std::vector<std::pair<const MeshDraw*, const MeshBuffers*>> drawable;
+		drawable.clear();
 		drawable.reserve(a_meshes.size());
 		for (const auto& draw : a_meshes) {
 			auto* triShape = draw.geometry ? draw.geometry->AsTriShape() : nullptr;

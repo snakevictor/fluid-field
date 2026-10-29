@@ -166,6 +166,12 @@ private:
 	/** @brief D98: the water type each refractive falls piece pours from (null: none); refreshed every FALL_WATER_REFRESH frames. */
 	std::unordered_map<const RE::BSGeometry*, const RE::TESWaterForm*> fallWaterTypes;
 	uint32_t fallWaterTypesAge = 0;
+	/** @brief DrawRefractiveFalls' per-frame lists, kept so their memory is reused. */
+	std::vector<FallGroundData> fallDrawGrounds;
+	std::vector<FluidFieldSim::FallRefraction::MeshDraw> fallDraws;
+	std::vector<const RE::TESWaterForm*> fallDrawWaters;  ///< D171: each draw's water type
+	std::unordered_set<const RE::BSGeometry*> fallDrawKeep;
+	std::unordered_map<const RE::TESWaterForm*, FluidFieldSim::FallRefraction::WaterLook> fallDrawLooks;
 	static constexpr uint32_t FALL_WATER_REFRESH = 120;
 	static constexpr uint32_t FALL_GROUND_SIZE = 1024;
 	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must equal FallCapture::CELL: pools are copied texel for texel
