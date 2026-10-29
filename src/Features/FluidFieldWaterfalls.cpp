@@ -246,6 +246,8 @@ void FluidFieldWaterfalls::ReleaseFallGround()
 	fallGroundSRV = nullptr;
 	fallClipBuffer = nullptr;
 	fallClipSRV = nullptr;
+	fallClipCapacity = 0;
+	fallClipCount = 0;
 	fallClipVersion = UINT64_MAX;
 	fallBakeSRVs.clear();
 	fallBakeVersion = UINT64_MAX;
@@ -291,23 +293,41 @@ void FluidFieldWaterfalls::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		Util::SetResourceName(fallGroundSRV.get(), "FluidFieldWaterfalls::FallGround SRV");
 	}
 
-	// D56: the falls' per-vertex rock cut, whenever more meshes are tested
+	// D56: the falls' per-vertex rock cut, whenever more meshes are tested; reallocated only to grow
 	if (fallSites.GetVertexClipVersion() != fallClipVersion && !fallSites.GetVertexClips().empty()) {
 		fallClipVersion = fallSites.GetVertexClipVersion();
 		const auto& clips = fallSites.GetVertexClips();
-		D3D11_BUFFER_DESC clipDesc{ .ByteWidth = static_cast<UINT>(clips.size() * sizeof(clips[0])), .Usage = D3D11_USAGE_IMMUTABLE, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, .StructureByteStride = sizeof(clips[0]) };
-		const D3D11_SUBRESOURCE_DATA clipData{ clips.data(), 0, 0 };
-		D3D11_SHADER_RESOURCE_VIEW_DESC clipView{ .Format = DXGI_FORMAT_UNKNOWN, .ViewDimension = D3D11_SRV_DIMENSION_BUFFER };
-		clipView.Buffer.FirstElement = 0;
-		clipView.Buffer.NumElements = static_cast<UINT>(clips.size());
-		fallClipBuffer = nullptr;
-		fallClipSRV = nullptr;
-		if (FAILED(device->CreateBuffer(&clipDesc, &clipData, fallClipBuffer.put())) || FAILED(device->CreateShaderResourceView(fallClipBuffer.get(), &clipView, fallClipSRV.put()))) {
+		const auto count = static_cast<UINT>(clips.size());
+		if (count > fallClipCapacity) {
 			fallClipBuffer = nullptr;
 			fallClipSRV = nullptr;
-		} else {
-			Util::SetResourceName(fallClipBuffer.get(), "FluidFieldWaterfalls::FallVertexClip");
-			Util::SetResourceName(fallClipSRV.get(), "FluidFieldWaterfalls::FallVertexClip SRV");
+			fallClipCapacity = 0;
+			fallClipCount = 0;
+			D3D11_BUFFER_DESC clipDesc{ .ByteWidth = static_cast<UINT>(count * sizeof(clips[0])), .Usage = D3D11_USAGE_DEFAULT, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, .StructureByteStride = sizeof(clips[0]) };
+			if (SUCCEEDED(device->CreateBuffer(&clipDesc, nullptr, fallClipBuffer.put()))) {
+				Util::SetResourceName(fallClipBuffer.get(), "FluidFieldWaterfalls::FallVertexClip");
+				fallClipCapacity = count;
+			} else {
+				fallClipBuffer = nullptr;
+			}
+		}
+		if (fallClipBuffer) {
+			// The view spans the clips only, as when the buffer was made to their size
+			if (count != fallClipCount) {
+				fallClipSRV = nullptr;
+				fallClipCount = 0;
+				D3D11_SHADER_RESOURCE_VIEW_DESC clipView{ .Format = DXGI_FORMAT_UNKNOWN, .ViewDimension = D3D11_SRV_DIMENSION_BUFFER };
+				clipView.Buffer.FirstElement = 0;
+				clipView.Buffer.NumElements = count;
+				if (SUCCEEDED(device->CreateShaderResourceView(fallClipBuffer.get(), &clipView, fallClipSRV.put()))) {
+					Util::SetResourceName(fallClipSRV.get(), "FluidFieldWaterfalls::FallVertexClip SRV");
+					fallClipCount = count;
+				} else {
+					fallClipSRV = nullptr;
+				}
+			}
+			const D3D11_BOX box{ 0, 0, 0, static_cast<UINT>(count * sizeof(clips[0])), 1, 1 };
+			context->UpdateSubresource(fallClipBuffer.get(), 0, &box, clips.data(), 0, 0);
 		}
 	}
 

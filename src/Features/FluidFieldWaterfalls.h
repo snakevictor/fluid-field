@@ -173,8 +173,10 @@ private:
 	static constexpr float FALL_POOL_FOAM = 26.0f;          ///< World units above the water below over which the falls foam into it (D36)
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> fallGroundSRV;
-	winrt::com_ptr<ID3D11Buffer> fallClipBuffer;  ///< D56: the falls' per-vertex rock cut (FallSites::GetVertexClips)
+	winrt::com_ptr<ID3D11Buffer> fallClipBuffer;  ///< D56: the falls' per-vertex rock cut (FallSites::GetVertexClips); grows only, written in place
 	winrt::com_ptr<ID3D11ShaderResourceView> fallClipSRV;
+	uint32_t fallClipCapacity = 0;  ///< Elements fallClipBuffer holds
+	uint32_t fallClipCount = 0;     ///< Elements fallClipSRV shows
 	uint64_t fallClipVersion = UINT64_MAX;
 	std::unordered_map<const RE::BSGeometry*, winrt::com_ptr<ID3D11ShaderResourceView>> fallBakeSRVs;  ///< D59: each lit falls mesh's flow bake
 	uint64_t fallBakeVersion = UINT64_MAX;
