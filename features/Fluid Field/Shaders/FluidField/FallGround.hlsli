@@ -224,6 +224,14 @@ namespace FallGround
 	 * D188: a falls vertex's wobble for lighting: x streak, y run less phase, z size (model units), w world units per
 	 * unit of run (0: none)
 	 */
+	/** A falls vertex's steady move (its seam gap and swell, not its wobble), mesh space. */
+	float3 SteadyShift(uint a_vertex)
+	{
+		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
+			return 0.0;
+		return VertexClip[VertexBase + a_vertex].b.xyz;
+	}
+
 	float4 WobbleAt(uint a_vertex, float a_phase)
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
@@ -311,6 +319,7 @@ namespace FallGround
 		float4 plunge;    // D188: x landing strength, y foam left after it; D189: z height fallen; D190: w progress of its own drop
 		float stretch;    // D181: BakeStretchAt
 		float streak;     // a unified sheet's streaks left (0 once its water has met rock); 1 elsewhere
+		float3 contact;   // a unified sheet's distance to rock, land or the pool (x), that swept down its flow (y), world units; its heave over hidden rock (z)
 		float column;     // A unified sheet's streak columns (across for the ribbons; uvA.x elsewhere)
 	};
 
@@ -324,7 +333,7 @@ namespace FallGround
 			return 0.0;
 		uint width, height;
 		FlowBake.GetDimensions(width, height);
-		height /= 4;  // D179, D181, D188: flow, fields, stretch and frame, plunges: a quarter of the rows each
+		height /= 5;  // D179, D181, D188: flow, fields, stretch and frame, plunges, contact: a fifth of the rows each
 		const float2 texel = (a_uv - BakeRect.xy) * BakeRect.zw * float2(width, height) - 0.5;
 		const float2 cell = floor(texel);
 		const float2 t = texel - cell;
@@ -370,7 +379,8 @@ namespace FallGround
 		result.fields = BakeFieldsAt(uvStill);
 		const float4 third = BakeOn ? BakeRowsAt(uvStill, 2) : float4(1.0, 0.0, 0.0, 0.0);
 		result.stretch = max(third.x, 0.25);
-		result.streak = unifiedSheet ? saturate(third.x) : 1.0;  // (its own stretch is set below, so the bake keeps its streaks there)
+		result.streak = unifiedSheet ? saturate(third.x) : 1.0;
+		result.contact = unifiedSheet ? BakeRowsAt(uvStill, 4).xyz : float3(1.0e4, 1.0e4, 0.0);  // (its own stretch is set below, so the bake keeps its streaks there)
 		result.frame = third.yzw;
 		result.plunge = BakeOn ? BakeRowsAt(uvStill, 3) : 0.0;
 		float2 uvBase = (BakeOn ? baked.xy : uvStill) - float2(0.0, Scroll.x);

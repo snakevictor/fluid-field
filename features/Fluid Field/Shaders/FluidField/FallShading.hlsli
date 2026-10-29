@@ -241,18 +241,19 @@ namespace FallShading
 	 * (a_viewShift: flow coordinates per world unit of depth), smaller and dimmer deeper. A layer fades to its average where
 	 * its cells are a few pixels across. a_cellPixels: screen pixels per world unit.
 	 */
-	float4 Bubbles(float2 a_flowUv, float2 a_viewShift, float a_aeration, float a_cellPixels)
+	float4 Bubbles(float2 a_flowUv, float2 a_viewShift, float a_aeration, float a_cellPixels, float a_density = -1.0, float a_cellScale = 1.0, float a_farShare = 0.1)
 	{
 		// x nearest bubble's cover, yz the pixel's place on its sphere (screen axes, -1 to 1, y down), w its layer's depth (0 to 1)
 		if (a_aeration <= 0.02)
 			return 0.0;
-		// BUBBLE_AERATED_GAIN times as dense in aerated water as in the plain flow
-		const float density = saturate(a_aeration * 0.35 * BUBBLE_AMOUNT * lerp(1.0, BUBBLE_AERATED_GAIN, smoothstep(0.3, 0.7, a_aeration)));
+		// BUBBLE_AERATED_GAIN times as dense in aerated water as in the plain flow; a_density (0 to 1 of the cells) where given
+		const float density = a_density >= 0.0 ? saturate(a_density) :
+		                                         saturate(a_aeration * 0.35 * BUBBLE_AMOUNT * lerp(1.0, BUBBLE_AERATED_GAIN, smoothstep(0.3, 0.7, a_aeration)));
 		float4 result = 0.0;
 		[unroll] for (int k = BUBBLE_LAYERS - 1; k >= 0; k--)
 		{
 			const float depthShare = (k + 0.5) / BUBBLE_LAYERS;
-			const float cellSize = BUBBLE_CELL * lerp(1.0, 0.4, depthShare);
+			const float cellSize = BUBBLE_CELL * a_cellScale * lerp(1.0, 0.4, depthShare);
 			const float2 uv = a_flowUv + a_viewShift * (BUBBLE_DEPTH * depthShare);
 			const float2 p = uv * FlowScale(cellSize) + float2(0.37, 0.61) * k;
 			// Lattice to screen pixels
@@ -262,10 +263,12 @@ namespace FallShading
 			const float cellPixels = cellSize * a_cellPixels;
 			const float sharp = smoothstep(1.5, 4.0, cellPixels);
 			const float3 layer = BubbleLayer(p, density, toScreen, cellPixels);
-			const float cover = lerp(density * 0.1, layer.x, sharp) * lerp(1.0, 0.45, depthShare);
+			const float cover = lerp(density * a_farShare, layer.x, sharp) * lerp(1.0, 0.45, depthShare);  // (far: an even share of them, a_farShare)
 			// D190: unresolved, a sphere place matching the disc's average look (the centre drew far bubbles as dark lensing)
 			result = lerp(result, float4(cover, layer.yz * sharp + float2(0.55, 0.55) * (1.0 - sharp), depthShare), saturate(cover * 2.0));
 		}
+		// faded in with the drive (a step at its cut-off drew the far bubbles' even tint as a seam across the sheet)
+		result.x *= smoothstep(0.02, 0.15, a_aeration);
 		return result;
 	}
 
@@ -468,7 +471,84 @@ namespace FallShading
 	 * scattered inside it). */
 	static const float FOAM_DIFFUSE = 0.55;
 	static const float FOAM_WRAP = 1.0;
-	static const float FOAM_SHEEN = 0.25;
+	/** Unified: its foam never brighter than a white surface of FOAM_ALBEDO under the sun and sky, eased in above FOAM_KNEE of that. */
+	static const float FOAM_ALBEDO = 0.85;
+	/**
+	 * Unified: its foam in mounds. Billows (BILLOW_CELLS per flow unit, round in the world) boil in place at BILLOW_BOIL x the morph
+	 * rate; they give it a height of FOAM_MOUND world units where it is whole (thin foam a film), lit as relief, its hollows down to
+	 * HOLLOW_DARK; finer lumps (LUMP_EDGE_CELLS) round its edges by LUMP_EDGE; its undersides lean TWO_TONE to the water's hue, and its
+	 * thin hollows let RIM_GLOW more light through.
+	 */
+	static const float2 BILLOW_CELLS = float2(18.0, 23.0);
+	static const float BILLOW_BOIL = 1.0;
+	static const float FOAM_MOUND = 20.0;
+	static const float HOLLOW_DARK = 0.45;
+	static const float2 LUMP_EDGE_CELLS = float2(60.0, 76.0);
+	static const float LUMP_EDGE = 0.75;
+	static const float LUMP_EDGE_RATE = 2.0;                  ///< the small lumps open and close this much faster than the big
+	static const float2 LUMP_BIG_CELLS = float2(20.0, 25.0);  ///< bigger lumps over the fine (about 3 x their size)
+	static const float LUMP_BIG = 0.5;
+	static const float2 LUMP_FROM = float2(0.35, 0.6);  ///< the baked aeration over which the lumps come in (the foam starts at 0.2)
+	static const float LUMP_STREAK_OFF = 0.3;           ///< the lumps' strength while their column's streak interval is off
+	static const float TWO_TONE = 0.55;
+	static const float RIM_GLOW = 2.5;
+	/** Unified: where its streaks' and aeration's foam meet, this much of the weaker adds to the stronger (they join, not overlap). */
+	static const float FOAM_JOIN = 0.6;
+	/**
+	 * Unified: contact foam round rock, land and the pool: a band CONTACT_BAND (world units) out from the contact, solid within
+	 * CONTACT_SOLID; reaching out along the flow (toward its swept distance) by a noise riding the flow (CONTACT_REACH_CELLS, at
+	 * CONTACT_REACH_RATE x the morph rate); eaten into from its outer edge by the lobe foam's breakup; driven this hard.
+	 */
+	static const float2 CONTACT_BAND = float2(10.0, 90.0);
+	static const float CONTACT_SOLID = 25.0;
+	static const float2 CONTACT_HEAD = float2(2.0, 10.0);  ///< its head, the ring at the contact: a thin line
+	static const float CONTACT_TAIL_FROM = 25.0;
+	static const float CONTACT_PUSH_WEIGHT = 1.5;
+	static const float2 BULGE_FOAM = float2(2.0, 3.0);      // (off for now: untested)  ///< its heave over hidden rock over which that water foams
+	static const float BULGE_FOAM_SOLID = 0.3;              ///< ...how much of it stays whole under the breakup
+	static const float2 CONTACT_SCREEN = float2(0.5, 2.0);  ///< its head on screen: the moved surface within this of the rock behind it...
+	static const int CONTACT_SCREEN_PIXELS = 3;             ///< ...and rock in front of it this many pixels away (the waterline)
+	static const float2 CONTACT_REACH_CELLS = float2(10.0, 12.0);
+	static const float CONTACT_REACH_RATE = 0.8;
+	static const float CONTACT_TAIL_LEAST = 0.85;                       ///< how far its tails always reach (the noise takes them the rest of the way)
+	static const float2 TURB_BREAK_CELLS_CONTACT = float2(24.0, 30.0);  ///< its outer edge's noise
+	static const float CONTACT_EDGE_NOISE = 14.0;                       ///< world units its outer edge is eaten in by, at most
+	static const float CONTACT_FOAM_DRIVE = 1.4;
+	/**
+	 * Unified: milky under its surface by its baked aeration over UNIFIED_MILK_FROM (from before its foam starts at 0.2), cut
+	 * back where its foam covers over UNIFIED_MILK_UNDER_FOAM (of whole cover): its body toward a milky white kept UNIFIED_MILK_HUE in
+	 * its own colour, by UNIFIED_MILK; what lies behind veiled by UNIFIED_MILK_VEIL and shown UNIFIED_MURK less.
+	 */
+	static const float2 UNIFIED_MILK_FROM = float2(0.1, 0.65);
+	static const float2 UNIFIED_MILK_UNDER_FOAM = float2(0.05, 0.9);  ///< its foam's drive over which milk eases down (gradually)
+	static const float UNIFIED_MILK_IN_FOAM = 0.02;                   ///< what is left of it where foam forms (its openings barely milky)
+	static const float UNIFIED_MILK = 0.6;
+	static const float UNIFIED_MILK_HUE = 0.4;
+	static const float UNIFIED_MILK_VEIL = 0.45;
+	static const float UNIFIED_MURK = 0.5;
+
+	/** Unified: how milky its water is (0 to 1): by its baked aeration, none where its foam forms (a_foam: the foam's drive, so its openings
+	 * stay clear too), past its crest (a_lip). */
+	float UnifiedMilk(float a_aeration, float a_foam, float a_lip)
+	{
+		const float deep = smoothstep(UNIFIED_MILK_FROM.x, UNIFIED_MILK_FROM.y, a_aeration);
+		const float open = lerp(1.0, UNIFIED_MILK_IN_FOAM, smoothstep(UNIFIED_MILK_UNDER_FOAM.x, UNIFIED_MILK_UNDER_FOAM.y, a_foam));
+		return deep * open * a_lip;
+	}
+	/** Unified: bubbles under its surface by its baked aeration (from before its foam), hidden under its foam over BUBBLE_UNDER_FOAM. */
+	static const float2 UNIFIED_BUBBLES = float2(0.1, 0.4);
+	static const float UNIFIED_BUBBLE_AMOUNT = 1.0;
+	static const float UNIFIED_BUBBLE_DENSITY = 1.0;  ///< of the cells holding a bubble at whole drive (the falls' own scaling gave ~12%)
+	static const float UNIFIED_BUBBLE_CELL = 0.6;     ///< x BUBBLE_CELL: finer than the falls' own
+	static const float UNIFIED_BUBBLE_FAR = 0.1;      ///< their even share once too small to draw (more read as a solid band above the streaks from afar)
+	/** Unified: its bubbles gather where its streaks begin: ramping up over BUBBLE_START_LEAD (height fallen) to each streak's start,
+	 * easing off over BUBBLE_START_TAIL after it to BUBBLE_AFTER_START (also the aeration's share elsewhere). */
+	static const float BUBBLE_START_LEAD = 80.0;
+	static const float BUBBLE_START_TAIL = 250.0;
+	static const float BUBBLE_AFTER_START = 0.4;
+	static const float2 BUBBLE_UNDER_FOAM = float2(0.35, 0.85);
+	static const float FOAM_KNEE = 0.75;
+	static const float FOAM_SHEEN = 0.0;  // (diffuse: no glossy highlight)
 	static const float FOAM_SHEEN_POWER = 12.0;
 	static const float FOAM_SSS_BACK = 0.35;
 	static const float FOAM_SSS_POWER = 2.0;
@@ -479,7 +559,7 @@ namespace FallShading
 	static const float STREAK_FOAM_DRIVE = 1.4;
 	static const float STREAK_CLUMP = 0.675;
 	static const float STREAK_OPACITY = 0.85;
-	static const float2 UNIFIED_AERATION_DRIVE = float2(0.3, 0.8);  ///< its baked aeration (tops out near 0.8) from none to whole aeration foam
+	static const float2 UNIFIED_AERATION_DRIVE = float2(0.2, 0.62);  ///< its baked aeration (tops out near 0.8) from none to whole aeration foam
 	/** Unified: brief clear patches in the aeration (tall cells, across and along its flow, morphing open and shut in place): the share
 	 * of the time open and the softness of their edges. */
 	static const float2 AERATION_GAP_CELLS = float2(22.0, 14.0);    ///< per uv unit, across and along (the flow uv runs ~4 x longer along per world unit: half corrected, they stay long) (two lattices, the second 1.6 x finer)
@@ -496,7 +576,7 @@ namespace FallShading
 	/** Unified: the aeration clumped by a slow noise (cells across and along), down to 1 - AERATION_CLUMP between clumps. */
 	static const float2 AERATION_CLUMP_CELLS = float2(40.0, 12.0);
 	/** Unified: from this baked aeration to the next its most aerated water is nearly covered (drive past whole, less clumping and gaps). */
-	static const float2 AERATION_HEAVY = float2(0.65, 0.78);
+	static const float2 AERATION_HEAVY = float2(0.52, 0.66);
 	static const float AERATION_HEAVY_DRIVE = 1.5;     // (more drove every grain value past the cover: a flat sheet)
 	static const float AERATION_LAYER_OPACITY = 1.06;  ///< the top layer's cover, at most ~85% (the volume's own is 0.7)
 	static const float AERATION_CLUMP = 0.6;
@@ -521,7 +601,7 @@ namespace FallShading
 	}  ///< of AERATION_LAYERS: only the top one, while the look is built up  ///< every foam on the one grain (the streaks'), moving and looking alike
 	static const float CONTACT_LIP = 0.0;  // off with the edges until contact foam is baked
 	static const float2 CONTACT_LEVEL = float2(0.5, 0.85);
-	static const float STREAK_CRISP = 0.8;
+	static const float STREAK_CRISP = 1.0;
 	/** Baked falls: a streak's brightness (by its column), less while it fades; its edge and core light (by how far inside it), and
 	 * its grain's swing (the flow-stretched foam pattern). */
 	static const float2 STREAK_TONE = float2(0.61, 1.14);
@@ -532,7 +612,7 @@ namespace FallShading
 	static const float STREAK_GRAIN = 0.25;
 	/** Baked falls: a ribbon's frayed edge: solid from STREAK_SOLID (of its coverage) in, fibres (the flow-stretched foam pattern at
 	 * STREAK_FIBRE_ACROSS tiles across, its STREAK_FIBRE span kept) toward the edge. */
-	static const float2 STREAK_SOLID = float2(0.55, 0.95);
+	static const float2 STREAK_SOLID = float2(0.85, 1.0);
 	static const float STREAK_FIBRE_ACROSS = 12.0;
 	static const float2 STREAK_FIBRE = float2(0.35, 0.75);
 	/** Baked falls: the ribbons' bubbly holes: the foam pattern at STREAK_BUBBLE_SCALE times its tiling, its STREAK_BUBBLES span kept;
@@ -670,8 +750,8 @@ namespace FallShading
 	}
 
 	/** Baked falls: the ribbons' edge (field units either side, softer than RIBBON_EDGE) and how far the fine streaks break it up. */
-	static const float RIBBON_EDGE_SOFT = 0.22;
-	static const float EDGE_BREAK = 0.45;
+	static const float RIBBON_EDGE_SOFT = 0.42;
+	static const float EDGE_BREAK = 0.6;
 
 	/** Baked falls: Ribbons with RIBBON_EDGE_SOFT (feathered, ragged edges). */
 	/** Baked falls: Ribbons over an edge of a_edge field units either side. */

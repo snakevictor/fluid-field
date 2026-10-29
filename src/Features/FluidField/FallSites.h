@@ -173,7 +173,7 @@ namespace FluidFieldSim
 			uint32_t height = 0;
 			float uvMin[2]{};
 			float uvSize[2]{};
-			std::vector<float> texels;  ///< RGBA32F, w x (h x 4): D179 flow and fields; D181 stretch (D186: + frame); D188 plunges
+			std::vector<float> texels;  ///< RGBA32F, w x (h x 5): D179 flow and fields; D181 stretch (D186: + frame); D188 plunges; contact
 		};
 		const std::unordered_map<const RE::BSGeometry*, FlowBake>& GetFlowBakes() const { return flowBakes; }
 		/** @brief Changes whenever GetFlowBakes changes. */
@@ -795,6 +795,8 @@ namespace FluidFieldSim
 			std::vector<float> calm;                   ///< D190: world units run on calm water from the lip, softened (what it carried in clears by them)
 			std::vector<RE::NiPoint3> flow;            ///< A unified sheet's flow direction (world, unit), baked offline; empty elsewhere
 			std::vector<float> streak;                 ///< A unified sheet's streaks left (1, to 0 once its water has met rock), baked offline
+			std::vector<float> contact, contactTail;   ///< A unified sheet's distance to rock, land or the pool along it, and that swept down its flow
+			std::vector<float> bulge;                  ///< A unified sheet's heave over hidden rock (0 to 1)
 			std::vector<float> clearFront, clearBack;  ///< D104: as BakeJob's: the open water or air on each side of the sheet (its depth behind, once its outer side is known)
 		};
 		static constexpr float PLUNGE_WHITE_HEIGHT = 300.0f;  ///< D190: world units from its tangent to its foot over which a fall whitens fully: shorter ones only partly
@@ -824,6 +826,8 @@ namespace FluidFieldSim
 		static constexpr float BOUNCE_MOST = 45.0f;                   ///< A unified sheet: world units its most aerated, level water bobs up and down
 		static constexpr float BOUNCE_AERATION[2] = { 0.35f, 0.8f };  ///< ...over this baked aeration
 		static constexpr float BOUNCE_FACING[2] = { 0.45f, 0.85f };   ///< ...and this facing (|world normal z|: plunging sheets get none)
+		static constexpr std::size_t BAKE_TEXELS_PER = 20;            ///< RGBA32F per texel across the flow bake's five sections (flow, fields, frame, plunges, contact)
+		static constexpr float CONTACT_NONE = 1.0e4f;                 ///< contact distance where a sheet has none baked
 		static constexpr float UNIFIED_POOL_MOST = 35.0f;             ///< A unified sheet: world units its baked pooling (its swell) pushes out at most
 		static constexpr float UNIFIED_WOBBLE = 0.8f;                 ///< A unified sheet: its wobble along the normal, of the falls' (its bounce up more)
 		static constexpr float TURB_SPAN = 8.0f;                      ///< A unified sheet's bake: disturbance of whole turbulence (tools/unify/layers_to_ffbk.py)

@@ -288,6 +288,9 @@ namespace FluidFieldSim
 	{
 		// D183: fixed emitters from FallSites; the shader switches each on and off by the water's foam and flow there
 		UploadNear(a_device, a_context, a_params.cameraPosition);
+		// none wanted: no pass (drawing one particle each anyway divided by a zero count, and crests threw stray droplets)
+		if (a_params.sprayPerEmitter + a_params.mistPerEmitter == 0)
+			return;
 		if (emitterCount == 0 || !a_params.target || !a_params.depth || !a_params.camera || !EnsureShaders() || !EnsureStates(a_device))
 			return;
 		const uint32_t perEmitter = std::max(a_params.sprayPerEmitter + a_params.mistPerEmitter, 1u);

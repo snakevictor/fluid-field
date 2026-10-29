@@ -4320,6 +4320,24 @@ namespace FluidFieldSim
 				ok = true;
 			}
 		}
+		// and its contact distance and that swept down the flow
+		if (ok && !field->streak.empty() && file.peek() != std::char_traits<char>::eof()) {
+			get(field->contact);
+			get(field->contactTail);
+			if (!ok) {
+				field->contact.clear();
+				field->contactTail.clear();
+				ok = true;
+			}
+		}
+		// and how hard its water heaves over hidden rock (its foam there)
+		if (ok && !field->contactTail.empty() && file.peek() != std::char_traits<char>::eof()) {
+			get(field->bulge);
+			if (!ok) {
+				field->bulge.clear();
+				ok = true;
+			}
+		}
 		return ok ? field : nullptr;
 	}
 
@@ -4629,7 +4647,7 @@ namespace FluidFieldSim
 				const FlowBake& flow = linked->second;
 				const auto fw = static_cast<int32_t>(flow.width), fh = static_cast<int32_t>(flow.height);
 				const std::size_t count = static_cast<std::size_t>(fw) * fh;
-				if (flow.texels.size() != count * 16)
+				if (flow.texels.size() != count * BAKE_TEXELS_PER)
 					return 0.0f;
 				const auto gx = std::clamp(static_cast<int32_t>(std::lround((a_u - flow.uvMin[0]) / std::max(flow.uvSize[0], 1e-6f) * static_cast<float>(fw) - 0.5f)), 0, fw - 1);
 				const auto gy = std::clamp(static_cast<int32_t>(std::lround((a_v - flow.uvMin[1]) / std::max(flow.uvSize[1], 1e-6f) * static_cast<float>(fh) - 0.5f)), 0, fh - 1);
@@ -5266,7 +5284,7 @@ namespace FluidFieldSim
 			// hard), y the foam it leaves on its way, both filled by ComputePlunges (ApplyPlunges: where it meets water below, not another
 			// sheet); D189: z the height fallen down steep faces from the top of the falls, for the shading's drop; D190: w its own drop's
 			// progress.
-			bake.texels.resize(count * 16);
+			bake.texels.resize(count * BAKE_TEXELS_PER);
 			const auto fieldAt = [&](const std::vector<float>& a_values, std::size_t a_i, float a_none) { return a_values.size() == count ? a_values[a_i] : a_none; };
 			for (std::size_t i = 0; i < count; i++) {
 				bake.texels[i * 4] = a_node.across[i];
@@ -5288,6 +5306,13 @@ namespace FluidFieldSim
 				fourth[0] = fourth[1] = 0.0f;
 				fourth[2] = a_node.fallen[i];
 				fourth[3] = -1.0f;  // D190: the fall's progress, once all are linked (below)
+				// a unified sheet's contact: its distance to rock, land or the pool along the sheet, and that swept down its flow (world
+				// units; far where it has none)
+				float* fifth = &bake.texels[(count * 4 + i) * 4];
+				fifth[0] = a_node.unified && field.contact.size() == count ? field.contact[i] : CONTACT_NONE;
+				fifth[1] = a_node.unified && field.contactTail.size() == count ? field.contactTail[i] : CONTACT_NONE;
+				fifth[2] = a_node.unified && field.bulge.size() == count ? field.bulge[i] : 0.0f;
+				fifth[3] = 0.0f;
 			}
 			flowBakes[a_node.geometry] = std::move(bake);
 			a_node.done = true;
@@ -5327,7 +5352,7 @@ namespace FluidFieldSim
 			const BakeField& field = *node.field;
 			const auto w = static_cast<int32_t>(field.width), h = static_cast<int32_t>(field.height);
 			const std::size_t count = static_cast<std::size_t>(w) * h;
-			if (bake == flowBakes.end() || bake->second.texels.size() != count * 16 || std::isnan(node.tangent))
+			if (bake == flowBakes.end() || bake->second.texels.size() != count * BAKE_TEXELS_PER || std::isnan(node.tangent))
 				continue;
 			const float span = std::max(node.tangent - node.foot, 1.0f);
 			const float tall = std::min(span / PLUNGE_WHITE_HEIGHT, 1.0f);
@@ -5516,7 +5541,7 @@ namespace FluidFieldSim
 				continue;
 			auto& texels = flowBakes[nodes[n].geometry].texels;
 			const std::size_t count = progressOf[n].size();
-			if (texels.size() != count * 16)
+			if (texels.size() != count * BAKE_TEXELS_PER)
 				continue;
 			for (std::size_t i = 0; i < count; i++)
 				texels[(count * 3 + i) * 4 + 3] = progressOf[n][i];
@@ -6832,7 +6857,7 @@ namespace FluidFieldSim
 			if (bake == flowBakes.end() || landing == a_result.landings.end())
 				continue;
 			const std::size_t count = static_cast<std::size_t>(bake->second.width) * bake->second.height;
-			if (bake->second.texels.size() != count * 16 || impact.size() != count || landing->second.size() != count)
+			if (bake->second.texels.size() != count * BAKE_TEXELS_PER || impact.size() != count || landing->second.size() != count)
 				continue;
 			for (std::size_t i = 0; i < count; i++) {
 				float* fourth = &bake->second.texels[(count * 3 + i) * 4];
@@ -6868,7 +6893,7 @@ namespace FluidFieldSim
 			const auto fw = static_cast<int32_t>(flow.width), fh = static_cast<int32_t>(flow.height);
 			const std::size_t count = static_cast<std::size_t>(fw) * fh;
 			const std::size_t vertices = impact.size.size();
-			if (flow.texels.size() != count * 16 || base->second + vertices > vertexClips.size() || impact.weight.size() != vertices || impact.uv.size() != vertices ||
+			if (flow.texels.size() != count * BAKE_TEXELS_PER || base->second + vertices > vertexClips.size() || impact.weight.size() != vertices || impact.uv.size() != vertices ||
 				impact.direction.size() != vertices)
 				continue;
 			// The impact (the plunge section's x) bilinear at a vertex's texture coordinates
