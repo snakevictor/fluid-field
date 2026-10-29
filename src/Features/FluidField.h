@@ -99,7 +99,6 @@ struct FluidField : OverlayFeature
 		float FallDepth = 1.0f;              ///< D102: the falls' sheet opacity and colour depth
 		float FallRefraction = 0.5f;         ///< D91: how strongly the falls bend what is seen through them (D102: faint by default)
 		bool FallsRiverShader = true;        ///< D159: shade the see-through falls with Water.hlsl until FallSurface.hlsl's port is ready
-		bool FallBlendedCopies = false;      ///< D91 experiment: dense copies with a blended alpha property (falls built after it is set)
 		bool UnifiedFalls = true;            ///< Unified falls: a site's precomputed sheet where cached (off: per-mesh dense copies)
 		bool BakeOtherFalls = false;         ///< Unified falls testing: off, falls without a site sheet get no in-game bake
 		float FallFoamStart = 32.0f;         ///< World units the water falls (the bake's height fallen) before it takes air or foam
@@ -126,7 +125,7 @@ struct FluidField : OverlayFeature
 
 	virtual void RestoreDefaultSettings() override;
 
-	/** @brief Registers the loading-screen listener that resets the field. */
+	/** @brief Registers the loading-screen listener that resets the field, and installs the water hook. */
 	virtual void PostPostLoad() override;
 
 	/** @brief Steps the simulation once per frame. */
@@ -136,7 +135,7 @@ struct FluidField : OverlayFeature
 
 	/** @brief FLUID_FIELD, defined for the water shader only. */
 	virtual std::string_view GetShaderDefineName() override { return "FLUID_FIELD"; }
-	virtual bool HasShaderDefine(RE::BSShader::Type a_type) override { return a_type == RE::BSShader::Type::Water || a_type == RE::BSShader::Type::Effect || a_type == RE::BSShader::Type::Lighting || a_type == RE::BSShader::Type::Utility; }
+	virtual bool HasShaderDefine(RE::BSShader::Type a_type) override { return a_type == RE::BSShader::Type::Water; }
 
 	/** @brief Water grid placement for the water shader (SharedData::fluidFieldSettings); 16-byte sized. */
 	struct WaterShaderData
@@ -277,9 +276,6 @@ public:
 	 */
 	void DrawGroundFogAfterWorld();
 
-	/** @brief Per effect, lighting or utility draw setup: binds the falls' flow and cuts (D29, D56) on grounded falls, else unbinds. */
-	void SetupFallGeometry(RE::BSRenderPass* a_pass);
-
 	/** @brief From the deferred passes: snapshots the main camera for the fog drawn after the world; (debug) draws the fog here. */
 	void DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main);
 
@@ -287,6 +283,17 @@ public:
 	void CaptureRiverDraw(RE::BSShader* a_shader, uint32_t a_vertexDescriptor, uint32_t a_pixelDescriptor);
 	/** @brief D171: from BSWaterShader::SetupGeometry; tells which water type the next water draw is. */
 	void SetupWaterGeometry(RE::BSRenderPass* a_pass);
+
+	struct Hooks
+	{
+		/** @brief After the engine's water setup: records the water geometry drawn next (SetupWaterGeometry). */
+		struct BSWaterShader_SetupGeometry
+		{
+			static void thunk(RE::BSShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_renderFlags);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+		static void Install();
+	};
 
 private:
 	void DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderResourceView* a_depth);
@@ -322,13 +329,12 @@ private:
 		float InverseScale[2];
 		uint32_t BakeOn;
 		float PreviousPhase;    ///< D85: last frame's Scroll[0], for the wobble's motion vectors
-		float BlendAlpha;       ///< D91 experiment: how see-through a blended dense copy's clear water is (0: opaque)
+		float BlendAlpha;       ///< Unused, kept for FallGroundCB's layout
 		uint32_t BakeVelocity;  ///< A unified sheet: the flow's velocity from its bake's coordinates (its own uv is not vanilla's scale)
 		float BakeRect[4];
 		float AerationLook[4];  ///< x FallFoamStart, y FallAerationFoam, z FallAerationMilk, w FallAerationFrom
 	};
 	static_assert(sizeof(FallGroundData) == 128);
-	static constexpr float FALL_BLEND_TEST_ALPHA = 0.6f;  ///< D91 experiment: BlendAlpha for the dense copies built blended
 	/**
 	 * @brief D56-D85: fills fallGroundData for a grounded falls mesh (scroll removed, latched phase, vertex base); o_bake gets
 	 * its bake or null. Shared by the lit and refractive (D91) passes so both read the same flow.
@@ -372,12 +378,9 @@ private:
 		float scaleTime = 0.0f;  ///< fallSurfaceTime of that scale
 	};
 	std::unordered_map<const void*, FallScroll> fallScrolls;
-	winrt::com_ptr<ID3D11Buffer> fallGroundOn;  ///< Constants for grounded draws, rewritten per draw (each mesh's texture scroll)
 	FallGroundData fallGroundData{};
-	winrt::com_ptr<ID3D11Buffer> fallGroundOff;  ///< Enabled = 0, for every other effect draw
 	float fallGroundOrigin[2]{};
 	uint64_t fallGroundVersion = UINT64_MAX;
-	bool fallGroundBound = false;  ///< The last effect draw bound the grounding
 	std::vector<float> fallGroundScratch;
 	std::vector<float> fallPoolScratch;
 	winrt::com_ptr<ID3D11Texture2D> fallPlungeTexture;  ///< FallSites::BuildPlungeMap, for the water's foam (D44)

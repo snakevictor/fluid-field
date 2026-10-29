@@ -14,7 +14,6 @@
 #include "Util.h"
 
 #include "Features/Effects11.h"
-#include "Features/FluidField.h"
 #include "Features/HDRDisplay.h"
 #include "Features/InteriorSun.h"
 #include "Features/LightLimitFix.h"
@@ -232,23 +231,6 @@ namespace LightingExtensions
 		{
 			globals::state->UpdateLightingShaderPermutation(pass);
 			func(shader, pass, renderFlags);
-			if (globals::features::fluidField.loaded)
-				globals::features::fluidField.SetupFallGeometry(pass);
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-}
-
-namespace WaterExtensions
-{
-	// D171: Fluid Field records each river draw's water type, whose state its see-through falls take
-	struct BSWaterShader_SetupGeometry
-	{
-		static void thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
-		{
-			func(shader, pass, renderFlags);
-			if (globals::features::fluidField.loaded)
-				globals::features::fluidField.SetupWaterGeometry(pass);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -264,23 +246,6 @@ namespace EffectExtensions
 			ExternalEmittance::UpdatePermutation(pass);
 			globals::state->UpdateEffectShaderPermutation(pass);
 			globals::state->permutationData.EffectRadius = pass->geometry->worldBound.radius;
-			if (globals::features::fluidField.loaded)
-				globals::features::fluidField.SetupFallGeometry(pass);
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-}
-
-namespace UtilityExtensions
-{
-	struct BSUtilityShader_SetupGeometry
-	{
-		static void thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
-		{
-			func(shader, pass, renderFlags);
-			// Fluid Field (D38): the depth pre-pass cuts falling water where the lit pass hides it
-			if (globals::features::fluidField.loaded)
-				globals::features::fluidField.SetupFallGeometry(pass);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -1146,8 +1111,6 @@ namespace Hooks
 		logger::info("Installing SetupGeometry hooks");
 		stl::write_vfunc<0x6, LightingExtensions::BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
 		stl::write_vfunc<0x6, EffectExtensions::BSEffectShader_SetupGeometry>(RE::VTABLE_BSEffectShader[0]);
-		stl::write_vfunc<0x6, WaterExtensions::BSWaterShader_SetupGeometry>(RE::VTABLE_BSWaterShader[0]);
-		stl::write_vfunc<0x6, UtilityExtensions::BSUtilityShader_SetupGeometry>(RE::VTABLE_BSUtilityShader[0]);
 		stl::write_vfunc<0x6, SkyExtensions::BSSkyShader_SetupGeometry>(RE::VTABLE_BSSkyShader[0]);
 		stl::write_thunk_call<GrassExtensions::BSGrassShaderProperty_ctor>(REL::RelocationID(15214, 15383).address() + Util::VersionedRelocation::Select(0x45B, 0x4F5, 0x4FD));
 		stl::write_vfunc<0x6, GrassExtensions::BSGrassShader_SetupGeometry>(RE::VTABLE_BSGrassShader[0]);

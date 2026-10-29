@@ -70,7 +70,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	FallDepth,
 	FallRefraction,
 	FallsRiverShader,
-	FallBlendedCopies,
 	UnifiedFalls,
 	BakeOtherFalls,
 	FallFoamStart,
@@ -522,6 +521,20 @@ void FluidField::PostPostLoad()
 {
 	if (!MenuOpenCloseEventHandler::Register())
 		logger::warn("[Fluid Field] Loading-screen listener not registered; the field will not reset after loads");
+	Hooks::Install();
+}
+
+void FluidField::Hooks::BSWaterShader_SetupGeometry::thunk(RE::BSShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_renderFlags)
+{
+	func(a_shader, a_pass, a_renderFlags);
+	if (auto& fluidField = globals::features::fluidField; fluidField.loaded)
+		fluidField.SetupWaterGeometry(a_pass);
+}
+
+void FluidField::Hooks::Install()
+{
+	stl::write_vfunc<0x6, BSWaterShader_SetupGeometry>(RE::VTABLE_BSWaterShader[0]);
+	logger::info("[Fluid Field] Installed hooks");
 }
 
 void FluidField::ClearShaderCache()
@@ -856,8 +869,7 @@ void FluidField::Prepass()
 			// Waterfall sites reconstructed from vanilla's layout (D25)
 			fallSites.SetConsoleSummary(showFallSites);
 			fallSites.SetHideEffects(hideFallEffects, settings.FallLayerMask);
-			// D91: the refractive pass draws the lit pieces itself, so the engine's are hidden; blended copies apply only to new copies
-			fallSites.SetBlendedCopies(settings.FallBlendedCopies && !settings.RefractiveFalls);
+			// D91: the refractive pass draws the lit pieces itself, so the engine's are hidden
 			fallSites.SetUnifiedFalls(settings.UnifiedFalls);
 			fallSites.SetBakeOthers(settings.BakeOtherFalls);
 			fallSites.SetLitHidden(RefractiveFallsActive());
@@ -1461,8 +1473,6 @@ void FluidField::ReleaseFallGround()
 	fallPlungeSRV = nullptr;
 	fallLipTexture = nullptr;
 	fallLipSRV = nullptr;
-	fallGroundOn = nullptr;
-	fallGroundOff = nullptr;
 	fallGroundVersion = UINT64_MAX;
 }
 
@@ -1472,12 +1482,6 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	auto* context = globals::d3d::context;
 	if (!fallGroundTexture) {
 		D3D11_TEXTURE2D_DESC desc{ .Width = FALL_GROUND_SIZE, .Height = FALL_GROUND_SIZE, .MipLevels = 1, .ArraySize = 1, .Format = DXGI_FORMAT_R32_FLOAT, .SampleDesc = { 1, 0 }, .Usage = D3D11_USAGE_DEFAULT, .BindFlags = D3D11_BIND_SHADER_RESOURCE, .CPUAccessFlags = 0, .MiscFlags = 0 };
-		D3D11_BUFFER_DESC cbDesc{ .ByteWidth = sizeof(FallGroundData), .Usage = D3D11_USAGE_DEFAULT, .BindFlags = D3D11_BIND_CONSTANT_BUFFER, .CPUAccessFlags = 0, .MiscFlags = 0, .StructureByteStride = 0 };
-		D3D11_BUFFER_DESC onDesc = cbDesc;
-		onDesc.Usage = D3D11_USAGE_DYNAMIC;
-		onDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-		const FallGroundData off{};
-		const D3D11_SUBRESOURCE_DATA offData{ &off, 0, 0 };
 		D3D11_TEXTURE2D_DESC plungeDesc = desc;
 		plungeDesc.Format = DXGI_FORMAT_R16_FLOAT;
 		if (FAILED(device->CreateTexture2D(&plungeDesc, nullptr, fallPlungeTexture.put())) || FAILED(device->CreateShaderResourceView(fallPlungeTexture.get(), nullptr, fallPlungeSRV.put()))) {
@@ -1498,16 +1502,13 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 			Util::SetResourceName(fallLipSRV.get(), "FluidField::FallLip SRV");
 		}
 		desc.Format = DXGI_FORMAT_R32G32_FLOAT;  // The rock, and the pools' surface (D36)
-		if (FAILED(device->CreateTexture2D(&desc, nullptr, fallGroundTexture.put())) || FAILED(device->CreateShaderResourceView(fallGroundTexture.get(), nullptr, fallGroundSRV.put())) ||
-			FAILED(device->CreateBuffer(&onDesc, &offData, fallGroundOn.put())) || FAILED(device->CreateBuffer(&cbDesc, &offData, fallGroundOff.put()))) {
+		if (FAILED(device->CreateTexture2D(&desc, nullptr, fallGroundTexture.put())) || FAILED(device->CreateShaderResourceView(fallGroundTexture.get(), nullptr, fallGroundSRV.put()))) {
 			logger::warn("[Fluid Field] Could not create the waterfall ground map; waterfalls are not grounded");
 			ReleaseFallGround();
 			return;
 		}
 		Util::SetResourceName(fallGroundTexture.get(), "FluidField::FallGround");
 		Util::SetResourceName(fallGroundSRV.get(), "FluidField::FallGround SRV");
-		Util::SetResourceName(fallGroundOn.get(), "FluidField::FallGroundOn");
-		Util::SetResourceName(fallGroundOff.get(), "FluidField::FallGroundOff");
 	}
 
 	// D56: the falls' per-vertex rock cut, whenever more meshes are tested
@@ -1590,39 +1591,6 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	fallGroundData.AerationLook[1] = settings.FallAerationFoam;
 	fallGroundData.AerationLook[2] = settings.FallAerationMilk;
 	fallGroundData.AerationLook[3] = settings.FallAerationFrom;
-}
-
-void FluidField::SetupFallGeometry(RE::BSRenderPass* a_pass)
-{
-	auto* context = globals::d3d::context;
-	const bool grounded = fallGroundSRV && settings.Enabled && settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && a_pass && a_pass->geometry && fallSites.IsGrounded(a_pass->geometry);
-	if (grounded) {
-		ID3D11ShaderResourceView* bakeView = nullptr;
-		PrepareFallGroundData(a_pass->geometry, a_pass->shaderProperty, bakeView);
-		// D91 experiment: a dense copy built blended lets its clear water through
-		const auto* alpha = a_pass->geometry->GetGeometryRuntimeData().alphaProperty.get();
-		fallGroundData.BlendAlpha = settings.FallBlendedCopies && alpha && alpha->alphaFlags == FluidFieldSim::FallSites::BLENDED_ALPHA_FLAGS ? FALL_BLEND_TEST_ALPHA : 0.0f;
-		context->PSSetShaderResources(124, 1, &bakeView);
-		D3D11_MAPPED_SUBRESOURCE mapped{};
-		if (SUCCEEDED(context->Map(fallGroundOn.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-			std::memcpy(mapped.pData, &fallGroundData, sizeof(fallGroundData));
-			context->Unmap(fallGroundOn.get(), 0);
-		}
-		ID3D11Buffer* constants = fallGroundOn.get();
-		context->VSSetConstantBuffers(13, 1, &constants);
-		context->PSSetConstantBuffers(13, 1, &constants);
-		ID3D11ShaderResourceView* ground = fallGroundSRV.get();
-		context->VSSetShaderResources(120, 1, &ground);
-		ID3D11ShaderResourceView* clip = fallClipSRV.get();
-		context->VSSetShaderResources(123, 1, &clip);
-		context->PSSetShaderResources(120, 1, &ground);
-		fallGroundBound = true;
-	} else if (fallGroundBound) {
-		ID3D11Buffer* constants = fallGroundOff.get();
-		context->VSSetConstantBuffers(13, 1, &constants);
-		context->PSSetConstantBuffers(13, 1, &constants);
-		fallGroundBound = false;
-	}
 }
 
 void FluidField::PrepareFallGroundData(const RE::BSGeometry* a_geometry, RE::BSShaderProperty* a_property, ID3D11ShaderResourceView*& o_bake)
@@ -1745,7 +1713,7 @@ bool FluidField::RefractiveFallsActive() const
 {
 	// The debug views (D40) are drawn by the lit pass, so the lit pieces stay while one is on
 	return loaded && settings.Enabled && settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && settings.RefractiveFalls &&
-	       (settings.WaterfallDebug == 0 || settings.WaterfallDebug >= 4) && fallGroundSRV && fallGroundOn && fallRefraction.IsUsable();  // D108: 4 and 5 are its own
+	       (settings.WaterfallDebug == 0 || settings.WaterfallDebug >= 4) && fallGroundSRV && fallRefraction.IsUsable();  // D108: 4 and 5 are its own
 }
 
 namespace
