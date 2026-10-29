@@ -8,9 +8,6 @@
 #if defined(RENDER_SHADOWMASK) || defined(RENDER_SHADOWMASKSPOT) || defined(RENDER_SHADOWMASKPB) || defined(RENDER_SHADOWMASKDPB)
 #	define RENDER_SHADOWMASK_ANY
 #endif
-#if defined(FLUID_FIELD)
-#	include "FluidField/FallGround.hlsli"
-#endif
 
 struct VS_INPUT
 {
@@ -30,9 +27,6 @@ struct VS_INPUT
 #if defined(SKINNED)
 	float4 BoneWeights: BLENDWEIGHT0;
 	float4 BoneIndices: BLENDINDICES0;
-#endif
-#if defined(FLUID_FIELD)
-	uint VertexID: SV_VertexID;  // D56: the falls' per-vertex rock cut
 #endif
 };
 
@@ -75,10 +69,6 @@ struct VS_OUTPUT
 	float Depth: TEXCOORD2;
 #	endif
 #endif
-#if defined(FLUID_FIELD)
-	float FallClip: SV_ClipDistance0;  // Fluid Field (D38): Lighting.hlsl's cut, so the pre-pass leaves no depth where falling water is hidden
-	float2 FallFade: FALLFADE0;        // Fluid Field (D67): Lighting.hlsl's seam dither
-#endif
 };
 
 #ifdef VSHADER
@@ -110,10 +100,6 @@ float2 SmoothSaturate(float2 value)
 VS_OUTPUT main(VS_INPUT input)
 {
 	VS_OUTPUT vsout;
-#	if defined(FLUID_FIELD)
-	vsout.FallClip = FallGround::CLIP_MOST;  // D99: wholly shown (CutFade) where no cut is written
-	vsout.FallFade = float2(1.0, 1.0e4);
-#	endif
 
 #	if (defined(RENDER_DEPTH) && defined(RENDER_SHADOWMASK_ANY)) || SHADOWFILTER == 2
 	vsout.PositionCS.xy = input.PositionMS.xy;
@@ -128,10 +114,6 @@ VS_OUTPUT main(VS_INPUT input)
 	vsout.PositionCS.xzw = input.PositionMS.xzw;
 #	else
 
-#		if defined(FLUID_FIELD)
-	// Fluid Field (D69): a falls seam's edge moved across its gap, as in Lighting.hlsl
-	input.PositionMS.xyz += FallGround::Shift(input.VertexID, FallGround::Scroll.x, World[2].xyz);
-#		endif
 	precise float4 positionMS = float4(input.PositionMS.xyz, 1.0);
 	float4 positionCS = float4(0, 0, 0, 0);
 
@@ -160,10 +142,6 @@ VS_OUTPUT main(VS_INPUT input)
 #		else
 	precise float4x4 modelViewProj = mul(FrameBuffer::CameraViewProj, World);
 	positionCS = mul(modelViewProj, positionMS);
-#			if defined(FLUID_FIELD)
-	vsout.FallClip = FallGround::ClipDistance(mul(World, positionMS).xyz, input.VertexID);
-	vsout.FallFade = FallGround::Fade(input.VertexID);
-#			endif
 #		endif
 
 #		if defined(RENDER_SHADOWMAP) && defined(RENDER_SHADOWMAP_CLAMPED)
@@ -373,12 +351,6 @@ float SampleDualParaboloidShadowPCF(Texture2DArray<float4> tex, SamplerCompariso
 PS_OUTPUT main(PS_INPUT input)
 {
 	PS_OUTPUT psout;
-
-#	if defined(FLUID_FIELD)
-	// Fluid Field (D67, D99): Lighting.hlsl's seam dither and cut fade
-	if (FallGround::Enabled && FallGround::Dithered(input.PositionCS.xy, input.FallFade.x * FallGround::CutFade(input.FallClip)))
-		discard;
-#	endif
 
 #	if defined(ADDITIONAL_ALPHA_MASK)
 	uint2 alphaMask = input.PositionCS.xy;

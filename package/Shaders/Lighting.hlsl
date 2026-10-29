@@ -12,9 +12,6 @@
 #include "Common/SharedData.hlsli"
 #include "Common/Skinned.hlsli"
 #include "Common/Triplanar.hlsli"
-#if defined(FLUID_FIELD)
-#	include "FluidField/FallGround.hlsli"
-#endif
 
 #if defined(FACEGEN) || defined(FACEGEN_RGB_TINT)
 #	define SKIN
@@ -55,9 +52,6 @@ struct VS_INPUT
 #if defined(EYE)
 	float EyeParameter: TEXCOORD2;
 #endif  // EYE
-#if defined(FLUID_FIELD)
-	uint VertexID: SV_VertexID;  // D56: the falls' per-vertex rock cut
-#endif
 };
 
 struct VS_OUTPUT
@@ -94,10 +88,6 @@ struct VS_OUTPUT
 	float4 FogParam: COLOR1;
 
 	float3 ModelPosition: TEXCOORD12;
-#if defined(FLUID_FIELD)
-	float FallClip: SV_ClipDistance0;  // Fluid Field (D38): falling water buried in rock, ground or pools is cut
-	float2 FallFade: FALLFADE0;        // Fluid Field (D67): seam dither; D68: height above the water below
-#endif
 };
 #ifdef VSHADER
 
@@ -154,13 +144,6 @@ VS_OUTPUT main(VS_INPUT input)
 {
 	VS_OUTPUT vsout;
 
-#	if defined(FLUID_FIELD)
-	// Fluid Field (D69, D85): a falls seam's edge moved across its gap and its wobble, identical in the depth pre-pass (Utility.hlsl);
-	// also a frame ago, for the motion vector
-	const float3 fallShift = FallGround::Shift(input.VertexID, FallGround::Scroll.x, World[2].xyz);
-	const float3 fallShiftPrevious = FallGround::Shift(input.VertexID, FallGround::PreviousPhase, World[2].xyz);
-	input.Position.xyz += fallShift;
-#	endif
 	precise float4 inputPosition = float4(input.Position.xyz, 1.0);
 
 #	if defined(LODLANDNOISE) || defined(LODLANDSCAPE)
@@ -168,9 +151,6 @@ VS_OUTPUT main(VS_INPUT input)
 #	endif  // defined(LODLANDNOISE) || defined(LODLANDSCAPE)                                                                   \
 
 	precise float4 previousInputPosition = inputPosition;
-#	if defined(FLUID_FIELD)
-	previousInputPosition.xyz += fallShiftPrevious - fallShift;
-#	endif
 
 #	if defined(TREE_ANIM)
 	precise float2 treeShiftVector = GetTreeShiftVector(input.Position, input.Color);
@@ -192,12 +172,8 @@ VS_OUTPUT main(VS_INPUT input)
 	precise float4 worldPosition = float4(mul(inputPosition, transpose(worldMatrix)), 1);
 
 	float4 viewPos = mul(ViewProj, worldPosition);
-#	else  // !SKINNED
-#		if defined(FLUID_FIELD)
-	precise float4 previousWorldPosition = float4(mul(PreviousWorld, previousInputPosition), 1);  // D85: the falls' wobble a frame ago
-#		else
+#	else   // !SKINNED
 	precise float4 previousWorldPosition = float4(mul(PreviousWorld, inputPosition), 1);
-#		endif
 	precise float4 worldPosition = float4(mul(World, inputPosition), 1);
 	precise float4x4 world4x4 = float4x4(World[0], World[1], World[2], float4(0, 0, 0, 1));
 	precise float4x4 modelView = mul(ViewProj, world4x4);
@@ -299,11 +275,6 @@ VS_OUTPUT main(VS_INPUT input)
 	vsout.FogParam.w = fogColorParam;
 
 	vsout.ModelPosition = input.Position.xyz;
-
-#	if defined(FLUID_FIELD)
-	vsout.FallClip = FallGround::ClipDistance(worldPosition.xyz, input.VertexID);
-	vsout.FallFade = FallGround::Fade(input.VertexID);
-#	endif
 
 	return vsout;
 }
@@ -1055,24 +1026,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 	float2 uv = input.TexCoord0.xy;
-#	if defined(FLUID_FIELD)
-	// Fluid Field (D67, D99): dither out a seam's edge over the mesh leading it, as the depth pre-pass does, and fade toward the cut
-	if (FallGround::Enabled && FallGround::Dithered(input.Position.xy, input.FallFade.x * FallGround::CutFade(input.FallClip)))
-		discard;
-	// Fluid Field (D32): a waterfall's lit surface carried by the falls' flow, sampled through uv
-	FallGround::FlowSample fallFlow = (FallGround::FlowSample)0;
-	const float2 fallUvVanilla = uv;
-	const bool fallFlowOn = FallGround::Enabled && FallGround::DebugMode != 3;  // D108: 4 is See-Through Falls' own
-	float fallPoolHeight = 0.0;
-	bool fallPool = false;
-	[branch] if (fallFlowOn)
-	{
-		// D36: falling water under the pools' surface is the pool's, and not drawn
-		fallPool = FallGround::Pool(input.WorldPosition.xy + FrameBuffer::CameraPosAdjust.xy, fallPoolHeight);
-		fallFlow = FallGround::Flow(uv, input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
-		uv = fallFlow.uvA;
-	}
-#	endif
 	float2 uvOriginal = uv;
 
 	// Lattice cell comes from the geometric UV, before the parallax block below rewrites uv.
@@ -1517,53 +1470,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	baseColor = float4(Color::Diffuse(rawBaseColor.rgb), rawBaseColor.a);
 	float4 normalColor;
 	MESH_TV_SAMPLE_BIAS(normalColor, TexNormalSampler, SampNormalSampler, uv);
-#		if defined(FLUID_FIELD)
-	[branch] if (fallFlowOn)
-	{
-		rawBaseColor = saturate(rawBaseColor);
-		normalColor = saturate(normalColor);
-		// White water (D34, D59, D78): glassy where the water comes onto the falls, whitening as it runs and falls, foamed where it
-		// strikes rock; from the mesh's own bake only
-		const float aerated = 1.0 - exp(-fallFlow.runTime / FallGround::AERATION_SECONDS);
-		// D60: whiter in a rock's wake, fading down the streaks
-		float white = FallGround::Whitening ? saturate(max(fallFlow.foam, max(aerated * FallGround::AERATION_WHITE, fallFlow.wake * 0.6))) : 0.0;
-		// D36, D58: white where the falls meet the water below, thinning up the falls and back out under the pool's surface
-		[flatten] if (fallPool && FallGround::Whitening)
-		{
-			const float above = input.WorldPosition.z + FrameBuffer::CameraPosAdjust.z - fallPoolHeight;
-			white = max(white, above >= 0.0 ? 1.0 - saturate(above / FallGround::PoolFoamHeight) : 1.0 - saturate(-above / FallGround::POOL_CUT));
-		}
-		// D68: and where it meets the engine's water it falls into (per vertex)
-		[flatten] if (input.FallFade.y < FallGround::NO_WATER * 0.5 && FallGround::Whitening)
-			white = max(white, 1.0 - saturate(input.FallFade.y / FallGround::PoolFoamHeight));
-		// D42: foam as lace streaming with the water: thin where barely white, solid where wholly white
-		const float lace = FallGround::Lace(fallFlow);
-		const float cover = saturate(smoothstep(1.0 - white, 1.0 - white * 0.6, lace) + smoothstep(0.75, 1.0, white));
-		// Mostly white, in the water's own hue
-		const float3 waterHue = rawBaseColor.rgb / max(max(rawBaseColor.r, max(rawBaseColor.g, rawBaseColor.b)), 0.05);
-		const float3 foamColor = lerp(float3(0.9, 0.9, 0.9), waterHue * 0.9, 0.25);  // D44: too much hue tinted it blue
-		rawBaseColor.rgb = lerp(rawBaseColor.rgb, foamColor, white > 0.0 ? cover * 0.9 : 0.0);
-
-		// Debug (D40): 1 the mesh's bake (D59; dark magenta without one, D78); 2 the texture's direction of motion
-		[branch] if (FallGround::DebugMode == 1 && FallGround::BakeOn)
-		{
-			// D67: red streak spread (half: as at the top), green run time (a band per second), blue foam, white wake
-			const float2 bakeUv = (fallUvVanilla - FallGround::TexOffset) * FallGround::InverseScale;
-			const float4 baked = FallGround::BakeAt(bakeUv);
-			const float step = 0.01 / max(FallGround::BakeRect.z, 1e-4);
-			const float spread = (FallGround::BakeAt(bakeUv + float2(step, 0.0)).x - FallGround::BakeAt(bakeUv - float2(step, 0.0)).x) / (2.0 * step);
-			rawBaseColor.rgb = lerp(float3(saturate(0.5 * spread), frac(fallFlow.runTime), saturate(baked.w)), 1.0, saturate(baked.z) * 0.5);
-		}
-		else if (FallGround::DebugMode == 1)
-			rawBaseColor.rgb = float3(0.25, 0.0, 0.25);
-		else if (FallGround::DebugMode == 2)
-			rawBaseColor.rgb = (0.5 + 0.5 * fallFlow.velocity / max(length(fallFlow.velocity), 1e-3)) * saturate(length(fallFlow.velocity) / FallGround::DEBUG_FLOW_SPEED);
-		baseColor = float4(Color::Diffuse(rawBaseColor.rgb), rawBaseColor.a);
-		// D91 experiment: a dense copy built blended lets its clear water through, its white water stays opaque
-		[flatten] if (FallGround::BlendAlpha > 0.0)
-			baseColor.a *= lerp(1.0 - FallGround::BlendAlpha, 1.0, saturate(max(white > 0.0 ? cover : 0.0, aerated * 0.5)));
-	}
-#		endif
 	normal = normalColor;
 #		if defined(TRUE_PBR)
 	MESH_TV_SAMPLE_BIAS(rawRMAOS, TexRMAOSSampler, SampRMAOSSampler, diffuseUv);
