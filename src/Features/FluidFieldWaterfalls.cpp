@@ -473,7 +473,7 @@ void FluidFieldWaterfalls::PrepareFallGroundData(const RE::BSGeometry* a_geometr
 	}
 	// D38: the vertex shaders' camera offset (Lighting has none of its own)
 	// D44: this pass's own, since reflections use a mirrored camera
-	const auto eye = globals::game::shadowState->GetRuntimeData().posAdjust.getEye();
+	const auto eye = Util::GetEyePosition();
 	fallGroundData.CameraOffset[0] = eye.x;
 	fallGroundData.CameraOffset[1] = eye.y;
 	fallGroundData.CameraOffset[2] = eye.z;
