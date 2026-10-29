@@ -20,7 +20,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Enabled,
 	WaterfallStrength,
 	HideUnderwaterFalls,
-	FallWhitening,
 	FallSpeed,
 	FallFoamStart,
 	FallAerationFoam,
@@ -40,8 +39,6 @@ void FluidFieldWaterfalls::DrawSettings()
 	tooltip(T(TKEY("enabled_tooltip"), "Draws the waterfalls as clear, flowing water shaded like the river they pour from."));
 
 	ImGui::SeparatorText(T(TKEY("waterfall_look"), "Water"));
-	ImGui::Checkbox(T(TKEY("fall_whitening"), "Foam on the Falls"), &settings.FallWhitening);
-	tooltip(T(TKEY("fall_whitening_tooltip"), "White water on the falls where they strike rock, below rock, into the water below and as they run and fall."));
 	ImGui::SliderFloat(T(TKEY("fall_foam_start"), "Foam Start Height"), &settings.FallFoamStart, 0.0f, 300.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 	tooltip(T(TKEY("fall_foam_start_tooltip"), "How far the water falls, in world units, before it takes air or foam: the crest stays clear above it. Baked falls only."));
 	ImGui::SliderFloat(T(TKEY("fall_aeration_foam"), "Aeration Foam"), &settings.FallAerationFoam, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -394,7 +391,7 @@ void FluidFieldWaterfalls::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		}
 	}
 	fallGroundData = { { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u,
-		0u, fallSurfaceTime, FALL_POOL_FOAM, {}, {}, {}, settings.FallWhitening ? 1u : 0u, UINT32_MAX,
+		0u, fallSurfaceTime, 0.0f, {}, {}, {}, 0u, UINT32_MAX,
 		settings.HideUnderwaterFalls ? 1u : 0u, { 1.0f, 1.0f }, 0u, {}, {} };
 	fallGroundData.AerationLook[0] = settings.FallFoamStart;
 	fallGroundData.AerationLook[1] = settings.FallAerationFoam;
@@ -458,13 +455,10 @@ void FluidFieldWaterfalls::PrepareFallGroundData(const RE::BSGeometry* a_geometr
 	fallGroundData.InverseScale[1] = material && material->texCoordScale[buffer].y > 1e-4f ? 1.0f / material->texCoordScale[buffer].y : 1.0f;
 	// D59: this mesh's flow bake, where it is solved
 	o_bake = nullptr;
-	fallGroundData.BakeOn = 0;
-	fallGroundData.BakeVelocity = fallSites.IsUnified(a_geometry) ? 1u : 0u;
 	if (const auto it = fallBakeSRVs.find(a_geometry); it != fallBakeSRVs.end()) {
 		const auto& bakes = fallSites.GetFlowBakes();
 		if (const auto bake = bakes.find(a_geometry); bake != bakes.end()) {
 			o_bake = it->second.view.get();
-			fallGroundData.BakeOn = 1;
 			fallGroundData.BakeRect[0] = bake->second.uvMin[0];
 			fallGroundData.BakeRect[1] = bake->second.uvMin[1];
 			fallGroundData.BakeRect[2] = 1.0f / std::max(bake->second.uvSize[0], 1e-4f);
@@ -477,7 +471,6 @@ void FluidFieldWaterfalls::PrepareFallGroundData(const RE::BSGeometry* a_geometr
 	fallGroundData.CameraOffset[0] = eye.x;
 	fallGroundData.CameraOffset[1] = eye.y;
 	fallGroundData.CameraOffset[2] = eye.z;
-	fallGroundData.BlendAlpha = 0.0f;
 }
 
 void FluidFieldWaterfalls::SetupWaterGeometry(RE::BSRenderPass* a_pass)

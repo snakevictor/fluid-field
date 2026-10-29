@@ -32,7 +32,6 @@ struct FluidFieldWaterfalls : Feature
 		bool Enabled = true;
 		float WaterfallStrength = 1.0f;   ///< How hard waterfalls churn, push and foam the water (with Shallow Water)
 		bool HideUnderwaterFalls = true;  ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
-		bool FallWhitening = true;        ///< The falls whiten with their foam and speed (D34)
 		float FallSpeed = 1.75f;          ///< D90: the falls' flow (texture and wobble) as a multiple of vanilla's speed
 		float FallFoamStart = 32.0f;      ///< World units the water falls (the bake's height fallen) before it takes air or foam
 		float FallAerationFoam = 1.0f;    ///< How much of the bake's aeration turns to white foam (0: none)
@@ -126,20 +125,20 @@ private:
 		float InverseCell;
 		float Size;
 		uint32_t Enabled;
-		uint32_t DebugMode;
+		uint32_t Pad0;
 		float Time;
-		float PoolFoamHeight;
+		float Pad1;
 		float Scroll[2];
 		float TexOffset[2];
 		float CameraOffset[3];
-		uint32_t Whitening;
+		uint32_t Pad2;
 		uint32_t VertexBase;
 		uint32_t HideUnderwater;
 		float InverseScale[2];
-		uint32_t BakeOn;
-		float PreviousPhase;    ///< D85: last frame's Scroll[0], for the wobble's motion vectors
-		float BlendAlpha;       ///< Unused, kept for FallGroundCB's layout
-		uint32_t BakeVelocity;  ///< A unified sheet: the flow's velocity from its bake's coordinates (its own uv is not vanilla's scale)
+		uint32_t Pad3;
+		float PreviousPhase;  ///< D85: last frame's Scroll[0], for the wobble's motion vectors
+		float Pad4;
+		uint32_t Pad5;
 		float BakeRect[4];
 		float AerationLook[4];  ///< x FallFoamStart, y FallAerationFoam, z FallAerationMilk, w FallAerationFrom
 	};
@@ -177,7 +176,6 @@ private:
 	static constexpr float FALL_GROUND_CELL = 16.0f;        ///< Must equal FallCapture::CELL: pools are copied texel for texel
 	static constexpr float DEFAULT_FALL_SCROLL = 0.15f;     ///< D60: vanilla's scroll before it is measured (texture coordinates per second)
 	static constexpr float FALL_GROUND_RECENTRE = 4096.0f;  ///< How far the player moves before the map recentres
-	static constexpr float FALL_POOL_FOAM = 26.0f;          ///< World units above the water below over which the falls foam into it (D36)
 	winrt::com_ptr<ID3D11Texture2D> fallGroundTexture;
 	winrt::com_ptr<ID3D11ShaderResourceView> fallGroundSRV;
 	winrt::com_ptr<ID3D11Buffer> fallClipBuffer;  ///< D56: the falls' per-vertex rock cut (FallSites::GetVertexClips); grows only, written in place

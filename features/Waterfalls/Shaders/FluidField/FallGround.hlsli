@@ -8,26 +8,26 @@ namespace FallGround
 {
 	cbuffer FallGroundCB : register(b13)
 	{
-		float2 Origin;         // World position of texel (0, 0)
-		float InverseCell;     // Texels per world unit
-		float Size;            // Texels per side
-		uint Enabled;          // This draw is a grounded mesh
-		uint DebugMode;        // Unused; kept for the layout
-		float Time;            // Seconds
-		float PoolFoamHeight;  // Unused; kept for the layout
-		float2 Scroll;         // D67: the falls' shared scroll (texture coordinates, at most one repeat) and its rate per second
-		float2 TexOffset;      // Vanilla's texture scroll, removed from the coordinates
-		float3 CameraOffset;   // D38: FrameBuffer::CameraPosAdjust, for vertex shaders without it
-		uint Whitening;        // Unused; kept for the layout
-		uint VertexBase;       // D56: this mesh's first VertexClip entry, or NO_VERTEX_CLIP
-		uint HideUnderwater;   // D36: don't draw falling water under the pools' surface
-		float2 InverseScale;   // D57: undoes vanilla's animated texture scale (with TexOffset, its scroll)
-		uint BakeOn;           // D59: this mesh has a FlowBake (not read here)
-		float PreviousPhase;   // D85: last frame's Scroll.x, for the wobble's motion vectors
-		float BlendAlpha;      // Unused; kept for the layout
-		uint BakeVelocity;     // Unused; kept for the layout
-		float4 BakeRect;       // D59: the bake's least u and v, and one over its extent
-		float4 AerationLook;   // x height fallen before air or foam; y the bake's aeration to foam; z milk scale; w the aeration foam starts at
+		float2 Origin;      // World position of texel (0, 0)
+		float InverseCell;  // Texels per world unit
+		float Size;         // Texels per side
+		uint Enabled;       // This draw is a grounded mesh
+		uint Pad0;
+		float Time;  // Seconds
+		float Pad1;
+		float2 Scroll;        // D67: the falls' shared scroll (texture coordinates, at most one repeat) and its rate per second
+		float2 TexOffset;     // Vanilla's texture scroll, removed from the coordinates
+		float3 CameraOffset;  // D38: FrameBuffer::CameraPosAdjust, for vertex shaders without it
+		uint Pad2;
+		uint VertexBase;      // D56: this mesh's first VertexClip entry, or NO_VERTEX_CLIP
+		uint HideUnderwater;  // D36: don't draw falling water under the pools' surface
+		float2 InverseScale;  // D57: undoes vanilla's animated texture scale (with TexOffset, its scroll)
+		uint Pad3;
+		float PreviousPhase;  // D85: last frame's Scroll.x, for the wobble's motion vectors
+		float Pad4;
+		uint Pad5;
+		float4 BakeRect;      // D59: the bake's least u and v, and one over its extent
+		float4 AerationLook;  // x height fallen before air or foam; y the bake's aeration to foam; z milk scale; w the aeration foam starts at
 	};
 
 	Texture2D<float2> Heights : register(t120);  // Captured rock (x, unused here) and the pools' surface (y, D36)

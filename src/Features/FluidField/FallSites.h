@@ -126,8 +126,6 @@ namespace FluidFieldSim
 		 * (SV_ClipDistance; negative inside); D67: overlap visibility (1 whole, 0 gone; edges over a leading mesh dither out
 		 * so the two blend); D68: height above the water below (NO_WATER: none); D69: the move, in mesh space, closing a gap.
 		 */
-		/** A site's unified sheet (its uv addresses its bake only; the flow's scale comes from the bake). */
-		bool IsUnified(const RE::BSGeometry* a_geometry) const { return unifiedShapes.contains(a_geometry); }
 
 		bool GetVertexClip(const RE::BSGeometry* a_geometry, uint32_t& a_base) const
 		{
