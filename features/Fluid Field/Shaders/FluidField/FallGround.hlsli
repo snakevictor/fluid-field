@@ -366,6 +366,14 @@ namespace FallGround
 	 */
 	/** A unified sheet: the fastest its textures run (world units/s; the bake's speed reaches 600+, which spun the foam). */
 	static const float UNIFIED_SPEED_MOST = 250.0;
+	/** ...and how much of its gap to that its slower water keeps (the bake's speed reaches down to 150; 1 keeps it all). */
+	static const float UNIFIED_SPEED_LAG = 0.45;
+
+	/** A unified sheet's texture speed (world units/s): the bake's, capped, its slower water brought up toward the cap. */
+	float UnifiedSpeed(float a_speedField)
+	{
+		return UNIFIED_SPEED_MOST - max(UNIFIED_SPEED_MOST - a_speedField * 300.0, 0.0) * UNIFIED_SPEED_LAG;
+	}
 
 	FlowSample Flow(float2 a_uv, float3 a_position)
 	{
@@ -388,7 +396,7 @@ namespace FallGround
 		// these coordinates follows the flow; its stretch the travel time's (speed over the scroll) against the uv's own scale
 		if (unifiedSheet) {
 			uvBase.x = baked.z;
-			result.stretch = clamp(min(result.fields.x * 300.0, UNIFIED_SPEED_MOST) / max(Scroll.y * 968.0, 1e-3), 0.25, 4.0);
+			result.stretch = clamp(UnifiedSpeed(result.fields.x) / max(Scroll.y * 968.0, 1e-3), 0.25, 4.0);
 		}
 		result.uvA = uvBase;
 		result.column = unifiedSheet ? baked.z : uvBase.x;
@@ -402,7 +410,7 @@ namespace FallGround
 			result.velocity = (dpy * dux.x - dpx * duy.x) / det * Scroll.y;
 		// a unified sheet: its baked flow direction at the bake's speed (world units/s)
 		if (unifiedSheet && dot(result.frame, result.frame) > 0.25)
-			result.velocity = normalize(result.frame) * min(result.fields.x * 300.0, UNIFIED_SPEED_MOST);
+			result.velocity = normalize(result.frame) * UnifiedSpeed(result.fields.x);
 		return result;
 	}
 

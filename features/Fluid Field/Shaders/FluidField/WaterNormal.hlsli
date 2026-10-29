@@ -3,6 +3,8 @@
 // Surface texel: slopes, height above vanilla, coverage (0 on dry cells, fading to 0 at the level's edge).
 // Near fades into far, far into vanilla.
 
+#include "FluidField/FoamLook.hlsli"
+
 namespace FluidField
 {
 	Texture2D<float4> WaterSurfaceTex : register(t66);
@@ -389,6 +391,42 @@ namespace FluidField
 		// Dense foam covers solidly; thin foam only shows in the pattern's bubbles and streaks
 		const float threshold = pattern * 0.5;
 		return smoothstep(threshold, threshold + 0.25, foam) * FOAM_OPACITY;
+	}
+
+	/**
+	 * The river's foam in the falls' lobe foam look (FoamLook): the lobes' foam on a flow coordinate the sim's flow carries (two phases
+	 * dragged along it and restarted, as GetFoamCover's grain), its foam as their aeration.
+	 */
+	FoamLook::Sample FoamLookAt(float3 a_worldPosition)
+	{
+		FoamLook::Sample none = (FoamLook::Sample)0;
+		const float4 flowFoam = FlowFoamAtWorld(a_worldPosition.xy);
+		const float foam = flowFoam.z;
+		if (foam <= 0.005)
+			return none;
+		const float2 foamPatch = a_worldPosition.xy / (FOAM_TILE * 2.5);
+		const float2 cell = floor(foamPatch);
+		const float2 f = foamPatch - cell;
+		const float2 s = f * f * (3.0 - 2.0 * f);
+		const float4 corner = frac(sin(float4(dot(cell, float2(127.1, 311.7)), dot(cell + float2(1, 0), float2(127.1, 311.7)), dot(cell + float2(0, 1), float2(127.1, 311.7)),
+									   dot(cell + float2(1, 1), float2(127.1, 311.7)))) *
+								   43758.5453);
+		const float offset = lerp(lerp(corner.x, corner.y, s.x), lerp(corner.z, corner.w, s.x), s.y);
+		const float time = SharedData::Timer / FOAM_PERIOD + offset * 2.0;
+		const float phase0 = frac(time), phase1 = frac(time + 0.5);
+		float2 flow = SampleFlow(a_worldPosition);
+		flow *= min(1.0, max(FOAM_MAX_DRIFT, MaxDrift(flowFoam.w)) / max(length(flow), 1e-3));
+		const float2 drift = flow * FOAM_PERIOD;
+		const float aeration = lerp(FoamLook::AERATION_FROM_FOAM.x, FoamLook::AERATION_FROM_FOAM.y, saturate(foam));
+		const FoamLook::Sample a = FoamLook::At(Normals01Tex, Normals01Sampler, (a_worldPosition.xy - drift * phase0) / FoamLook::UV_WORLD, aeration, SharedData::MipBias, SharedData::Timer);
+		const FoamLook::Sample b = FoamLook::At(Normals01Tex, Normals01Sampler, (a_worldPosition.xy - drift * phase1) / FoamLook::UV_WORLD + 0.37, aeration, SharedData::MipBias, SharedData::Timer);
+		const float w = abs(phase0 * 2.0 - 1.0);  // (each phase's weight 0 where it restarts)
+		FoamLook::Sample r;
+		r.cover = lerp(a.cover, b.cover, w);
+		r.billow = lerp(a.billow, b.billow, w);
+		r.slope = lerp(a.slope, b.slope, w);
+		r.whole = lerp(a.whole, b.whole, w);
+		return r;
 	}
 
 	/** Draws foam (a_foamColor, from FoamColor) over a water colour. Returns the foam cover. */

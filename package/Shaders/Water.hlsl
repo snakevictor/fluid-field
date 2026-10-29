@@ -2103,7 +2103,19 @@ PS_OUTPUT main(PS_INPUT input)
 			waterOpacity = fallOpacity;
 		}
 #							else
-		FluidField::ApplyFoamBlended(finalColorPreFog, waterOpacity, input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, fluidFoamLight);
+		// the falls' lobe foam look on the river's foam (FoamLook)
+		[branch] if (FoamLook::RIVER_FOAM_LOOK)
+		{
+			const FoamLook::Sample look = FluidField::FoamLookAt(input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz);
+			if (look.cover > 0.0) {
+				const float3 foamLight = FoamLook::Light(look, fluidFoamLight, normal, viewDirection, SharedData::DirLightDirection.xyz,
+					SharedData::DirLightColor.xyz * surfaceShadow, fluidAmbientLight, diffuseOutput.refractionDiffuseColor, specularColor, fresnel);
+				const float opacity = lerp(waterOpacity, 1.0, look.cover);
+				finalColorPreFog = (finalColorPreFog * (waterOpacity * (1.0 - look.cover)) + foamLight * look.cover) / max(opacity, 1e-3);
+				waterOpacity = opacity;
+			}
+		}
+		else FluidField::ApplyFoamBlended(finalColorPreFog, waterOpacity, input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz, fluidFoamLight);
 #							endif
 	}
 #						endif

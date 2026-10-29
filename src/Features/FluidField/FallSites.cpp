@@ -4448,8 +4448,8 @@ namespace FluidFieldSim
 
 	void FallSites::ComputePushes()
 	{
-		uint32_t meshes = 0, pushed = 0, wobbled = 0, flippedTotal = 0, leadCut = 0;
-		float most = 0.0f, mostWobble = 0.0f;
+		uint32_t meshes = 0, pushed = 0, wobbled = 0, flippedTotal = 0, leadCut = 0, flattened = 0;
+		float most = 0.0f, mostWobble = 0.0f, mostFlattened = 0.0f;
 		wobbleImpacts.clear();
 		for (const auto& lit : litMeshList) {
 			auto* geometry = lit.geometry.get();
@@ -4873,12 +4873,57 @@ namespace FluidFieldSim
 				pushed++;
 				most = std::max(most, swellPush[v]);
 			}
+			// a unified sheet: its lobes bulge in the middle (the mesh's shape); where it faces up, pull what stands proud of its smoothed
+			// surface part of the way in (open edges and rock hold the smoothing in place)
+			if (unified) {
+				std::vector<RE::NiPoint3> drawn(counts.vertexCount);
+				for (uint32_t v = 0; v < counts.vertexCount; v++)
+					drawn[v] = positions[v] + push[v];
+				std::vector<RE::NiPoint3> smooth = drawn;
+				for (int pass = 0; pass < FLATTEN_PASSES; pass++) {
+					std::vector<RE::NiPoint3> softened = smooth;
+					for (uint32_t v = 0; v < counts.vertexCount; v++) {
+						if (open[v] || inRock[v] || next[v].empty())
+							continue;
+						RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
+						for (const auto& [n, length] : next[v])
+							sum += smooth[n];
+						softened[v] = smooth[v] * 0.5f + sum * (0.5f / static_cast<float>(next[v].size()));
+					}
+					smooth.swap(softened);
+				}
+				// (only its lower part: the crest's lip faces up and stands proud too)
+				float lowest = FLT_MAX, highest = -FLT_MAX;
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					const float z = (geometry->world * positions[v]).z;
+					lowest = std::min(lowest, z);
+					highest = std::max(highest, z);
+				}
+				for (uint32_t v = 0; v < counts.vertexCount; v++) {
+					const float length = normals[v].Length();
+					if (open[v] || inRock[v] || length < 1e-6f)
+						continue;
+					const RE::NiPoint3 worldNormal = geometry->world.rotate * normals[v];
+					const float facing = std::abs(worldNormal.z) / std::max(worldNormal.Length(), 1e-6f);
+					const float up = std::clamp((facing - BOUNCE_FACING[0]) / (BOUNCE_FACING[1] - BOUNCE_FACING[0]), 0.0f, 1.0f);
+					const float proud = (drawn[v] - smooth[v]).Dot(normals[v]) / length * scale;  // world units out past the smoothed surface
+					const float height = std::clamp(((geometry->world * positions[v]).z - lowest) / std::max(highest - lowest, 1.0f), 0.0f, 1.0f);
+					const float low = 1.0f - std::clamp((height - FLATTEN_BELOW[0]) / (FLATTEN_BELOW[1] - FLATTEN_BELOW[0]), 0.0f, 1.0f);
+					const float in = std::min(std::max(proud, 0.0f) * FLATTEN_SHARE, FLATTEN_MOST) * up * up * (3.0f - 2.0f * up) * low * low * (3.0f - 2.0f * low);
+					if (in < 0.05f)
+						continue;
+					push[v] -= normals[v] * (in / (length * scale));
+					flattened++;
+					mostFlattened = std::max(mostFlattened, in);
+				}
+			}
 			meshes++;
 		}
 		ComposeShifts();
 		RequestCulling();  // D103: after the lead-in cuts, which the covering sheets' test reads
 		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units; {} wobble, at most {:.1f} units; {} normals turned outward; {} hidden lead-in vertices cut",
 			pushed, meshes, most, wobbled, mostWobble, flippedTotal, leadCut);
+		logger::info("[Fluid Field]   unified lobes flattened: {} vertices, at most {:.1f} units in", flattened, mostFlattened);
 	}
 
 	void FallSites::ProbeScrolls()
