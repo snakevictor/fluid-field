@@ -7,7 +7,7 @@
 namespace FluidFieldSim
 {
 	/**
-	 * @brief CPU copy of the loaded exterior cells' landscape heights; the depth map's riverbed source (R1, D7 stage 1).
+	 * @brief CPU copy of the loaded exterior cells' landscape heights; the depth map's riverbed source (D7).
 	 *
 	 * Copied once when a cell attaches, dropped when it leaves. Stored heights are cell-relative; adding
 	 * `heightExtents.x - min(heights)` makes them world heights.
@@ -29,10 +29,7 @@ namespace FluidFieldSim
 			float anchor = 0.0f;
 		};
 
-		/**
-		 * @brief Polls the engine's loaded grid and copies newly attached cells.
-		 * Main thread only (reads the engine's cell grid).
-		 */
+		/** @brief Polls the engine's loaded grid and copies newly attached cells. Main thread only. */
 		void Update();
 
 		/** @brief Drops every cached cell; the next update copies the loaded grid again. */

@@ -32,10 +32,7 @@ namespace FluidFieldSim
 			return model ? model->GetModel() : nullptr;
 		}
 
-		/**
-		 * @brief Collects a mesh's effect parts: every leaf not drawn with the lighting shader, so lit rocks
-		 * (FXrapidsRocks) stay.
-		 */
+		/** @brief Collects a mesh's effect parts: every leaf not drawn with the lighting shader, so lit rocks stay. */
 		void CollectEffectParts(RE::NiAVObject* a_object, std::vector<RE::NiPointer<RE::NiAVObject>>& a_parts)
 		{
 			if (!a_object)

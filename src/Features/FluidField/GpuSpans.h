@@ -9,9 +9,9 @@
 namespace FluidFieldSim
 {
 	/**
-	 * D192: GPU timestamps for a few spans per frame, apart from the built-in profiler, which cannot nest passes (the engine's
-	 * water lies between other features' timed passes). Read a few frames late without stalling. A span past SLOW_MS is
-	 * logged at once (per-line flush survives a following hang); each span's worst over LOG_SECONDS is logged if any passed NOTE_MS.
+	 * @brief D192: GPU timestamps for a few spans per frame; the built-in profiler cannot nest passes. Read a few frames
+	 * late without stalling. A span past SLOW_MS is logged at once (the flush survives a following hang); each span's worst
+	 * over LOG_SECONDS is logged if any passed NOTE_MS.
 	 */
 	class GpuSpans
 	{
@@ -20,7 +20,7 @@ namespace FluidFieldSim
 		{
 			EngineWater,      ///< Deferred end to world end: the engine's water, including falls drawn by Water.hlsl
 			RefractiveFalls,  ///< DrawRefractiveFalls: falls drawn by our own pass
-			Simulation,       ///< Prepass: wind and water solvers, bake GPU work
+			Simulation,       ///< Prepass: wind and water solvers, falls uploads
 			Count
 		};
 

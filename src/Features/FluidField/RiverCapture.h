@@ -12,10 +12,9 @@ namespace FluidFieldSim
 	 * @brief D159: the river's draw state, captured once a frame, so the see-through falls are shaded by the engine's own
 	 * water pixel shader (Water.hlsl with FLUID_FIELD_FALLS) exactly as the river is.
 	 *
-	 * D171: one capture per water type, so each fall gets its own type's fog and glint. Taken in State::Draw at the type's
-	 * first refracting-surface draw, once the engine has bound it: constant buffer contents are copied (the engine's buffers
-	 * are shared and rewritten by every draw), and every pixel shader view and sampler is referenced. The references are
-	 * released after the falls are drawn, before the next frame's water: engine textures are not held across frames.
+	 * One capture per water type, so each fall gets its own type's fog and glint. Taken in State::Draw at the type's first
+	 * refracting-surface draw: constant buffers are copied (the engine's are shared and rewritten by every draw); views and
+	 * samplers are referenced until the falls are drawn, so engine textures are not held across frames.
 	 */
 	class RiverCapture
 	{

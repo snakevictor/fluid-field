@@ -8,7 +8,7 @@
 namespace FluidFieldSim
 {
 	/**
-	 * @brief Where vanilla water is around the player, and at what height: the depth map's surface layer (R1, D7 stage 2).
+	 * @brief Where vanilla water is around the player, and at what height: the depth map's surface layer (D7).
 	 *
 	 * From the engine's water objects (`TESWaterSystem::waterObjects`), falling back to each loaded cell's water height.
 	 * Sloped bounds (rapids, waterfalls) are counted but skipped.
@@ -36,10 +36,7 @@ namespace FluidFieldSim
 			CellWater
 		};
 
-		/**
-		 * @brief Rebuilds the surface list from the engine's water objects every few updates.
-		 * Main thread only (reads the engine's water system and cell grid).
-		 */
+		/** @brief Rebuilds the surface list from the engine's water objects every few updates. Main thread only. */
 		void Update();
 
 		/** @brief Drops every surface; the next update rebuilds immediately. */

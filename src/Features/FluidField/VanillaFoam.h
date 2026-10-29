@@ -10,7 +10,7 @@ namespace FluidFieldSim
 	class WaterSurfaces;
 
 	/**
-	 * @brief D19: hides vanilla's placed foam and spray effects where Fluid Field simulates the water.
+	 * @brief D19: hides vanilla's placed foam and spray effects where Shallow Water simulates the water.
 	 *
 	 * Their looping textures ignore the flow, so their effect parts are culled (`SetAppCulled`) and our foam takes over; lit
 	 * geometry in the same mesh (FXrapidsRocks' rocks) stays. Nothing is saved: a reference is shown again when it leaves the

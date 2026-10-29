@@ -1,6 +1,6 @@
 #pragma once
 
-// Free of plugin headers (no PCH, globals or CommonLib), like WindSolver, so a standalone WARP test can run it.
+// Free of plugin headers (no PCH, globals or CommonLib) so tests/FluidField can run the solver on a WARP device.
 
 #include "WindSolver.h"
 

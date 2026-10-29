@@ -14,7 +14,7 @@ namespace FluidFieldSim
 	class WaterSurfaces;
 
 	/**
-	 * @brief Riverbed and obstacle heights from downward Havok raycasts where there is water (R1, D7 stage 4).
+	 * @brief Riverbed and obstacle heights from downward Havok raycasts where there is water (D7).
 	 *
 	 * Landscape heights miss placed meshes (rocks, banks, piers, riverbed meshes). A ray is cast down at each lattice point
 	 * with water; a hit above the water is probed from below to tell an overhead (deck, arch: water flows under) from a

@@ -51,8 +51,7 @@ namespace FluidFieldSim
 		updatesUntilRetry = retry ? RETRY_INTERVAL : updatesUntilRetry - 1;
 		bool changed = false;
 
-		// Sample the cells that are new to the grid since the last fill (all of them the first
-		// time), and on a retry the ones still over unloaded land
+		// Sample cells new since the last fill (all, the first time) and, on a retry, those still over unloaded land
 		for (int32_t y = 0; y < n; y++) {
 			const int32_t cellY = a_gridMin[1] + y;
 			const bool rowWasInGrid = filled && cellY >= filledMin[1] && cellY < filledMin[1] + n;
