@@ -8,7 +8,7 @@
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
 #include "Features/ExtendedTranslucency.h"
-#include "Features/FluidField.h"
+#include "Features/FluidFieldShallowWater.h"
 #include "Features/GrassLighting.h"
 #include "Features/HairSpecular.h"
 #include "Features/HorizonFix.h"
@@ -66,5 +66,5 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		globals::features::truePBR.settings,
 		globals::features::skin.GetCommonBufferData(),
 		globals::features::horizonFix.GetCommonBufferData(),
-		globals::features::fluidField.GetCommonBufferData());
+		globals::features::fluidFieldShallowWater.GetCommonBufferData());
 }

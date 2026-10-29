@@ -9,7 +9,9 @@
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
 #include "Features/ExtendedTranslucency.h"
-#include "Features/FluidField.h"
+#include "Features/FluidFieldGroundFog.h"
+#include "Features/FluidFieldShallowWater.h"
+#include "Features/FluidFieldWaterfalls.h"
 #include "Features/GrassCollision.h"
 #include "Features/GrassLighting.h"
 #include "Features/GrassOptimizations.h"
@@ -263,7 +265,9 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::exponentialHeightFog,
 		&globals::features::hdrDisplay,
 		&globals::features::skin,
-		&globals::features::fluidField
+		&globals::features::fluidFieldWaterfalls,
+		&globals::features::fluidFieldShallowWater,
+		&globals::features::fluidFieldGroundFog
 	};
 
 	return features;

@@ -9,7 +9,7 @@
 #include "Features/CSEditor.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/Effects11.h"
-#include "Features/FluidField.h"
+#include "Features/FluidField/Field.h"
 #include "Features/IBL.h"
 #include "Features/ScreenSpaceGI.h"
 #include "Features/Skylighting.h"
@@ -416,8 +416,8 @@ void Deferred::DeferredPasses()
 	if (globals::features::effects11.loaded)
 		globals::features::effects11.DrawVolumetricRays();
 
-	if (globals::features::fluidField.loaded)
-		globals::features::fluidField.DrawGroundFogBeforeWater();
+	if (FluidFieldSim::Field::AnyActive())
+		FluidFieldSim::Field::Get().DrawBeforeWater();
 }
 
 void Deferred::EndDeferred()
@@ -666,9 +666,9 @@ void Deferred::Hooks::Main_RenderWorld::thunk(bool a1)
 	state->inWorld = true;
 	func(a1);
 
-	// Fluid Field's ground fog goes over the finished world, water included (D21)
-	if (globals::features::fluidField.loaded)
-		globals::features::fluidField.DrawGroundFogAfterWorld();
+	// Fluid Field's falls and ground fog go over the finished world, water included
+	if (FluidFieldSim::Field::AnyActive())
+		FluidFieldSim::Field::Get().DrawAfterWorld();
 
 	state->inWorld = false;
 	state->permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::InWorld);

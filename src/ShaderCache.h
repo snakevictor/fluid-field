@@ -708,7 +708,7 @@ namespace SIE
 			Flowmap = 1 << 9,           // 0x200
 			BlendNormals = 1 << 10,     // 0x400
 			// Bits 11-14 hold the technique
-			FluidFieldFalls = 1 << 15,  // 0x8000: CS only (D159), Fluid Field's see-through falls drawn by the river's shader
+			FluidFieldFalls = 1 << 15,  // 0x8000: CS only, Waterfalls' see-through falls drawn by the river's shader
 		};
 
 		enum class EffectShaderFlags
