@@ -1,6 +1,5 @@
-// Fluid Field waterfall flow (D28, D32, D59): vanilla's lit falls meshes, textured along each mesh's solved flow (parting
-// round rock, closing behind it), foamed where they strike rock, and cut under the pools (D36, D56). Bound only for
-// grounded meshes' draws; Enabled is 0 for every other draw.
+// Fluid Field waterfall flow (D59): per-vertex and baked data for the falls sheets, textured along each mesh's solved flow
+// (parting round rock, closing behind it) and cut under the pools (D36) and in rock. Enabled is 0 for every other draw.
 
 #ifndef FLUID_FIELD_FALL_GROUND_HLSLI
 #define FLUID_FIELD_FALL_GROUND_HLSLI
@@ -13,39 +12,35 @@ namespace FallGround
 		float InverseCell;     // Texels per world unit
 		float Size;            // Texels per side
 		uint Enabled;          // This draw is a grounded mesh
-		uint DebugMode;        // 0 off; 1 bake; 2 flow direction; 3 vanilla's texture; 4 depth behind; 5 quadrants
+		uint DebugMode;        // Unused; kept for the layout
 		float Time;            // Seconds
-		float PoolFoamHeight;  // World units above the water below over which the falls foam into it
+		float PoolFoamHeight;  // Unused; kept for the layout
 		float2 Scroll;         // D67: the falls' shared scroll (texture coordinates, at most one repeat) and its rate per second
 		float2 TexOffset;      // Vanilla's texture scroll, removed from the coordinates
 		float3 CameraOffset;   // D38: FrameBuffer::CameraPosAdjust, for vertex shaders without it
-		uint Whitening;        // D34: whiten with foam and speed; 0 for the debug comparison (D39)
+		uint Whitening;        // Unused; kept for the layout
 		uint VertexBase;       // D56: this mesh's first VertexClip entry, or NO_VERTEX_CLIP
 		uint HideUnderwater;   // D36: don't draw falling water under the pools' surface
 		float2 InverseScale;   // D57: undoes vanilla's animated texture scale (with TexOffset, its scroll)
-		uint BakeOn;           // D59: this mesh has a FlowBake
+		uint BakeOn;           // D59: this mesh has a FlowBake (not read here)
 		float PreviousPhase;   // D85: last frame's Scroll.x, for the wobble's motion vectors
-		float BlendAlpha;      // D91 experiment: a blended dense copy's clear-water transparency (0: opaque, every other draw)
-		uint BakeVelocity;     // A unified sheet: the velocity from the bake's coordinates (its uv only addresses the bake)
+		float BlendAlpha;      // Unused; kept for the layout
+		uint BakeVelocity;     // Unused; kept for the layout
 		float4 BakeRect;       // D59: the bake's least u and v, and one over its extent
 		float4 AerationLook;   // x height fallen before air or foam; y the bake's aeration to foam; z milk scale; w the aeration foam starts at
 	};
 
 	Texture2D<float2> Heights : register(t120);  // Captured rock (x, unused here) and the pools' surface (y, D36)
-	/**
-	 * D69: per vertex of the falls' lit meshes. a: rock clearance (D56, negative inside), seam fade (D67, dithered in both
-	 * passes), height above the water below (D68), side flags (w).
-	 */
+	/** D69: per falls vertex. a: rock clearance (D56, negative inside), seam fade (D67), height above the water below (D68), side flags (w). */
 	struct FallVertex
 	{
 		float4 a;
 		float4 b;  // D69: move across a seam's gap; D82: plus swell, mesh space; D85: w its streak
 		float4 c;  // D85: wobble direction and size (its normal); w its run down the flow
-		float4 d;  // D106: y open water or air behind the visible face to the first rock (world units); D124: z depth under the water it pours from (NO_WATER: starts mid-fall); D128: w distance to the nearest other shown sheet (NO_WATER: none within 64); D188: x world units per unit of run
+		float4 d;  // x world units per unit of run (D188); y open water or air behind to the first rock (D106); z depth under its source water (D124, NO_WATER: starts mid-fall); w distance to the nearest other shown sheet (D128, NO_WATER: none within 64)
 	};
 	StructuredBuffer<FallVertex> VertexClip : register(t123);
-	// D59, D67: this mesh's flow on its own texture grid, linked to the mesh above (FallSites::LinkBakes): coordinates
-	// (across: streak; along: run time at the shared scroll), rock wake, foam
+	// D59: this mesh's flow bake, linked to the mesh above (FallSites::LinkBakes); five row bands (BakeRowsAt)
 	Texture2D<float4> FlowBake : register(t124);
 
 	static const uint NO_VERTEX_CLIP = 0xFFFFFFFF;
@@ -58,7 +53,7 @@ namespace FallGround
 	/** D36: the pools' surface height at a world position; false where there is none. */
 	bool Pool(float2 a_position, out float a_height)
 	{
-		// D58: bilinear; the nearest texel stepped the cut every 16 units
+		// D58: bilinear, or the cut steps at every texel
 		a_height = 0.0;
 		const float2 texel = (a_position - Origin) * InverseCell;
 		const int2 base = int2(floor(texel));
@@ -77,12 +72,11 @@ namespace FallGround
 	}
 
 	/** D47: depth of the cut under the pools' surface, so the pool's water overlaps it. */
-	static const float POOL_CUT = 48.0;  // D49, D58, D176: deep enough that only the foam shows at the waterline, hiding the cut's steps
+	static const float POOL_CUT = 48.0;  // D176: deep enough that only foam shows at the waterline
 
 	/**
 	 * D38: a falls vertex's height above where it is buried (under the pools, or in rock, D56), for SV_ClipDistance.
-	 * The depth pre-pass (Utility.hlsl) and lit pass (Lighting.hlsl) must cut at the same line, or hidden water stays in
-	 * depth. CLIP_MOST on every other draw (D99).
+	 * Every falls pass must cut at the same line, or hidden water stays in depth. CLIP_MOST on every other draw (D99).
 	 * @param a_position Camera-relative world position.
 	 * @param a_vertex SV_VertexID, for VertexClip.
 	 */
@@ -150,10 +144,9 @@ namespace FallGround
 	}
 
 	/**
-	 * D85: the falls' wobble at (streak, run less phase): waves across the flow riding down with the texture, broken
-	 * by noise. Periodic per texture repeat so the phase's wrap never jumps. D88: -0.15 to 0.85 (mostly up).
+	 * D85: a wobble at (streak, run less phase): a_waves crests per texture repeat across the flow, broken by noise at
+	 * a_bendCells and a_noiseCells. All whole, or it jumps at the phase wrap (D91). -0.15 to 0.85 (D88).
 	 */
-	/** A wobble of a_waves whole crests per texture repeat (D91: whole, or it jumps at the phase wrap), noised at a_cells (whole). */
 	float WobbleWave(float a_across, float a_run, float a_waves, float2 a_bendCells, float2 a_noiseCells)
 	{
 		const float wave = sin(6.2831853 * a_waves * a_run + 1.7 * WobbleNoise(float2(a_across, a_run), a_bendCells));
@@ -167,7 +160,7 @@ namespace FallGround
 		return WobbleWave(a_across, a_run, 2.0, float2(2.0, 2.0), float2(3.0, 4.0));  // D90: shorter waves folded triangles
 	}
 
-	/** A unified sheet's vertical motion: a slow swell (one crest per repeat) and a finer, quicker bubbling over it, their shares. */
+	/** Shares of a sheet's vertical motion: a slow swell (one crest per repeat) and a finer, quicker bubbling over it. */
 	static const float Z_SLOW_SHARE = 0.55;
 	static const float Z_FINE_SHARE = 0.3;
 	static const float Z_MICRO_SHARE = 0.18;  ///< and a smaller, quicker one still
@@ -229,8 +222,7 @@ namespace FallGround
 		return float4(fallVertex.b.w, fallVertex.c.w - a_phase, length(fallVertex.c.xyz), fallVertex.d.x);
 	}
 
-	/** D69, D82, D85: a falls vertex's move (seam gap, swell, wobble at phase a_phase), mesh space; 0 on other draws. */
-	/** A unified sheet's vertical layers at (a_across, a_run): the slow swell, the finer bubbling and the smaller one over it. */
+	/** The vertical bob at (a_across, a_run): the slow swell, the finer bubbling and the smaller one over it. */
 	float BobLayers(float a_across, float a_run)
 	{
 		return Z_SLOW_SHARE * WobbleWave(a_across, a_run, 1.0, float2(2.0, 1.0), float2(3.0, 2.0)) +
@@ -238,7 +230,7 @@ namespace FallGround
 		       Z_MICRO_SHARE * WobbleWave(a_across * 7.0, a_run, 11.0, float2(11.0, 11.0), float2(13.0, 18.0));
 	}
 
-	/** A unified sheet's wobble split (a_up: world up in model space): its vertical part, and the Z_MOST clamp's scale at a_run. */
+	/** A wobble's vertical part (a_up: world up in model space), and the Z_MOST clamp's scale at a_run. */
 	void SplitWobble(FallVertex a_vertex, float a_run, float3 a_up, out float3 o_vertical, out float o_clamp)
 	{
 		const float3 up = normalize(a_up);
@@ -248,7 +240,10 @@ namespace FallGround
 		o_clamp = reach > most ? most / reach : 1.0;
 	}
 
-	/** a_up: world up in the model's space (its model-to-world matrix's third row): a unified sheet's wobble splits off its vertical part. */
+	/**
+	 * D85: a falls vertex's move (seam gap, swell, wobble at phase a_phase), mesh space; 0 on other draws. a_up: world up in
+	 * model space (the model-to-world matrix's third row); the wobble's vertical part bobs instead.
+	 */
 	float3 Shift(uint a_vertex, float a_phase, float3 a_up)
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
@@ -264,8 +259,8 @@ namespace FallGround
 	}
 
 	/**
-	 * For the lighting (FallShading::WobbleNormal): a vertex's wobble along its surface, and its vertical bob's share along its normal
-	 * (a_normal: model space), model units; a sheet that is not unified has all its wobble in x.
+	 * For FallShading::WobbleNormal: a vertex's wobble along its surface, and its vertical bob's share along its normal
+	 * (a_normal: model space), model units; all in x when a_up is zero.
 	 */
 	float2 WobbleSizes(uint a_vertex, float a_phase, float3 a_up, float3 a_normal)
 	{
@@ -287,26 +282,26 @@ namespace FallGround
 		float2 uvA;       // Texture coordinates the water reads
 		float3 velocity;  // World units per second, along the surface
 		float foam;       // D59: baked foam: rock rims, water piling against and squeezing past rock
-		float wake;       // D60: wake of a rock above, fading down the streaks
-		float runTime;    // D59: seconds run since entering this mesh (0 without a bake)
+		float wake;       // Always 0: band 0's z holds the streak columns
+		float runTime;    // D59: seconds run since entering this mesh
 		float4 fields;    // D179: BakeFieldsAt: speed over vanilla's, swell, disturbance, aeration
 		float3 frame;     // D186: world direction of the along coordinate (the normal maps' frame); zero where unknown
 		float4 plunge;    // D188: x landing strength, y foam left after it; D189: z height fallen; D190: w progress of its own drop
 		float stretch;    // D181: BakeStretchAt
-		float streak;     // a unified sheet's streaks left (0 once its water has met rock); 1 elsewhere
-		float3 contact;   // a unified sheet's distance to rock, land or the pool (x), that swept down its flow (y), world units; its heave over hidden rock (z)
-		float column;     // A unified sheet's streak columns (across for the ribbons; uvA.x elsewhere)
+		float streak;     // Streaks left (0 once the water has met rock)
+		float3 contact;   // Distance to rock, land or the pool (x), that swept down the flow (y), world units; heave over hidden rock (z)
+		float column;     // Streak columns, across
 	};
 
 	/**
-	 * D59: one quarter (a_half) of the flow bake at a vanilla, unscrolled texture coordinate; 0 without a bake. D67: rows 0
-	 * hold across, along, wake, foam. D80: cubic B-spline over 4x4 texels, as bilinear stepped the gradients (and mips).
+	 * D59: row band a_half (of five) of the flow bake at a vanilla, unscrolled texture coordinate; band 0 holds across,
+	 * along, streak column, foam. D80: cubic B-spline over 4x4 texels, as bilinear stepped the gradients (and mips).
 	 */
 	float4 BakeRowsAt(float2 a_uv, uint a_half)
 	{
 		uint width, height;
 		FlowBake.GetDimensions(width, height);
-		height /= 5;  // D179, D181, D188: flow, fields, stretch and frame, plunges, contact: a fifth of the rows each
+		height /= 5;  // Bands: flow, fields, streak and frame, plunges, contact
 		const float2 texel = (a_uv - BakeRect.xy) * BakeRect.zw * float2(width, height) - 0.5;
 		const float2 cell = floor(texel);
 		const float2 t = texel - cell;
@@ -329,29 +324,29 @@ namespace FallGround
 	/** D179: the water's fields: x speed over vanilla's, y swell, z disturbance, w aeration. */
 	float4 BakeFieldsAt(float2 a_uv) { return BakeRowsAt(a_uv, 1); }
 
-	/**
-	 * D67: a falls pixel's flow: the bake's coordinates (streak across, run time along) less the shared scroll. Streaks
-	 * bend round rock, speed up with the water and run on into the next mesh; only the scroll moves in time, so the
-	 * texture cannot pulse or run back. Without a bake, vanilla's coordinates under the same scroll.
-	 */
-	/** A unified sheet: the fastest its textures run (world units/s; the bake's speed reaches 600+, which spun the foam). */
+	/** Fastest the textures run (world units/s): the bake's 600+ spun the foam. */
 	static const float UNIFIED_SPEED_MOST = 250.0;
-	/** ...and how much of its gap to that its slower water keeps (the bake's speed reaches down to 150; 1 keeps it all). */
+	/** Share of its gap to UNIFIED_SPEED_MOST that slower water keeps (1 keeps it all). */
 	static const float UNIFIED_SPEED_LAG = 0.45;
 
-	/** A unified sheet's texture speed (world units/s): the bake's, capped, its slower water brought up toward the cap. */
+	/** Texture speed (world units/s): the bake's, capped, slower water brought up toward the cap. */
 	float UnifiedSpeed(float a_speedField)
 	{
 		return UNIFIED_SPEED_MOST - max(UNIFIED_SPEED_MOST - a_speedField * 300.0, 0.0) * UNIFIED_SPEED_LAG;
 	}
 
+	/**
+	 * D67: a falls pixel's flow: the bake's coordinates (streak across, run time along) less the shared scroll. Streaks
+	 * bend round rock, speed up with the water and run on into the next mesh; only the scroll moves in time, so the
+	 * texture cannot pulse or run back.
+	 */
 	FlowSample Flow(float2 a_uv, float3 a_position)
 	{
 		FlowSample result;
 		const float2 uvStill = (a_uv - TexOffset) * InverseScale;
 		const float4 baked = BakeAt(uvStill);
 		result.foam = baked.w;
-		result.wake = 0.0;  // the bake keeps its streak columns there
+		result.wake = 0.0;
 		result.runTime = max(baked.y, 0.0) / max(Scroll.y, 1e-3);
 		result.fields = BakeFieldsAt(uvStill);
 		const float4 third = BakeRowsAt(uvStill, 2);
@@ -359,8 +354,8 @@ namespace FallGround
 		result.contact = BakeRowsAt(uvStill, 4).xyz;
 		result.frame = third.yzw;
 		result.plunge = BakeRowsAt(uvStill, 3);
-		// across is the flow's streamlines (the bake's columns, mapped to u), along its travel time, so every texture on these
-		// coordinates follows the flow; the stretch is the travel time's (speed over the scroll) against the uv's own scale
+		// u: the flow's streamlines (the bake's columns); v: travel time, so every texture follows the flow. The stretch: travel
+		// speed over the scroll against the uv's own scale
 		float2 uvBase = baked.xy - float2(0.0, Scroll.x);
 		uvBase.x = baked.z;
 		result.stretch = clamp(UnifiedSpeed(result.fields.x) / max(Scroll.y * 968.0, 1e-3), 0.25, 4.0);

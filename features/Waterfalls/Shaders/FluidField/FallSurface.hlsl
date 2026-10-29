@@ -67,7 +67,7 @@ struct VSOutput
 	float3 WorldPosition: TEXCOORD0;  // Camera-relative
 	float2 TexCoord: TEXCOORD1;
 	float3 Normal: TEXCOORD2;
-	float3 Fade: TEXCOORD3;  // FallGround::Fade: seam fade, height above the water below; z: D98 its foot (VertexClip's a.w)
+	float3 Fade: TEXCOORD3;  // FallGround::Fade: seam fade, height above the water below; z its foot (D98)
 	float Clip: SV_ClipDistance0;
 	float Behind: TEXCOORD7;        // D104: baked open water or air behind its outer side, world units
 	float BelowSource: TEXCOORD8;   // D124: depth under the water it pours from (FallGround::NO_WATER: none)
@@ -91,16 +91,16 @@ VSOutput VSMain(uint vertexID : SV_VertexID)
 	output.TexCoord = v.TexCoord;
 	output.Normal = mul((float3x3)World, v.Normal);
 	output.Fade.xy = FallGround::Fade(vertexID);
-	output.Fade.y = min(output.Fade.y, 512.0);  // D139: clamped as BelowSource (D138)
-	// D98: as the cut (D71), pools foam a mesh only at its foot
-	output.Fade.z = (!FallGround::Enabled || FallGround::VertexBase == FallGround::NO_VERTEX_CLIP) ? 1.0 : fmod(FallGround::VertexClip[FallGround::VertexBase + vertexID].a.w, 2.0);  // D100: +2 marks an inward winding
+	output.Fade.y = min(output.Fade.y, 512.0);  // D139: clamped as BelowSource
+	// D98: as the cut (D71), pools foam a mesh only at its foot; fmod drops the side flags
+	output.Fade.z = (!FallGround::Enabled || FallGround::VertexBase == FallGround::NO_VERTEX_CLIP) ? 1.0 : fmod(FallGround::VertexClip[FallGround::VertexBase + vertexID].a.w, 2.0);
 	output.Clip = FallGround::ClipDistance(relative, vertexID);
-	// the depth behind moves with the vertex (pushed out along its normal the gap behind widens), as Water.hlsl's
+	// The depth behind moves with the vertex: pushed out along its normal, the gap behind widens
 	output.Behind = max(FallGround::Behind(vertexID) + dot(shift, v.Normal) / max(dot(v.Normal, v.Normal), 1e-6) * length(World[0].xyz), 0.0);
-	// D138: "none" (NO_WATER, 1e4) clamped to 512 before interpolation, or a triangle mixing it drew a hard line
+	// D138: "none" (NO_WATER, 1e4) clamped before interpolation, or a triangle mixing it drew a hard line
 	output.BelowSource = min(FallGround::BelowSource(vertexID), 512.0);
 	output.ToOtherSheet = min(FallGround::ToOtherSheet(vertexID), 512.0);
-	output.Outward = float4(output.Normal * FallGround::OutwardSign(vertexID), FallGround::InnerCovered(vertexID));  // D103: interpolated as a normal, no sign flipping mid-triangle
+	output.Outward = float4(output.Normal * FallGround::OutwardSign(vertexID), FallGround::InnerCovered(vertexID));  // D103: no sign flip mid-triangle
 	return output;
 }
 #endif  // VSHADER
@@ -128,8 +128,8 @@ void PSDepth(VSOutput input)
 void PSBehindDepth(VSOutput input)
 {
 	PSDepth(input);
-	// Not BehindFront's FRONT_EPSILON: where sheets cross it hid the other sheet. The same vertex shader drew the front, so
-	// its depth matches exactly
+	// Not BehindFront's FRONT_EPSILON, which hides the other sheet where sheets cross; the front's depth matches exactly
+	// (same vertex shader)
 	if (SharedData::GetScreenDepth(input.Position.z) - SharedData::GetScreenDepth(FrontDepth.Load(int3(input.Position.xy, 0))) <= FallShading::BEHIND_LAYER_EPSILON)
 		discard;
 }
