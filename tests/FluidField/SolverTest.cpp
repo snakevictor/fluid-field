@@ -20,8 +20,8 @@
 #include <string>
 #include <vector>
 
-#ifndef FLUIDFIELD_SHADER_DIR
-#	error "FLUIDFIELD_SHADER_DIR must point at features/Fluid Field/Shaders"
+#if !defined(FLUIDFIELD_SHADER_DIR) || !defined(FLUIDFIELD_COMMON_SHADER_DIR)
+#	error "FLUIDFIELD_SHADER_DIR and FLUIDFIELD_COMMON_SHADER_DIR must point at the Ground Fog and Shallow Water shaders"
 #endif
 
 namespace
@@ -181,17 +181,23 @@ namespace
 	// GPU side
 	// ---------------------------------------------------------------------------------------
 
-	/** @brief Resolves `#include "FluidField/..."` against the feature's shader root, like the game does. */
+	/** @brief Resolves `#include "FluidField/..."` against the features' shader roots, which the game merges into one folder. */
 	class ShaderInclude final : public ID3DInclude
 	{
 	public:
-		explicit ShaderInclude(std::filesystem::path a_root) :
-			root(std::move(a_root)) {}
+		explicit ShaderInclude(std::vector<std::filesystem::path> a_roots) :
+			roots(std::move(a_roots)) {}
 
 		HRESULT __stdcall Open(D3D_INCLUDE_TYPE, LPCSTR fileName, LPCVOID, LPCVOID* data, UINT* bytes) override
 		{
-			std::ifstream file(root / fileName, std::ios::binary);
-			if (!file)
+			std::ifstream file;
+			for (const auto& root : roots) {
+				file.open(root / fileName, std::ios::binary);
+				if (file.is_open())
+					break;
+				file.clear();
+			}
+			if (!file.is_open())
 				return E_FAIL;
 			auto* buffer = new std::string(std::istreambuf_iterator<char>(file), {});
 			*data = buffer->data();
@@ -211,7 +217,7 @@ namespace
 		}
 
 	private:
-		std::filesystem::path root;
+		std::vector<std::filesystem::path> roots;
 		std::vector<std::string*> open;
 	};
 
@@ -227,11 +233,11 @@ namespace
 		return SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, &level, 1, D3D11_SDK_VERSION, gpu.device.put(), nullptr, gpu.context.put()));
 	}
 
-	ID3D11ComputeShader* CompileShader(ID3D11Device* device, const std::filesystem::path& root, const wchar_t* fileName)
+	ID3D11ComputeShader* CompileShader(ID3D11Device* device, const std::vector<std::filesystem::path>& roots, const wchar_t* fileName)
 	{
-		ShaderInclude include(root);
+		ShaderInclude include(roots);
 		winrt::com_ptr<ID3DBlob> blob, errors;
-		const auto path = root / L"FluidField" / fileName;
+		const auto path = roots.front() / L"FluidField" / fileName;
 		const HRESULT hr = D3DCompileFromFile(path.c_str(), nullptr, &include, "main", "cs_5_0",
 			D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, blob.put(), errors.put());
 		if (FAILED(hr)) {
@@ -331,7 +337,8 @@ namespace
 
 int main(int argc, char** argv)
 {
-	const std::filesystem::path shaderRoot = argc > 1 ? std::filesystem::path(argv[1]) : std::filesystem::path(FLUIDFIELD_SHADER_DIR);
+	const std::vector<std::filesystem::path> shaderRoots = argc > 2 ? std::vector<std::filesystem::path>{ argv[1], argv[2] } :
+	                                                                  std::vector<std::filesystem::path>{ FLUIDFIELD_SHADER_DIR, FLUIDFIELD_COMMON_SHADER_DIR };
 
 	Gpu gpu;
 	if (!CreateWarpDevice(gpu)) {
@@ -342,8 +349,8 @@ int main(int argc, char** argv)
 	constexpr std::uint32_t N = 64;
 	WindSolver solver;
 	solver.CreateResources(gpu.device.get(), N, [](ID3D11DeviceChild*, const char*) {});
-	if (!solver.CompileShaders([&](const wchar_t* fileName) { return CompileShader(gpu.device.get(), shaderRoot, fileName); })) {
-		std::fprintf(stderr, "Shader compilation failed (shader root: %ls)\n", shaderRoot.c_str());
+	if (!solver.CompileShaders([&](const wchar_t* fileName) { return CompileShader(gpu.device.get(), shaderRoots, fileName); })) {
+		std::fprintf(stderr, "Shader compilation failed (shader root: %ls)\n", shaderRoots.front().c_str());
 		return 2;
 	}
 
