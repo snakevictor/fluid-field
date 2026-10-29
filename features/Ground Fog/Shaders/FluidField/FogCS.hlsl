@@ -1,8 +1,6 @@
-// Fluid Field fog (D21): ground fog amount per wind-grid cell (1 full, 0 clear), drawn by GroundFogCS.
-// Carried by the wind and the weather's drift, it settles back toward a resting pattern over a few seconds.
-// Only moving actors disturb it: their bodies plough it aside (mostly ahead and sideways), packing it up to
-// MaxFog, and their wake curls it; a standing actor pushes nothing. Strong stirring thins it a little.
-// Cells that scrolled in, and all cells after a reset, start at the resting pattern.
+// Fluid Field fog (D21): ground fog amount per wind-grid cell (1 full, 0 clear), drawn by GroundFogCS. Carried by the
+// wind and the weather's drift, it settles back toward a resting pattern. Moving actors plough it aside (packing it up to
+// MaxFog) and their wake curls it; strong stirring thins it. Scrolled-in and reset cells start at the resting pattern.
 
 #include "FluidField/Common.hlsli"
 #include "FluidField/FogPattern.hlsli"
