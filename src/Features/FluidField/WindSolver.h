@@ -50,14 +50,6 @@ namespace FluidFieldSim
 		const FogParams* fog = nullptr;  ///< Steps the fog layer too when set
 	};
 
-	/** @brief Colour scales for the debug view: a value of 1/scale maps to full intensity. */
-	struct DebugViewScales
-	{
-		float velocity = 1.0f / 500.0f;
-		float divergence = 1.0f;
-		float pressure = 1.0f / 1000.0f;
-	};
-
 	/**
 	 * @brief 2D stable-fluids wind layer on a toroidal, scrolling grid. Owns its GPU resources.
 	 * Each step dispatches add forces, advect, divergence, a Jacobi pressure solve and projection.
@@ -110,9 +102,6 @@ namespace FluidFieldSim
 			Step(context, params, [](const char*, auto&& runPass) { runPass(); });
 		}
 
-		/** @brief Renders the north-up debug images of every layer. */
-		void RenderDebugViews(ID3D11DeviceContext* context, const DebugViewScales& scales);
-
 		ID3D11Texture2D* GetVelocityTexture() const { return velocity[current].texture.get(); }
 		ID3D11Texture2D* GetDivergenceTexture() const { return divergence.texture.get(); }
 		ID3D11Texture2D* GetPressureTexture() const { return pressure[pressureResult].texture.get(); }
@@ -120,10 +109,6 @@ namespace FluidFieldSim
 		ID3D11ShaderResourceView* GetVelocitySRV() const { return velocity[current].srv.get(); }
 		/** @brief Fog density multiplier (D21): 1 is the weather's fog, 0 clear air. Toroidal like the velocity. */
 		ID3D11ShaderResourceView* GetFogSRV() const { return fog[currentFog].srv.get(); }
-
-		/** @brief Debug images, in the order velocity, divergence, pressure. */
-		static constexpr std::array<const char*, 3> DEBUG_VIEW_NAMES = { "Velocity", "Divergence", "Pressure" };
-		ID3D11ShaderResourceView* GetDebugViewSRV(std::size_t index) const { return debugViews[index].srv.get(); }
 
 	private:
 		struct Layer
@@ -148,15 +133,6 @@ namespace FluidFieldSim
 		};
 		static_assert(sizeof(Constants) == 48);
 
-		// Matches DebugViewCB in DebugViewCS.hlsl
-		struct alignas(16) DebugConstants
-		{
-			float velocityScale;
-			float divergenceScale;
-			float pressureScale;
-			float pad;
-		};
-
 		static Layer CreateLayer(ID3D11Device* device, std::uint32_t resolution, DXGI_FORMAT format, const NameFn& name, const char* label);
 
 		void BeginStep(ID3D11DeviceContext* context, const StepParams& params);
@@ -176,14 +152,12 @@ namespace FluidFieldSim
 		std::array<Layer, 2> velocity;  // Ping-pong, `current` holds the latest result
 		std::array<Layer, 2> pressure;  // Ping-pong within the Jacobi solve
 		Layer divergence;
-		std::array<Layer, 3> debugViews;
 		std::array<Layer, 2> fog;  // Ping-pong, `currentFog` holds the latest result
 		std::uint32_t currentFog = 0;
 		std::uint32_t current = 0;
 		std::uint32_t pressureResult = 0;
 
 		winrt::com_ptr<ID3D11Buffer> constants;
-		winrt::com_ptr<ID3D11Buffer> debugConstants;
 		winrt::com_ptr<ID3D11Buffer> fogConstants;
 		winrt::com_ptr<ID3D11Buffer> emitterBuffer;
 		winrt::com_ptr<ID3D11ShaderResourceView> emitterSRV;
@@ -193,7 +167,6 @@ namespace FluidFieldSim
 		winrt::com_ptr<ID3D11ComputeShader> divergenceCS;
 		winrt::com_ptr<ID3D11ComputeShader> jacobiCS;
 		winrt::com_ptr<ID3D11ComputeShader> projectCS;
-		winrt::com_ptr<ID3D11ComputeShader> debugViewCS;
 		winrt::com_ptr<ID3D11ComputeShader> fogCS;
 
 		// Scroll and reset state carried between steps

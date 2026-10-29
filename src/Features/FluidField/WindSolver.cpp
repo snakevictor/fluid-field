@@ -58,8 +58,6 @@ namespace FluidFieldSim
 		divergence = CreateLayer(device, a_resolution, DXGI_FORMAT_R32_FLOAT, name, "Divergence");
 		fog[0] = CreateLayer(device, a_resolution, DXGI_FORMAT_R16_FLOAT, name, "Fog0");
 		fog[1] = CreateLayer(device, a_resolution, DXGI_FORMAT_R16_FLOAT, name, "Fog1");
-		for (std::size_t i = 0; i < debugViews.size(); i++)
-			debugViews[i] = CreateLayer(device, a_resolution, DXGI_FORMAT_R8G8B8A8_UNORM, name, (std::string("DebugView") + DEBUG_VIEW_NAMES[i]).c_str());
 
 		D3D11_BUFFER_DESC cbDesc{
 			.ByteWidth = sizeof(Constants),
@@ -71,10 +69,6 @@ namespace FluidFieldSim
 		};
 		winrt::check_hresult(device->CreateBuffer(&cbDesc, nullptr, constants.put()));
 		name(constants.get(), "FluidField::Constants");
-
-		cbDesc.ByteWidth = sizeof(DebugConstants);
-		winrt::check_hresult(device->CreateBuffer(&cbDesc, nullptr, debugConstants.put()));
-		name(debugConstants.get(), "FluidField::DebugViewConstants");
 
 		cbDesc.ByteWidth = sizeof(FogParams);
 		winrt::check_hresult(device->CreateBuffer(&cbDesc, nullptr, fogConstants.put()));
@@ -116,7 +110,6 @@ namespace FluidFieldSim
 			{ &divergenceCS, L"DivergenceCS.hlsl" },
 			{ &jacobiCS, L"JacobiCS.hlsl" },
 			{ &projectCS, L"ProjectCS.hlsl" },
-			{ &debugViewCS, L"DebugViewCS.hlsl" },
 			{ &fogCS, L"FogCS.hlsl" },
 		};
 
@@ -130,7 +123,7 @@ namespace FluidFieldSim
 
 	bool WindSolver::HasShaders() const
 	{
-		return addForcesCS && advectCS && divergenceCS && jacobiCS && projectCS && debugViewCS && fogCS;
+		return addForcesCS && advectCS && divergenceCS && jacobiCS && projectCS && fogCS;
 	}
 
 	void WindSolver::ReleaseShaders()
@@ -140,7 +133,6 @@ namespace FluidFieldSim
 		divergenceCS = nullptr;
 		jacobiCS = nullptr;
 		projectCS = nullptr;
-		debugViewCS = nullptr;
 		fogCS = nullptr;
 	}
 
@@ -149,10 +141,8 @@ namespace FluidFieldSim
 		velocity = {};
 		pressure = {};
 		divergence = {};
-		debugViews = {};
 		fog = {};
 		constants = nullptr;
-		debugConstants = nullptr;
 		fogConstants = nullptr;
 		emitterBuffer = nullptr;
 		emitterSRV = nullptr;
@@ -168,8 +158,6 @@ namespace FluidFieldSim
 		const float zero[4] = {};
 		for (auto* layer : { &velocity[0], &velocity[1], &pressure[0], &pressure[1], &divergence })
 			context->ClearUnorderedAccessViewFloat(layer->uav.get(), zero);
-		for (auto& view : debugViews)
-			context->ClearUnorderedAccessViewFloat(view.uav.get(), zero);
 		// Fog starts as the weather has it
 		const float one[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 		for (auto& layer : fog)
@@ -298,36 +286,4 @@ namespace FluidFieldSim
 		context->CSSetConstantBuffers(1, 1, &nullCB);
 	}
 
-	void WindSolver::RenderDebugViews(ID3D11DeviceContext* context, const DebugViewScales& scales)
-	{
-		// Without a step since the last reset, b0 holds no grid placement and the layers are already clear
-		if (!HasResources() || !debugViewCS || !historyValid)
-			return;
-
-		const DebugConstants data{ scales.velocity, scales.divergence, scales.pressure, 0.0f };
-		D3D11_MAPPED_SUBRESOURCE mapped{};
-		if (SUCCEEDED(context->Map(debugConstants.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-			std::memcpy(mapped.pData, &data, sizeof(data));
-			context->Unmap(debugConstants.get(), 0);
-		}
-
-		// b0 still holds the last step's grid placement
-		ID3D11Buffer* cbs[] = { constants.get(), debugConstants.get() };
-		ID3D11ShaderResourceView* srvs[MAX_SRVS] = { velocity[current].srv.get(), divergence.srv.get(), pressure[pressureResult].srv.get() };
-		ID3D11UnorderedAccessView* uavs[] = { debugViews[0].uav.get(), debugViews[1].uav.get(), debugViews[2].uav.get() };
-
-		context->CSSetConstantBuffers(0, 2, cbs);
-		context->CSSetShaderResources(0, MAX_SRVS, srvs);
-		context->CSSetUnorderedAccessViews(0, 3, uavs, nullptr);
-		context->CSSetShader(debugViewCS.get(), nullptr, 0);
-
-		const std::uint32_t groups = (resolution + GROUP_SIZE - 1) / GROUP_SIZE;
-		context->Dispatch(groups, groups, 1);
-
-		ID3D11Buffer* nullCBs[2] = {};
-		context->CSSetShaderResources(0, MAX_SRVS, NULL_SRVS);
-		context->CSSetUnorderedAccessViews(0, 3, NULL_UAVS, nullptr);
-		context->CSSetConstantBuffers(0, 2, nullCBs);
-		context->CSSetShader(nullptr, nullptr, 0);
-	}
 }

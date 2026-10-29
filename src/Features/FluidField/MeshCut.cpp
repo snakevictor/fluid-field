@@ -170,7 +170,6 @@ namespace FluidFieldSim
 		dirtyBlocks.clear();
 		updatesUntilScan = 0;
 		cleared = true;
-		stats = {};
 	}
 
 	bool MeshCut::IsSolid(int32_t a_fineX, int32_t a_fineY, float& a_top) const
@@ -180,13 +179,6 @@ namespace FluidFieldSim
 			return false;
 		a_top = it->second.top;
 		return true;
-	}
-
-	bool MeshCut::IsSolidAt(float a_worldX, float a_worldY) const
-	{
-		if (fineSpacing <= 0.0f)
-			return false;
-		return solids.contains(MakeKey(static_cast<int32_t>(std::round(a_worldX / fineSpacing)), static_cast<int32_t>(std::round(a_worldY / fineSpacing))));
 	}
 
 	std::vector<std::pair<int32_t, int32_t>> MeshCut::TakeDirtyBlocks()
@@ -314,36 +306,29 @@ namespace FluidFieldSim
 		}
 	}
 
-	void MeshCut::Cut(RE::TESObjectREFR& a_ref, float a_surface, bool a_log)
+	void MeshCut::Cut(RE::TESObjectREFR& a_ref, float a_surface)
 	{
-		const auto start = std::chrono::steady_clock::now();
 		auto* root = a_ref.Get3D();
 		std::vector<Segment> segments;
-		uint32_t shapes = 0;
-		uint32_t skipped = 0;
 		std::vector<RE::NiPoint3> world;
 
 		RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-			shapes++;
 			auto* triShape = a_geometry->AsTriShape();
 			const auto& runtime = a_geometry->GetGeometryRuntimeData();
 			auto* renderer = runtime.rendererData;
 			// Only lit surfaces are solid: water, effect and sky meshes use other shaders
 			const auto* shader = runtime.shaderProperty.get();
 			if (!shader || shader->GetRTTI() != globals::rtti::BSLightingShaderPropertyRTTI.get()) {
-				skipped++;
 				return RE::BSVisit::BSVisitControl::kContinue;
 			}
 			if (!triShape || a_geometry->GetType().get() != RE::BSGeometry::Type::kTriShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData ||
 				renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_SKINNED)) {
-				skipped++;
 				return RE::BSVisit::BSVisitControl::kContinue;
 			}
 			const auto& counts = triShape->GetTrishapeRuntimeData();
 			const uint32_t stride = renderer->vertexDesc.GetSize();
 			const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
 			if (stride < positionOffset + 12 || counts.vertexCount == 0 || counts.triangleCount == 0) {
-				skipped++;
 				return RE::BSVisit::BSVisitControl::kContinue;
 			}
 
@@ -420,22 +405,9 @@ namespace FluidFieldSim
 		for (const uint64_t key : record.points)
 			AddPoint(key, top);
 		cut[a_ref.GetFormID()] = std::move(record);
-
-		stats.shapes += shapes;
-		stats.shapesWithoutData += skipped;
-		stats.segments += static_cast<uint32_t>(segments.size());
-		stats.closedLoops += static_cast<uint32_t>(loops.size());
-
-		if (a_log) {
-			const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-			const auto* base = a_ref.GetBaseObject();
-			const auto* model = base ? base->As<RE::TESModel>() : nullptr;
-			logger::info("[Fluid Field] Mesh cut {:08X} '{}' at {:.0f}: {} shapes ({} skipped), {} segments, {} closed loops, {} solid points, {:.3f} ms",
-				a_ref.GetFormID(), model ? model->GetModel() : "", a_surface, shapes, skipped, segments.size(), loops.size(), points.size(), ms);
-		}
 	}
 
-	void MeshCut::Update(const WaterSurfaces& a_water, float a_fineSpacing, bool a_log)
+	void MeshCut::Update(const WaterSurfaces& a_water, float a_fineSpacing)
 	{
 		const auto start = std::chrono::steady_clock::now();
 		if (a_fineSpacing != fineSpacing) {
@@ -460,12 +432,7 @@ namespace FluidFieldSim
 			const auto ref = pending.handle.get();
 			if (!ref || ref->GetFormID() != pending.formID || !ref->Get3D() || cut.contains(pending.formID))
 				continue;
-			Cut(*ref, pending.surface, a_log);
+			Cut(*ref, pending.surface);
 		}
-
-		stats.references = static_cast<uint32_t>(cut.size());
-		stats.solidPoints = static_cast<uint32_t>(solids.size());
-		stats.pending = static_cast<uint32_t>(queue.size());
-		stats.lastUpdateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 	}
 }

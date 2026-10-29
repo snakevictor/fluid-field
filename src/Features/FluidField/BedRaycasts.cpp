@@ -62,38 +62,12 @@ namespace FluidFieldSim
 		dirtySquares.clear();
 		cleared = true;
 		sweepCursor = 0;
-		stats.raysLastFrame = 0;
 		lastCentre[0] = lastCentre[1] = INT32_MIN;
 		prunedCentre[0] = prunedCentre[1] = INT32_MIN;
 		newThisPass = 0;
 		idle = false;
 		coarseResolved = false;
 		burstUpdates = BURST_UPDATES;
-	}
-
-	BedRaycasts::Counts BedRaycasts::CountSamples() const
-	{
-		Counts counts;
-		for (const auto& [key, sample] : samples) {
-			switch (sample.kind) {
-			case HitKind::Terrain:
-				counts.terrain++;
-				break;
-			case HitKind::Static:
-				counts.statics++;
-				break;
-			case HitKind::NoHit:
-				counts.noHit++;
-				break;
-			case HitKind::Skipped:
-				counts.skipped++;
-				break;
-			case HitKind::NoWater:
-				counts.noWater++;
-				break;
-			}
-		}
-		return counts;
 	}
 
 	const BedRaycasts::Sample* BedRaycasts::Find(float a_worldX, float a_worldY) const
@@ -125,8 +99,6 @@ namespace FluidFieldSim
 			input.to = RE::hkVector4(a_worldX * scale, a_worldY * scale, a_toZ * scale, 0.0f);
 			RE::hkpWorldRayCastOutput output;
 			a_world->CastRay(input, output);
-			stats.raysCast++;
-			stats.raysLastFrame++;
 			if (!output.HasHit())
 				break;
 
@@ -139,36 +111,9 @@ namespace FluidFieldSim
 				return result;
 			}
 			// The water's own collision, an actor or clutter: continue past it
-			stats.stepThroughs++;
 			fromZ = hitZ + direction * STEP_THROUGH_OFFSET;
 		}
 		return result;
-	}
-
-	void BedRaycasts::LogHit(float a_worldX, float a_worldY, float a_surface, const RayHit& a_hit, const char* a_what)
-	{
-		if (hitLogsThisInterval >= MAX_HIT_LOGS_PER_INTERVAL)
-			return;
-		hitLogsThisInterval++;
-		const auto* refr = a_hit.collidable ? RE::TESHavokUtilities::FindCollidableRef(*a_hit.collidable) : nullptr;
-		const auto* base = refr ? refr->GetBaseObject() : nullptr;
-		const char* name = base ? base->GetName() : "";
-		const char* editorID = base ? base->GetFormEditorID() : "";
-		logger::info("[Fluid Field] Ray at ({:.0f}, {:.0f}) surface {:.0f}: {} layer {} at {:.0f} ({:.0f} below surface), ref {:08X} '{}' ({})",
-			a_worldX, a_worldY, a_surface, a_what, static_cast<uint32_t>(a_hit.layer), a_hit.z, a_surface - a_hit.z,
-			refr ? refr->GetFormID() : 0u, name ? name : "", editorID ? editorID : "");
-	}
-
-	const BedRaycasts::Sample* BedRaycasts::FindDetail(float a_worldX, float a_worldY) const
-	{
-		if (spacing <= 0.0f)
-			return nullptr;
-		const float fineSpacing = GetFineSpacing();
-		const auto fx = static_cast<int32_t>(std::round(a_worldX / fineSpacing));
-		const auto fy = static_cast<int32_t>(std::round(a_worldY / fineSpacing));
-		if (const auto it = fine.find(MakeKey(fx, fy)); it != fine.end())
-			return &it->second;
-		return Find(a_worldX, a_worldY);
 	}
 
 	std::vector<BedRaycasts::FineBlock> BedRaycasts::TakeDirtyBlocks()
@@ -235,7 +180,7 @@ namespace FluidFieldSim
 		}
 	}
 
-	bool BedRaycasts::Resolve(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, float a_worldX, float a_worldY, bool a_log, bool a_probeOverheads,
+	bool BedRaycasts::Resolve(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, float a_worldX, float a_worldY, bool a_probeOverheads,
 		Sample& a_sample, float& a_surface)
 	{
 		if (a_water.SampleHeight(a_worldX, a_worldY, a_surface) == WaterSurfaces::Source::None) {
@@ -248,11 +193,11 @@ namespace FluidFieldSim
 			return true;
 		}
 		bool aborted = false;
-		a_sample = Cast(a_worldX, a_worldY, a_surface, a_log, a_probeOverheads, aborted);
+		a_sample = Cast(a_worldX, a_worldY, a_surface, a_probeOverheads, aborted);
 		return !aborted;
 	}
 
-	bool BedRaycasts::RefineSquare(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, int32_t a_squareX, int32_t a_squareY, bool a_log)
+	bool BedRaycasts::RefineSquare(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, int32_t a_squareX, int32_t a_squareY)
 	{
 		const float fineSpacing = GetFineSpacing();
 		for (int32_t j = 0; j < REFINE; j++) {
@@ -264,7 +209,7 @@ namespace FluidFieldSim
 					continue;  // Done in an earlier, interrupted pass over this square
 				Sample sample;
 				float surface = 0.0f;
-				if (!Resolve(a_landscape, a_water, static_cast<float>(fx) * fineSpacing, static_cast<float>(fy) * fineSpacing, a_log, true, sample, surface))
+				if (!Resolve(a_landscape, a_water, static_cast<float>(fx) * fineSpacing, static_cast<float>(fy) * fineSpacing, true, sample, surface))
 					return false;
 				sample.refined = true;
 				fine.emplace(key, sample);
@@ -274,7 +219,7 @@ namespace FluidFieldSim
 		return true;
 	}
 
-	BedRaycasts::Sample BedRaycasts::Cast(float a_worldX, float a_worldY, float a_surface, bool a_log, bool a_probeOverheads, bool& a_aborted)
+	BedRaycasts::Sample BedRaycasts::Cast(float a_worldX, float a_worldY, float a_surface, bool a_probeOverheads, bool& a_aborted)
 	{
 		Sample result{ .kind = HitKind::NoHit };
 
@@ -301,15 +246,7 @@ namespace FluidFieldSim
 			// Open: a downward-facing underside clear of the water (deck, arch, thin plank). Solid: an underside
 			// touching the water (pillar), none, or an upward-facing hit from inside a solid.
 			const bool open = overheadsAlwaysOpen || (up.hit && up.normalZ < -0.3f && up.z > a_surface + UNDERSIDE_CLEARANCE);
-			if (a_log && !a_aborted && !open) {
-				const auto what = !up.hit ? std::string("solid, probe found no underside") :
-				                            std::format("solid, underside at {:.0f} above the water, normal z {:.2f}", up.z - a_surface, up.normalZ);
-				LogHit(a_worldX, a_worldY, a_surface, hit, what.c_str());
-			}
 			if (open) {
-				if (a_log)
-					LogHit(a_worldX, a_worldY, a_surface, up, std::format("open, underside normal z {:.2f}", up.normalZ).c_str());
-				stats.overheads++;
 				result.overhead = true;
 				hit = CastVertical(world, a_worldX, a_worldY, std::min(up.z, a_surface + PROBE_OFFSET), bottom, a_aborted);
 				if (!hit.hit)
@@ -318,17 +255,14 @@ namespace FluidFieldSim
 		}
 
 		const bool landscape = IsLandscapeLayer(hit.layer);
-		if (a_log && !landscape)
-			LogHit(a_worldX, a_worldY, a_surface, hit, "static");
 		result.height = hit.z;
 		result.kind = landscape ? HitKind::Terrain : HitKind::Static;
 		return result;
 	}
 
 	void BedRaycasts::Update(const LandscapeCache& a_landscape, const WaterSurfaces& a_water, float a_centreX, float a_centreY,
-		float a_extent, float a_spacing, uint32_t a_maxRays, bool a_log)
+		float a_extent, float a_spacing, uint32_t a_maxRays)
 	{
-		stats.raysLastFrame = 0;
 		if (a_spacing != spacing) {
 			Clear();
 			spacing = a_spacing;
@@ -416,7 +350,7 @@ namespace FluidFieldSim
 				const float wy = static_cast<float>(ly) * spacing;
 				Sample sample;
 				float surface = 0.0f;
-				if (!Resolve(a_landscape, a_water, wx, wy, a_log, false, sample, surface)) {
+				if (!Resolve(a_landscape, a_water, wx, wy, false, sample, surface)) {
 					newThisPass--;  // Out of time; this point is retried on the next pass
 					break;
 				}
@@ -456,7 +390,7 @@ namespace FluidFieldSim
 					deferredSquares.emplace_back(sx, sy);
 					continue;
 				}
-				if (!RefineSquare(a_landscape, a_water, sx, sy, a_log)) {
+				if (!RefineSquare(a_landscape, a_water, sx, sy)) {
 					refineQueue.emplace_front(sx, sy);  // Out of time; finish it next update
 					break;
 				}
@@ -464,22 +398,5 @@ namespace FluidFieldSim
 			if (coarseResolved && refineQueue.empty())
 				idle = true;
 		}
-		const double rayMs = std::chrono::duration<double, std::milli>(Clock::now() - updateStart).count();
-
-		if (!a_log)
-			return;
-		rayMsSinceSummary += rayMs;
-		if (updatesUntilSummary > 0) {
-			updatesUntilSummary--;
-			return;
-		}
-		updatesUntilSummary = LOG_SUMMARY_INTERVAL;
-		const auto counts = CountSamples();
-		logger::info("[Fluid Field] Bed rays: {} cast in the last {} updates ({:.3f} ms total), {} stepped through and {} overheads overall; cached {} terrain, {} mesh, {} out of reach, {} buried plane, {} no water; idle {}",
-			stats.raysCast - raysAtLastSummary, LOG_SUMMARY_INTERVAL, rayMsSinceSummary, stats.stepThroughs, stats.overheads,
-			counts.terrain, counts.statics, counts.noHit, counts.skipped, counts.noWater, idle ? "yes" : "no");
-		raysAtLastSummary = stats.raysCast;
-		rayMsSinceSummary = 0.0;
-		hitLogsThisInterval = 0;
 	}
 }

@@ -2,7 +2,6 @@
 
 #include "FluidField/AirSources.h"
 #include "FluidField/BedRaycasts.h"
-#include "FluidField/DepthMapView.h"
 #include "FluidField/FallRefraction.h"
 #include "FluidField/FallSites.h"
 #include "FluidField/GpuSpans.h"
@@ -16,16 +15,15 @@
 #include "FluidField/WaterMapBuilder.h"
 #include "FluidField/WaterSurfaces.h"
 #include "FluidField/WindSolver.h"
-#include "OverlayFeature.h"
 
 /**
- * @brief Player-centred fluid simulation shared by water, fog, smoke and buoyancy outputs.
+ * @brief Player-centred fluid simulation: shallow water, waterfalls and ground fog.
  *
  * A stable-fluids wind layer on a toroidal grid that follows the player, a riverbed and water depth map, and a
  * shallow-water layer. Owns every GPU resource; cleared after each loading screen; while disabled it creates and
  * dispatches nothing.
  */
-struct FluidField : OverlayFeature
+struct FluidField : Feature
 {
 	virtual inline std::string GetName() override { return "Fluid Field"; }
 	virtual std::string GetDisplayName() override { return T("feature.fluid_field.name", "Fluid Field"); }
@@ -35,9 +33,9 @@ struct FluidField : OverlayFeature
 	/** @brief Returns a localized description and list of key features for the UI summary panel. */
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
-		return { T("feature.fluid_field.description", "A real-time fluid simulation around the player that drives interactive water, fog and smoke."),
+		return { T("feature.fluid_field.description", "A real-time fluid simulation around the player: shallow water, waterfalls and ground fog."),
 			{ T("feature.fluid_field.key_feature_1", "Shallow water that flows around obstacles and carries wakes"),
-				T("feature.fluid_field.key_feature_2", "Fog and smoke pushed by actors, shouts and spells") } };
+				T("feature.fluid_field.key_feature_2", "Ground fog that moving actors push aside") } };
 	}
 
 	/** @brief Allowed grid resolutions. The shaders wrap with a bitmask, so each must be a power of two. */
@@ -60,20 +58,12 @@ struct FluidField : OverlayFeature
 		float GridSize = 4096.0f;            ///< World units per side
 		uint JacobiIterations = 30;          ///< Pressure solve iterations per step
 		float WindDamping = 0.3f;            ///< Fraction of wind speed lost per second, as an exponential rate
-		float TestPuffStrength = 800.0f;     ///< Test puff wind speed at its centre, world units per second
-		float TestPuffRadius = 256.0f;       ///< Test puff radius, world units
-		bool DepthMapEnabled = false;        ///< Experimental: build the riverbed and obstacle map (R1)
-		bool VerifyLandscape = false;        ///< Debug: compare cached landscape heights with the engine's
-		bool VerifyWater = false;            ///< Debug: compare water surface heights with the engine's
 		bool RaycastBed = true;              ///< Find rocks, banks and riverbed meshes under water with Havok rays
 		uint RaysPerFrame = 32;              ///< Most bed rays cast in one frame
 		float RaySpacing = 64.0f;            ///< World units between bed rays
-		bool LogDepthMap = false;            ///< Debug: log what bed rays hit and periodic depth map statistics
 		bool MeshCutObstacles = true;        ///< Water-line obstacles from cutting placed meshes at the water height (D15)
 		bool WaterEnabled = false;           ///< Experimental: simulate shallow water on the grid (needs the depth map)
 		float WakeStrength = 1.0f;           ///< How strongly the player drags the water along
-		float TestCurrentSpeed = 0.0f;       ///< Test current until vanilla flow is read, world units per second
-		float TestCurrentAngle = 0.0f;       ///< Test current heading in degrees, 0 = north, clockwise
 		uint WaterResolution = 512;          ///< Near water texels per side; its own grid, separate from the wind's
 		float WaterSize = 4096.0f;           ///< Near water width in world units (full detail: obstacles, wakes)
 		bool FarWater = true;                ///< A coarser water level around the near one, so rivers stay simulated further out
@@ -88,7 +78,6 @@ struct FluidField : OverlayFeature
 		float FoamStrength = 1.0f;           ///< How much foam the flow makes at obstacles, rapids, wakes and splashes (0: none)
 		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
 		bool Waterfalls = true;              ///< Waterfalls landing on the simulated water drive it (D22)
-		int WaterfallDebug = 0;              ///< Debug: 1 the mesh's bake (spread, run time, foam, wake); 2 the texture's direction of motion; 3 grounding without the flow
 		bool HideUnderwaterFalls = true;     ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
 		bool FallWhitening = false;          ///< The falls whiten with their foam and speed (D34); D86: off until the foam layer replaces it
 		float FallSpeed = 1.75f;             ///< D90: the falls' flow (texture and wobble) as a multiple of vanilla's speed
@@ -104,6 +93,7 @@ struct FluidField : OverlayFeature
 		float FogThickness = 18.0f;          ///< Height of the ground fog layer's top above the ground, in its banks, world units
 		float FogStir = 1.0f;                ///< How strongly moving actors push the air and part the fog
 		float FogRefillSeconds = 10.0f;      ///< Seconds for parted fog to fill back in (about two thirds of the way)
+		bool ExportSiteInputs = false;       ///< Writes each cached site's sheets, statics and landscape next to the log for tools/unify (JSON only)
 	};
 
 	Settings settings;
@@ -143,17 +133,12 @@ struct FluidField : OverlayFeature
 		float FarCellSize = 0.0f;
 		uint32_t FarEnabled = 0;
 		float Fade = 0.0f;       ///< 0 to 1 over the first moments after a (re)start, so the water eases in
-		uint32_t DebugView = 0;  ///< Showcase view on the water: 0 off, 1 flow, 2 foam, 3 surface height
+		uint32_t DebugView = 0;  ///< Unused (0), kept for the layout
 		float farPad = 0.0f;
 	};
 	static_assert(sizeof(WaterShaderData) % 16 == 0);
 	/** @brief This frame's water grid placement, or Enabled = 0 when the water outputs are not valid. */
 	WaterShaderData GetCommonBufferData() const;
-
-	/** @brief Draws the per-layer debug overlay when it is turned on from the menu. */
-	virtual void DrawOverlay() override;
-	/** @brief True while the debug overlay is turned on and has layer images to show. */
-	virtual bool IsOverlayVisible() const override;
 
 	/** @brief Clamps loaded settings to the ranges the solver supports. */
 	static Settings Sanitize(Settings a_settings);
@@ -175,9 +160,8 @@ private:
 	FluidFieldSim::WaterSurfaces water;
 	FluidFieldSim::BedRaycasts bedRays;
 	FluidFieldSim::MeshCut meshCut;
-	FluidFieldSim::DepthMapView depthView;
 
-	/** @brief Drops the depth map's data and debug images. */
+	/** @brief Drops the depth map's data. */
 	void ClearDepthMap();
 
 	/** @brief One water simulation level: its solver, map and this step's placement on the world. */
@@ -221,12 +205,9 @@ private:
 	/** @brief Fog drift at the weather's full wind speed, world units per second. */
 	static constexpr float MAX_WEATHER_DRIFT = 150.0f;
 	/** @brief Distance within which the waterfall sites' debug view is drawn, world units. */
-	static constexpr float FALL_SITES_DEBUG_RANGE = 12000.0f;
 	/** @brief The far water level's foam: a fraction of the near level's, and its most per cell. */
 	static constexpr float FAR_FOAM_SCALE = 0.25f;
 	static constexpr float FAR_FOAM_MAX = 0.5f;
-	/** @brief Time per frame for mapping the rock under waterfalls, milliseconds. */
-	static constexpr double FALL_BED_BUDGET_MS = 0.4;
 	/** @brief Substep length of the warm-up, as the regular step's shortest substep. */
 	static constexpr float WARMUP_SUBSTEP = 0.012f;
 	/** @brief Seconds over which the simulated water fades in after a (re)start. */
@@ -247,17 +228,10 @@ private:
 	winrt::com_ptr<ID3D11ComputeShader> groundFogCS;
 	winrt::com_ptr<ID3D11Buffer> groundFogCB;
 	bool groundFogFailed = false;
-	int32_t fogGridMin[2]{};         ///< The wind grid's placement this frame, for the fog pass
-	int32_t fogGroundMin[2]{};       ///< The ground map's placement this frame
-	float fogPatternOffset[2]{};     ///< How far the resting fog has drifted with the weather's wind
-	bool fogReady = false;           ///< The fog layer and ground height are valid this frame
-	uint32_t fogDrawsThisFrame = 0;  ///< Debug: fog passes drawn since the last Prepass
-	std::string fogDrawTargets;      ///< Debug: the colour and depth targets they drew into
-	uint32_t fogLogCountdown = 0;
-	int fogDebugMode = 0;  ///< Debug: isolates parts of the ground fog to find visual problems; not saved
-	static constexpr int FOG_DEBUG_PREWATER_DEPTH = 5;
-	static constexpr int FOG_DEBUG_BEFORE_WATER = 6;
-	static constexpr int FOG_DEBUG_LIVE_CAMERA = 8;
+	int32_t fogGridMin[2]{};                      ///< The wind grid's placement this frame, for the fog pass
+	int32_t fogGroundMin[2]{};                    ///< The ground map's placement this frame
+	float fogPatternOffset[2]{};                  ///< How far the resting fog has drifted with the weather's wind
+	bool fogReady = false;                        ///< The fog layer and ground height are valid this frame
 	winrt::com_ptr<ID3D11Buffer> cameraSnapshot;  ///< The main camera's per-frame constants, copied during the deferred passes
 
 public:
@@ -267,8 +241,8 @@ public:
 	 */
 	void DrawGroundFogAfterWorld();
 
-	/** @brief From the deferred passes: snapshots the main camera for the fog drawn after the world; (debug) draws the fog here. */
-	void DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main);
+	/** @brief From the deferred passes: snapshots the main camera for the fog and falls drawn after the world, copies the scene for the falls. */
+	void DrawGroundFogBeforeWater();
 
 	/** @brief D159: from State::Draw before each draw: captures the river's draw state (once a frame) to shade the falls with. */
 	void CaptureRiverDraw(RE::BSShader* a_shader, uint32_t a_vertexDescriptor, uint32_t a_pixelDescriptor);
@@ -289,8 +263,6 @@ public:
 private:
 	void DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderResourceView* a_depth);
 
-public:
-private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
 	FluidFieldSim::FallSites fallSites;
 	float fallSurfaceTime = 0.0f;          ///< Seconds, for the surfaces' flow
@@ -340,7 +312,7 @@ private:
 	uint32_t fallsMissed = 0;
 	/** @brief Frames without our pass drawing (no river captured, its shader still compiling) before vanilla's falls show again. */
 	static constexpr uint32_t FALLS_FALLBACK_FRAMES = 60;
-	FluidFieldSim::GpuSpans gpuSpans;                                                        ///< D192: GPU timings of water, falls, spray and simulation; logged when slow
+	FluidFieldSim::GpuSpans gpuSpans;                                                        ///< D192: GPU timings of water, falls and simulation; logged when slow
 	FluidFieldSim::FallRefraction fallRefraction;                                            ///< D91
 	std::unordered_map<const RE::TESWaterForm*, FluidFieldSim::RiverCapture> riverCaptures;  ///< D159, D171: each water type's draw state, for the falls drawn by its shader
 	const RE::BSGeometry* waterGeometry = nullptr;                                           ///< D171: the water geometry last set up (SetupWaterGeometry)
@@ -386,11 +358,6 @@ private:
 	/** @brief Rebuilds the ground, pool and plunge maps when the sites change or the player moves far; uploads the constants. */
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
 	void ReleaseFallGround();
-	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
-	float plungeFoamBehind = 0.0f;                           ///< D176: tuning, plunge foam offset upstream of the falls' line, world units; not saved
-	float plungeFoamRadius = 1.0f;                           ///< D176: tuning, the plunge foam's radius scale; not saved
-	float plungeFoamBuilt[2] = { 0.0f, 1.0f };               ///< D176: the values the plunge map was last built with
-	int waterDebugView = 0;                                  ///< Showcase view drawn on the water (WaterShaderData::DebugView); not saved
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 
 	/** @brief Creates the water layer's GPU resources and shaders as needed. Returns false if it cannot run. */
@@ -419,22 +386,6 @@ private:
 	std::atomic<bool> queuedReset = true;
 	/** @brief Same as queuedReset, for the landscape cache; consumed on the main thread. */
 	std::atomic<bool> queuedLandscapeClear = true;
-	/** @brief A test puff was requested from the menu; consumed by the next step. */
-	bool queuedTestPuff = false;
-
-	// Last step's grid placement, for the overlay's player marker
-	int32_t lastGridMin[2]{};
-	float lastPlayerTexel[2]{};
-	float lastHeading = 0.0f;
-	float lastPlayerPos[2]{};
-
-	// Debug overlay, not saved
-	bool showDebugOverlay = false;
-	bool hasDebugViews = false;
-	float debugOverlayScale = 1.0f;
-	float debugVelocityRange = 500.0f;   ///< Wind speed shown at full brightness
-	float debugDivergenceRange = 1.0f;   ///< Divergence shown at full colour
-	float debugPressureRange = 1000.0f;  ///< Pressure shown at full colour
 
 	/** @brief Cell size the field was last stepped with; a change invalidates its contents. */
 	float lastCellSize = 0.0f;

@@ -33,17 +33,17 @@ namespace FluidFieldSim
 		lastSignature = 0;
 	}
 
-	void WaterSurfaces::Update(bool a_verify)
+	void WaterSurfaces::Update()
 	{
 		if (updatesUntilRebuild > 0) {
 			updatesUntilRebuild--;
 			return;
 		}
 		updatesUntilRebuild = REBUILD_INTERVAL;
-		Rebuild(a_verify);
+		Rebuild();
 	}
 
-	void WaterSurfaces::Rebuild(bool a_verify)
+	void WaterSurfaces::Rebuild()
 	{
 		surfaces.clear();
 		cellWater.clear();
@@ -66,12 +66,6 @@ namespace FluidFieldSim
 				const auto* waterType = waterObject->waterType;
 				const uint32_t formID = waterType ? waterType->GetFormID() : 0;
 				const float flowScale = waterType && waterType->flags.any(RE::TESWaterForm::Flag::kEnableFlowmap) ? 1.0f : 0.0f;
-				// With the check on, log each water type once (how the game tells rivers from lakes and sea)
-				if (a_verify && waterType && loggedWaterTypes.insert(formID).second) {
-					const auto& v = waterType->linearVelocity;
-					logger::info("[Fluid Field] Water type {:08X}: flowmap {}, flowmap scale {:.2f}, linear velocity ({:.1f}, {:.1f}, {:.1f}), wave amplitude {:.2f}",
-						formID, flowScale > 0.0f ? "on" : "off", waterType->data.flowmapScale, v.x, v.y, v.z, waterType->amplitude);
-				}
 				for (const auto& bound : waterObject->multiBounds) {
 					if (!bound)
 						continue;
@@ -119,8 +113,6 @@ namespace FluidFieldSim
 			signature = HashFloat(signature, surface.height);
 		}
 		signature = HashFloat(signature, static_cast<float>(cellWater.size()));
-		if (a_verify && signature != lastSignature)
-			Verify();
 		lastSignature = signature;
 	}
 
@@ -185,48 +177,4 @@ namespace FluidFieldSim
 		}
 	}
 
-	void WaterSurfaces::Verify()
-	{
-		auto tes = RE::TES::GetSingleton();
-		if (!tes)
-			return;
-
-		uint32_t checked = 0;
-		uint32_t missed = 0;
-		float maxError = 0.0f;
-		float maxPlaneDifference = 0.0f;
-		uint32_t maxPlaneFormID = 0;
-		float maxPlaneAtX = 0.0f;
-		float maxPlaneAtY = 0.0f;
-
-		for (const auto& surface : surfaces) {
-			const RE::NiPoint3 centre((surface.minX + surface.maxX) * 0.5f, (surface.minY + surface.maxY) * 0.5f, surface.height);
-			if (std::isfinite(surface.planeHeight) && std::abs(surface.planeHeight - surface.height) > maxPlaneDifference) {
-				maxPlaneDifference = std::abs(surface.planeHeight - surface.height);
-				maxPlaneFormID = surface.waterFormID;
-				maxPlaneAtX = centre.x;
-				maxPlaneAtY = centre.y;
-			}
-
-			auto* cell = tes->interiorCell ? tes->interiorCell : tes->GetCell(centre);
-			float engine = 0.0f;
-			checked++;
-			if (!cell || !cell->GetWaterHeight(centre, engine) || !(engine > -RE::NI_INFINITY)) {
-				missed++;
-				continue;
-			}
-			float ours = 0.0f;
-			SampleHeight(centre.x, centre.y, ours);  // Same overlap rule the simulation will see
-			maxError = std::max(maxError, std::abs(ours - engine));
-		}
-
-		verifyStats.runs++;
-		verifyStats.samplesChecked += checked;
-		verifyStats.samplesMissed += missed;
-		verifyStats.maxError = std::max(verifyStats.maxError, maxError);
-		verifyStats.maxPlaneDifference = std::max(verifyStats.maxPlaneDifference, maxPlaneDifference);
-
-		logger::info("[Fluid Field] Water check: {} surfaces, {} sloped skipped (water {:08X}), {} cells with water, interior water {}; error {:.2f}, plane vs bound {:.2f} (water {:08X} at {:.0f}, {:.0f}), missed {} of {}",
-			surfaces.size(), slopedCount, slopedFormID, cellWater.size(), hasInteriorWater ? "yes" : "no", maxError, maxPlaneDifference, maxPlaneFormID, maxPlaneAtX, maxPlaneAtY, missed, checked);
-	}
 }

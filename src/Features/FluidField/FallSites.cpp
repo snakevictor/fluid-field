@@ -237,30 +237,6 @@ namespace FluidFieldSim
 			return t >= 0.0f && t <= a_reach ? t : -1.0f;
 		}
 
-		/** @brief A grid softened in place: a_passes of a 3x3 tent. */
-		void BlurGrid(std::vector<float>& a_field, int32_t a_width, int32_t a_height, int a_passes)
-		{
-			std::vector<float> scratch(a_field.size());
-			for (int pass = 0; pass < a_passes; pass++) {
-				for (int32_t y = 0; y < a_height; y++) {
-					for (int32_t x = 0; x < a_width; x++) {
-						float total = 0.0f, weight = 0.0f;
-						for (int32_t dy = -1; dy <= 1; dy++) {
-							for (int32_t dx = -1; dx <= 1; dx++) {
-								if (x + dx < 0 || y + dy < 0 || x + dx >= a_width || y + dy >= a_height)
-									continue;
-								const float k = (dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f);
-								total += a_field[static_cast<std::size_t>(y + dy) * a_width + x + dx] * k;
-								weight += k;
-							}
-						}
-						scratch[static_cast<std::size_t>(y) * a_width + x] = total / weight;
-					}
-				}
-				a_field.swap(scratch);
-			}
-		}
-
 		std::string Lowercase(const char* a_text)
 		{
 			std::string result(a_text ? a_text : "");
@@ -1572,90 +1548,6 @@ namespace FluidFieldSim
 		return !cut.buried && cut.inside > 0.0f && cut.lead > 0.0f && cut.submerged > 0.0f && cut.island > 0.0f;
 	}
 
-	float FallSites::LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above, LandProbe* a_probe, float a_engineHeight) const
-	{
-		// D126: straight down, past every hit but the landscape's own collision: layer 17 (ground) or 13 (terrain) with no reference.
-		// LEARNINGS: landscape rays hit kGround, never kTerrain.
-		const float scale = RE::bhkWorld::GetWorldScale();
-		const float bottom = a_above - LAND_RAY_DROP;
-		float z = a_above;
-		for (int step = 0; step < 32 && z > bottom; step++) {
-			RE::hkpWorldRayCastInput input;
-			input.from = RE::hkVector4(a_x * scale, a_y * scale, z * scale, 0.0f);
-			input.to = RE::hkVector4(a_x * scale, a_y * scale, bottom * scale, 0.0f);
-			RE::hkpWorldRayCastOutput output;
-			a_world->CastRay(input, output);
-			if (!output.HasHit() || !output.rootCollidable)
-				return -FLT_MAX;
-			const float hit = z + (bottom - z) * output.hitFraction;
-			const auto layer = output.rootCollidable->GetCollisionLayer();
-			const bool referenced = RE::TESHavokUtilities::FindCollidableRef(*output.rootCollidable) != nullptr;
-			// D131: what the ray met, for the log's samples
-			if (a_probe) {
-				a_probe->steps = step + 1;
-				if (step == 0) {
-					a_probe->firstLayer = static_cast<uint32_t>(layer);
-					a_probe->firstReferenced = referenced;
-					a_probe->firstHeight = hit;
-				}
-			}
-			if ((layer == RE::COL_LAYER::kGround || layer == RE::COL_LAYER::kTerrain) && !referenced) {
-				// D138: only where the engine's landscape height agrees (TES::GetLandHeight): unreferenced layer-17 collision can be a
-				// mesh's, and taken for the ground it buried a visible sheet (a hole). Skipped and counted.
-				float engine = 0.0f;
-				bool known = false;
-				if (!std::isnan(a_engineHeight)) {
-					// D172: read on the render thread (the worker's rays)
-					engine = a_engineHeight;
-					known = a_engineHeight > -FLT_MAX;
-				} else if (auto* tes = RE::TES::GetSingleton()) {
-					known = tes->GetLandHeight(RE::NiPoint3(a_x, a_y, hit + 64.0f), engine);
-				}
-				if (!known || std::abs(engine - hit) <= LAND_AGREE) {
-					if (a_probe)
-						a_probe->engine = engine;
-					return hit;
-				}
-				if (a_probe)
-					a_probe->disagreed++;
-			}
-			z = hit - 0.5f;
-		}
-		return -FLT_MAX;
-	}
-
-	void FallSites::StaticHits(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, std::vector<StaticHit>& a_hits) const
-	{
-		// D135: every static face (layers 1 and 2; the falls' own collision skipped) the ray meets, as distances from a_from; the
-		// landscape is LandHeightAt's. D138: with the face's normal along the ray (negative: the ray meets its front).
-		const float scale = RE::bhkWorld::GetWorldScale();
-		float from = 0.0f;
-		for (int step = 0; step < 16 && from < a_reach; step++) {
-			const RE::NiPoint3 start = a_from + a_direction * from;
-			const RE::NiPoint3 end = a_from + a_direction * a_reach;
-			RE::hkpWorldRayCastInput input;
-			input.from = RE::hkVector4(start.x * scale, start.y * scale, start.z * scale, 0.0f);
-			input.to = RE::hkVector4(end.x * scale, end.y * scale, end.z * scale, 0.0f);
-			RE::hkpWorldRayCastOutput output;
-			a_world->CastRay(input, output);
-			if (!output.HasHit() || !output.rootCollidable)
-				break;
-			const float hit = from + (a_reach - from) * output.hitFraction;
-			const auto layer = output.rootCollidable->GetCollisionLayer();
-			if (layer == RE::COL_LAYER::kStatic || layer == RE::COL_LAYER::kAnimStatic) {
-				const auto* ref = RE::TESHavokUtilities::FindCollidableRef(*output.rootCollidable);
-				const char* model = ref ? ModelOf(ref->GetBaseObject()) : nullptr;
-				const std::string name = model ? Lowercase(model) : std::string();
-				if (name.find("fxwaterfall") == std::string::npos && name.find("fxrapids") == std::string::npos) {
-					float normal[4];
-					_mm_storeu_ps(normal, output.normal.quad);
-					a_hits.push_back({ hit, normal[0] * a_direction.x + normal[1] * a_direction.y + normal[2] * a_direction.z });
-				}
-			}
-			from = hit + 0.5f;
-		}
-	}
-
 	std::vector<uint8_t> FallSites::ShellTexels(RE::BSGeometry* a_geometry, uint32_t a_width, uint32_t a_height, const float a_uvMin[2], const float a_uvSize[2], uint64_t* a_hash) const
 	{
 		const auto base = a_geometry ? vertexClipBase.find(a_geometry) : vertexClipBase.end();
@@ -1801,8 +1693,6 @@ namespace FluidFieldSim
 				// D131: in a.x (the GPU cuts it), from BURY_LAND under the landscape
 				const float landClip = ground > -FLT_MAX ? std::clamp(p.z - (ground - BURY_LAND), -CLIP_RANGE, NO_CUT) : NO_CUT;
 				parts.rock = landClip;
-				parts.rockCause = static_cast<uint8_t>(landClip <= 0.0f ? 1 : 0);
-				parts.votes = 0;
 				parts.buried = landClip <= 0.0f ? 1 : 0;
 				buriedCount += parts.buried;
 				buryTested++;
@@ -2095,7 +1985,8 @@ namespace FluidFieldSim
 		logger::info("[Fluid Field]   {} vertices under the river's water by its bed, cut; cleanup: {} orphan pieces ({} triangles, {} vertices) cut, {} small enclosed holes ({} vertices) restored",
 			submerged, job.islands, job.islandTriangles, job.islandVertices, job.holes, job.holeVertices);
 		cullJob.reset();
-		DumpUnifyInputs();
+		if (exportSiteInputs)
+			DumpUnifyInputs();
 		// D126: the spray, plunges and lips come only from the shell (ComputePlunges reads VertexInShell)
 		if (!bakeFields.empty())
 			plungesDue = true;  // D172: ComputePlunges on a worker (Update)
@@ -2300,12 +2191,11 @@ namespace FluidFieldSim
 			}
 			a_job.islandVertices++;
 		}
-		// D138: log what cut this sheet's vertices and its two largest pieces cut by rock or a sheet alone, to trace a hole to its test
-		uint32_t byLand = 0, byStatic = 0, byInside = 0, byLead = 0, byRiver = 0, byWater = 0, byPool = 0, byIsland = 0;
+		// D138: log what cut this sheet's vertices
+		uint32_t byLand = 0, byInside = 0, byLead = 0, byRiver = 0, byWater = 0, byPool = 0, byIsland = 0;
 		for (std::size_t v = 0; v < count; v++) {
 			const VertexCut& parts = vertexCuts[a_sheet.base + v];
-			byLand += (parts.rockCause & 1) && parts.rock <= 0.0f ? 1 : 0;
-			byStatic += (parts.rockCause & 2) && parts.rock <= 0.0f ? 1 : 0;
+			byLand += parts.rock <= 0.0f ? 1 : 0;
 			byInside += parts.inside <= 0.0f ? 1 : 0;
 			byLead += parts.lead <= 0.0f ? 1 : 0;
 			byRiver += parts.submerged <= 0.0f ? 1 : 0;
@@ -2313,29 +2203,9 @@ namespace FluidFieldSim
 			byPool += parts.pool <= 0.0f ? 1 : 0;
 			byIsland += parts.island <= 0.0f ? 1 : 0;
 		}
-		logger::info("[Fluid Field]   cut '{}' ({} vertices): {} under the landscape, {} in statics, {} inside another sheet, {} lead-in, {} in the river, {} the water below, {} the pools, {} orphans; {} orphan pieces ({} triangles) cut, {} holes ({} vertices) restored",
-			a_sheet.geometry->name.c_str(), count, byLand, byStatic, byInside, byLead, byRiver, byWater, byPool, byIsland, a_job.islands - orphansBefore,
+		logger::info("[Fluid Field]   cut '{}' ({} vertices): {} under the landscape, {} inside another sheet, {} lead-in, {} in the river, {} the water below, {} the pools, {} orphans; {} orphan pieces ({} triangles) cut, {} holes ({} vertices) restored",
+			a_sheet.geometry->name.c_str(), count, byLand, byInside, byLead, byRiver, byWater, byPool, byIsland, a_job.islands - orphansBefore,
 			a_job.islandTriangles - orphanTrianglesBefore, a_job.holes - holesBefore, a_job.holeVertices - holeVerticesBefore);
-		pieces([&](uint32_t a_n) { return !kept[a_n] && solid[a_n]; }, label, found);
-		std::sort(found.begin(), found.end(), [](const auto& a_a, const auto& a_b) { return a_a.size() > a_b.size(); });
-		for (std::size_t k = 0; k < found.size() && k < 2; k++) {
-			RE::NiPoint3 centre(0.0f, 0.0f, 0.0f);
-			uint32_t land = 0, statics = 0, inside = 0, votes = 0, edge = 0;
-			for (const uint32_t n : found[k]) {
-				const uint32_t v = copies[n].front();
-				const VertexCut& parts = vertexCuts[a_sheet.base + v];
-				centre += a_sheet.positions[v];
-				land += (parts.rockCause & 1) && parts.rock <= 0.0f ? 1 : 0;
-				statics += (parts.rockCause & 2) && parts.rock <= 0.0f ? 1 : 0;
-				inside += parts.inside <= 0.0f ? 1 : 0;
-				votes += parts.votes;
-				edge += open[n] ? 1 : 0;
-			}
-			const float size = static_cast<float>(found[k].size());
-			centre = centre / size;
-			logger::info("[Fluid Field]     cut piece of {} vertices round ({:.0f}, {:.0f}, {:.0f}): {} by the landscape, {} by statics (mean {:.1f} of 6 axes inside), {} inside another sheet; {} on its open edge",
-				found[k].size(), centre.x, centre.y, centre.z, land, statics, static_cast<float>(votes) / size, inside, edge);
-		}
 	}
 
 	void FallSites::PoolCut(const CullSheet& a_sheet, uint32_t a_vertex)
@@ -2776,8 +2646,8 @@ namespace FluidFieldSim
 
 	void FallSites::ComputePushes()
 	{
-		uint32_t meshes = 0, pushed = 0, wobbled = 0, flippedTotal = 0, leadCut = 0, flattened = 0;
-		float most = 0.0f, mostWobble = 0.0f, mostFlattened = 0.0f;
+		uint32_t meshes = 0, pushed = 0, wobbled = 0, flippedTotal = 0, leadCut = 0;
+		float most = 0.0f, mostWobble = 0.0f;
 		wobbleImpacts.clear();
 		for (const auto& lit : litMeshList) {
 			auto* geometry = lit.geometry.get();
@@ -3201,57 +3071,12 @@ namespace FluidFieldSim
 				pushed++;
 				most = std::max(most, swellPush[v]);
 			}
-			// a unified sheet: its lobes bulge in the middle (the mesh's shape); where it faces up, pull what stands proud of its smoothed
-			// surface part of the way in (open edges and rock hold the smoothing in place)
-			if (unified) {
-				std::vector<RE::NiPoint3> drawn(counts.vertexCount);
-				for (uint32_t v = 0; v < counts.vertexCount; v++)
-					drawn[v] = positions[v] + push[v];
-				std::vector<RE::NiPoint3> smooth = drawn;
-				for (int pass = 0; pass < FLATTEN_PASSES; pass++) {
-					std::vector<RE::NiPoint3> softened = smooth;
-					for (uint32_t v = 0; v < counts.vertexCount; v++) {
-						if (open[v] || inRock[v] || next[v].empty())
-							continue;
-						RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
-						for (const auto& [n, length] : next[v])
-							sum += smooth[n];
-						softened[v] = smooth[v] * 0.5f + sum * (0.5f / static_cast<float>(next[v].size()));
-					}
-					smooth.swap(softened);
-				}
-				// (only its lower part: the crest's lip faces up and stands proud too)
-				float lowest = FLT_MAX, highest = -FLT_MAX;
-				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					const float z = (geometry->world * positions[v]).z;
-					lowest = std::min(lowest, z);
-					highest = std::max(highest, z);
-				}
-				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					const float length = normals[v].Length();
-					if (open[v] || inRock[v] || length < 1e-6f)
-						continue;
-					const RE::NiPoint3 worldNormal = geometry->world.rotate * normals[v];
-					const float facing = std::abs(worldNormal.z) / std::max(worldNormal.Length(), 1e-6f);
-					const float up = std::clamp((facing - BOUNCE_FACING[0]) / (BOUNCE_FACING[1] - BOUNCE_FACING[0]), 0.0f, 1.0f);
-					const float proud = (drawn[v] - smooth[v]).Dot(normals[v]) / length * scale;  // world units out past the smoothed surface
-					const float height = std::clamp(((geometry->world * positions[v]).z - lowest) / std::max(highest - lowest, 1.0f), 0.0f, 1.0f);
-					const float low = 1.0f - std::clamp((height - FLATTEN_BELOW[0]) / (FLATTEN_BELOW[1] - FLATTEN_BELOW[0]), 0.0f, 1.0f);
-					const float in = std::min(std::max(proud, 0.0f) * FLATTEN_SHARE, FLATTEN_MOST) * up * up * (3.0f - 2.0f * up) * low * low * (3.0f - 2.0f * low);
-					if (in < 0.05f)
-						continue;
-					push[v] -= normals[v] * (in / (length * scale));
-					flattened++;
-					mostFlattened = std::max(mostFlattened, in);
-				}
-			}
 			meshes++;
 		}
 		ComposeShifts();
 		RequestCulling();  // D103: after the lead-in cuts, which the covering sheets' test reads
 		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units; {} wobble, at most {:.1f} units; {} normals turned outward; {} hidden lead-in vertices cut",
 			pushed, meshes, most, wobbled, mostWobble, flippedTotal, leadCut);
-		logger::info("[Fluid Field]   unified lobes flattened: {} vertices, at most {:.1f} units in", flattened, mostFlattened);
 	}
 
 	void FallSites::LinkBakes()
@@ -4199,8 +4024,8 @@ namespace FluidFieldSim
 			logger::info("[Fluid Field] Waterfall site #{} ground captured: {}x{} at {:.0f}, {:.0f}, {} holes left", site.id, capture.GetWidth(), capture.GetHeight(),
 				capture.GetOriginX(), capture.GetOriginY(), holes);
 			logger::info("[Fluid Field]   rays: {}", capture.DescribeRays());
-			// Diagnostics: the captured rock, next to the log
-			if (const auto directory = logger::log_directory()) {
+			// The captured rock, next to the log (tools/unify)
+			if (const auto directory = exportSiteInputs ? logger::log_directory() : std::optional<std::filesystem::path>{}) {
 				const auto path = (*directory / std::format("FluidField_rock_site{}.bin", site.id)).string();
 				if (capture.Dump(path))
 					logger::info("[Fluid Field]   rock written to {}", path);
@@ -4227,11 +4052,6 @@ namespace FluidFieldSim
 		}
 		if (nearest)
 			nearest->Cast(CAPTURE_BUDGET_MS);
-	}
-
-	uint32_t FallSites::CountKind(Kind a_kind) const
-	{
-		return static_cast<uint32_t>(std::count_if(sites.begin(), sites.end(), [&](const Site& a_site) { return a_site.kind == a_kind; }));
 	}
 
 	bool FallSites::LoadIdle() const
@@ -5108,66 +4928,6 @@ namespace FluidFieldSim
 				}
 			}
 		}
-		if (false) {
-			for (const auto& [geometry, field] : bakeFields) {
-				if (!field || !grounded.contains(geometry))
-					continue;
-				const auto w = static_cast<int32_t>(field->width);
-				FallStrands::Input input;
-				input.width = field->width;
-				input.height = field->height;
-				input.position = reinterpret_cast<const float*>(field->position.data());
-				input.covered = field->covered.data();
-				std::vector<int32_t> crest;
-				std::vector<uint8_t> leadIn;
-				FallStrands::FindCrests(input, crest, leadIn);
-				for (int32_t x = 0; x < w; x++) {
-					const int32_t y = crest[x];
-					if (y < 0 || y + 2 >= static_cast<int32_t>(field->height))
-						continue;
-					const std::size_t i = static_cast<std::size_t>(y) * w + x;
-					if (!field->rock.empty() && field->rock[i])
-						continue;
-					const RE::NiPoint3& p = field->position[i];
-					// D91: the pool it comes from, ours or the engine's (the lip lies at a river plane's surface, so D70's overreach is no
-					// risk here)
-					float level = 0.0f;
-					bool upper = PoolLevelAt(p.x, p.y, level) && std::abs(p.z - level) <= LIP_BAND;
-					if (!upper) {
-						std::vector<std::array<float, 5>> lipPlanes;
-						CollectWaterPlanes(p.x - 1.0f, p.y - 1.0f, p.x + 1.0f, p.y + 1.0f, lipPlanes);
-						for (const auto& plane : lipPlanes) {
-							if (p.x >= plane[0] && p.x <= plane[2] && p.y >= plane[1] && p.y <= plane[3] && std::abs(p.z - plane[4]) <= LIP_BAND) {
-								level = plane[4];
-								upper = true;
-								break;
-							}
-						}
-					}
-					if (!upper)
-						continue;
-					const RE::NiPoint3 down = field->position[i + 2 * static_cast<std::size_t>(w)] - p;
-					const float horizontal = std::sqrt(down.x * down.x + down.y * down.y);
-					if (horizontal < 1e-3f)
-						continue;
-					const auto key = (static_cast<int64_t>(std::floor(p.x / PLUNGE_WATER_SPACING)) << 32) ^ static_cast<uint32_t>(static_cast<int32_t>(std::floor(p.y / PLUNGE_WATER_SPACING))) ^
-					                 (int64_t{ 1 } << 62);
-					auto [it, added] = points.try_emplace(key);
-					if (!added)
-						continue;
-					FallPlunge& lip = it->second;
-					// D92: upstream of the drop (at it, its foam was carried straight over the edge and never showed)
-					lip.position[0] = p.x - down.x / horizontal * LIP_UPSTREAM;
-					lip.position[1] = p.y - down.y / horizontal * LIP_UPSTREAM;
-					lip.position[2] = level;
-					lip.direction[0] = down.x / horizontal;
-					lip.direction[1] = down.y / horizontal;
-					lip.speed = SIM_INFLOW;
-					lip.strength = LIP_STRENGTH;
-					lips++;
-				}
-			}
-		}
 		o_result.plungePoints.clear();
 		o_result.plungePoints.reserve(points.size());
 		for (const auto& [key, plunge] : points)
@@ -5233,10 +4993,6 @@ namespace FluidFieldSim
 					site.min[0], site.max[0], site.min[1], site.max[1], site.min[2], site.max[2], levels, site.topFromMesh ? " (top from mesh)" : "");
 				logger::info("[Fluid Field]     falling water x {:.0f}..{:.0f}, y {:.0f}..{:.0f}, z {:.0f}..{:.0f}; planes near:{}", site.fallMin[0], site.fallMax[0], site.fallMin[1],
 					site.fallMax[1], site.fallMin[2], site.fallMax[2], site.candidates);
-			}
-			if (consoleSummary) {
-				if (auto* console = RE::ConsoleLog::GetSingleton())
-					console->Print("%s", line.c_str());
 			}
 		}
 	}

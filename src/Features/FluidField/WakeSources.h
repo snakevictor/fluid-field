@@ -36,9 +36,6 @@ namespace FluidFieldSim
 		/** @brief Forgets every actor's history, after a reset or teleport. */
 		void Clear();
 
-		uint32_t GetWakeCount() const { return wakeCount; }
-		uint32_t GetSplashCount() const { return splashCount; }
-
 	private:
 		struct History
 		{
@@ -52,7 +49,5 @@ namespace FluidFieldSim
 		std::unordered_map<uint32_t, History> history;  ///< Keyed by actor form ID
 		std::vector<WaterEmitter> emitters;
 		uint32_t updateCounter = 0;
-		uint32_t wakeCount = 0;
-		uint32_t splashCount = 0;
 	};
 }

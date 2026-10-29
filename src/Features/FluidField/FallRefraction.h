@@ -14,11 +14,10 @@
 namespace FluidFieldSim
 {
 	/**
-	 * @brief D91: draws the falls' lit pieces as refractive water in our own forward pass after the world (water and
-	 * blended geometry included), before the spray. Each piece uses immutable buffers built once from its CPU copy (D73),
-	 * with the lit passes' vertex shift and wobble (t123), flow bake (t124) and latched scroll phase. The shader
-	 * (FluidField/FallSurface.hlsl) ports Water.hlsl's look: lit and shadowed as the river (D102), faintly see-through,
-	 * fresnel, sun glint, white water from the bake. All pipeline state it touches is saved and restored.
+	 * @brief D91: draws the cached sites' sheets as see-through water in our own forward pass after the world (water and
+	 * blended geometry included). Each piece uses immutable buffers built once from its CPU copy, with its vertex shift and
+	 * wobble (t123), flow bake (t124) and latched scroll phase. D159: shaded by the river's own Water.hlsl (FLUID_FIELD_FALLS);
+	 * FallSurface.hlsl only draws the depth passes. All pipeline state it touches is saved and restored.
 	 */
 	class FallRefraction
 	{

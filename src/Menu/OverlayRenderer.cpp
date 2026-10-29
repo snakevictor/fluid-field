@@ -24,7 +24,6 @@
 #include "State.h"
 #include "Util.h"
 
-#include "Features/FluidField.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/PerformanceOverlay/ABTesting/ABTesting.h"
 namespace
@@ -238,7 +237,6 @@ bool OverlayRenderer::ShouldSkipRendering()
 			 (failed && !hide) ||
 			 effectFailed ||
 			 globals::features::performanceOverlay.settings.ShowInOverlay ||
-			 (globals::features::fluidField.loaded && globals::features::fluidField.IsOverlayVisible()) ||
 			 renderDoc->IsAvailable());
 }
 

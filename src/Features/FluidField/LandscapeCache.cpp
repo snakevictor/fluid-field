@@ -34,21 +34,6 @@ namespace FluidFieldSim
 		return it != cells.end() ? &it->second : nullptr;
 	}
 
-	LandscapeCache LandscapeCache::Subset(float a_minX, float a_minY, float a_maxX, float a_maxY) const
-	{
-		LandscapeCache out;
-		out.worldSpace = worldSpace;
-		const auto x0 = static_cast<int32_t>(std::floor(a_minX / CELL_UNITS)), x1 = static_cast<int32_t>(std::floor(a_maxX / CELL_UNITS));
-		const auto y0 = static_cast<int32_t>(std::floor(a_minY / CELL_UNITS)), y1 = static_cast<int32_t>(std::floor(a_maxY / CELL_UNITS));
-		for (int32_t y = y0; y <= y1; y++) {
-			for (int32_t x = x0; x <= x1; x++) {
-				if (const Cell* cell = Find(x, y))
-					out.cells.emplace(MakeCellKey(x, y), *cell);
-			}
-		}
-		return out;
-	}
-
 	bool LandscapeCache::SampleHeight(float a_worldX, float a_worldY, float& a_height) const
 	{
 		const int32_t cellX = static_cast<int32_t>(std::floor(a_worldX / CELL_UNITS));
@@ -71,7 +56,7 @@ namespace FluidFieldSim
 		return true;
 	}
 
-	void LandscapeCache::Update(bool a_verify)
+	void LandscapeCache::Update()
 	{
 		auto tes = RE::TES::GetSingleton();
 		if (!tes || !tes->gridCells || tes->interiorCell) {
@@ -120,9 +105,7 @@ namespace FluidFieldSim
 				for (float& height : copy.heights)
 					height += copy.anchor;
 
-				const auto& inserted = cells.emplace(key, copy).first->second;
-				if (a_verify)
-					Verify(inserted);
+				cells.emplace(key, copy);
 			}
 		}
 
@@ -130,53 +113,4 @@ namespace FluidFieldSim
 		std::erase_if(cells, [&](const auto& entry) { return std::ranges::find(present, entry.first) == present.end(); });
 	}
 
-	void LandscapeCache::Verify(const Cell& a_cell)
-	{
-		auto tes = RE::TES::GetSingleton();
-		if (!tes)
-			return;
-
-		const float originX = static_cast<float>(a_cell.x * CELL_UNITS);
-		const float originY = static_cast<float>(a_cell.y * CELL_UNITS);
-		float vertexError = 0.0f;
-		float interpolatedError = 0.0f;
-		uint32_t missed = 0;
-
-		const auto engineHeight = [&](float x, float y, float guess, float& out) {
-			// The probe starts above the expected surface so a downward query finds it
-			return tes->GetLandHeight(RE::NiPoint3(x, y, guess + 1024.0f), out);
-		};
-
-		// Interior vertices only; edge vertices are shared with neighbours that may not be loaded
-		constexpr std::array<std::array<int32_t, 2>, 5> vertices = { { { 8, 8 }, { 24, 8 }, { 8, 24 }, { 24, 24 }, { 16, 16 } } };
-		for (const auto& [vx, vy] : vertices) {
-			const float cached = a_cell.heights[vy * VERTS_PER_SIDE + vx];
-			float engine = 0.0f;
-			if (!engineHeight(originX + vx * VERT_SPACING, originY + vy * VERT_SPACING, cached, engine)) {
-				missed++;
-				continue;
-			}
-			vertexError = std::max(vertexError, std::abs(cached - engine));
-		}
-
-		// A point between vertices: the engine interpolates over triangles, this cache bilinearly
-		const float px = originX + 10.37f * VERT_SPACING;
-		const float py = originY + 21.61f * VERT_SPACING;
-		float sampled = 0.0f;
-		float engine = 0.0f;
-		if (SampleHeight(px, py, sampled) && engineHeight(px, py, sampled, engine))
-			interpolatedError = std::abs(sampled - engine);
-		else
-			missed++;
-
-		verifyStats.cellsChecked++;
-		verifyStats.samplesChecked += static_cast<uint32_t>(vertices.size()) + 1;
-		verifyStats.samplesMissed += missed;
-		verifyStats.maxVertexError = std::max(verifyStats.maxVertexError, vertexError);
-		verifyStats.maxInterpolatedError = std::max(verifyStats.maxInterpolatedError, interpolatedError);
-		verifyStats.maxAbsAnchor = std::max(verifyStats.maxAbsAnchor, std::abs(a_cell.anchor));
-
-		logger::info("[Fluid Field] Landscape check cell ({}, {}): vertex error {:.2f}, interpolated error {:.2f}, anchor {:.2f}, missed {}",
-			a_cell.x, a_cell.y, vertexError, interpolatedError, a_cell.anchor, missed);
-	}
 }

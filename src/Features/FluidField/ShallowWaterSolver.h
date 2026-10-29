@@ -58,14 +58,6 @@ namespace FluidFieldSim
 		ID3D11ShaderResourceView* lipMap = nullptr;
 	};
 
-	/** @brief Colour scales for the water debug view: a value of 1/scale maps to full intensity. */
-	struct WaterDebugScales
-	{
-		float depth = 1.0f / 300.0f;
-		float flow = 1.0f / 300.0f;
-		float wave = 1.0f / 10.0f;
-	};
-
 	/**
 	 * @brief Shallow water: depth and staggered velocity, semi-Lagrangian advection, height and velocity from the surface slope
 	 * (Bridson & Mueller-Fischer, "Fluid Simulation", SIGGRAPH 2007 course, heightfield chapter).
@@ -129,20 +121,10 @@ namespace FluidFieldSim
 		/** @brief Writes the surface and flow outputs from the latest state. */
 		void WriteOutputs(ID3D11DeviceContext* context);
 
-		/** @brief Renders the north-up debug images: depth, flow, waves. */
-		void RenderDebugViews(ID3D11DeviceContext* context, const WaterDebugScales& scales);
-
 		/** @brief (slope x, slope y, height above vanilla, coverage) per texel, in storage order. */
 		ID3D11ShaderResourceView* GetSurfaceSRV() const { return surface.srv.get(); }
-		/** @brief D183: the bed and vanilla surface map (WaterMap: r bed, g surface), toroidal at GetMapSpacing. */
-		ID3D11ShaderResourceView* GetMapSRV() const { return map.srv.get(); }
-		float GetMapSpacing() const { return mapSpacing; }
 		/** @brief Cell-centred velocity (xy) and foam (z, 0 to about 1.5) per texel, in storage order. */
 		ID3D11ShaderResourceView* GetFlowSRV() const { return flow.srv.get(); }
-
-		static constexpr std::array<const char*, 3> DEBUG_VIEW_NAMES = { "Water Depth", "Water Flow", "Waves" };
-		ID3D11ShaderResourceView* GetDebugViewSRV(std::size_t index) const { return debugViews[index].srv.get(); }
-		bool HasDebugViews() const { return hasDebugViews; }
 
 	private:
 		struct Layer
@@ -202,15 +184,6 @@ namespace FluidFieldSim
 		};
 		static_assert(sizeof(WaterConstants) == 144);
 
-		// Matches WaterDebugCB in WaterDebugViewCS.hlsl
-		struct alignas(16) DebugConstants
-		{
-			float depthScale;
-			float flowScale;
-			float waveScale;
-			float pad;
-		};
-
 		static Layer CreateLayer(ID3D11Device* device, std::uint32_t resolution, DXGI_FORMAT format, const NameFn& name, const char* label, bool unordered = true);
 		static void UpdateBuffer(ID3D11DeviceContext* context, ID3D11Buffer* buffer, const void* data, std::size_t size);
 
@@ -244,16 +217,13 @@ namespace FluidFieldSim
 		Layer flow;
 		Layer map;
 		Layer obstacles;
-		std::array<Layer, 3> debugViews;
 		std::uint32_t currentDepth = 0;
 		std::uint32_t currentVelocity = 0;
 		std::uint32_t currentCellMap = 0;
 		std::uint32_t currentFoam = 0;
-		bool hasDebugViews = false;
 
 		winrt::com_ptr<ID3D11Buffer> gridConstants;
 		winrt::com_ptr<ID3D11Buffer> waterConstants;
-		winrt::com_ptr<ID3D11Buffer> debugConstants;
 		winrt::com_ptr<ID3D11Buffer> emitterBuffer;
 		winrt::com_ptr<ID3D11ShaderResourceView> emitterSRV;
 
@@ -263,7 +233,6 @@ namespace FluidFieldSim
 		winrt::com_ptr<ID3D11ComputeShader> velocityCS;
 		winrt::com_ptr<ID3D11ComputeShader> outputCS;
 		winrt::com_ptr<ID3D11ComputeShader> foamCS;
-		winrt::com_ptr<ID3D11ComputeShader> debugViewCS;
 
 		std::int32_t prevGridMin[2]{};
 		float simTime = 0.0f;  ///< Seconds simulated since the last reset

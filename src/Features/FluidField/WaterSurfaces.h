@@ -36,22 +36,11 @@ namespace FluidFieldSim
 			CellWater
 		};
 
-		/** @brief Result of comparing surface heights with the engine's own water query. */
-		struct VerifyStats
-		{
-			uint32_t runs = 0;
-			uint32_t samplesChecked = 0;
-			uint32_t samplesMissed = 0;       ///< Engine query found no water where a surface claims some
-			float maxError = 0.0f;            ///< Surface height vs the engine
-			float maxPlaneDifference = 0.0f;  ///< Bound centre vs plane-derived height
-		};
-
 		/**
 		 * @brief Rebuilds the surface list from the engine's water objects every few updates.
-		 * @param a_verify After a rebuild that changed the list, compare with the engine and log.
 		 * Main thread only (reads the engine's water system and cell grid).
 		 */
-		void Update(bool a_verify);
+		void Update();
 
 		/** @brief Drops every surface; the next update rebuilds immediately. */
 		void Clear();
@@ -81,15 +70,13 @@ namespace FluidFieldSim
 		std::size_t GetSurfaceCount() const { return surfaces.size(); }
 		uint32_t GetSlopedCount() const { return slopedCount; }
 		std::size_t GetCellWaterCount() const { return cellWater.size(); }
-		const VerifyStats& GetVerifyStats() const { return verifyStats; }
 		/** @brief Changes whenever the set of surfaces changes. */
 		uint64_t GetSignature() const { return lastSignature; }
 
 	private:
 		static constexpr uint32_t REBUILD_INTERVAL = 30;  ///< Updates between rebuilds
 
-		void Rebuild(bool a_verify);
-		void Verify();
+		void Rebuild();
 
 		std::vector<Surface> surfaces;
 		uint32_t slopedCount = 0;
@@ -102,7 +89,5 @@ namespace FluidFieldSim
 
 		uint32_t updatesUntilRebuild = 0;
 		uint64_t lastSignature = 0;
-		std::unordered_set<uint32_t> loggedWaterTypes;  ///< Water types already described in the log (with the check on)
-		VerifyStats verifyStats;
 	};
 }

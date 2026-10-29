@@ -22,18 +22,6 @@ namespace FluidFieldSim
 	class MeshCut
 	{
 	public:
-		struct Stats
-		{
-			uint32_t references = 0;  ///< References cut and currently loaded
-			uint32_t shapes = 0;
-			uint32_t shapesWithoutData = 0;  ///< Shapes skipped: no CPU vertex data, skinned or dynamic
-			uint32_t segments = 0;
-			uint32_t closedLoops = 0;
-			uint32_t solidPoints = 0;  ///< Distinct solid fine points
-			uint32_t pending = 0;      ///< References waiting to be cut
-			double lastUpdateMs = 0.0;
-		};
-
 		/** @brief Points per obstacle block side, matching the obstacle texture upload block. */
 		static constexpr int32_t BLOCK = 4;
 		/** @brief A solid point's height above the cut, so the water solver reads it as a wall. */
@@ -42,16 +30,13 @@ namespace FluidFieldSim
 		/**
 		 * @brief Finds loaded references at the water line and cuts a few of them, within a time budget.
 		 * @param a_fineSpacing World units between fine lattice points; a change re-cuts everything.
-		 * @param a_log Log each reference cut (form ID, model, loops, time).
 		 */
-		void Update(const WaterSurfaces& a_water, float a_fineSpacing, bool a_log);
+		void Update(const WaterSurfaces& a_water, float a_fineSpacing);
 
 		void Clear();
 
 		/** @brief Solid at a fine lattice point; a_top is the height the water solver should see there. */
 		bool IsSolid(int32_t a_fineX, int32_t a_fineY, float& a_top) const;
-		/** @brief Solid at the fine lattice point nearest to a world position. */
-		bool IsSolidAt(float a_worldX, float a_worldY) const;
 
 		/** @brief Blocks (fine coordinates of their south-west point) whose solid points changed; the list is emptied. */
 		std::vector<std::pair<int32_t, int32_t>> TakeDirtyBlocks();
@@ -60,7 +45,6 @@ namespace FluidFieldSim
 		/** @brief True after a clear until the next TakeDirtyBlocks, so consumers can drop stale blocks. */
 		bool WasCleared() const { return cleared; }
 
-		const Stats& GetStats() const { return stats; }
 		float GetFineSpacing() const { return fineSpacing; }
 
 	private:
@@ -86,7 +70,7 @@ namespace FluidFieldSim
 		/** @brief Reconciles the cut set with the references loaded now: queues arrivals, removes departures. */
 		void Scan(const WaterSurfaces& a_water);
 		/** @brief Cuts one reference and adds its solid points. */
-		void Cut(RE::TESObjectREFR& a_ref, float a_surface, bool a_log);
+		void Cut(RE::TESObjectREFR& a_ref, float a_surface);
 		void AddPoint(uint64_t a_key, float a_top);
 		void RemoveRecord(const CutRecord& a_record);
 		void MarkBlockDirty(uint64_t a_pointKey);
@@ -106,6 +90,5 @@ namespace FluidFieldSim
 		float fineSpacing = 0.0f;
 		uint32_t updatesUntilScan = 0;
 		bool cleared = true;
-		Stats stats;
 	};
 }

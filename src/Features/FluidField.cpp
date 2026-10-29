@@ -25,20 +25,12 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GridSize,
 	JacobiIterations,
 	WindDamping,
-	TestPuffStrength,
-	TestPuffRadius,
-	DepthMapEnabled,
-	VerifyLandscape,
-	VerifyWater,
 	RaycastBed,
 	RaysPerFrame,
 	RaySpacing,
-	LogDepthMap,
 	MeshCutObstacles,
 	WaterEnabled,
 	WakeStrength,
-	TestCurrentSpeed,
-	TestCurrentAngle,
 	WaterResolution,
 	WaterSize,
 	FarWater,
@@ -68,7 +60,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	FallAerationFoam,
 	FallAerationFrom,
 	FallAerationMilk,
-	WaterfallDebug)
+	ExportSiteInputs)
 
 void FluidField::DrawSettings()
 {
@@ -217,8 +209,6 @@ void FluidField::DrawSettings()
 			queuedReset = true;
 
 		ImGui::SeparatorText(T(TKEY("depth_map"), "Bed and Obstacles"));
-		ImGui::Checkbox(T(TKEY("depth_map_enabled"), "Build Depth Map"), &settings.DepthMapEnabled);
-		tooltip(T(TKEY("depth_map_enabled_tooltip"), "Maps the riverbed and vanilla water around the player, which the water simulation stands on."));
 		ImGui::Checkbox(T(TKEY("raycast_bed"), "Raycast Bed"), &settings.RaycastBed);
 		tooltip(T(TKEY("raycast_bed_tooltip"), "Casts rays down from the water surface to find rocks, banks and riverbed meshes that the landscape heights miss."));
 		ImGui::SliderScalar(T(TKEY("rays_per_frame"), "Rays Per Frame"), ImGuiDataType_U32, &settings.RaysPerFrame, &MIN_RAYS_PER_FRAME, &MAX_RAYS_PER_FRAME, "%u", ImGuiSliderFlags_AlwaysClamp);
@@ -228,196 +218,6 @@ void FluidField::DrawSettings()
 		tooltip(T(TKEY("mesh_cut_tooltip"), "Finds pillars, posts, walls and boats by cutting their meshes at the water height. Rays then only measure the bed."));
 		ImGui::PopID();
 	}
-
-	// Debug: views, toggles and counts
-	if (ImGui::CollapsingHeader(T(TKEY("debug"), "Debug"))) {
-		ImGui::PushID("DebugSection");
-		ImGui::SeparatorText(T(TKEY("debug_water"), "Water"));
-		{
-			const char* waterViews[] = { T(TKEY("water_debug_off"), "Off"), T(TKEY("water_debug_flow"), "Flow"), T(TKEY("water_debug_foam"), "Foam"),
-				T(TKEY("water_debug_height"), "Surface Height") };
-			ImGui::Combo(T(TKEY("water_debug_view"), "Water Debug View"), &waterDebugView, waterViews, IM_ARRAYSIZE(waterViews));
-			if (auto _tt = Util::HoverTooltipWrapper())
-				ImGui::Text("%s", T(TKEY("water_debug_view_tooltip"), "Draws the shallow water simulation on the water itself: the flow (colour by direction, lines moving with it), its foam, or the surface's height (blue below rest, red above)."));
-		}
-		ImGui::SeparatorText(T(TKEY("debug_waterfalls"), "Waterfalls"));
-		{
-			const char* fallDebugModes[] = { T(TKEY("waterfall_debug_off"), "Off"), T(TKEY("waterfall_debug_bake"), "Mesh Flow Bake"), T(TKEY("waterfall_debug_direction"), "Flow Direction"),
-				T(TKEY("waterfall_debug_vanilla"), "Vanilla Texture (No Flow)"), T(TKEY("waterfall_debug_depth"), "Depth Behind (See-Through Falls)"),
-				T(TKEY("waterfall_debug_quadrants"), "Quadrants (See-Through Falls)") };
-			settings.WaterfallDebug = std::clamp(settings.WaterfallDebug, 0, 5);
-			ImGui::Combo(T(TKEY("waterfall_debug"), "Waterfall Shading"), &settings.WaterfallDebug, fallDebugModes, IM_ARRAYSIZE(fallDebugModes));
-			tooltip(T(TKEY("waterfall_debug_tooltip"), "Paints the falling water with its flow. Mesh Flow Bake: red how the streaks spread, green the run time (a band per second), blue foam, white the wake of rock; dark magenta where a mesh has no bake. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster. Vanilla Texture: the falls without the flow. Depth Behind: with See-Through Falls, each sheet by the open water or air behind it to the first rock or ground: red under 50 units, yellow to 150, green to 300, blue to 600 (8.5 m), magenta where nothing was hit."));
-			ImGui::SliderFloat(T(TKEY("plunge_foam_behind"), "Plunge Foam Behind (tuning)"), &plungeFoamBehind, -64.0f, 256.0f, "%.0f");
-			tooltip(T(TKEY("plunge_foam_behind_tooltip"), "World units the foam where the falls meet the water below is moved behind their line, against their flow. Not saved."));
-			ImGui::SliderFloat(T(TKEY("plunge_foam_radius"), "Plunge Foam Radius (tuning)"), &plungeFoamRadius, 0.25f, 4.0f, "%.2f");
-			tooltip(T(TKEY("plunge_foam_radius_tooltip"), "How far round each point the falls meet the water below it foams, as a scale. Not saved."));
-
-			uint32_t captured, captures;
-			fallSites.CountCaptures(captured, captures);
-			ImGui::Text(T(TKEY("waterfall_sites"), "Sites: %u falls, %u cascades, %u rapids, %u no bottom, %u failed; ground captured for %u of %u"),
-				fallSites.CountKind(FluidFieldSim::FallSites::Kind::Fall), fallSites.CountKind(FluidFieldSim::FallSites::Kind::Cascade), fallSites.CountKind(FluidFieldSim::FallSites::Kind::Rapids),
-				fallSites.CountKind(FluidFieldSim::FallSites::Kind::NoBottom), fallSites.CountKind(FluidFieldSim::FallSites::Kind::Failed), captured, captures);
-		}
-
-		ImGui::SeparatorText(T(TKEY("debug_layers"), "Simulation Layers"));
-		ImGui::Checkbox(T(TKEY("show_layer_overlay"), "Show Layer Overlay"), &showDebugOverlay);
-		tooltip(T(TKEY("show_layer_overlay_tooltip"), "Draws every simulation layer on screen, north up, centred on the player. Not saved."));
-		ImGui::SliderFloat(T(TKEY("overlay_scale"), "Overlay Scale"), &debugOverlayScale, 0.5f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat(T(TKEY("overlay_velocity_range"), "Velocity Range"), &debugVelocityRange, 10.0f, 5000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-		ImGui::SliderFloat(T(TKEY("overlay_divergence_range"), "Divergence Range"), &debugDivergenceRange, 0.01f, 20.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-		ImGui::SliderFloat(T(TKEY("overlay_pressure_range"), "Pressure Range"), &debugPressureRange, 1.0f, 50000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-		tooltip(T(TKEY("overlay_range_tooltip"), "The value drawn at full colour in the overlay."));
-
-		ImGui::SeparatorText(T(TKEY("debug_checks"), "Counts"));
-		ImGui::Text(T(TKEY("landscape_cells"), "Cached cells: %u"), static_cast<uint>(landscape.GetCellCount()));
-		ImGui::Text(T(TKEY("water_surfaces"), "Water surfaces: %u flat, %u sloped (not used), %u cells with water"), static_cast<uint>(water.GetSurfaceCount()), water.GetSlopedCount(),
-			static_cast<uint>(water.GetCellWaterCount()));
-		ImGui::Text(T(TKEY("vanilla_foam_hidden"), "Vanilla foam effects hidden: %u"), vanillaFoam.GetHiddenCount());
-		if (settings.RaycastBed && bedRays.GetSampleCount() > 0) {
-			const auto counts = bedRays.CountSamples();
-			const auto& rayStats = bedRays.GetStats();
-			ImGui::Text(T(TKEY("raycast_counts"), "Bed rays: %u terrain, %u meshes, %u out of reach, %u under ground, %u no water; %u cast last frame"), counts.terrain, counts.statics, counts.noHit,
-				counts.skipped, counts.noWater, rayStats.raysLastFrame);
-		}
-		if (settings.MeshCutObstacles) {
-			const auto& cutStats = meshCut.GetStats();
-			ImGui::Text(T(TKEY("mesh_cut_stats"), "Mesh cut: %u references, %u shapes (%u skipped), %u closed loops, %u solid points, %u waiting; %.2f ms last frame"), cutStats.references,
-				cutStats.shapes, cutStats.shapesWithoutData, cutStats.closedLoops, cutStats.solidPoints, cutStats.pending, cutStats.lastUpdateMs);
-		}
-		if (const auto& stats = landscape.GetVerifyStats(); stats.cellsChecked > 0) {
-			ImGui::Text(T(TKEY("landscape_verify_result"), "Checked %u cells: vertex error %.2f, interpolated %.2f units, largest anchor %.0f (%u of %u samples missed)"), stats.cellsChecked,
-				stats.maxVertexError, stats.maxInterpolatedError, stats.maxAbsAnchor, stats.samplesMissed, stats.samplesChecked);
-		}
-		if (const auto& stats = water.GetVerifyStats(); stats.runs > 0) {
-			ImGui::Text(T(TKEY("water_verify_result"), "Water checked %u times: error %.2f units, plane vs bound %.2f (%u of %u samples missed)"), stats.runs, stats.maxError,
-				stats.maxPlaneDifference, stats.samplesMissed, stats.samplesChecked);
-		}
-		ImGui::PopID();
-	}
-}
-
-void FluidField::DrawOverlay()
-{
-	if (!(showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews))
-		return;
-
-	const float uiScale = Util::GetUIScale();
-	const float padding = ThemeManager::Constants::OVERLAY_WINDOW_POSITION * uiScale;
-	const auto* viewport = ImGui::GetMainViewport();
-	ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - padding, viewport->WorkPos.y + padding), ImGuiCond_FirstUseEver, ImVec2(1.0f, 0.0f));
-
-	// Click-through during play; movable while the menu is open
-	ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoCollapse;
-	if (!Menu::GetSingleton()->IsEnabled)
-		flags |= ImGuiWindowFlags_NoInputs;
-
-	if (!ImGui::Begin(T(TKEY("overlay_title"), "Fluid Field Layers###FluidFieldLayers"), nullptr, flags)) {
-		ImGui::End();
-		return;
-	}
-
-	ImGui::Text(T(TKEY("overlay_grid_info"), "%u x %u texels, %.1f units each, south-west cell (%d, %d)"),
-		settings.GridResolution, settings.GridResolution, GetCellSize(), lastGridMin[0], lastGridMin[1]);
-
-	const float imageSize = 192.0f * uiScale * debugOverlayScale;
-	const float res = static_cast<float>(settings.GridResolution);
-	const ImU32 markerColor = ImGui::GetColorU32(ImGuiCol_Text);
-	const std::array<const char*, 3> layerNames = {
-		T(TKEY("layer_velocity"), "Velocity"),
-		T(TKEY("layer_divergence"), "Divergence"),
-		T(TKEY("layer_pressure"), "Pressure")
-	};
-
-	for (std::size_t i = 0; i < layerNames.size(); i++) {
-		if (i > 0)
-			ImGui::SameLine();
-
-		ImGui::BeginGroup();
-		ImGui::TextUnformatted(layerNames[i]);
-		ImGui::Image(reinterpret_cast<ImTextureID>(solver.GetDebugViewSRV(i)), ImVec2(imageSize, imageSize));
-
-		// Player marker and facing; images are north up, so texel y is flipped
-		const ImVec2 imageMin = ImGui::GetItemRectMin();
-		const ImVec2 marker(imageMin.x + lastPlayerTexel[0] / res * imageSize, imageMin.y + (1.0f - lastPlayerTexel[1] / res) * imageSize);
-		const float markerRadius = 3.0f * uiScale;
-		const float facingLength = 10.0f * uiScale;
-		auto* drawList = ImGui::GetWindowDrawList();
-		drawList->AddCircle(marker, markerRadius, markerColor);
-		drawList->AddLine(marker, ImVec2(marker.x + std::sin(lastHeading) * facingLength, marker.y - std::cos(lastHeading) * facingLength), markerColor);
-		ImGui::EndGroup();
-	}
-
-	ImGui::TextUnformatted(T(TKEY("overlay_legend_velocity"), "Velocity: hue is direction (east red, north green, west cyan, south violet), brightness is speed."));
-	ImGui::TextUnformatted(T(TKEY("overlay_legend_scalar"), "Divergence and pressure: red is positive, blue is negative."));
-
-	if (depthView.HasImages()) {
-		const std::array<const char*, FluidFieldSim::DepthMapView::IMAGE_COUNT> depthNames = {
-			T(TKEY("layer_bed"), "Bed"),
-			T(TKEY("layer_water"), "Water Surface"),
-			T(TKEY("layer_depth"), "Depth"),
-			T(TKEY("layer_raycasts"), "Raycasts")
-		};
-		for (std::size_t i = 0; i < depthNames.size(); i++) {
-			if (i > 0)
-				ImGui::SameLine();
-			ImGui::BeginGroup();
-			ImGui::TextUnformatted(depthNames[i]);
-			ImGui::Image(reinterpret_cast<ImTextureID>(depthView.GetSRV(i)), ImVec2(imageSize, imageSize));
-
-			// The depth map images are centred on the player
-			const ImVec2 imageMin = ImGui::GetItemRectMin();
-			const ImVec2 marker(imageMin.x + imageSize * 0.5f, imageMin.y + imageSize * 0.5f);
-			auto* drawList = ImGui::GetWindowDrawList();
-			drawList->AddCircle(marker, 3.0f * uiScale, markerColor);
-			drawList->AddLine(marker, ImVec2(marker.x + std::sin(lastHeading) * 10.0f * uiScale, marker.y - std::cos(lastHeading) * 10.0f * uiScale), markerColor);
-			ImGui::EndGroup();
-		}
-		const auto& depthStats = depthView.GetStats();
-		ImGui::TextUnformatted(T(TKEY("overlay_legend_bed"), "Bed: green below the player, brown above, magenta where no landscape is loaded."));
-		ImGui::TextUnformatted(T(TKEY("overlay_legend_water"), "Water: bright blue is wet under a water object, bright cyan wet under cell water only; dim is a water plane under the ground."));
-		ImGui::TextUnformatted(T(TKEY("overlay_legend_depth"), "Depth: lighter is shallow, darker is deep; tan is water plane under the ground."));
-		ImGui::TextUnformatted(T(TKEY("overlay_legend_raycasts"), "Raycasts: red a mesh-cut obstacle, green terrain, purple under a deck or arch, orange solid above the water, yellow above the water but not checked (ignored), brown a mesh below the water, dark blue nothing in reach, grey no ray."));
-		ImGui::Text(T(TKEY("overlay_depth_stats"), "Wet %u texels (%u water object, %u cell water), deepest %.0f units; %u plane under ground; %u without a bed"),
-			depthStats.submerged, depthStats.waterObject, depthStats.cellWater, depthStats.maxDepth, depthStats.buried, depthStats.bedMissing);
-	} else if (settings.DepthMapEnabled || settings.WaterEnabled) {
-		ImGui::TextUnformatted(T(TKEY("overlay_depth_waiting"), "Depth map: waiting for data."));
-	} else {
-		ImGui::TextUnformatted(T(TKEY("overlay_depth_off"), "Depth map: turn on Build Depth Map to see the bed, water surface and depth here."));
-	}
-
-	if (nearWater.solver.HasDebugViews()) {
-		const float waterRes = static_cast<float>(settings.WaterResolution);
-		const float waterCell = GetWaterCellSize();
-		const float waterTexel[2] = { lastPlayerPos[0] / waterCell - static_cast<float>(nearWater.gridMin[0]),
-			lastPlayerPos[1] / waterCell - static_cast<float>(nearWater.gridMin[1]) };
-		const std::array<const char*, FluidFieldSim::ShallowWaterSolver::DEBUG_VIEW_NAMES.size()> waterNames = {
-			T(TKEY("layer_water_depth"), "Water Depth"),
-			T(TKEY("layer_water_flow"), "Flow"),
-			T(TKEY("layer_waves"), "Waves")
-		};
-		for (std::size_t i = 0; i < waterNames.size(); i++) {
-			if (i > 0)
-				ImGui::SameLine();
-			ImGui::BeginGroup();
-			ImGui::TextUnformatted(waterNames[i]);
-			ImGui::Image(reinterpret_cast<ImTextureID>(nearWater.solver.GetDebugViewSRV(i)), ImVec2(imageSize, imageSize));
-			const ImVec2 imageMin = ImGui::GetItemRectMin();
-			const ImVec2 marker(imageMin.x + waterTexel[0] / waterRes * imageSize, imageMin.y + (1.0f - waterTexel[1] / waterRes) * imageSize);
-			auto* drawList = ImGui::GetWindowDrawList();
-			drawList->AddCircle(marker, 3.0f * uiScale, markerColor);
-			drawList->AddLine(marker, ImVec2(marker.x + std::sin(lastHeading) * 10.0f * uiScale, marker.y - std::cos(lastHeading) * 10.0f * uiScale), markerColor);
-			ImGui::EndGroup();
-		}
-		ImGui::TextUnformatted(T(TKEY("overlay_legend_water_sim"), "Water depth: light is shallow, dark is deep. Flow: hue is direction, brightness speed. Waves: red above vanilla water, blue below, foam white."));
-	}
-
-	ImGui::End();
-}
-
-bool FluidField::IsOverlayVisible() const
-{
-	return showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews;
 }
 
 #undef I18N_KEY_PREFIX
@@ -432,13 +232,9 @@ FluidField::Settings FluidField::Sanitize(Settings a_settings)
 	a_settings.GridSize = std::isfinite(a_settings.GridSize) ? std::clamp(a_settings.GridSize, MIN_GRID_SIZE, MAX_GRID_SIZE) : defaults.GridSize;
 	a_settings.JacobiIterations = std::clamp(a_settings.JacobiIterations, MIN_JACOBI_ITERATIONS, MAX_JACOBI_ITERATIONS);
 	a_settings.WindDamping = std::isfinite(a_settings.WindDamping) ? std::clamp(a_settings.WindDamping, 0.0f, 5.0f) : defaults.WindDamping;
-	a_settings.TestPuffStrength = std::isfinite(a_settings.TestPuffStrength) ? std::clamp(a_settings.TestPuffStrength, 0.0f, 5000.0f) : defaults.TestPuffStrength;
-	a_settings.TestPuffRadius = std::isfinite(a_settings.TestPuffRadius) ? std::clamp(a_settings.TestPuffRadius, 16.0f, 2048.0f) : defaults.TestPuffRadius;
 	a_settings.RaysPerFrame = std::clamp(a_settings.RaysPerFrame, MIN_RAYS_PER_FRAME, MAX_RAYS_PER_FRAME);
 	a_settings.RaySpacing = std::isfinite(a_settings.RaySpacing) ? std::clamp(a_settings.RaySpacing, MIN_RAY_SPACING, MAX_RAY_SPACING) : defaults.RaySpacing;
 	a_settings.WakeStrength = std::isfinite(a_settings.WakeStrength) ? std::clamp(a_settings.WakeStrength, 0.0f, 3.0f) : defaults.WakeStrength;
-	a_settings.TestCurrentSpeed = std::isfinite(a_settings.TestCurrentSpeed) ? std::clamp(a_settings.TestCurrentSpeed, 0.0f, 400.0f) : defaults.TestCurrentSpeed;
-	a_settings.TestCurrentAngle = std::isfinite(a_settings.TestCurrentAngle) ? std::clamp(a_settings.TestCurrentAngle, 0.0f, 360.0f) : defaults.TestCurrentAngle;
 
 	if (std::ranges::find(GRID_RESOLUTIONS, a_settings.WaterResolution) == GRID_RESOLUTIONS.end())
 		a_settings.WaterResolution = defaults.WaterResolution;
@@ -532,7 +328,6 @@ bool FluidField::EnsureSolver()
 		}
 		// New textures hold undefined data
 		queuedReset = true;
-		hasDebugViews = false;
 	}
 
 	if (!solver.HasShaders()) {
@@ -561,8 +356,6 @@ void FluidField::ClearDepthMap()
 		bedRays.Clear();
 	if (meshCut.GetFineSpacing() > 0.0f)
 		meshCut.Clear();
-	if (depthView.HasImages())
-		depthView.Release();
 }
 
 void FluidField::ReleaseSolver()
@@ -570,7 +363,6 @@ void FluidField::ReleaseSolver()
 	solver.ReleaseResources();
 	solver.ReleaseShaders();
 	lastCellSize = 0.0f;
-	hasDebugViews = false;
 }
 
 void FluidField::Prepass()
@@ -602,7 +394,7 @@ void FluidField::Prepass()
 	if (!player)
 		return;
 
-	if (settings.DepthMapEnabled || settings.WaterEnabled || settings.InteractiveFog) {
+	if (settings.WaterEnabled || settings.InteractiveFog) {
 		if (queuedLandscapeClear.exchange(false)) {
 			landscape.Clear();
 			water.Clear();
@@ -612,13 +404,13 @@ void FluidField::Prepass()
 		{
 			ZoneScopedN("FluidField - Landscape Cache");
 			globals::profiler->BeginPass("FluidField::Landscape Cache");
-			landscape.Update(settings.VerifyLandscape);
+			landscape.Update();
 			globals::profiler->EndPass();
 		}
 		{
 			ZoneScopedN("FluidField - Water Surfaces");
 			globals::profiler->BeginPass("FluidField::Water Surfaces");
-			water.Update(settings.VerifyWater);
+			water.Update();
 			globals::profiler->EndPass();
 		}
 		const auto playerPos = player->GetPosition();
@@ -626,7 +418,7 @@ void FluidField::Prepass()
 		if (settings.MeshCutObstacles) {
 			ZoneScopedN("FluidField - Mesh Cut");
 			globals::profiler->BeginPass("FluidField::Mesh Cut");
-			meshCut.Update(water, GetObstacleSpacing(), settings.LogDepthMap);
+			meshCut.Update(water, GetObstacleSpacing());
 			globals::profiler->EndPass();
 			// Nobody else consumes the changed blocks while the water is off
 			if (!settings.WaterEnabled)
@@ -637,22 +429,13 @@ void FluidField::Prepass()
 		if (settings.RaycastBed) {
 			ZoneScopedN("FluidField - Bed Raycasts");
 			globals::profiler->BeginPass("FluidField::Bed Raycasts");
-			bedRays.Update(landscape, water, playerPos.x, playerPos.y, settings.WaterSize, settings.RaySpacing, settings.RaysPerFrame, settings.LogDepthMap);
+			bedRays.Update(landscape, water, playerPos.x, playerPos.y, settings.WaterSize, settings.RaySpacing, settings.RaysPerFrame);
 			globals::profiler->EndPass();
 			// Nobody else consumes the refined blocks while the water is off
 			if (!settings.WaterEnabled)
 				bedRays.TakeDirtyBlocks();
 		} else if (bedRays.GetSampleCount() > 0) {
 			bedRays.Clear();
-		}
-		if (showDebugOverlay) {
-			ZoneScopedN("FluidField - Depth Map View");
-			globals::profiler->BeginPass("FluidField::Depth Map View");
-			depthView.Update(globals::d3d::context, landscape, water, settings.RaycastBed ? &bedRays : nullptr, settings.MeshCutObstacles ? &meshCut : nullptr,
-				playerPos.x, playerPos.y, playerPos.z, settings.WaterSize);
-			globals::profiler->EndPass();
-		} else if (depthView.HasImages()) {
-			depthView.Release();
 		}
 	} else {
 		ClearDepthMap();
@@ -705,26 +488,11 @@ void FluidField::Prepass()
 		static_cast<int32_t>(std::floor(playerPos.y / cellSize)) - halfRes
 	};
 
-	// Test puff: a gust on the player, blowing the way they face (heading 0 is +Y, north)
-	std::optional<FluidFieldSim::Emitter> testPuff;
-	if (std::exchange(queuedTestPuff, false)) {
-		const float heading = player->GetAngleZ();
-		testPuff = FluidFieldSim::Emitter{
-			.position = { playerPos.x / cellSize - static_cast<float>(gridMin[0]), playerPos.y / cellSize - static_cast<float>(gridMin[1]) },
-			.radius = settings.TestPuffRadius / cellSize,
-			.pad0 = 0.0f,
-			.velocity = { std::sin(heading) * settings.TestPuffStrength, std::cos(heading) * settings.TestPuffStrength },
-			.pad1 = {}
-		};
-	}
-
-	// Moving actors push the air (D21), leaving the test puff a slot
+	// Moving actors push the air (D21), one slot short of the most
 	std::vector<FluidFieldSim::Emitter> windEmitters;
 	if (settings.InteractiveFog) {
 		windEmitters = airSources.Update(playerPos, gridMin, cellSize, settings.GridResolution, deltaTime, settings.FogStir, FluidFieldSim::WindSolver::MAX_EMITTERS - 1);
 	}
-	if (testPuff)
-		windEmitters.push_back(*testPuff);
 
 	// The fog: carried by the wind and the weather's own wind, refilling behind actors
 	const FluidFieldSim::FogParams* fog = nullptr;
@@ -772,18 +540,6 @@ void FluidField::Prepass()
 		});
 	}
 
-	lastGridMin[0] = gridMin[0];
-	lastGridMin[1] = gridMin[1];
-	if (settings.LogDepthMap && fog) {
-		if (fogLogCountdown == 0) {
-			logger::info("[Fluid Field] Ground fog: {} draw(s) last frame into colour/depth {}", fogDrawsThisFrame, fogDrawTargets);
-			fogLogCountdown = 120;
-		} else {
-			fogLogCountdown--;
-		}
-	}
-	fogDrawsThisFrame = 0;
-	fogDrawTargets.clear();
 	fogReady = false;
 	if (fog) {
 		// The ground the fog lies on, under the wind grid
@@ -799,11 +555,6 @@ void FluidField::Prepass()
 	} else {
 		groundHeight.Release();
 	}
-	lastPlayerTexel[0] = playerPos.x / cellSize - static_cast<float>(gridMin[0]);
-	lastPlayerTexel[1] = playerPos.y / cellSize - static_cast<float>(gridMin[1]);
-	lastHeading = player->GetAngleZ();
-	lastPlayerPos[0] = playerPos.x;
-	lastPlayerPos[1] = playerPos.y;
 
 	if (settings.WaterEnabled) {
 		ZoneScopedN("FluidField - Water Step");
@@ -830,7 +581,7 @@ void FluidField::Prepass()
 		}
 		if (settings.Waterfalls) {
 			// Waterfall sites reconstructed from vanilla's layout (D25)
-			fallSites.SetConsoleSummary(showFallSites);
+			fallSites.SetExportSiteInputs(settings.ExportSiteInputs);
 			// Vanilla's pieces at the cached sites hide while our pass draws their falls
 			if (!RefractiveFallsActive())
 				fallsShown = false;
@@ -858,17 +609,6 @@ void FluidField::Prepass()
 		}
 	} else {
 		ReleaseWater();
-	}
-
-	if (showDebugOverlay) {
-		ZoneScopedN("FluidField - Debug View");
-		TracyD3D11Zone(state->tracyCtx, "FluidField - Debug View");
-		globals::profiler->BeginPass("FluidField::Debug View");
-		solver.RenderDebugViews(context, { .velocity = 1.0f / debugVelocityRange, .divergence = 1.0f / debugDivergenceRange, .pressure = 1.0f / debugPressureRange });
-		if (settings.WaterEnabled)
-			nearWater.solver.RenderDebugViews(context, {});
-		globals::profiler->EndPass();
-		hasDebugViews = true;
 	}
 }
 
@@ -1065,7 +805,6 @@ FluidField::WaterShaderData FluidField::GetCommonBufferData() const
 	WaterShaderData data = waterShaderData;
 	data.WaterTint = settings.WaterTint;
 	data.Fade = waterFade;
-	data.DebugView = static_cast<uint32_t>(waterDebugView);
 	return data;
 }
 
@@ -1079,7 +818,7 @@ void FluidField::DrawGroundFogAfterWorld()
 	if (!renderer)
 		return;
 
-	// D91: the refractive falls, over the finished world (water included) and under their spray
+	// D91: the see-through falls, over the finished world (water included)
 	if (RefractiveFallsActive() && cameraSnapshot) {
 		const auto& shadow = globals::game::shadowState->GetRuntimeData();
 		const auto colorIndex = static_cast<uint32_t>(shadow.renderTargets[0]);
@@ -1104,10 +843,6 @@ void FluidField::DrawGroundFogAfterWorld()
 
 	if (!settings.InteractiveFog || !fogReady)
 		return;
-	if (fogDebugMode == FOG_DEBUG_BEFORE_WATER)
-		return;  // Drawn from the deferred passes instead
-	if (!renderer)
-		return;
 	// The targets the world was just rendered into; not always kMAIN, so the fog follows whatever is bound
 	const auto& shadow = globals::game::shadowState->GetRuntimeData();
 	const auto colorIndex = static_cast<uint32_t>(shadow.renderTargets[0]);
@@ -1119,17 +854,13 @@ void FluidField::DrawGroundFogAfterWorld()
 	if (!main.UAV || !depth.depthSRV)
 		return;
 
-	fogDrawsThisFrame++;
-	if (settings.LogDepthMap)
-		fogDrawTargets += std::format("{}/{} ", colorIndex, depthIndex);
-
 	// The live depth holds the water surfaces; it can only be read once it is no longer bound
 	globals::d3d::context->OMSetRenderTargets(0, nullptr, nullptr);
-	DrawGroundFog(main.UAV, fogDebugMode == FOG_DEBUG_PREWATER_DEPTH ? Util::GetCurrentSceneDepthSRV(false) : depth.depthSRV);
+	DrawGroundFog(main.UAV, depth.depthSRV);
 	globals::game::shadowState->GetRuntimeData().stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
 }
 
-void FluidField::DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main)
+void FluidField::DrawGroundFogBeforeWater()
 {
 	if (!loaded || !settings.Enabled)
 		return;
@@ -1153,8 +884,6 @@ void FluidField::DrawGroundFogBeforeWater(ID3D11UnorderedAccessView* a_main)
 	// D159: release last frame's river capture views before this frame's capture
 	for (auto& capture : riverCaptures | std::views::values)
 		capture.ReleaseViews();
-	if (fogDebugMode == FOG_DEBUG_BEFORE_WATER && settings.InteractiveFog && fogReady)
-		DrawGroundFog(a_main, Util::GetCurrentSceneDepthSRV(false));
 	// D123: the scene before the water, for the see-through falls to refract
 	if (RefractiveFallsActive() && globals::game::renderer) {
 		auto& main = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
@@ -1199,7 +928,7 @@ void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderRe
 		.groundRes = FOG_GROUND_RESOLUTION,
 		.groundCellSize = FOG_GROUND_CELL,
 		.patternOffset = { fogPatternOffset[0], fogPatternOffset[1] },
-		.debugMode = static_cast<uint32_t>(fogDebugMode),
+		.debugMode = 0,
 		.pad = 0.0f
 	};
 	D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -1213,7 +942,7 @@ void FluidField::DrawGroundFog(ID3D11UnorderedAccessView* a_main, ID3D11ShaderRe
 	ID3D11ShaderResourceView* srvs[] = { a_depth, solver.GetFogSRV(), groundHeight.GetSRV(), solver.GetVelocitySRV() };
 	context->CSSetConstantBuffers(0, 1, &cb);
 	// Bind the camera (b12) and shared/feature data (b5, b6) explicitly: earlier passes unbind or replace them
-	ID3D11Buffer* perFrame = cameraSnapshot && fogDebugMode != FOG_DEBUG_LIVE_CAMERA ? cameraSnapshot.get() : *globals::game::perFrame;
+	ID3D11Buffer* perFrame = cameraSnapshot ? cameraSnapshot.get() : *globals::game::perFrame;
 	context->CSSetConstantBuffers(12, 1, &perFrame);
 	ID3D11Buffer* sharedBuffers[2]{ globals::state->sharedDataCB->CB(), globals::state->featureDataCB->CB() };
 	context->CSSetConstantBuffers(5, 2, sharedBuffers);
@@ -1346,9 +1075,6 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 			params.riverSpeed = settings.RiverSpeed;
 		}
 	}
-	const float currentHeading = settings.TestCurrentAngle * std::numbers::pi_v<float> / 180.0f;
-	params.current[0] = std::sin(currentHeading) * settings.TestCurrentSpeed;
-	params.current[1] = std::cos(currentHeading) * settings.TestCurrentSpeed;
 
 	// Short sub-steps keep waves on deep water stable
 	constexpr float MAX_SUBSTEP = 0.012f;
@@ -1519,10 +1245,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 	constexpr float half = 0.5f * FALL_GROUND_SIZE * FALL_GROUND_CELL;
 	const float dx = a_playerPos.x - (fallGroundOrigin[0] + half);
 	const float dy = a_playerPos.y - (fallGroundOrigin[1] + half);
-	const bool plungeTuned = plungeFoamBuilt[0] != plungeFoamBehind || plungeFoamBuilt[1] != plungeFoamRadius;  // D176: rebuilt live
-	if (plungeTuned || fallSites.GetGroundVersion() != fallGroundVersion || dx * dx + dy * dy >= FALL_GROUND_RECENTRE * FALL_GROUND_RECENTRE) {
-		plungeFoamBuilt[0] = plungeFoamBehind;
-		plungeFoamBuilt[1] = plungeFoamRadius;
+	if (fallSites.GetGroundVersion() != fallGroundVersion || dx * dx + dy * dy >= FALL_GROUND_RECENTRE * FALL_GROUND_RECENTRE) {
 		fallGroundVersion = fallSites.GetGroundVersion();
 		fallGroundOrigin[0] = std::floor((a_playerPos.x - half) / FALL_GROUND_CELL) * FALL_GROUND_CELL;
 		fallGroundOrigin[1] = std::floor((a_playerPos.y - half) / FALL_GROUND_CELL) * FALL_GROUND_CELL;
@@ -1535,7 +1258,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		}
 		context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, interleaved.data(), FALL_GROUND_SIZE * 2 * sizeof(float), 0);
 		if (fallPlungeTexture) {
-			fallSites.BuildPlungeMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallPlungeScratch, plungeFoamBehind, plungeFoamRadius);
+			fallSites.BuildPlungeMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallPlungeScratch);
 			std::vector<uint16_t> halves(fallPlungeScratch.size());
 			for (std::size_t i = 0; i < halves.size(); i++)
 				halves[i] = DirectX::PackedVector::XMConvertFloatToHalf(fallPlungeScratch[i]);
@@ -1550,7 +1273,7 @@ void FluidField::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		}
 	}
 	fallGroundData = { { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u,
-		static_cast<uint32_t>(std::clamp(settings.WaterfallDebug, 0, 5)), fallSurfaceTime, FALL_POOL_FOAM, {}, {}, {}, settings.FallWhitening ? 1u : 0u, UINT32_MAX,
+		0u, fallSurfaceTime, FALL_POOL_FOAM, {}, {}, {}, settings.FallWhitening ? 1u : 0u, UINT32_MAX,
 		settings.HideUnderwaterFalls ? 1u : 0u, { 1.0f, 1.0f }, 0u, {}, {} };
 	fallGroundData.AerationLook[0] = settings.FallFoamStart;
 	fallGroundData.AerationLook[1] = settings.FallAerationFoam;

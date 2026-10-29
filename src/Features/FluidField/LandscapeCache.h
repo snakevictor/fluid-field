@@ -10,7 +10,7 @@ namespace FluidFieldSim
 	 * @brief CPU copy of the loaded exterior cells' landscape heights; the depth map's riverbed source (R1, D7 stage 1).
 	 *
 	 * Copied once when a cell attaches, dropped when it leaves. Stored heights are cell-relative; adding
-	 * `heightExtents.x - min(heights)` makes them world heights (`Verify` checks against `TES::GetLandHeight`).
+	 * `heightExtents.x - min(heights)` makes them world heights.
 	 */
 	class LandscapeCache
 	{
@@ -29,23 +29,11 @@ namespace FluidFieldSim
 			float anchor = 0.0f;
 		};
 
-		/** @brief Result of comparing cached heights with the engine's own height query. */
-		struct VerifyStats
-		{
-			uint32_t cellsChecked = 0;
-			uint32_t samplesChecked = 0;
-			uint32_t samplesMissed = 0;         ///< Engine query returned no height
-			float maxVertexError = 0.0f;        ///< Cached world height at a vertex vs the engine
-			float maxInterpolatedError = 0.0f;  ///< Bilinear sample between vertices vs the engine's triangles
-			float maxAbsAnchor = 0.0f;          ///< Largest relative-to-world offset seen
-		};
-
 		/**
 		 * @brief Polls the engine's loaded grid and copies newly attached cells.
-		 * @param a_verify Check each new cell against `TES::GetLandHeight` and log it.
 		 * Main thread only (reads the engine's cell grid).
 		 */
-		void Update(bool a_verify);
+		void Update();
 
 		/** @brief Drops every cached cell; the next update copies the loaded grid again. */
 		void Clear();
@@ -61,15 +49,8 @@ namespace FluidFieldSim
 
 		std::size_t GetCellCount() const { return cells.size(); }
 
-		/** @brief D172: a copy of the cells over a world area, for a worker (the cache changes each frame). */
-		LandscapeCache Subset(float a_minX, float a_minY, float a_maxX, float a_maxY) const;
-		const VerifyStats& GetVerifyStats() const { return verifyStats; }
-
 	private:
-		void Verify(const Cell& a_cell);
-
 		std::unordered_map<uint64_t, Cell> cells;
 		const void* worldSpace = nullptr;  ///< Identity only; never dereferenced
-		VerifyStats verifyStats;
 	};
 }

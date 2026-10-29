@@ -12,10 +12,8 @@ namespace FluidFieldSim::FallStrands
 	struct Input
 	{
 		uint32_t width = 0, height = 0;
-		float texelV = 0.0f;              ///< Texture v per row
 		const float* position = nullptr;  ///< World x, y, z per texel (RE::NiPoint3's layout)
 		const uint8_t* covered = nullptr;
-		const uint8_t* rock = nullptr;
 	};
 
 	/**

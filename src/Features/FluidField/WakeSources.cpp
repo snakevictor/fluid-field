@@ -41,14 +41,12 @@ namespace FluidFieldSim
 	{
 		history.clear();
 		emitters.clear();
-		wakeCount = splashCount = 0;
 	}
 
 	const std::vector<WaterEmitter>& WakeSources::Update(const WaterSurfaces& a_water, const RE::NiPoint3& a_playerPos, const int32_t a_gridMin[2],
 		float a_cellSize, uint32_t a_gridRes, float a_deltaTime, const Settings& a_settings)
 	{
 		emitters.clear();
-		wakeCount = splashCount = 0;
 		updateCounter++;
 		if (!(a_deltaTime > 0.0f) || !(a_cellSize > 0.0f))
 			return emitters;
@@ -110,7 +108,6 @@ namespace FluidFieldSim
 					.depthRate = -push / a_deltaTime,  // Spread over this frame's sub-steps
 					.velocity = { velocity.x, velocity.y },
 					.pad1 = {} });
-				splashCount++;
 				continue;
 			}
 
@@ -123,7 +120,6 @@ namespace FluidFieldSim
 				.depthRate = 0.0f,
 				.velocity = { velocity.x * a_settings.wakeStrength, velocity.y * a_settings.wakeStrength },
 				.pad1 = {} });
-			wakeCount++;
 		}
 
 		for (auto it = history.begin(); it != history.end();) {

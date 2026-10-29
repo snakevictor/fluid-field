@@ -80,7 +80,7 @@ namespace FluidFieldSim
 		struct Site
 		{
 			uint32_t id;
-			std::vector<uint32_t> members;  ///< Indices into GetRefs()
+			std::vector<uint32_t> members;  ///< Indices into refs
 			uint32_t classCounts[static_cast<int>(FxClass::Count)]{};
 			float min[3];  ///< Bounds of every member
 			float max[3];
@@ -107,12 +107,10 @@ namespace FluidFieldSim
 
 		/** @brief Rescans every few updates; rebuilds the sites when the references or water changed. */
 		void Update(const WaterSurfaces& a_water);
-		/** @brief D172: Fluid Field's landscape height cache; dense copies are cut under it and the rock test reads it. */
+		/** @brief D172: Fluid Field's landscape height cache; the rock test reads it. */
 		void SetLandscape(const LandscapeCache* a_landscape) { landscape = a_landscape; }
 		void Clear();
 
-		const std::vector<FxRef>& GetRefs() const { return refs; }
-		const std::vector<Site>& GetSites() const { return sites; }
 		/** @brief A site's ground capture; null for rapids and failed sites. */
 		const FallCapture* GetCapture(const Site& a_site) const;
 		/** @brief Counts for the menu: ground captures complete, and in all. */
@@ -205,9 +203,6 @@ namespace FluidFieldSim
 		static Layer LayerOf(RE::BSGeometry* a_geometry);
 		static constexpr float NO_SURFACE = -1.0e7f;
 
-		/** @brief Counts for the menu: sites by kind. */
-		uint32_t CountKind(Kind a_kind) const;
-
 		/**
 		 * @brief D36: per ground-map texel (a_cell must be FallCapture::CELL), the highest pool over it (ComputePools), else
 		 * FallCapture::NONE. Falling water under it is hidden.
@@ -224,8 +219,8 @@ namespace FluidFieldSim
 		void BuildLipMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field) const;
 		mutable std::size_t loggedLips = SIZE_MAX;  ///< D170: the lip count last logged
 
-		/** @brief Prints each cell's summary to the game console too, not only the log. */
-		void SetConsoleSummary(bool a_print) { consoleSummary = a_print; }
+		/** @brief Writes each cached site's sheets, statics, landscape and captured rock next to the log, for tools/unify. */
+		void SetExportSiteInputs(bool a_on) { exportSiteInputs = a_on; }
 
 		static constexpr float CLUSTER_RADIUS = 512.0f;
 		static constexpr float RAPIDS_CLUSTER_RADIUS = 128.0f;  ///< Rapids and splashes away from any fall cluster only this close
@@ -253,7 +248,7 @@ namespace FluidFieldSim
 		uint64_t refSignature = 0;
 		uint64_t waterSignature = 0;
 		uint32_t updatesUntilScan = 0;
-		bool consoleSummary = false;
+		bool exportSiteInputs = false;
 		std::unordered_map<uint64_t, std::string> cellSummaries;  ///< Last summary logged per cell
 		std::unordered_map<uint64_t, FallCapture> captures;       ///< By Site::captureKey
 		std::unordered_set<const RE::BSGeometry*> grounded;
@@ -284,8 +279,6 @@ namespace FluidFieldSim
 			float submerged = NO_CUT;  ///< D126: CullStep: LEAD_CUT_DEPTH or more under our pools' water near the bed (a river over a lead-in)
 			float rock = NO_CUT;       ///< D131: BuryStep: BURY_LAND under the landscape, or BURY_MARGIN inside a static (parity); in a.x
 			float island = NO_CUT;     ///< D138: CleanupSheet: a small kept piece cut off from its sheet's main body; in a.x
-			uint8_t rockCause = 0;     ///< D138: 1 the landscape cut it, 2 a static (for the log)
-			uint8_t votes = 0;         ///< D138: axes that called it inside a static
 			float ground = -FLT_MAX;   ///< D126: BuryStep: the landscape's height under it (-FLT_MAX: none, or an interior)
 			uint8_t buried = 0;        ///< BuryStep: under the landscape, or no ray from open air reaches it (not in a.x)
 		};
@@ -304,27 +297,8 @@ namespace FluidFieldSim
 		 * the bake and every emitter.
 		 */
 		bool VertexInShell(std::size_t a_index) const;
-		/** @brief D131: what LandHeightAt's ray met, for the log. */
-		struct LandProbe
-		{
-			int steps = 0;
-			uint32_t firstLayer = 0;
-			bool firstReferenced = false;
-			float firstHeight = 0.0f;
-			float engine = 0.0f;  ///< D138: TES::GetLandHeight where the ray stopped
-			int disagreed = 0;    ///< D138: unreferenced ground-layer hits passed by, the engine's height elsewhere
-		};
-		/** @brief D126: the landscape height under a point (its collision, straight down from a_above, past all else), or -FLT_MAX. */
-		float LandHeightAt(RE::hkpWorld* a_world, float a_x, float a_y, float a_above, LandProbe* a_probe = nullptr, float a_engineHeight = std::numeric_limits<float>::quiet_NaN()) const;
-		struct StaticHit
-		{
-			float distance = 0.0f;  ///< Along the ray from its start
-			float facing = 0.0f;    ///< D138: the face's normal along the ray (negative: its front)
-		};
-		/** @brief D131: appends where a ray meets static faces (stepping past each) to a_hits. */
-		void StaticHits(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, std::vector<StaticHit>& a_hits) const;
 		/**
-		 * @brief D126: VertexInShell rasterised onto a bake's texel grid (as StartBake does), 1 where kept; empty if the mesh has
+		 * @brief D126: VertexInShell rasterised onto a bake's texel grid, 1 where kept; empty if the mesh has
 		 * no culling yet. a_hash, if given, gets a hash of the kept vertices (part of the bake cache key).
 		 */
 		std::vector<uint8_t> ShellTexels(RE::BSGeometry* a_geometry, uint32_t a_width, uint32_t a_height, const float a_uvMin[2], const float a_uvSize[2], uint64_t* a_hash) const;
@@ -350,9 +324,6 @@ namespace FluidFieldSim
 		static constexpr float BURY_REACH = 1000.0f;        ///< D112: burial ray reach (D131: parity rays end outside big cliffs)
 		static constexpr float BURY_MARGIN = 24.0f;         ///< D112: shallower rock does not bury (sheets dip into it)
 		static constexpr float BURY_LAND = 24.0f;           ///< D126: this far under the land is buried (D143: runs dip in)
-		static constexpr float LAND_AGREE = 16.0f;          ///< D138: a ground hit counts as the landscape only within this of TES::GetLandHeight there
-		static constexpr float LAND_RAY_ABOVE = 4000.0f;    ///< D126: the landscape ray starts this far over the point...
-		static constexpr float LAND_RAY_DROP = 20000.0f;    ///< D126: ...and looks this far down
 		static constexpr float SUBMERGED_DEPTH = 48.0f;     ///< D157: a vertex this far under the river's water (and on its bed) is in the river
 		static constexpr float SUBMERGED_BED = 16.0f;       ///< D126, D157: this near the land under our pools is in the river
 		static constexpr float SUBMERGED_COLUMN = 256.0f;   ///< D131: water planes this near the land count as a river
@@ -545,22 +516,16 @@ namespace FluidFieldSim
 		static constexpr float SOURCE_DEPTH_MOST = 240.0f;    ///< D138: the most a water plane may lie over a falls vertex and still be the water it pours out of
 		static constexpr float CREST_RISE = 64.0f;            ///< D174: the most a vertex on a mesh's upper half may stand over the water it pours out of (the crest's bulge)
 		static constexpr float SOURCE_REACH = 96.0f;          ///< D124: world units past a water plane's bound a falls vertex still counts as pouring out of it (the lip leans out over the edge)
-		static constexpr float CLIP_REACH = 240.0f;           ///< D56: world units each ray out of a vertex looks for rock
 		static constexpr float CLIP_MARGIN = 6.0f;            ///< A vertex this far inside rock still shows (water lying on it)
 		static constexpr float CLIP_RANGE = 32.0f;            ///< The most a vertex counts as in or out, so the cut stays near the rock's face
 		static constexpr double CLIP_BUDGET_MS = 3.0;
-		static constexpr float BAKE_TEXEL = 8.0f;          ///< D59: world units per bake texel (D181, D183: steps vs cost)
-		static constexpr uint32_t BAKE_MOST_SIDE = 512;    ///< ...and the most texels along a side (D181, D183; unified falls: a whole site)
-		static constexpr float BAKE_ROCK_MARGIN = 24.0f;   ///< A texel this far inside rock is still water (vanilla's sheets dip into the rock they lie on)
-		static constexpr double BAKE_BUDGET_MS = 5.0;      ///< D185: bake work per frame, ms (its rock tests set a cold load's pace)
-		static constexpr float CLEAR_AGREE = 16.0f;        ///< D185: tested neighbours' clearances this close agree: the texels between take their mean
-		static constexpr std::size_t BAKE_LEAST_ROCK = 6;  ///< D60: rock islands of this many texels or fewer are specks, taken as water
-		static constexpr float SIM_GRAVITY = 686.0f;       ///< D74: world units per second squared (Skyrim's)
-		static constexpr float SIM_INFLOW = 250.0f;        ///< D74: world units per second the water comes onto a mesh's top at
-		static constexpr float SIM_TERMINAL = 900.0f;      ///< D74: world units per second sliding water tends to (its drag)
+		static constexpr uint32_t BAKE_MOST_SIDE = 512;  ///< ...and the most texels along a side (D181, D183; unified falls: a whole site)
+		static constexpr float SIM_GRAVITY = 686.0f;     ///< D74: world units per second squared (Skyrim's)
+		static constexpr float SIM_INFLOW = 250.0f;      ///< D74: world units per second the water comes onto a mesh's top at
+		static constexpr float SIM_TERMINAL = 900.0f;    ///< D74: world units per second sliding water tends to (its drag)
 		/**
 		 * @brief Unified falls: a site's precomputed sheet (tools/unify, offline: one continuous surface for all its falls meshes,
-		 * rock never cutting it), from FluidField/Sites/*.unfs, drawn in place of its members' lit meshes and their dense copies.
+		 * rock never cutting it), from FluidField/Sites/*.unfs, drawn in place of its members' lit meshes.
 		 */
 		struct BakeField;
 		struct UnifiedCache
@@ -631,7 +596,6 @@ namespace FluidFieldSim
 		static constexpr float TANGENT_KEEP_FALLEN = 60.0f;   ///< D190: a mesh carries on its feeder's tangent while its water comes in with this much fallen recently (calmer: its own)
 		static constexpr uint32_t BAKE_CACHE_VERSION = 26;    ///< D82: bump whenever a bake would come out different (bumped in D85, D91, D104, D126, D132, D181, D183, D185, D186, D188-D190, D192)
 		static constexpr float CLEAR_REACH = 600.0f;          ///< D104: world units the clearance rays look for rock
-		static constexpr float CLEAR_START = 40.0f;           ///< D105: the clearance rays start this far off the other side of the sheet
 		/** @brief D82: where a bake job's finished bake is kept on disk: by its reference, model part, placement, the rock and ground round it, and the version. */
 		static std::shared_ptr<BakeField> LoadBake(const std::filesystem::path& a_path);
 		/**
@@ -642,8 +606,6 @@ namespace FluidFieldSim
 		static constexpr float PUSH_MOST = 20.0f;                     ///< D82: world units the water swells out at most (D83)
 		static constexpr float PUSH_FROM = 1.0f;                      ///< D82: swell the push starts at (the sheet mostly runs 0 to 2.5)...
 		static constexpr float PUSH_FULL = 3.0f;                      ///< D82: ...and is whole at (piling against or squeezing between rocks: 5 to 20; D83)
-		static constexpr int32_t LEAD_TEST_REACH = 12;                ///< D83: hidden lead-in texels this far across from running water still get the rock test
-		static constexpr int PUSH_BLUR = 2;                           ///< D82: passes softening the swell (D84: few: steeper, rounder mounds)
 		static constexpr float WOBBLE_MOST = 28.0f;                   ///< D85: world units the water wobbles at most, where most stirred (D90)...
 		static constexpr float WOBBLE_CALM = 10.0f;                   ///< D85: ...and everywhere else (its breathing; D90)
 		static constexpr float WOBBLE_STIRRED = 1.5f;                 ///< D85: disturbance at which the wobble is whole
@@ -658,10 +620,6 @@ namespace FluidFieldSim
 		static constexpr float TURB_WOBBLE = 40.0f;                   ///< World units more wobble where wholly turbulent...
 		static constexpr float TURB_PUSH = 15.0f;                     ///< ...and swell outward
 		static constexpr float TURB_EDGE_SHARE = 0.4f;                ///< Share of WOBBLE_EDGE_REACH over which that fades toward rock and the edges
-		static constexpr int FLATTEN_PASSES = 200;                    ///< A unified sheet: passes smoothing its drawn surface, the shape its lobes' bulges are pulled toward...
-		static constexpr float FLATTEN_SHARE = 0.0f;                  ///< ...how much of the way...
-		static constexpr float FLATTEN_MOST = 60.0f;                  ///< ...and the most, world units (only inward, only where it faces up: BOUNCE_FACING)
-		static constexpr float FLATTEN_BELOW[2] = { 0.35f, 0.55f };   ///< ...and only below this share of the sheet's height (fading over it)
 		static constexpr float WOBBLE_CRASH = 36.0f;                  ///< D191: world units more where a plunge crashes white (the bake's progress down its fall)
 		static constexpr float WOBBLE_CRASH_FROM = 0.25f;             ///< D191: the fall's progress where that starts...
 		static constexpr float WOBBLE_CRASH_FULL = 0.7f;              ///< D191: ...and where it is whole
@@ -713,79 +671,37 @@ namespace FluidFieldSim
 		static constexpr float LINK_REACH = 48.0f;  ///< D67: world units a mesh's top edge may lie from the mesh feeding it
 		static constexpr int32_t LINK_ROWS = 10;    ///< D67: texel rows up from a mesh's bottom edge that may feed the next
 		std::unordered_map<const RE::BSGeometry*, FlowBake> flowBakes;
-		static constexpr int32_t PLUNGE_ABOVE = 3;        ///< D188: texels up the flow the water is looked at for a drop onto a texel
-		static constexpr float PLUNGE_FAST = 2.0f;        ///< D188: baked speed (D192: x 300 world units/s) at which it lands hardest
 		static constexpr float PLUNGE_LEVEL = 0.9f;       ///< D190: a landing only where the sheet's normal's upright part is under this (falling into the pool, not lying on it)
 		static constexpr float PLUNGE_LEVEL_EASE = 0.3f;  ///< D190: eased in over this much of it
 		static constexpr float PLUNGE_CARRY = 0.9f;       ///< D188: the landing foam carried on per texel (D189: up the sheet from the waterline, 8 units a texel)
 		static constexpr int PLUNGE_WIDEN = 2;            ///< D189: texels the waterline's impact is widened by each way before it is softened
-		static constexpr float MEET_LOCAL = 48.0f;        ///< D188: world units round a seam point its seam's run is judged over...
-		static constexpr float MEET_LEVEL = 0.6f;         ///< D189: a meeting's water surface level enough to land on (its normal's up), mist there...
-		static constexpr int MEET_WAY_ROWS = 3;           ///< D189: texels either side its water's way at a meeting is measured over...
-		static constexpr float MEET_POUR = 0.5f;          ///< D189: ...a landing where it runs into the other sheet's surface this much (cosine; along it: side by side)
-		static constexpr float MEET_FOOT_LEVEL = 0.3f;    ///< D189: ...or this, at the foot of a steeper stretch (no meeting point lower nearby)
-		static constexpr float MEET_FOOT_DROP = 16.0f;    ///< D188: a steep stretch's point with no seam point this much lower nearby is its foot
 		uint64_t flowBakeVersion = 0;
 		/** @brief D67: links the bakes on a worker once they are in. */
 		void BakeStep();
-		bool linkDue = false;                         ///< D83: a bake landed since the last link
-		std::unordered_set<std::string> loggedParts;  ///< Diagnostics: falling-water mesh parts already logged
+		bool linkDue = false;  ///< D83: a bake landed since the last link
 
 		/**
 		 * @brief D78: from bakeFields, the plunge points where each mesh enters the water below (foot texels at or under it,
-		 * fed from above), grouped every PLUNGE_WATER_SPACING with the flow's way and fall speed; and spray emitters at the
-		 * plunges and rock strikes (the bake's foam). Rerun when bakes link, pools are found or meshes go.
+		 * fed from above), grouped every PLUNGE_WATER_SPACING with the flow's way and fall speed. Rerun when bakes link, pools
+		 * are found or meshes go.
 		 */
 		static constexpr float PLUNGE_BAND = 14.0f;           ///< A texel this near above the water below, or under it, is in it
 		static constexpr float PLUNGE_HEAD = 40.0f;           ///< Water that has fallen at least this far down its mesh plunges
 		static constexpr float PLUNGE_STEEP = 0.8f;           ///< Water this steep (upward normal) at the water's level plunges whatever its head (D46)
 		static constexpr float PLUNGE_WATER_SPACING = 24.0f;  ///< World units between the plunge points (their pushes on the simulated water)
-		static constexpr float OBSTACLE_FOAM = 0.6f;          ///< Rock foam at least this much throws spray
-		static constexpr float OBSTACLE_SPACING = 28.0f;
-		static constexpr float FALL_VIEW_RANGE = 2500.0f;    ///< World units round the camera the fall debug view draws (D36)
-		static constexpr float POOL_COVER = 2.0f;            ///< Water lying under a pool's surface by more than this is the pool's (D36)
-		static constexpr float POOL_BAND = 24.0f;            ///< D40: a pool's water is where vanilla's falling water lies at its level, within this...
-		static constexpr float TOP_POOL_CUT = 24.0f;         ///< D50: how much deeper the falls are cut under the pool they come from
-		static constexpr float POOL_SHALLOW = 160.0f;        ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
-		static constexpr int32_t POOL_LIP_REACH = 3;         ///< D53: cells round a pool's cell its falls are looked at: a fall dropping away below the level...
-		static constexpr float POOL_LIP_DROP = 48.0f;        ///< ...this far, with none coming in from above it, is the pool's lip or a curtain under it: not the pool's water
-		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;   ///< World units round each point where the falls meet the water below that it foams (D44, D47)
-		static constexpr float AERATED_SPRAY = 0.75f;        ///< D181: aeration from which water throws spray and mist (D182: not lower)
-		static constexpr float SPRAY_BURIED = 8.0f;          ///< D182: world units under the landscape past which a texel throws no spray
-		static constexpr float EMIT_PROUD = 4.0f;            ///< D183: world units off the drawn water an emitter sits
-		static constexpr float EMIT_SUBMERGED = 8.0f;        ///< D183: world units under another water surface a texel is hidden and throws nothing
-		static constexpr float EMIT_DEEP = 24.0f;            ///< D184: another sheet's shown water this far over an emitter: it is deep under it, none
-		static constexpr uint32_t SOURCE_LEAST_CRESTS = 4;   ///< D184: a mesh with this many columns' crests at a water's level pours out of it...
-		static constexpr float SOURCE_SHARE = 0.15f;         ///< D184: ...and at least this share of its columns'
-		static constexpr int32_t CREST_BAND_STEP = 3;        ///< D184: texels between the crest band's emitters upstream of a column's turn...
-		static constexpr int32_t CREST_BAND_ROWS = 24;       ///< D184: ...up to this many texels upstream of it
-		static constexpr float CREST_BAND_STRENGTH = 0.45f;  ///< D184: how much the band's emitters throw (on less often than the turn's)
-		static constexpr float CREST_FLAT = 0.995f;          ///< D186: the crest's band reaches upstream until the water faces this far up (flat)
-		static constexpr float MEET_LINE_CELL = 32.0f;       ///< D186: world units per cell the seams' points are joined into lines over
-		static constexpr float MEET_FOOT_BAND = 48.0f;       ///< D186: world units over a seam line's lowest point its water lands: mist there
-		static constexpr float MEET_CELL = 16.0f;            ///< D184: world units per cell of the shown water's grid (ComputePlunges)
-		static constexpr float MEET_EMIT = 12.0f;            ///< D184: another mesh's shown water this near a texel: the two sheets meet there (mist)
-		static constexpr float MEET_SPACING = 40.0f;         ///< D184: world units between the meeting mist emitters
-		static constexpr float MEET_STRENGTH = 0.85f;        ///< D184: how much a meeting throws
-		static constexpr float CREST_THROW = 300.0f;         ///< D184: world units a second the crests' spray leaves at least
-		static constexpr int32_t HEAD_ON_REACH = 3;          ///< D183: texels downstream rock must lie for the water to strike it head-on
-		static constexpr float STRIKE_FOAM = 0.65f;          ///< D183: rock foam a head-on strike needs (D186: more along a face)
-		static constexpr float STRIKE_SPACING = 28.0f;       ///< D183: world units between strike emitters (D186)
-		static constexpr float LIP_TANGENT = 0.94f;          ///< D183: past a crest, the first texel facing less up than this is where the flat water turns to fall (the crest's droplets)
-		static constexpr float SURFACE_CELL = 16.0f;         ///< D183: world units per cell of the meshes' surface grids (ComputePlunges)
-		static constexpr float OTHER_REACH = 400.0f;         ///< D183: world units above a point another mesh's water may lie and still cover it
-		static constexpr int32_t DROP_SEARCH = 48;           ///< D183: texels down from a crest the roll-over is looked for
-		static constexpr float DROP_SPACING = 32.0f;         ///< D183: world units between the droplet emitters past the crests
-		static constexpr float DROP_STRENGTH = 0.7f;
-		static constexpr float AERATED_SPACING = 96.0f;     ///< D181, D182: world units between the aerated spray emitters
-		static constexpr float PLUNGE_PUSH_OFFSET = 32.0f;  ///< D56: world units downstream of the falls' line the plunge pushes the water
-		static constexpr float PLUNGE_MARK = 0.001f;        ///< D56: radial speed marking a fall's emitter (its own foam rate) without spreading the water
-		static constexpr float PLUNGE_PULL = 0.2f;          ///< Fraction of the falling water's speed the water below is pulled along at
-		static constexpr float LIP_BAND = 40.0f;            ///< D90: a crest this near its pool's surface is a lip (D91)...
-		static constexpr float LIP_STRENGTH = 0.6f;         ///< D90: ...stirring it this much (a plunge's: 0.25 to 1; D91)
-		static constexpr float LIP_UPSTREAM = 40.0f;        ///< D92: world units upstream of the crest its foam is made
-		static constexpr float CROSSING_STRENGTH = 0.8f;    ///< D94: how hard the water foams where a mesh crosses a water surface (D100)...
-		static constexpr float CROSSING_BACK = 32.0f;       ///< D100: ...set back this far onto the water's side of the seam
+		static constexpr float POOL_COVER = 2.0f;             ///< Water lying under a pool's surface by more than this is the pool's (D36)
+		static constexpr float POOL_BAND = 24.0f;             ///< D40: a pool's water is where vanilla's falling water lies at its level, within this...
+		static constexpr float TOP_POOL_CUT = 24.0f;          ///< D50: how much deeper the falls are cut under the pool they come from
+		static constexpr float POOL_SHALLOW = 160.0f;         ///< ...or where the rock lies at most this far under it (a river or pool bed, not the face of a fall)
+		static constexpr int32_t POOL_LIP_REACH = 3;          ///< D53: cells round a pool's cell its falls are looked at: a fall dropping away below the level...
+		static constexpr float POOL_LIP_DROP = 48.0f;         ///< ...this far, with none coming in from above it, is the pool's lip or a curtain under it: not the pool's water
+		static constexpr float PLUNGE_FOAM_RADIUS = 64.0f;    ///< World units round each point where the falls meet the water below that it foams (D44, D47)
+		static constexpr float PLUNGE_PUSH_OFFSET = 32.0f;    ///< D56: world units downstream of the falls' line the plunge pushes the water
+		static constexpr float PLUNGE_MARK = 0.001f;          ///< D56: radial speed marking a fall's emitter (its own foam rate) without spreading the water
+		static constexpr float PLUNGE_PULL = 0.2f;            ///< Fraction of the falling water's speed the water below is pulled along at
+		static constexpr float LIP_BAND = 40.0f;              ///< D90: a crest this near its pool's surface is a lip (D91)...
+		static constexpr float CROSSING_STRENGTH = 0.8f;      ///< D94: how hard the water foams where a mesh crosses a water surface (D100)...
+		static constexpr float CROSSING_BACK = 32.0f;         ///< D100: ...set back this far onto the water's side of the seam
 		std::vector<FallPlunge> plungePoints;
 		const WaterSurfaces* waterSurfaces = nullptr;  ///< Set each update: the engine's water, for the pools' extent (D45). D172: waterCopy
 		WaterSurfaces waterCopy;                       ///< D172: the engine's water as Update last saw it with no worker running

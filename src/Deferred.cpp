@@ -417,7 +417,7 @@ void Deferred::DeferredPasses()
 		globals::features::effects11.DrawVolumetricRays();
 
 	if (globals::features::fluidField.loaded)
-		globals::features::fluidField.DrawGroundFogBeforeWater(main.UAV);
+		globals::features::fluidField.DrawGroundFogBeforeWater();
 }
 
 void Deferred::EndDeferred()

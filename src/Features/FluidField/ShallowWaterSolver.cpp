@@ -68,8 +68,6 @@ namespace FluidFieldSim
 		foam[1] = CreateLayer(device, a_resolution, DXGI_FORMAT_R16_FLOAT, name, "WaterFoam1");
 		map = CreateLayer(device, a_mapResolution, DXGI_FORMAT_R32G32B32A32_FLOAT, name, "WaterMap", false);
 		obstacles = CreateLayer(device, a_obstacleResolution, DXGI_FORMAT_R32G32B32A32_FLOAT, name, "WaterObstacles");
-		for (std::size_t i = 0; i < debugViews.size(); i++)
-			debugViews[i] = CreateLayer(device, a_resolution, DXGI_FORMAT_R8G8B8A8_UNORM, name, (std::string("DebugView") + DEBUG_VIEW_NAMES[i]).c_str());
 
 		D3D11_BUFFER_DESC cbDesc{
 			.ByteWidth = sizeof(GridConstants),
@@ -84,9 +82,6 @@ namespace FluidFieldSim
 		cbDesc.ByteWidth = sizeof(WaterConstants);
 		winrt::check_hresult(device->CreateBuffer(&cbDesc, nullptr, waterConstants.put()));
 		name(waterConstants.get(), "FluidField::WaterConstants");
-		cbDesc.ByteWidth = sizeof(DebugConstants);
-		winrt::check_hresult(device->CreateBuffer(&cbDesc, nullptr, debugConstants.put()));
-		name(debugConstants.get(), "FluidField::WaterDebugConstants");
 
 		D3D11_BUFFER_DESC emitterDesc{
 			.ByteWidth = sizeof(WaterEmitter) * MAX_EMITTERS,
@@ -122,7 +117,6 @@ namespace FluidFieldSim
 			{ &velocityCS, L"WaterVelocityCS.hlsl" },
 			{ &outputCS, L"WaterOutputCS.hlsl" },
 			{ &foamCS, L"WaterFoamCS.hlsl" },
-			{ &debugViewCS, L"WaterDebugViewCS.hlsl" },
 		};
 		for (auto& [program, fileName] : shaders) {
 			if (auto shader = compile(fileName))
@@ -133,7 +127,7 @@ namespace FluidFieldSim
 
 	bool ShallowWaterSolver::HasShaders() const
 	{
-		return forcesCS && advectCS && heightCS && velocityCS && outputCS && foamCS && debugViewCS;
+		return forcesCS && advectCS && heightCS && velocityCS && outputCS && foamCS;
 	}
 
 	void ShallowWaterSolver::ReleaseShaders()
@@ -144,7 +138,6 @@ namespace FluidFieldSim
 		velocityCS = nullptr;
 		outputCS = nullptr;
 		foamCS = nullptr;
-		debugViewCS = nullptr;
 	}
 
 	void ShallowWaterSolver::ReleaseResources()
@@ -157,10 +150,8 @@ namespace FluidFieldSim
 		foam = {};
 		map = {};
 		obstacles = {};
-		debugViews = {};
 		gridConstants = nullptr;
 		waterConstants = nullptr;
-		debugConstants = nullptr;
 		emitterBuffer = nullptr;
 		emitterSRV = nullptr;
 		resolution = 0;
@@ -175,7 +166,6 @@ namespace FluidFieldSim
 		// describes the previous location and would flood or drain the grid once the new map arrives.
 		historyValid = false;
 		stepped = false;
-		hasDebugViews = false;
 		mapUploaded = false;
 		obstaclesNeedClear = true;
 	}
@@ -381,23 +371,4 @@ namespace FluidFieldSim
 		EndStep(context);
 	}
 
-	void ShallowWaterSolver::RenderDebugViews(ID3D11DeviceContext* context, const WaterDebugScales& scales)
-	{
-		if (!HasResources() || !debugViewCS || !stepped)
-			return;
-
-		const DebugConstants data{ scales.depth, scales.flow, scales.wave, 0.0f };
-		UpdateBuffer(context, debugConstants.get(), &data, sizeof(data));
-
-		ID3D11Buffer* cbs[] = { gridConstants.get(), waterConstants.get(), debugConstants.get() };
-		context->CSSetConstantBuffers(0, 3, cbs);
-		ID3D11ShaderResourceView* srvs[] = { depth[currentDepth].srv.get(), surface.srv.get(), flow.srv.get() };
-		ID3D11UnorderedAccessView* uavs[] = { debugViews[0].uav.get(), debugViews[1].uav.get(), debugViews[2].uav.get() };
-		Dispatch(context, debugViewCS.get(), srvs, uavs);
-
-		ID3D11Buffer* nullCBs[3] = {};
-		context->CSSetConstantBuffers(0, 3, nullCBs);
-		EndStep(context);
-		hasDebugViews = true;
-	}
 }

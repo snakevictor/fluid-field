@@ -28,8 +28,6 @@ namespace FluidFieldSim
 		/** @brief Forgets every actor's history, after a reset or teleport. */
 		void Clear();
 
-		uint32_t GetCount() const { return static_cast<uint32_t>(emitters.size()); }
-
 	private:
 		struct History
 		{
