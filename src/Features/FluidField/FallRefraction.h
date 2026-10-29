@@ -81,22 +81,15 @@ namespace FluidFieldSim
 			float skyFogFar = 0.0f;  ///< 0: no fog
 			float skyFogPower = 1.0f;
 			float skyFogClamp = 0.0f;
-			uint32_t frame = 0;              ///< D123: the rendered frame's number (only this frame's pre-water copy is used)
-			float depthScale = 1.0f;         ///< D102: how thick the sheet reads (Water Depth): its opacity and depth of colour
-			float refraction = 0.5f;         ///< How strongly the surface bends what is seen through it
-			float streakFoam = 0.4f;         ///< How much of vanilla's streak texture reads as white water
-			bool volumetricShadows = false;  ///< D102: Volumetric Shadows is loaded: its map (t18) and cascades (t98) shadow the sheet while bound
-			/**
-			 * D159: this frame's river draw state and the falls variant of its shaders (Water.hlsl, FLUID_FIELD_FALLS); with
-			 * all three set the falls use the river's shader, else FallSurface.hlsl
-			 */
+			uint32_t frame = 0;  ///< D123: the rendered frame's number (only this frame's pre-water copy is used)
+			/** D159: this frame's river draw state and the falls variant of its shaders (Water.hlsl, FLUID_FIELD_FALLS); all three needed */
 			const RiverCapture* river = nullptr;
 			ID3D11VertexShader* riverVertexShader = nullptr;
 			ID3D11PixelShader* riverPixelShader = nullptr;
 		};
 
-		/** @brief Draws a_meshes; nothing when the shaders failed or nothing is bound. */
-		void Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params, const std::vector<MeshDraw>& a_meshes);
+		/** @brief Draws a_meshes with the river's shader; false (nothing drawn) without it, or when nothing is bound. */
+		bool Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params, const std::vector<MeshDraw>& a_meshes);
 		/**
 		 * @brief D123: copies the scene before the water draws, for this frame's Draw to refract when its target is the same
 		 * texture (else the river seen through a sheet shows as a plane cut by it).
@@ -107,7 +100,7 @@ namespace FluidFieldSim
 		void Prune(const std::unordered_set<const RE::BSGeometry*>& a_keep);
 		void Release();
 		void ReleaseShaders();
-		/** @brief False once its shaders failed to compile or the scene could not be copied: the engine's lit falls are then kept. */
+		/** @brief False once its shaders failed to compile or the scene could not be copied: vanilla's falls are then kept. */
 		bool IsUsable() const { return !shaderFailed && !sceneCopyFailed; }
 
 		/** @brief D102: most world units of water behind the surface counted (the sheet should read, not the gap behind it). */
@@ -117,8 +110,6 @@ namespace FluidFieldSim
 
 	private:
 		bool EnsureShaders();
-		/** @brief D102: the pixel shader reading Volumetric Shadows' map, compiled on first use; null when it failed. */
-		ID3D11PixelShader* EnsureShadowedShader();
 
 		bool EnsureStates(ID3D11Device* a_device);
 		bool EnsureSceneCopy(ID3D11Device* a_device, ID3D11Texture2D* a_source, ID3D11RenderTargetView* a_target);
@@ -198,16 +189,13 @@ namespace FluidFieldSim
 		winrt::com_ptr<ID3D11Buffer> constants;
 		winrt::com_ptr<ID3D11Buffer> groundConstants;
 		uint32_t groundSize = 0;
-		winrt::com_ptr<ID3D11VertexShader> vertexShader;
-		winrt::com_ptr<ID3D11PixelShader> pixelShader;
-		winrt::com_ptr<ID3D11PixelShader> pixelShaderShadowed;  ///< D102: with VOLUMETRIC_SHADOWS
+		winrt::com_ptr<ID3D11VertexShader> vertexShader;  ///< FallSurface.hlsl's VSMain, for the depth passes
 		winrt::com_ptr<ID3D11BlendState> blend;
 		winrt::com_ptr<ID3D11DepthStencilState> depthState;
 		winrt::com_ptr<ID3D11RasterizerState> raster;
 		winrt::com_ptr<ID3D11SamplerState> wrapSampler;
 		winrt::com_ptr<ID3D11SamplerState> clampSampler;
 		bool shaderFailed = false;
-		bool shadowedShaderFailed = false;  ///< D102: the shadowed variant failed; the plain one is used
 		bool sceneCopyFailed = false;
 		// D125: the falls' front surface: its depth pass's shader, and a copy of the scene's depth it is drawn into
 		winrt::com_ptr<ID3D11PixelShader> depthPixelShader;
@@ -224,7 +212,6 @@ namespace FluidFieldSim
 		bool behindShaderFailed = false;
 		/** D174: per captured river state, the last Normals01 (t4) it had bound: the foam's bubbles (FOAM_MAP_SLOT). */
 		std::unordered_map<const RiverCapture*, winrt::com_ptr<ID3D11ShaderResourceView>> riverFoamMaps;
-		bool lastRiverShader = false;                     ///< D159: which shader drew the falls last (logged when it changes)
 		const ID3D11Texture2D* preWaterSource = nullptr;  ///< D123: what the pre-water copy was taken from, and in which frame
 		uint32_t preWaterFrame = UINT32_MAX;
 	};

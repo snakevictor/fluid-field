@@ -11,7 +11,6 @@
 #include "DynamicCubemaps.h"
 #include "UnifiedWater.h"
 #include "UnifiedWater/Flowmap.h"
-#include "VolumetricShadows.h"
 
 #include <DirectXPackedVector.h>
 #include <bit>
@@ -62,21 +61,13 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ReplaceVanillaFoam,
 	Waterfalls,
 	WaterfallStrength,
-	GroundWaterfalls,
 	HideUnderwaterFalls,
 	FallWhitening,
 	FallSpeed,
-	RefractiveFalls,
-	FallDepth,
-	FallRefraction,
-	FallsRiverShader,
-	UnifiedFalls,
-	BakeOtherFalls,
 	FallFoamStart,
 	FallAerationFoam,
 	FallAerationFrom,
 	FallAerationMilk,
-	FallLayerMask,
 	WaterfallDebug)
 
 void FluidField::DrawSettings()
@@ -139,12 +130,6 @@ void FluidField::DrawSettings()
 		ImGui::PushID("WaterfallsSection");
 		ImGui::Checkbox(T(TKEY("waterfalls"), "Waterfalls"), &settings.Waterfalls);
 		tooltip(T(TKEY("waterfalls_tooltip"), "Waterfalls churn, push and foam the water they land in."));
-		ImGui::Checkbox(T(TKEY("ground_waterfalls"), "Flowing Waterfalls"), &settings.GroundWaterfalls);
-		tooltip(T(TKEY("ground_waterfalls_tooltip"), "Moves vanilla's waterfall textures with each fall's solved flow, so they part round rocks, and adds foam and spray. Off shows vanilla's waterfalls unchanged."));
-		ImGui::Checkbox(T(TKEY("unified_falls"), "Unified Falls"), &settings.UnifiedFalls);
-		tooltip(T(TKEY("unified_falls_tooltip"), "Draws each waterfall site that has a precomputed sheet as one continuous surface instead of its separate meshes. Off shows the separate meshes."));
-		ImGui::Checkbox(T(TKEY("bake_other_falls"), "Bake Other Falls"), &settings.BakeOtherFalls);
-		tooltip(T(TKEY("bake_other_falls_tooltip"), "Bakes the flow of waterfalls that have no precomputed sheet, as before. Off leaves them without baked flow (testing the precomputed sites alone; quicker to load)."));
 
 		ImGui::SeparatorText(T(TKEY("waterfall_look"), "Water"));
 		ImGui::Checkbox(T(TKEY("fall_whitening"), "Foam on the Falls"), &settings.FallWhitening);
@@ -159,16 +144,6 @@ void FluidField::DrawSettings()
 		tooltip(T(TKEY("fall_whitening_tooltip"), "White water on the falls where they strike rock, below rock, into the water below and as they run and fall."));
 		ImGui::SliderFloat(T(TKEY("fall_speed"), "Falls Speed"), &settings.FallSpeed, 0.5f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("fall_speed_tooltip"), "How fast the falls' water runs, against vanilla's own speed. The whole flow speeds up alike, so the texture never stretches."));
-		ImGui::Checkbox(T(TKEY("refractive_falls"), "See-Through Falls"), &settings.RefractiveFalls);
-		tooltip(T(TKEY("refractive_falls_tooltip"), "Experimental. Draws the falls in the water of the river they pour out of, lit and shadowed as it is: a thin sheet of mostly opaque water through which the rock behind shows faintly, with modest reflections and white water. Off draws vanilla's opaque falls."));
-		if (settings.RefractiveFalls) {
-			ImGui::Checkbox(T(TKEY("falls_river_shader"), "Falls Use River Shader"), &settings.FallsRiverShader);
-			tooltip(T(TKEY("falls_river_shader_tooltip"), "Shades the see-through falls with the river's own water shader, so they match the river exactly. Off uses Fluid Field's own copy of it. Water Depth and Refraction only apply when off."));
-			ImGui::SliderFloat(T(TKEY("fall_depth"), "Water Depth"), &settings.FallDepth, 0.25f, 8.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-			tooltip(T(TKEY("fall_depth_tooltip"), "How thick the falling water looks. Higher is more opaque and deeper in its river's colour; lower lets more of the rock behind show through."));
-			ImGui::SliderFloat(T(TKEY("fall_refraction"), "Refraction"), &settings.FallRefraction, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			tooltip(T(TKEY("fall_refraction_tooltip"), "How strongly the falls' surface bends what little is seen through it."));
-		}
 		ImGui::Checkbox(T(TKEY("hide_underwater_falls"), "Hide Buried Falls"), &settings.HideUnderwaterFalls);
 		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes under the water above or below them, or deep in the rock."));
 		ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Plunge Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -273,16 +248,11 @@ void FluidField::DrawSettings()
 			settings.WaterfallDebug = std::clamp(settings.WaterfallDebug, 0, 5);
 			ImGui::Combo(T(TKEY("waterfall_debug"), "Waterfall Shading"), &settings.WaterfallDebug, fallDebugModes, IM_ARRAYSIZE(fallDebugModes));
 			tooltip(T(TKEY("waterfall_debug_tooltip"), "Paints the falling water with its flow. Mesh Flow Bake: red how the streaks spread, green the run time (a band per second), blue foam, white the wake of rock; dark magenta where a mesh has no bake. Flow Direction: the way the texture moves as colour (x red, y green, up blue), brighter for faster. Vanilla Texture: the falls without the flow. Depth Behind: with See-Through Falls, each sheet by the open water or air behind it to the first rock or ground: red under 50 units, yellow to 150, green to 300, blue to 600 (8.5 m), magenta where nothing was hit."));
-			const char* meshViews[] = { T(TKEY("fall_mesh_debug_off"), "Off"), T(TKEY("fall_mesh_debug_wireframe"), "Wireframe"), T(TKEY("fall_mesh_debug_flow"), "Flow"),
-				T(TKEY("fall_mesh_debug_both"), "Wireframe and Flow"), T(TKEY("fall_mesh_debug_rays"), "Depth Rays"), T(TKEY("fall_mesh_debug_wireframe_rays"), "Wireframe and Depth Rays") };
-			ImGui::Combo(T(TKEY("fall_mesh_debug"), "Falls Mesh Debug"), &fallMeshDebug, meshViews, IM_ARRAYSIZE(meshViews));
 			ImGui::SliderFloat(T(TKEY("plunge_foam_behind"), "Plunge Foam Behind (tuning)"), &plungeFoamBehind, -64.0f, 256.0f, "%.0f");
 			tooltip(T(TKEY("plunge_foam_behind_tooltip"), "World units the foam where the falls meet the water below is moved behind their line, against their flow. Not saved."));
 			ImGui::SliderFloat(T(TKEY("plunge_foam_radius"), "Plunge Foam Radius (tuning)"), &plungeFoamRadius, 0.25f, 4.0f, "%.2f");
 			tooltip(T(TKEY("plunge_foam_radius_tooltip"), "How far round each point the falls meet the water below it foams, as a scale. Not saved."));
 
-			tooltip(T(TKEY("fall_mesh_debug_tooltip"),
-				"Drawn over everything, through the ground. Wireframe: the falls' meshes as drawn (yellow: our dense copies). Flow: the simulated water on each mesh as arrows, longer and redder when faster, bluer when slower, white where it strikes rock. Depth Rays: the rays measuring the depth behind each sheet, from its vertices, green to what they hit, red to their reach where they miss. Not saved."));
 			uint32_t captured, captures;
 			fallSites.CountCaptures(captured, captures);
 			ImGui::Text(T(TKEY("waterfall_sites"), "Sites: %u falls, %u cascades, %u rapids, %u no bottom, %u failed; ground captured for %u of %u"),
@@ -304,7 +274,6 @@ void FluidField::DrawSettings()
 		ImGui::Text(T(TKEY("water_surfaces"), "Water surfaces: %u flat, %u sloped (not used), %u cells with water"), static_cast<uint>(water.GetSurfaceCount()), water.GetSlopedCount(),
 			static_cast<uint>(water.GetCellWaterCount()));
 		ImGui::Text(T(TKEY("vanilla_foam_hidden"), "Vanilla foam effects hidden: %u"), vanillaFoam.GetHiddenCount());
-		ImGui::Text(T(TKEY("waterfalls_found"), "Waterfalls driving the water: %u"), static_cast<uint32_t>(waterfalls.GetFalls().size()));
 		if (settings.RaycastBed && bedRays.GetSampleCount() > 0) {
 			const auto counts = bedRays.CountSamples();
 			const auto& rayStats = bedRays.GetStats();
@@ -330,9 +299,6 @@ void FluidField::DrawSettings()
 
 void FluidField::DrawOverlay()
 {
-	// D75: the falls' meshes and their sim
-	if (fallMeshDebug != 0 && loaded && settings.Enabled)
-		fallSites.DrawMeshDebug(ImGui::GetBackgroundDrawList(), FALL_SITES_DEBUG_RANGE, fallMeshDebug);
 	if (!(showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews))
 		return;
 
@@ -451,7 +417,7 @@ void FluidField::DrawOverlay()
 
 bool FluidField::IsOverlayVisible() const
 {
-	return (showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews) || (fallMeshDebug > 0 && settings.Enabled);
+	return showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews;
 }
 
 #undef I18N_KEY_PREFIX
@@ -863,16 +829,12 @@ void FluidField::Prepass()
 			vanillaFoam.RestoreAll();
 		}
 		if (settings.Waterfalls) {
-			// Waterfalls over the whole simulated area, far level included
-			const float simulated = 0.5f * (settings.FarWater ? settings.WaterSize * settings.FarWaterScale : settings.WaterSize);
-			waterfalls.Update(water, playerPos.x, playerPos.y, simulated);
 			// Waterfall sites reconstructed from vanilla's layout (D25)
 			fallSites.SetConsoleSummary(showFallSites);
-			fallSites.SetHideEffects(hideFallEffects, settings.FallLayerMask);
-			// D91: the refractive pass draws the lit pieces itself, so the engine's are hidden
-			fallSites.SetUnifiedFalls(settings.UnifiedFalls);
-			fallSites.SetBakeOthers(settings.BakeOtherFalls);
-			fallSites.SetLitHidden(RefractiveFallsActive());
+			// Vanilla's pieces at the cached sites hide while our pass draws their falls
+			if (!RefractiveFallsActive())
+				fallsShown = false;
+			fallSites.SetTakeover(fallsShown);
 			fallSurfaceTime += deltaTime;
 			// D67: one scroll for all falls at vanilla's averaged rate, so a cascade's meshes run on into each other;
 			// integrated so it never jumps when the measured rate moves (D60)
@@ -892,7 +854,6 @@ void FluidField::Prepass()
 			fallSites.Update(water);
 			UpdateFallGround(playerPos);
 		} else {
-			waterfalls.Clear();
 			fallSites.Clear();
 		}
 	} else {
@@ -964,7 +925,6 @@ void FluidField::ReleaseWater()
 	}
 	wakeSources.Clear();
 	vanillaFoam.RestoreAll();
-	waterfalls.Clear();
 	fallSites.Clear();
 	ReleaseFallGround();
 	fallRefraction.Release();
@@ -1131,8 +1091,14 @@ void FluidField::DrawGroundFogAfterWorld()
 			auto* behind = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
 			// D177: writable depth view: the falls write their depth so later passes (distance fog) see the sheet, not what is behind it
 			gpuSpans.Begin(globals::d3d::context, FluidFieldSim::GpuSpans::RefractiveFalls);
-			DrawRefractiveFalls(target.RTV, target.texture, depth.views[0] ? depth.views[0] : depth.readOnlyViews[0], behind ? behind : depth.depthSRV);
+			const bool drawn = DrawRefractiveFalls(target.RTV, target.texture, depth.views[0] ? depth.views[0] : depth.readOnlyViews[0], behind ? behind : depth.depthSRV);
 			gpuSpans.End(globals::d3d::context, FluidFieldSim::GpuSpans::RefractiveFalls);
+			if (drawn) {
+				fallsShown = true;
+				fallsMissed = 0;
+			} else if (++fallsMissed > FALLS_FALLBACK_FRAMES) {
+				fallsShown = false;
+			}
 		}
 	}
 
@@ -1335,7 +1301,6 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 	if (settings.Waterfalls) {
 		// D35: the falls' own plunges first, along their whole width; D22's single pushes after
 		fallSites.AppendWaterEmitters(levelEmitters, a_gridMin, a_cellSize, a_resolution, settings.WaterfallStrength, FluidFieldSim::ShallowWaterSolver::MAX_EMITTERS, a_near);
-		waterfalls.AppendEmitters(levelEmitters, a_gridMin, a_cellSize, a_resolution, settings.WaterfallStrength, FluidFieldSim::ShallowWaterSolver::MAX_EMITTERS, a_near);
 	}
 	const std::span<const FluidFieldSim::WaterEmitter> emitters = levelEmitters;
 
@@ -1352,7 +1317,7 @@ void FluidField::StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, 
 	}
 	// The near level inherits far foam for cells entering it, so foam doesn't reset as the player approaches
 	// The falls' plunges foam the water along their whole width (D44)
-	if (settings.Waterfalls && settings.GroundWaterfalls && fallPlungeSRV) {
+	if (settings.Waterfalls && fallPlungeSRV) {
 		params.plungeMap = fallPlungeSRV.get();
 		params.plungeOrigin[0] = fallGroundOrigin[0];
 		params.plungeOrigin[1] = fallGroundOrigin[1];
@@ -1671,11 +1636,6 @@ void FluidField::PrepareFallGroundData(const RE::BSGeometry* a_geometry, RE::BSS
 	fallGroundData.BlendAlpha = 0.0f;
 }
 
-bool FluidField::RiverShaderFallsWanted() const
-{
-	return settings.FallsRiverShader && RefractiveFallsActive();
-}
-
 void FluidField::SetupWaterGeometry(RE::BSRenderPass* a_pass)
 {
 	waterGeometry = a_pass ? a_pass->geometry : nullptr;
@@ -1684,7 +1644,7 @@ void FluidField::SetupWaterGeometry(RE::BSRenderPass* a_pass)
 void FluidField::CaptureRiverDraw(RE::BSShader* a_shader, uint32_t a_vertexDescriptor, uint32_t a_pixelDescriptor)
 {
 	// D159: cheap tests first: this runs before every draw call
-	if (!FluidFieldSim::RiverCapture::IsRiverDraw(a_shader, a_pixelDescriptor) || !RiverShaderFallsWanted())
+	if (!FluidFieldSim::RiverCapture::IsRiverDraw(a_shader, a_pixelDescriptor) || !RefractiveFallsActive())
 		return;
 	// D171: one capture per water type (of the water object owning this shape), at its first draw of the frame
 	const RE::TESWaterForm* waterType = nullptr;
@@ -1711,9 +1671,7 @@ void FluidField::CaptureRiverDraw(RE::BSShader* a_shader, uint32_t a_vertexDescr
 
 bool FluidField::RefractiveFallsActive() const
 {
-	// The debug views (D40) are drawn by the lit pass, so the lit pieces stay while one is on
-	return loaded && settings.Enabled && settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && settings.RefractiveFalls &&
-	       (settings.WaterfallDebug == 0 || settings.WaterfallDebug >= 4) && fallGroundSRV && fallRefraction.IsUsable();  // D108: 4 and 5 are its own
+	return loaded && settings.Enabled && settings.WaterEnabled && settings.Waterfalls && fallGroundSRV && fallRefraction.IsUsable();
 }
 
 namespace
@@ -1825,10 +1783,10 @@ namespace
 	}
 }
 
-void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Texture2D* a_targetTexture, ID3D11DepthStencilView* a_depth, ID3D11ShaderResourceView* a_sceneDepth)
+bool FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Texture2D* a_targetTexture, ID3D11DepthStencilView* a_depth, ID3D11ShaderResourceView* a_sceneDepth)
 {
 	if (!RefractiveFallsActive() || !cameraSnapshot)
-		return;
+		return false;
 	// Every lit piece's constants first (each MeshDraw points into this), then its draw
 	const auto& lit = fallSites.GetLitMeshes();
 	std::vector<FallGroundData> grounds;
@@ -1896,7 +1854,7 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 	fallRefraction.Prune(keep);
 	std::erase_if(fallWaterTypes, [&](const auto& a_entry) { return !keep.contains(a_entry.first); });
 	if (draws.empty())
-		return;
+		return false;
 
 	FluidFieldSim::FallRefraction::DrawParams params;
 	params.target = a_target;
@@ -1936,13 +1894,9 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 		else if (dynamicCubemaps.cubemapValid[0] && dynamicCubemaps.envTexture)
 			params.environment = dynamicCubemaps.envTexture->srv.get();
 	}
-	params.depthScale = std::clamp(settings.FallDepth, 0.25f, 8.0f);
-	params.refraction = std::clamp(settings.FallRefraction, 0.0f, 3.0f);
-	params.streakFoam = settings.FallWhitening ? 0.4f : 0.25f;  // D102: the base look's white water kept modest
-	params.volumetricShadows = globals::features::volumetricShadows.loaded;
-	// D159: falls shaded by the river's own shader (no per-vertex, flowmap or wading variants), compiled in the background;
-	// FallSurface.hlsl draws them until it is ready. D171: frame state (shadows, lights, SSR, camera) from any water drawn this
-	// frame; each fall's material from its water type's last capture, else the frame's
+	// D159: falls shaded by the river's own shader (no per-vertex, flowmap or wading variants), compiled in the background; not
+	// drawn until it is ready. D171: frame state (shadows, lights, SSR, camera) from any water drawn this frame; each fall's
+	// material from its water type's last capture, else the frame's
 	const uint32_t frame = globals::state->frameCount;
 	for (const auto& [waterType, capture] : riverCaptures) {
 		// D171: the kept piece was not drawn this frame, so keep the one captured instead
@@ -1959,37 +1913,46 @@ void FluidField::DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Tex
 			frameWater = waterType;
 		}
 	}
-	if (RiverShaderFallsWanted() && frameCapture) {
-		using Flags = SIE::ShaderCache::WaterShaderFlags;
-		constexpr auto notOnSheets = static_cast<uint32_t>(Flags::Vc) | static_cast<uint32_t>(Flags::NormalTexCoord) | static_cast<uint32_t>(Flags::Wading) |
-		                             static_cast<uint32_t>(Flags::VertexAlphaDepth) | static_cast<uint32_t>(Flags::Flowmap) | static_cast<uint32_t>(Flags::BlendNormals);
-		constexpr auto falls = static_cast<uint32_t>(Flags::FluidFieldFalls);
-		const auto shadersOf = [&](const FluidFieldSim::RiverCapture& a_capture) -> std::pair<ID3D11VertexShader*, ID3D11PixelShader*> {
-			auto* vertexShader = globals::shaderCache->GetVertexShader(*a_capture.GetShader(), (a_capture.GetVertexDescriptor() & ~notOnSheets) | falls);
-			auto* pixelShader = globals::shaderCache->GetPixelShader(*a_capture.GetShader(), (a_capture.GetPixelDescriptor() & ~notOnSheets) | falls);
-			if (!vertexShader || !pixelShader || !vertexShader->shader || !pixelShader->shader)
-				return { nullptr, nullptr };
-			return { reinterpret_cast<ID3D11VertexShader*>(vertexShader->shader), reinterpret_cast<ID3D11PixelShader*>(pixelShader->shader) };
-		};
-		const auto [frameVertexShader, framePixelShader] = shadersOf(*frameCapture);
-		if (frameVertexShader && framePixelShader) {
-			params.river = frameCapture;
-			params.riverVertexShader = frameVertexShader;
-			params.riverPixelShader = framePixelShader;
-			for (std::size_t i = 0; i < draws.size(); i++) {
-				const auto own = riverCaptures.find(drawWaters[i]);
-				if (own == riverCaptures.end() || !own->second.GetMaterialBuffer())
-					continue;
-				draws[i].riverMaterial = own->second.GetMaterialBuffer();
-				if (own->second.IsCaptured(frame))
-					draws[i].river = &own->second;
-				const auto [vertexShader, pixelShader] = shadersOf(own->second);
-				draws[i].riverVertexShader = vertexShader;
-				draws[i].riverPixelShader = pixelShader;
-			}
-		}
+	// D159: the engine's textures are not held past the falls
+	const auto releaseCaptures = [&]() {
+		for (auto& capture : riverCaptures | std::views::values)
+			capture.ReleaseViews();
+	};
+	if (!frameCapture) {
+		releaseCaptures();
+		return false;
 	}
-	fallRefraction.Draw(globals::d3d::device, globals::d3d::context, params, draws);
-	for (auto& capture : riverCaptures | std::views::values)
-		capture.ReleaseViews();  // D159: the engine's textures are not held past the falls
+	using Flags = SIE::ShaderCache::WaterShaderFlags;
+	constexpr auto notOnSheets = static_cast<uint32_t>(Flags::Vc) | static_cast<uint32_t>(Flags::NormalTexCoord) | static_cast<uint32_t>(Flags::Wading) |
+	                             static_cast<uint32_t>(Flags::VertexAlphaDepth) | static_cast<uint32_t>(Flags::Flowmap) | static_cast<uint32_t>(Flags::BlendNormals);
+	constexpr auto falls = static_cast<uint32_t>(Flags::FluidFieldFalls);
+	const auto shadersOf = [&](const FluidFieldSim::RiverCapture& a_capture) -> std::pair<ID3D11VertexShader*, ID3D11PixelShader*> {
+		auto* vertexShader = globals::shaderCache->GetVertexShader(*a_capture.GetShader(), (a_capture.GetVertexDescriptor() & ~notOnSheets) | falls);
+		auto* pixelShader = globals::shaderCache->GetPixelShader(*a_capture.GetShader(), (a_capture.GetPixelDescriptor() & ~notOnSheets) | falls);
+		if (!vertexShader || !pixelShader || !vertexShader->shader || !pixelShader->shader)
+			return { nullptr, nullptr };
+		return { reinterpret_cast<ID3D11VertexShader*>(vertexShader->shader), reinterpret_cast<ID3D11PixelShader*>(pixelShader->shader) };
+	};
+	const auto [frameVertexShader, framePixelShader] = shadersOf(*frameCapture);
+	if (!frameVertexShader || !framePixelShader) {
+		releaseCaptures();
+		return false;
+	}
+	params.river = frameCapture;
+	params.riverVertexShader = frameVertexShader;
+	params.riverPixelShader = framePixelShader;
+	for (std::size_t i = 0; i < draws.size(); i++) {
+		const auto own = riverCaptures.find(drawWaters[i]);
+		if (own == riverCaptures.end() || !own->second.GetMaterialBuffer())
+			continue;
+		draws[i].riverMaterial = own->second.GetMaterialBuffer();
+		if (own->second.IsCaptured(frame))
+			draws[i].river = &own->second;
+		const auto [vertexShader, pixelShader] = shadersOf(own->second);
+		draws[i].riverVertexShader = vertexShader;
+		draws[i].riverPixelShader = pixelShader;
+	}
+	const bool drawn = fallRefraction.Draw(globals::d3d::device, globals::d3d::context, params, draws);
+	releaseCaptures();
+	return drawn;
 }

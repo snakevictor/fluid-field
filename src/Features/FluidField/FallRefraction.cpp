@@ -23,16 +23,14 @@ namespace FluidFieldSim
 		constexpr UINT SCENE_COLOR_SLOT = 100;
 		constexpr UINT DIFFUSE_SLOT = 121;  // D159: t121 diffuse, t122 normal map (clear of Light Limit Fix's local shadows at t102-t103)
 		constexpr UINT ENVIRONMENT_SLOT = 104;
-		constexpr UINT FRONT_DEPTH_SLOT = 105;     // D125
-		constexpr UINT BEHIND_DEPTH_SLOT = 112;    // D174: the falls' surface nearest behind their front
-		constexpr UINT FOAM_MAP_SLOT = 113;        // D174: the river's own Normals01, read as the foam's bubbles
-		constexpr UINT NOISE_SLOT = 106;           // D129: t106-t108
-		constexpr UINT REFRACTION_SLOT = 1;        // D159: Water.hlsl's RefractionTex
-		constexpr UINT WATER_DEPTH_SLOT = 7;       // D159: ...and DepthTex
-		constexpr UINT RIVER_NORMALS_SLOT = 4;     // D171: ...and Normals01-03 (t4-t6)
-		constexpr UINT SAMPLER_COUNT = 2;          // s0 wrap, s1 clamp
-		constexpr UINT SHADOW_MAP_SLOT = 18;       // D102: Volumetric Shadows' map (VolumetricShadows::kSharedShadowMapShaderSlot), read, never set
-		constexpr UINT SHADOW_CASCADES_SLOT = 98;  // ...and the directional light's cascades (Deferred::CopyShadowLightData)
+		constexpr UINT FRONT_DEPTH_SLOT = 105;   // D125
+		constexpr UINT BEHIND_DEPTH_SLOT = 112;  // D174: the falls' surface nearest behind their front
+		constexpr UINT FOAM_MAP_SLOT = 113;      // D174: the river's own Normals01, read as the foam's bubbles
+		constexpr UINT NOISE_SLOT = 106;         // D129: t106-t108
+		constexpr UINT REFRACTION_SLOT = 1;      // D159: Water.hlsl's RefractionTex
+		constexpr UINT WATER_DEPTH_SLOT = 7;     // D159: ...and DepthTex
+		constexpr UINT RIVER_NORMALS_SLOT = 4;   // D171: ...and Normals01-03 (t4-t6)
+		constexpr UINT SAMPLER_COUNT = 2;        // s0 wrap, s1 clamp
 
 		/** @brief Everything Draw touches, saved on construction and put back on destruction. */
 		struct SavedState
@@ -187,10 +185,7 @@ namespace FluidFieldSim
 	void FallRefraction::ReleaseShaders()
 	{
 		vertexShader = nullptr;
-		pixelShader = nullptr;
-		pixelShaderShadowed = nullptr;
 		shaderFailed = false;
-		shadowedShaderFailed = false;
 		depthPixelShader = nullptr;
 		depthShaderFailed = false;
 	}
@@ -203,31 +198,18 @@ namespace FluidFieldSim
 
 	bool FallRefraction::EnsureShaders()
 	{
-		if (vertexShader && pixelShader)
+		if (vertexShader)
 			return true;
 		if (shaderFailed)
 			return false;
 		vertexShader.attach(reinterpret_cast<ID3D11VertexShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSurface.hlsl", {}, "vs_5_0", "VSMain")));
-		pixelShader.attach(reinterpret_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSurface.hlsl", {}, "ps_5_0", "PSMain")));
-		if (!vertexShader || !pixelShader) {
-			logger::error("[Fluid Field] Refractive falls shaders failed to compile; the falls stay lit by the engine");
+		if (!vertexShader) {
+			logger::error("[Fluid Field] Falls shaders failed to compile; the falls stay vanilla");
 			ReleaseShaders();
 			shaderFailed = true;
 			return false;
 		}
 		return true;
-	}
-
-	ID3D11PixelShader* FallRefraction::EnsureShadowedShader()
-	{
-		if (pixelShaderShadowed || shadowedShaderFailed)
-			return pixelShaderShadowed.get();
-		pixelShaderShadowed.attach(reinterpret_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\FluidField\\FallSurface.hlsl", { { "VOLUMETRIC_SHADOWS", "" } }, "ps_5_0", "PSMain")));
-		if (!pixelShaderShadowed) {
-			logger::warn("[Fluid Field] Refractive falls: the shadowed shader failed to compile; the falls are drawn without Volumetric Shadows");
-			shadowedShaderFailed = true;
-		}
-		return pixelShaderShadowed.get();
 	}
 
 	bool FallRefraction::EnsureStates(ID3D11Device* a_device)
@@ -549,11 +531,13 @@ namespace FluidFieldSim
 		return true;
 	}
 
-	void FallRefraction::Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params, const std::vector<MeshDraw>& a_meshes)
+	bool FallRefraction::Draw(ID3D11Device* a_device, ID3D11DeviceContext* a_context, const DrawParams& a_params, const std::vector<MeshDraw>& a_meshes)
 	{
-		if (a_meshes.empty() || !a_params.target || !a_params.targetTexture || !a_params.depth || !a_params.sceneDepth || !a_params.camera || !EnsureShaders() ||
-			!EnsureStates(a_device) || !EnsureSceneCopy(a_device, a_params.targetTexture, a_params.target))
-			return;
+		// D159: the river's own shader when its draw was captured this frame and the falls variant has compiled (in the background)
+		if (a_meshes.empty() || !a_params.river || !a_params.riverVertexShader || !a_params.riverPixelShader || !a_params.target || !a_params.targetTexture ||
+			!a_params.depth || !a_params.sceneDepth || !a_params.camera || !EnsureShaders() || !EnsureStates(a_device) ||
+			!EnsureSceneCopy(a_device, a_params.targetTexture, a_params.target))
+			return false;
 
 		// The pieces' buffers, built once each (a piece whose address now holds other geometry is built again)
 		std::vector<std::pair<const MeshDraw*, const MeshBuffers*>> drawable;
@@ -580,7 +564,7 @@ namespace FluidFieldSim
 			drawable.emplace_back(&draw, &it->second);
 		}
 		if (drawable.empty())
-			return;
+			return false;
 
 		// The per-piece FallGroundCB, sized to what the caller hands over
 		const uint32_t wantedGround = (a_meshes.front().groundSize + 15u) & ~15u;
@@ -589,19 +573,12 @@ namespace FluidFieldSim
 			groundSize = 0;
 			D3D11_BUFFER_DESC cbDesc{ .ByteWidth = wantedGround, .Usage = D3D11_USAGE_DYNAMIC, .BindFlags = D3D11_BIND_CONSTANT_BUFFER, .CPUAccessFlags = D3D11_CPU_ACCESS_WRITE, .MiscFlags = 0, .StructureByteStride = 0 };
 			if (FAILED(a_device->CreateBuffer(&cbDesc, nullptr, groundConstants.put())))
-				return;
+				return false;
 			Util::SetResourceName(groundConstants.get(), "FluidField::FallRefractionGround");
 			groundSize = wantedGround;
 		}
 
-		// D159: the river's own shader when its draw was captured this frame and the falls variant has compiled (in the
-		// background); otherwise FallSurface.hlsl
-		const bool riverShader = a_params.river && a_params.riverVertexShader && a_params.riverPixelShader;
-		if (riverShader != lastRiverShader) {
-			logger::info("[Fluid Field] See-through falls shaded by {}", riverShader ? "the river's water shader" : "FallSurface.hlsl");
-			lastRiverShader = riverShader;
-		}
-		SavedState saved(a_context, riverShader);
+		SavedState saved(a_context, true);
 
 		// What the falls refract: the scene so far (their lit pieces hidden, D91). D123: the pre-water copy when taken this
 		// frame, so the river's surface behind a sheet does not show through it
@@ -611,9 +588,9 @@ namespace FluidFieldSim
 			a_context->CopyResource(sceneCopy.get(), a_params.targetTexture);
 		globals::profiler->EndPass();
 
-		// the river's shader writes the sheets' motion vectors too (FallSurface.hlsl writes colour only)
+		// the river's shader writes the sheets' motion vectors too
 		ID3D11RenderTargetView* const targets[2] = { a_params.target, a_params.motion };
-		const UINT targetCount = riverShader && a_params.motion ? 2u : 1u;
+		const UINT targetCount = a_params.motion ? 2u : 1u;
 		a_context->OMSetRenderTargets(targetCount, targets, a_params.depth);
 		const float factor[4] = {};
 		a_context->OMSetBlendState(blend.get(), factor, 0xFFFFFFFF);
@@ -621,20 +598,6 @@ namespace FluidFieldSim
 		a_context->RSSetState(raster.get());
 		a_context->IASetInputLayout(nullptr);
 		a_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		a_context->VSSetShader(vertexShader.get(), nullptr, 0);
-		// D102: the sun's shadow from Volumetric Shadows' map and cascades, as the river's, while the engine's passes still
-		// have them bound (an unbound map would read as wholly shadowed); else the plain variant (terrain and clouds only)
-		ID3D11PixelShader* shader = pixelShader.get();
-		if (a_params.volumetricShadows) {
-			winrt::com_ptr<ID3D11ShaderResourceView> shadowMap, cascades;
-			a_context->PSGetShaderResources(SHADOW_MAP_SLOT, 1, shadowMap.put());
-			a_context->PSGetShaderResources(SHADOW_CASCADES_SLOT, 1, cascades.put());
-			if (shadowMap && cascades) {
-				if (auto* shadowed = EnsureShadowedShader())
-					shader = shadowed;
-			}
-		}
-		a_context->PSSetShader(shader, nullptr, 0);
 		ID3D11Buffer* buffers[3] = { a_params.shared, a_params.features, constants.get() };
 		a_context->VSSetConstantBuffers(SHARED_SLOT, 3, buffers);
 		a_context->PSSetConstantBuffers(SHARED_SLOT, 3, buffers);
@@ -653,9 +616,6 @@ namespace FluidFieldSim
 		a_context->PSSetShaderResources(ENVIRONMENT_SLOT, 1, &a_params.environment);
 
 		Constants data{};
-		data.refraction = a_params.refraction;
-		data.streakFoam = a_params.streakFoam;
-		data.depthScale = std::clamp(a_params.depthScale, 0.05f, 50.0f);
 		data.hasEnvironment = a_params.environment ? 1u : 0u;
 		data.maxPath = LONGEST_PATH;
 		data.sheetThickness = SHEET_THICKNESS;
@@ -668,7 +628,7 @@ namespace FluidFieldSim
 		const RiverCapture* boundRiver = nullptr;
 		const auto drawMeshes = [&](bool a_shade) {
 			for (const auto& [draw, mesh] : drawable) {
-				if (a_shade && riverShader) {
+				if (a_shade) {
 					// D171: the piece's own water type's state when it was drawn this frame, else the frame's with the piece's
 					// own material (b1) as last captured; and its shader variant
 					const RiverCapture* state = draw->river ? draw->river : a_params.river;
@@ -777,7 +737,6 @@ namespace FluidFieldSim
 			}
 			a_context->OMSetRenderTargets(targetCount, targets, a_params.depth);
 			a_context->OMSetDepthStencilState(depthState.get(), 0);
-			a_context->PSSetShader(shader, nullptr, 0);
 			front = frontDepthSRV.get();
 		}
 		globals::profiler->EndPass();
@@ -813,13 +772,9 @@ namespace FluidFieldSim
 			a_river->GetVertexBuffers(vertexBuffers);
 			a_context->VSSetConstantBuffers(0, RiverCapture::VERTEX_BUFFER_COUNT, vertexBuffers);
 		};
-		if (riverShader) {
-			bindRiver(a_params.river);
-			a_context->VSSetShader(a_params.riverVertexShader, nullptr, 0);
-			a_context->PSSetShader(a_params.riverPixelShader, nullptr, 0);
-		} else {
-			a_context->VSSetShader(vertexShader.get(), nullptr, 0);
-		}
+		bindRiver(a_params.river);
+		a_context->VSSetShader(a_params.riverVertexShader, nullptr, 0);
+		a_context->PSSetShader(a_params.riverPixelShader, nullptr, 0);
 		globals::profiler->BeginPass("FluidField::Falls Shade");
 		drawMeshes(true);
 		globals::profiler->EndPass();
@@ -837,5 +792,6 @@ namespace FluidFieldSim
 		ID3D11ShaderResourceView* none[1] = { nullptr };
 		a_context->PSSetShaderResources(FRONT_DEPTH_SLOT, 1, none);
 		a_context->PSSetShaderResources(BEHIND_DEPTH_SLOT, 1, none);
+		return true;
 	}
 }

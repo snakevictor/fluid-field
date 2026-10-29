@@ -1,7 +1,6 @@
 #pragma once
 
 #include "FallCapture.h"
-#include "FallVisibility.h"
 #include "LandscapeCache.h"
 #include "ShallowWaterSolver.h"
 #include "WaterSurfaces.h"
@@ -47,6 +46,9 @@ namespace FluidFieldSim
 	class FallSites
 	{
 	public:
+		/** @brief A world-space triangle. */
+		using Triangle = std::array<RE::NiPoint3, 3>;
+
 		/** @brief What a classified effect reference is. */
 		enum class FxClass : uint8_t
 		{
@@ -143,24 +145,13 @@ namespace FluidFieldSim
 		{
 			RE::NiPointer<RE::BSGeometry> geometry;
 		};
-		/** @brief D61: the grounded sites' lit falls pieces (their dense copies where built, D73). */
+		/** @brief D61: the cached sites' sheets the falls pass draws. */
 		const std::vector<LitMesh>& GetLitMeshes() const { return litMeshList; }
 		/**
-		 * @brief D91: app-culls the lit falls pieces, since the refractive pass draws them and must see behind them. False
-		 * shows again only the pieces hidden here (an original replaced by its dense copy stays hidden).
+		 * @brief Whether the falls pass draws the cached sites now: their vanilla pieces (lit meshes, effect layers, mist, splash)
+		 * hide while it does and show again when it stops.
 		 */
-		void SetLitHidden(bool a_hidden);
-		/**
-		 * @brief D91 experiment: dense copies built from now on get a blended NiAlphaProperty (from the effect layers) before
-		 * engine setup, so they may join the blended pass (realtime-integration-design.md 5.2, cause 1). Built copies keep theirs.
-		 */
-		void SetBlendedCopies(bool a_on) { blendedCopies = a_on; }
-		/** @brief Unified falls: draws a site's precomputed sheet where one is cached (off: the per-mesh dense copies). */
-		void SetUnifiedFalls(bool a_on);
-		/** @brief Off: falls without a precomputed site sheet get no in-game bake (testing the unified sites alone). */
-		void SetBakeOthers(bool a_on) { bakeOthers = a_on; }
-		/** @brief D91: the alpha flags the falls' effect layers carry: blended, SrcAlpha / InvSrcAlpha. */
-		static constexpr uint16_t BLENDED_ALPHA_FLAGS = 0x10ED;
+		void SetTakeover(bool a_on);
 		/** @brief D61: the pool surface over a world point (D78: ComputePools), or false where there is none yet. */
 		bool PoolLevelAt(float a_x, float a_y, float& a_level) const;
 		/** @brief D112: the height the shaders cut the falls' foot at (pool surface less FallGround::POOL_CUT), or false with no pool. */
@@ -203,12 +194,6 @@ namespace FluidFieldSim
 		void AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_strength,
 			uint32_t a_maxEmitters, bool a_foam) const;
 
-		/**
-		 * @brief Debug: hides vanilla's mist, skirt, splash and rapids meshes and the falls models' spray, to judge the
-		 * falling water alone. Restored when off and on Clear.
-		 */
-		void SetHideEffects(bool a_hide, uint32_t a_layerMask);
-
 		/** @brief The parts of a vanilla falling-water model, by what draws them. */
 		enum class Layer : uint8_t
 		{
@@ -222,16 +207,6 @@ namespace FluidFieldSim
 
 		/** @brief Counts for the menu: sites by kind. */
 		uint32_t CountKind(Kind a_kind) const;
-
-		/**
-		 * @brief D75 debug: the lit meshes as drawn, on top, within a_range: 1 wireframe, 2 flow arrows (by speed: blue slow,
-		 * red fast; white on rock), 3 both.
-		 */
-		void DrawMeshDebug(ImDrawList* a_drawList, float a_range, int a_mode) const;
-		/** @brief D75: which debug arrows the camera sees (no rock in between), a few hundred rays a frame. */
-		mutable std::unordered_map<uint64_t, uint8_t> arrowSeen;
-		mutable RE::NiPoint3 arrowEye;
-		static constexpr int ARROW_RAYS = 400;  ///< D75: occlusion rays per frame for the debug arrows
 
 		/**
 		 * @brief D36: per ground-map texel (a_cell must be FallCapture::CELL), the highest pool over it (ComputePools), else
@@ -283,48 +258,17 @@ namespace FluidFieldSim
 		std::unordered_map<uint64_t, FallCapture> captures;       ///< By Site::captureKey
 		std::unordered_set<const RE::BSGeometry*> grounded;
 		std::vector<LitMesh> litMeshList;
-		std::vector<RE::NiPointer<RE::BSGeometry>> litHidden;  ///< D91: the lit pieces SetLitHidden app-culled
-		bool litHiddenWanted = false;
-		bool blendedCopies = false;  ///< D91 experiment (SetBlendedCopies)
-		/** @brief D91: app-culls the current lit pieces (or shows the ones it culled again) as SetLitHidden asked. */
+		std::vector<RE::NiPointer<RE::BSGeometry>> litHidden;  ///< D91: the sheets app-culled (the falls pass draws them)
+		/** @brief D91: app-culls the current sheets, and forgets the ones gone. */
 		void ApplyLitHidden();
-		/** @brief D91 experiment: a blended alpha property for a_geometry's dense copy (cloned from its effect layers'), or null. */
-		RE::NiAlphaProperty* MakeBlendedAlpha(RE::BSGeometry* a_geometry) const;
+		bool takeover = false;                           ///< SetTakeover
+		std::unordered_set<RE::FormID> unifiedSiteRefs;  ///< Every reference of a cached site (its vanilla pieces hide on takeover)
 		/** @brief D56: tests the queued lit meshes' vertices against the rock, a few milliseconds a frame. */
 		void ClipStep();
-		/**
-		 * @brief D106: per lit-mesh vertex, the depth to rock or ground behind it: Havok rays along the normal from DEPTH_START
-		 * off a face, one vertex per DEPTH_CELL, both ways (shaders use the inner side), spread to the rest. A few ms a frame.
-		 */
+		/** @brief D106: each sheet's depth behind its vertices, from its offline bake, once its cuts are done. */
 		void DepthStep();
-		struct DepthJob
-		{
-			RE::NiPointer<RE::BSGeometry> geometry;
-			uint32_t base = 0;
-			std::vector<RE::NiPoint3> positions, normals;  ///< World; normals by winding, unit
-			std::vector<std::vector<uint32_t>> ring;
-			std::vector<uint32_t> samples;
-			std::size_t next = 0;
-			std::vector<float> plus, minus;  ///< Clearance along and against the winding normal
-			std::vector<uint8_t> known;
-			std::vector<std::array<RE::NiPoint3, 3>> rays;  ///< D108: each ray's start, end and (x) whether it hit, for the overlay
-			// TEMPORARY D106 diagnostics
-			std::vector<float> hitDistances, missDown;
-			uint32_t hits = 0, misses = 0, missDownHits = 0, downward = 0;
-			double tiltSum = 0.0;
-		};
 		std::vector<RE::NiPointer<RE::BSGeometry>> depthQueue;
-		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> outwardNormals;                 ///< D109: each lit mesh's consistent outward normals, world (SideFlags)
-		std::unordered_map<const RE::BSGeometry*, std::vector<std::array<RE::NiPoint3, 3>>> depthRaysShown;  ///< D108: the overlay's rays
-		std::unique_ptr<DepthJob> depthJob;
-		uint32_t depthRays = 0, depthHits = 0;
-		bool depthAudited = true;                          ///< TEMPORARY D110
-		static constexpr float DEPTH_UNDERSIDE_Z = -0.3f;  ///< D111: a vertex whose outer normal's z is below this casts no depth ray
-		static constexpr float DEPTH_CELL = 30.0f;         ///< D106: world units: one sampled vertex per cell this size
-		static constexpr float DEPTH_START = 40.0f;        ///< D106: the ray starts this far off the other face
-		static constexpr int DEPTH_FILL_PASSES = 60;       ///< D106: rounds spreading the samples to the vertices between
-		/** @brief D57: distance to the nearest rock along a ray (passing the falls' own collision), negative for none. */
-		float RockAlong(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, int* a_crossings = nullptr, float* a_last = nullptr) const;
+		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> outwardNormals;  ///< D109: each lit mesh's consistent outward normals, world (SideFlags)
 		std::unordered_map<const RE::BSGeometry*, uint32_t> vertexClipBase;
 		std::vector<std::array<float, 16>> vertexClips;
 		/**
@@ -401,20 +345,19 @@ namespace FluidFieldSim
 			const uint16_t* data = nullptr;
 			uint32_t count = 0;
 		};
-		/** @brief D172: the triangles the bake reads: a dense copy's untrimmed ones (Densify cut it at the landscape), else its own. */
+		/** @brief The mesh's triangles, as its bake reads them. */
 		IndexSpan BakeIndices(RE::BSGeometry* a_geometry) const;
-		std::unordered_map<const RE::BSGeometry*, std::vector<uint16_t>> untrimmedIndices;  ///< D172: by dense copy
-		static constexpr float BURY_REACH = 1000.0f;                                        ///< D112: burial ray reach (D131: parity rays end outside big cliffs)
-		static constexpr float BURY_MARGIN = 24.0f;                                         ///< D112: shallower rock does not bury (sheets dip into it)
-		static constexpr float BURY_LAND = 24.0f;                                           ///< D126: this far under the land is buried (D143: runs dip in)
-		static constexpr float LAND_AGREE = 16.0f;                                          ///< D138: a ground hit counts as the landscape only within this of TES::GetLandHeight there
-		static constexpr float LAND_RAY_ABOVE = 4000.0f;                                    ///< D126: the landscape ray starts this far over the point...
-		static constexpr float LAND_RAY_DROP = 20000.0f;                                    ///< D126: ...and looks this far down
-		static constexpr float SUBMERGED_DEPTH = 48.0f;                                     ///< D157: a vertex this far under the river's water (and on its bed) is in the river
-		static constexpr float SUBMERGED_BED = 16.0f;                                       ///< D126, D157: this near the land under our pools is in the river
-		static constexpr float SUBMERGED_COLUMN = 256.0f;                                   ///< D131: water planes this near the land count as a river
-		static constexpr float SUBMERGED_OVER_TOP = 96.0f;                                  ///< D143: ...and at most this far over the sheet's own top (its source, not the river of the drop above)
-		static constexpr float POOL_CUT_DEPTH = 8.0f;                                       ///< D112: FallGround::POOL_CUT: the shaders cut the foot this far under the pools' surface
+		static constexpr float BURY_REACH = 1000.0f;        ///< D112: burial ray reach (D131: parity rays end outside big cliffs)
+		static constexpr float BURY_MARGIN = 24.0f;         ///< D112: shallower rock does not bury (sheets dip into it)
+		static constexpr float BURY_LAND = 24.0f;           ///< D126: this far under the land is buried (D143: runs dip in)
+		static constexpr float LAND_AGREE = 16.0f;          ///< D138: a ground hit counts as the landscape only within this of TES::GetLandHeight there
+		static constexpr float LAND_RAY_ABOVE = 4000.0f;    ///< D126: the landscape ray starts this far over the point...
+		static constexpr float LAND_RAY_DROP = 20000.0f;    ///< D126: ...and looks this far down
+		static constexpr float SUBMERGED_DEPTH = 48.0f;     ///< D157: a vertex this far under the river's water (and on its bed) is in the river
+		static constexpr float SUBMERGED_BED = 16.0f;       ///< D126, D157: this near the land under our pools is in the river
+		static constexpr float SUBMERGED_COLUMN = 256.0f;   ///< D131: water planes this near the land count as a river
+		static constexpr float SUBMERGED_OVER_TOP = 96.0f;  ///< D143: ...and at most this far over the sheet's own top (its source, not the river of the drop above)
+		static constexpr float POOL_CUT_DEPTH = 8.0f;       ///< D112: FallGround::POOL_CUT: the shaders cut the foot this far under the pools' surface
 		/** @brief D112: a lit mesh as the culling sees it: world positions at rest and as drawn, outer sides, open edges, bins. */
 		struct CullSheet
 		{
@@ -501,12 +444,10 @@ namespace FluidFieldSim
 		enum class LoadWork : uint8_t
 		{
 			Pools,
-			Dense,
 			Seams,
 			Cull,
 			Link,
 			Plunges,
-			Solve,
 			Count
 		};
 		struct LoadTiming
@@ -533,9 +474,6 @@ namespace FluidFieldSim
 		void TrackLoad();
 		bool plungesDue = false;  ///< D172: asked for (several asks, one build)
 		void ComputePlunges(PlungeResult& o_result) const;
-		/** @brief D185: BakeWork's halves: the finished solves into bakeFields (only while no worker runs), and the bakes' rays (any time). */
-		void LandBakes();
-		void BakeRays();
 		void ApplyPlunges(PlungeResult& a_result);
 		/** @brief D172: whether any worker has vertexClips, vertexCuts, the pools and the bakes. */
 		bool Busy() const { return cullWork.valid() || heavyWork.valid(); }
@@ -620,43 +558,6 @@ namespace FluidFieldSim
 		static constexpr float SIM_GRAVITY = 686.0f;       ///< D74: world units per second squared (Skyrim's)
 		static constexpr float SIM_INFLOW = 250.0f;        ///< D74: world units per second the water comes onto a mesh's top at
 		static constexpr float SIM_TERMINAL = 900.0f;      ///< D74: world units per second sliding water tends to (its drag)
-		/** @brief D59: a mesh's flow bake in progress: its texture grid rasterised, its texels being tested against the rock. */
-		struct BakeJob
-		{
-			RE::NiPointer<RE::BSGeometry> geometry;
-			uint32_t width = 0, height = 0;
-			float uvMin[2]{}, uvSize[2]{};
-			std::vector<RE::NiPoint3> position, normal;
-			std::vector<uint8_t> covered, rock;
-			std::vector<uint8_t> untested;             ///< D83: hidden lead-in texels no strand comes near: the rock test passes them by
-			std::vector<float> clearFront, clearBack;  ///< D104: distance to rock along (front) and against (back) the normal
-			std::filesystem::path cache;               ///< D82: where its finished bake is kept (empty: not kept)
-			std::size_t next = 0;
-			int pass = 0;               ///< D185: 0 every other texel each way, 1 the rest
-			bool worldMissing = false;  ///< Diagnostics: the wait for its cell's collision world logged
-			// D68: the render meshes of the statics round the sheet (boulders, the walls beside it), binned from above
-			std::vector<std::array<RE::NiPoint3, 3>> solids;
-			std::vector<uint32_t> solidRef;
-			float solidOrigin[2]{};
-			int32_t solidBins[2]{};
-			std::vector<std::vector<uint32_t>> bins;
-		};
-		static constexpr float SOLID_BIN = 32.0f;     ///< D68: world units per bin of the statics' triangles
-		static constexpr float SOLID_REACH = 64.0f;   ///< D68: world units round a sheet its statics are gathered
-		static constexpr float SOLID_MARGIN = 40.0f;  ///< D68: a texel this deep in a static is rock (sheets dip into cliffs)
-		/**
-		 * @brief D73: a denser copy of a lit falls mesh, built by the engine (D62's builder) and drawn in its place: triangles split
-		 * to at most DENSE_EDGE, new points on the PN-triangle surface, with UVs, vertex colours and a material copy. Cuts, seams
-		 * and bakes work on the copy.
-		 */
-		struct DenseCopy
-		{
-			RE::NiPointer<RE::BSTriShape> shape;
-			RE::NiPointer<RE::BSGeometry> original;
-			RE::NiPointer<RE::NiNode> parent;
-		};
-		std::unordered_map<const RE::BSGeometry*, DenseCopy> denseOf;  ///< By original
-		std::unordered_set<const RE::BSGeometry*> denseShapes;
 		/**
 		 * @brief Unified falls: a site's precomputed sheet (tools/unify, offline: one continuous surface for all its falls meshes,
 		 * rock never cutting it), from FluidField/Sites/*.unfs, drawn in place of its members' lit meshes and their dense copies.
@@ -672,7 +573,7 @@ namespace FluidFieldSim
 			std::vector<uint8_t> flags;           ///< +1 inside rock (the bake ignores it)
 			std::vector<RE::NiColorA> colors;     ///< The members' vertex colours (vanilla's water tint)
 			std::vector<uint16_t> indices;
-			std::shared_ptr<BakeField> bake;  ///< Its flow bake, baked offline (beside it as .ffbk), or null (baked here)
+			std::shared_ptr<BakeField> bake;  ///< Its flow bake, baked offline (beside it as .ffbk), or null (the site stays vanilla)
 			std::filesystem::path bakePath;
 			std::filesystem::file_time_type bakeTime{};  ///< When the bake read was written (hot reload: a newer one is read again)
 		};
@@ -684,8 +585,6 @@ namespace FluidFieldSim
 		};
 		std::vector<UnifiedCache> unifiedCaches;
 		bool unifiedLoaded = false;
-		bool unifiedFalls = true;
-		bool bakeOthers = true;                                   ///< Off: falls without a site cache are not baked here (drawn and culled, no flow)
 		std::unordered_map<std::size_t, UnifiedShape> unifiedOf;  ///< By cache index
 		std::unordered_set<const RE::BSGeometry*> unifiedShapes;
 		std::unordered_set<const RE::BSGeometry*> linkUnified;  ///< unifiedShapes as LinkBakes' worker started
@@ -698,79 +597,14 @@ namespace FluidFieldSim
 		RE::BSTriShape* AttachUnified(std::size_t a_cache, RE::NiNode* a_root, RE::BSGeometry* a_material);
 		/** @brief Unified falls: detaches every site shape and shows the members' meshes again. */
 		void RemoveUnified();
-		bool refreshing = false;
-		static constexpr bool DENSE = true;
-		static constexpr float DENSE_TRIM_UNDER = 24.0f;         ///< D172: the dense copies are cut this far under the landscape (BURY_LAND: the cut line stays in the ground)
-		static constexpr float DENSE_EDGE = 20.0f;               ///< D73: longest dense edge, budget allowing (D91: only longer split)
-		static constexpr float DENSE_EDGE_NEAR = 8.0f;           ///< D186: ...and near a solid (a static, the landscape) at most this (the cut lines round boulders run smooth)
-		static constexpr float DENSE_NEAR_REACH = 40.0f;         ///< D186: world units from a solid an edge's middle counts as near it
-		static constexpr std::size_t DENSE_NEAR_BUDGET = 35000;  ///< D186: no finer splitting near solids past this (16-bit indices)
-		static constexpr int DENSE_LEVELS = 8;                   ///< D73: splitting passes at most (D91: adaptive, refining only what is still long)
-		static constexpr int DENSE_SHAPE_PASSES = 12;            ///< D186: Taubin pairs smoothing the copy's shape at the end...
-		static constexpr int DENSE_UV_PASSES = 0;                ///< D188: UV relaxing passes per smoothing round (0: off, zigzags)
-		static constexpr float DENSE_UV_STEP = 0.4f;             ///< D188: ...how far toward their neighbours' mean each pass
-		static constexpr int DENSE_SHAPE_LEVEL_PASSES = 4;       ///< D186: ...and after each round of splitting (its edges' length reaching far)
-		static constexpr int DENSE_CURVE_SPREAD = 6;             ///< D190: bend-spreading passes per pass (no Taubin: it flattened bumps)
-		static constexpr int DENSE_CURVE_SOLVE = 120;            ///< D190: passes solving the shape to the spread bend
-		static constexpr float DENSE_CURVE_STEP = 0.8f;          ///< D190: ...each this share of the way
-		static constexpr int DENSE_CURVE_TIDY = 2;               ///< D190: Taubin pairs after it (the solve's dimples at each vertex)
-		static constexpr float DENSE_SHAPE_MOST = 40.0f;         ///< D186: most a vertex moves in shaping (curves sag ~20); D188-D190: eased (tanh), a hard cap left plateaus
-		static constexpr int DENSE_NORMAL_PASSES = 16;           ///< D186: passes softening the copy's normals over its neighbours (about 80 units)
-		static constexpr int32_t FRAME_REACH = 4;                ///< D186: texels each way the flow's frame is measured over
-		static constexpr int FRAME_BLUR = 3;                     ///< D186: passes softening it
-		/** @brief D73: builds and attaches a dense copy of a lit mesh; false where it cannot (no CPU data, or no engine builder). */
-		/** @brief D172: a dense copy in the making: the original's geometry copied on the render thread, made on a worker. */
-		struct DenseJob
-		{
-			RE::NiPointer<RE::BSGeometry> geometry;
-			std::vector<RE::NiPoint3> positions, normals, tangents, bitangents;
-			std::vector<RE::NiPoint2> uvs;
-			std::vector<RE::NiColorA> colors;
-			std::vector<std::array<uint32_t, 3>> triangles, untrimmed;
-			std::vector<uint16_t> indices;
-			RE::NiTransform world;
-			LandscapeCache land;  ///< The cells round the mesh
-			bool haveColors = false, interior = false, ok = false;
-			uint32_t vertexCount = 0, triangleCount = 0, trimmedAway = 0, trimmedSplit = 0;
-			uint32_t hiddenAway = 0;  ///< D173: triangles seen from nowhere (TrimHidden)
-			float lo[2]{}, hi[2]{};   ///< D173: its world bounds (x, y)
-		};
-		/** @brief D173: what TrimHidden needs from the render thread: what can hide the batch's sheets. */
-		struct ShellInput
-		{
-			std::vector<FallVisibility::Triangle> occluders;  ///< The statics' and the earlier copies' triangles round the batch
-			LandscapeCache land;                              ///< The landscape as far as the rays reach
-			bool interior = false;
-			double gatherMs = 0.0;
-		};
-		/** @brief D173: the statics' render triangles over an area (not the falls' models) and the dense copies made before.
+		static constexpr int32_t FRAME_REACH = 4;  ///< D186: texels each way the flow's frame is measured over
+		static constexpr int FRAME_BLUR = 3;       ///< D186: passes softening it
+		/** @brief D173: the statics' render triangles over an area (not the falls' models).
 		 * With a report (the unified-falls dump): every reference type and lit shader, triangles spanning the area too, and a line per
 		 * reference of what was taken or skipped and why. */
-		void GatherOccluders(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<FallVisibility::Triangle>& o_triangles, std::string* o_report = nullptr) const;
+		void GatherOccluders(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<Triangle>& o_triangles, std::string* o_report = nullptr) const;
 		/** @brief Unified falls, phase 0: each lit mesh, the statics and the landscape round them, next to the log (offline harness input). */
 		void DumpUnifyInputs() const;
-		/** @brief D173: on the worker, after the batch's copies are made: their triangles seen from nowhere dropped. */
-		static void TrimHidden(const std::vector<DenseJob*>& a_jobs, const ShellInput& a_shell);
-		static constexpr float OCCLUDER_REACH = 1024.0f;  ///< D173: world units round a batch its statics are gathered
-		static constexpr float SHELL_MARGIN = 64.0f;      ///< D173: world units along a sheet past what is seen that are kept (the sheets overlap where they meet)
-		bool ReadDense(RE::BSGeometry* a_geometry, DenseJob& o_job) const;
-		static void ComputeDense(DenseJob& a_job, const ShellInput* a_solids = nullptr);
-		bool AttachDense(DenseJob& a_job);
-		/** @brief D172: attaches the copies a finished worker made, and grounds them. */
-		void FinishDenseWork();
-		std::future<void> denseWork;
-		std::vector<std::unique_ptr<DenseJob>> denseJobs;
-		std::unordered_set<const RE::BSGeometry*> denseFailed;  ///< D172: originals with no copy: drawn as they are
-		std::chrono::steady_clock::time_point denseStarted;
-		/** @brief D73: removes every dense copy and shows the originals again. */
-		void RemoveDense();
-		/** @brief D68: gathers the statics' triangles round a bake job's sheet (main thread). */
-		void GatherSolids(BakeJob& a_job) const;
-		/** @brief D68: whether a point lies inside a static's render mesh, deeper than BAKE_ROCK_MARGIN (upward ray parity per mesh). */
-		static bool InsideSolid(const BakeJob& a_job, const RE::NiPoint3& a_point, bool a_lying = false);
-		static constexpr float SOLID_COVER = 120.0f;  ///< D76: a lying texel with a static's underside this near above it is under that rock (a wall)
-		std::vector<RE::NiPointer<RE::BSGeometry>> bakeQueue;
-		std::unique_ptr<BakeJob> bakeJob;
 		/** @brief D67: a mesh's solved flow on its texture grid, before it is linked to the meshes above it. */
 		struct BakeField
 		{
@@ -799,10 +633,7 @@ namespace FluidFieldSim
 		static constexpr float CLEAR_REACH = 600.0f;          ///< D104: world units the clearance rays look for rock
 		static constexpr float CLEAR_START = 40.0f;           ///< D105: the clearance rays start this far off the other side of the sheet
 		/** @brief D82: where a bake job's finished bake is kept on disk: by its reference, model part, placement, the rock and ground round it, and the version. */
-		static std::filesystem::path BakeCachePath(const BakeJob& a_job);
-		static bool SaveBake(const std::filesystem::path& a_path, const BakeField& a_field);
 		static std::shared_ptr<BakeField> LoadBake(const std::filesystem::path& a_path);
-		uint32_t bakesCached = 0, bakesSolved = 0;
 		/**
 		 * @brief D82: each lit mesh's vertices pushed out along their normals where its water piles up (the bake's swell),
 		 * in its own space, broad shapes only; none at its open edges (cracks between meshes)
@@ -872,17 +703,7 @@ namespace FluidFieldSim
 
 	private:
 		std::unordered_map<const RE::BSGeometry*, std::vector<RE::NiPoint3>> gapShifts, vertexPushes;
-		/** @brief D82 diagnostics: each fall's own vanilla scroll, measured on its hidden original and on its copy, logged once. */
-		void ProbeScrolls();
-		struct ScrollProbe
-		{
-			float offset = 0.0f, copyOffset = 0.0f, travelled = 0.0f, copyTravelled = 0.0f, scale = 0.0f;
-			double start = -1.0, last = -1.0;
-			bool logged = false;
-		};
-		std::unordered_map<const RE::BSGeometry*, ScrollProbe> scrollProbes;
 
-		std::vector<std::pair<RE::NiPointer<RE::BSGeometry>, std::future<std::shared_ptr<BakeField>>>> bakesPending;
 		std::unordered_map<const RE::BSGeometry*, std::shared_ptr<BakeField>> bakeFields;
 		/**
 		 * @brief D67: the solved meshes linked into cascades: a mesh whose top edge lies on the lower part of another
@@ -905,14 +726,9 @@ namespace FluidFieldSim
 		static constexpr float MEET_FOOT_LEVEL = 0.3f;    ///< D189: ...or this, at the foot of a steeper stretch (no meeting point lower nearby)
 		static constexpr float MEET_FOOT_DROP = 16.0f;    ///< D188: a steep stretch's point with no seam point this much lower nearby is its foot
 		uint64_t flowBakeVersion = 0;
-		uint32_t bakedRockTexels = 0, bakedTexels = 0, bakedFilled = 0;
-		/** @brief D59: rasterises the next queued mesh, tests its texels against the rock, then solves it off the main thread. */
+		/** @brief D67: links the bakes on a worker once they are in. */
 		void BakeStep();
-		/** @brief D83: BakeStep's work: lands finished bakes, then starts or continues the next job. */
-		void BakeWork();
-		bool linkDue = false;  ///< D83: a bake landed since the last link
-		std::unique_ptr<BakeJob> StartBake(RE::BSGeometry* a_geometry) const;
-		static std::shared_ptr<BakeField> SolveBake(const BakeJob& a_job);
+		bool linkDue = false;                         ///< D83: a bake landed since the last link
 		std::unordered_set<std::string> loggedParts;  ///< Diagnostics: falling-water mesh parts already logged
 
 		/**
@@ -997,8 +813,7 @@ namespace FluidFieldSim
 		PoolField ComputePools(const Site& a_site, const FallCapture& a_capture) const;  ///< D172: returned (a worker's), taken in by FinishHeavyWork
 		/** @brief D78: works out the pools of newly captured sites. */
 		void PollPools();
-		bool hideEffects = false;
-		uint32_t layerMask = 0x1;                                                                ///< Bit per Layer: the falling-water model parts shown while effects are hidden
+		static constexpr uint32_t SHOWN_LAYERS = 0x1;                                            ///< Bit per Layer: the falling-water model parts shown on takeover (the inner surface)
 		std::unordered_map<const RE::NiAVObject*, RE::NiPointer<RE::NiAVObject>> hiddenEffects;  ///< Culled effect 3D: whole effect references, and the spray particles in the falling-water models
 		void RefreshHiddenEffects();
 		uint64_t groundVersion = 0;

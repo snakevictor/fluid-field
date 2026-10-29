@@ -389,15 +389,6 @@ namespace FluidFieldSim
 		}
 	}
 
-	void FallSites::SetHideEffects(bool a_hide, uint32_t a_layerMask)
-	{
-		if (a_hide == hideEffects && a_layerMask == layerMask)
-			return;
-		hideEffects = a_hide;
-		layerMask = a_layerMask;
-		RefreshHiddenEffects();
-	}
-
 	FallSites::Layer FallSites::LayerOf(RE::BSGeometry* a_geometry)
 	{
 		auto* triShape = a_geometry->AsTriShape();
@@ -414,8 +405,10 @@ namespace FluidFieldSim
 	void FallSites::RefreshHiddenEffects()
 	{
 		std::unordered_map<const RE::NiAVObject*, RE::NiPointer<RE::NiAVObject>> wanted;
-		if (hideEffects) {
+		if (takeover) {
 			for (const auto& ref : refs) {
+				if (!unifiedSiteRefs.contains(ref.formID))
+					continue;
 				auto* object = RE::TESForm::LookupByID<RE::TESObjectREFR>(ref.formID);
 				auto* root = object ? object->Get3D() : nullptr;
 				if (!root)
@@ -429,19 +422,16 @@ namespace FluidFieldSim
 					});
 					continue;
 				}
-				// Falling-water models: show only the layers in the mask
+				// Falling-water models: show only the layers in SHOWN_LAYERS
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-					// D73: an original drawn by its dense copy stays hidden; the copy takes its layer
-					if (denseOf.contains(a_geometry))
-						return RE::BSVisit::BSVisitControl::kContinue;
-					if (!(layerMask & (1u << static_cast<uint32_t>(LayerOf(a_geometry)))))
+					if (!(SHOWN_LAYERS & (1u << static_cast<uint32_t>(LayerOf(a_geometry)))))
 						wanted.emplace(a_geometry, RE::NiPointer<RE::NiAVObject>(a_geometry));
 					return RE::BSVisit::BSVisitControl::kContinue;
 				});
 			}
 		}
 		for (auto& [object, pointer] : hiddenEffects) {
-			// D91: a lit piece the refractive pass draws stays hidden
+			// D91: a sheet the falls pass draws stays hidden
 			const bool lit = std::any_of(litHidden.begin(), litHidden.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_hidden) { return a_hidden.get() == object; });
 			if (!wanted.contains(object) && pointer && !lit)
 				pointer->SetAppCulled(false);
@@ -451,19 +441,26 @@ namespace FluidFieldSim
 		hiddenEffects.swap(wanted);
 	}
 
+	void FallSites::SetTakeover(bool a_on)
+	{
+		if (a_on == takeover)
+			return;
+		takeover = a_on;
+		for (auto& [index, unified] : unifiedOf) {
+			for (auto& original : unified.hidden) {
+				if (original)
+					original->SetAppCulled(takeover);
+			}
+		}
+		RefreshHiddenEffects();
+	}
+
 	void FallSites::Clear()
 	{
 		outwardNormals.clear();  // D109
-		depthRaysShown.clear();
 		depthQueue.clear();
-		depthJob.reset();
 		buryQueue.clear();  // D112
 		buryDone = true;
-		if (denseWork.valid())  // D172: wait for the dense worker; its results are dropped
-			denseWork.wait();
-		denseWork = {};
-		denseJobs.clear();
-		denseFailed.clear();
 		if (heavyWork.valid())  // D172: wait for the seams' or bakes' linking worker (it cannot be stopped)
 			heavyWork.wait();
 		heavyWork = {};
@@ -478,20 +475,17 @@ namespace FluidFieldSim
 		cullWork = {};
 		cullJob.reset();  // D113
 		cullRequested = false;
-		hideEffects = false;
+		takeover = false;
 		RefreshHiddenEffects();
-		// D91: the pieces the refractive pass drew show again (the wish is kept for the next sites)
 		for (const auto& geometry : litHidden) {
-			if (geometry && !denseOf.contains(geometry.get()))
+			if (geometry)
 				geometry->SetAppCulled(false);
 		}
 		litHidden.clear();
-		RemoveDense();
 		RemoveUnified();
+		unifiedSiteRefs.clear();
 		grounded.clear();
 		clipQueue.clear();
-		bakeQueue.clear();
-		bakeJob.reset();
 		if (!flowBakes.empty())
 			flowBakeVersion++;
 		flowBakes.clear();
@@ -782,168 +776,77 @@ namespace FluidFieldSim
 
 	void FallSites::RefreshGrounded()
 	{
-		// D26: ground the falling-water meshes of every site with captured ground
+		// D26: a site whose cache's members are all here, with its offline flow bake, draws as one sheet in place of its members'
+		// lit meshes (unified falls); every other falls site stays vanilla
 		grounded.clear();
 		std::unordered_set<const RE::BSGeometry*> litMeshes;
 		litMeshList.clear();
-		std::vector<RE::NiPointer<RE::BSGeometry>> toDensify;
-		std::unordered_set<const RE::BSGeometry*> denseSeen;
-		if (unifiedFalls && !unifiedLoaded)
+		unifiedSiteRefs.clear();
+		if (!unifiedLoaded)
 			LoadUnifiedCaches();
 		std::unordered_set<std::size_t> unifiedSeen;
-		const auto queueLit = [&](RE::BSGeometry* a_geometry, const std::shared_ptr<BakeField>& a_baked) {
-			litMeshes.insert(a_geometry);
-			litMeshList.push_back({ RE::NiPointer<RE::BSGeometry>(a_geometry) });
-			if (!vertexClipBase.contains(a_geometry) &&
-				std::none_of(clipQueue.begin(), clipQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }))
-				clipQueue.emplace_back(a_geometry);
-			// Baked offline: taken as a finished bake (linked, plunged and shaded as any), never baked here
-			if (a_baked) {
-				if (!bakeFields.contains(a_geometry)) {
-					bakeFields[a_geometry] = a_baked;
-					bakesCached++;
-					linkDue = true;
-				}
-				return;
-			}
-			if (!bakeFields.contains(a_geometry) && (!bakeJob || bakeJob->geometry.get() != a_geometry) &&
-				std::none_of(bakeQueue.begin(), bakeQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }) &&
-				std::none_of(bakesPending.begin(), bakesPending.end(), [&](const auto& a_pending) { return a_pending.first.get() == a_geometry; }))
-				bakeQueue.emplace_back(a_geometry);
-		};
 		for (const auto& site : sites) {
 			const FallCapture* capture = GetCapture(site);
 			if (!capture || !capture->IsComplete())
 				continue;
-			// Unified falls: a site whose cache's members are all here draws as one sheet (the members' lit meshes hidden, not copied)
 			std::size_t unifiedIndex = SIZE_MAX;
-			for (std::size_t c = 0; unifiedFalls && c < unifiedCaches.size() && unifiedIndex == SIZE_MAX; c++) {
+			for (std::size_t c = 0; c < unifiedCaches.size() && unifiedIndex == SIZE_MAX; c++) {
 				const auto& wanted = unifiedCaches[c].members;
-				if (std::all_of(wanted.begin(), wanted.end(), [&](RE::FormID a_id) {
+				if (unifiedCaches[c].bake && std::all_of(wanted.begin(), wanted.end(), [&](RE::FormID a_id) {
 						return std::any_of(site.members.begin(), site.members.end(), [&](uint32_t a_member) { return refs[a_member].formID == a_id && refs[a_member].cls == FxClass::Body; });
 					}))
 					unifiedIndex = c;
 			}
+			if (unifiedIndex == SIZE_MAX)
+				continue;
+			const auto& cacheMembers = unifiedCaches[unifiedIndex].members;
 			std::vector<RE::BSGeometry*> unifiedLit;
 			RE::NiNode* unifiedRoot = nullptr;
 			for (const uint32_t member : site.members) {
-				if (refs[member].cls != FxClass::Body)
+				unifiedSiteRefs.insert(refs[member].formID);
+				if (refs[member].cls != FxClass::Body || std::ranges::find(cacheMembers, refs[member].formID) == cacheMembers.end())
 					continue;
 				auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(refs[member].formID);
 				auto* root = ref ? ref->Get3D() : nullptr;
 				if (!root)
 					continue;
-				if (unifiedIndex != SIZE_MAX && std::ranges::find(unifiedCaches[unifiedIndex].members, refs[member].formID) != unifiedCaches[unifiedIndex].members.end()) {
-					if (!unifiedRoot)
-						unifiedRoot = root->AsNode();
-					RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-						// The sheet itself, and old dense copies (detached below: their originals go unseen)
-						auto* triShape = a_geometry->AsTriShape();
-						if (unifiedShapes.contains(a_geometry) || denseShapes.contains(a_geometry) || !triShape || triShape->GetTrishapeRuntimeData().triangleCount == 0)
-							return RE::BSVisit::BSVisitControl::kContinue;
-						if (netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get()))
-							unifiedLit.push_back(a_geometry);
-						else
-							grounded.insert(a_geometry);  // the effect layers ground as before
-						return RE::BSVisit::BSVisitControl::kContinue;
-					});
-					continue;
-				}
+				if (!unifiedRoot)
+					unifiedRoot = root->AsNode();
 				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-					// D73: skip an original drawn by its dense copy (the copy is found as its sibling)
-					if (denseOf.contains(a_geometry)) {
-						denseSeen.insert(a_geometry);
-						return RE::BSVisit::BSVisitControl::kContinue;
-					}
-					if (DENSE && !denseShapes.contains(a_geometry) && !denseFailed.contains(a_geometry) && a_geometry->AsTriShape() &&
-						a_geometry->AsTriShape()->GetTrishapeRuntimeData().triangleCount > 0 && netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get())) {
-						// D172: copied on a worker (FinishDenseWork); not lit, clipped or baked until then
-						toDensify.emplace_back(a_geometry);
-						return RE::BSVisit::BSVisitControl::kContinue;
-					}
-					// Water surfaces only: the particle spray (no triangles) would smear grounding and the streamlines
 					auto* triShape = a_geometry->AsTriShape();
-					if (triShape && triShape->GetTrishapeRuntimeData().triangleCount > 0)
-						grounded.insert(a_geometry);
-					// D56: test the lit surface's vertices against the rock, once
-					if (triShape && triShape->GetTrishapeRuntimeData().triangleCount > 0 && netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get())) {
-						litMeshes.insert(a_geometry);
-						litMeshList.push_back({ RE::NiPointer<RE::BSGeometry>(a_geometry) });
-						if (!vertexClipBase.contains(a_geometry) &&
-							std::none_of(clipQueue.begin(), clipQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }))
-							clipQueue.emplace_back(a_geometry);
-						if (bakeOthers && !bakeFields.contains(a_geometry) && (!bakeJob || bakeJob->geometry.get() != a_geometry) &&
-							std::none_of(bakeQueue.begin(), bakeQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == a_geometry; }) &&
-							std::none_of(bakesPending.begin(), bakesPending.end(), [&](const auto& a_pending) { return a_pending.first.get() == a_geometry; }))
-							bakeQueue.emplace_back(a_geometry);
-					}
-					// Diagnostics: what each part of a falling-water mesh is, once per model and part
-					auto* property = a_geometry->GetGeometryRuntimeData().shaderProperty.get();
-					auto* effect = property ? netimmerse_cast<RE::BSEffectShaderProperty*>(property) : nullptr;
-					auto* material = effect ? static_cast<RE::BSEffectShaderMaterial*>(effect->GetBaseMaterial()) : nullptr;
-					const char* model = ModelOf(ref->GetBaseObject());
-					const std::string key = std::format("{}|{}", model ? model : "?", a_geometry->name.c_str());
-					if (loggedParts.insert(key).second) {
-						// Alpha, textures and texture-coordinate range
-						std::string extra;
-						if (auto* alpha = a_geometry->GetGeometryRuntimeData().alphaProperty.get())
-							extra += std::format(", alpha flags {:04X} (blend {}, test {}), threshold {}", alpha->alphaFlags,
-								alpha->GetAlphaBlending(), alpha->GetAlphaTesting(), alpha->alphaThreshold);
-						else
-							extra += ", no alpha property";
-						if (auto* lighting = property ? netimmerse_cast<RE::BSLightingShaderProperty*>(property) : nullptr) {
-							auto* base = static_cast<RE::BSLightingShaderMaterialBase*>(lighting->GetBaseMaterial());
-							if (base && base->textureSet)
-								extra += std::format(", diffuse '{}', normal '{}'", base->textureSet->GetTexturePath(RE::BSTextureSet::Texture::kDiffuse),
-									base->textureSet->GetTexturePath(RE::BSTextureSet::Texture::kNormal));
-							if (base)
-								extra += std::format(", uv offset {:.3f},{:.3f} scale {:.3f},{:.3f}", base->texCoordOffset[0].x, base->texCoordOffset[0].y, base->texCoordScale[0].x,
-									base->texCoordScale[0].y);
-						}
-						auto* renderer = a_geometry->GetGeometryRuntimeData().rendererData;
-						if (triShape && renderer && renderer->rawVertexData && renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV)) {
-							const uint32_t stride = renderer->vertexDesc.GetSize();
-							const uint32_t uvOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
-							float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
-							for (uint32_t v = 0; v < triShape->GetTrishapeRuntimeData().vertexCount; v++) {
-								const auto* uv = reinterpret_cast<const uint16_t*>(renderer->rawVertexData + static_cast<std::size_t>(v) * stride + uvOffset);
-								for (int k = 0; k < 2; k++) {
-									const float value = DirectX::PackedVector::XMConvertHalfToFloat(uv[k]);
-									lo[k] = std::min(lo[k], value);
-									hi[k] = std::max(hi[k], value);
-								}
-							}
-							extra += std::format(", vertex uv {:.2f}..{:.2f} x {:.2f}..{:.2f}", lo[0], hi[0], lo[1], hi[1]);
-						}
-						logger::info("[Fluid Field]   fall part {} '{}'{}", model ? model : "?", a_geometry->name.c_str(), extra);
-						logger::info("[Fluid Field]   fall part {}: '{}' ({}, {}, layer {}), {} vertices, {} triangles, texture '{}', greyscale '{}', shader flags {:016X}, culled {}",
-							model ? model : "?", a_geometry->name.c_str(), a_geometry->GetRTTI() ? a_geometry->GetRTTI()->GetName() : "?",
-							property && property->GetRTTI() ? property->GetRTTI()->GetName() : "no shader", static_cast<int>(LayerOf(a_geometry)),
-							triShape ? triShape->GetTrishapeRuntimeData().vertexCount : 0, triShape ? triShape->GetTrishapeRuntimeData().triangleCount : 0,
-							material ? material->sourceTexturePath.c_str() : "", material ? material->greyscaleTexturePath.c_str() : "",
-							property ? property->flags.underlying() : 0ull, a_geometry->GetAppCulled());
-					}
+					if (unifiedShapes.contains(a_geometry) || !triShape || triShape->GetTrishapeRuntimeData().triangleCount == 0)
+						return RE::BSVisit::BSVisitControl::kContinue;
+					if (netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get()))
+						unifiedLit.push_back(a_geometry);
 					return RE::BSVisit::BSVisitControl::kContinue;
 				});
 			}
-			// Unified falls: the site's sheet (attached once), lit, clipped and baked as one mesh; its members' lit meshes hidden
-			if (unifiedIndex != SIZE_MAX && unifiedRoot && !unifiedLit.empty()) {
-				const auto found = unifiedOf.find(unifiedIndex);
-				RE::BSGeometry* sheet = found != unifiedOf.end() ? found->second.shape.get() : AttachUnified(unifiedIndex, unifiedRoot, unifiedLit.front());
-				if (sheet) {
-					unifiedSeen.insert(unifiedIndex);
-					auto& unified = unifiedOf[unifiedIndex];
-					for (auto* lit : unifiedLit) {
-						lit->SetAppCulled(true);
-						if (std::none_of(unified.hidden.begin(), unified.hidden.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_hidden) { return a_hidden.get() == lit; }))
-							unified.hidden.emplace_back(lit);
-					}
-					grounded.insert(sheet);
-					queueLit(sheet, unifiedCaches[unifiedIndex].bake);
-				}
+			// The site's sheet (attached once), clipped and linked as one mesh; its members' lit meshes hidden while our pass draws it
+			if (!unifiedRoot || unifiedLit.empty())
+				continue;
+			const auto found = unifiedOf.find(unifiedIndex);
+			RE::BSGeometry* sheet = found != unifiedOf.end() ? found->second.shape.get() : AttachUnified(unifiedIndex, unifiedRoot, unifiedLit.front());
+			if (!sheet)
+				continue;
+			unifiedSeen.insert(unifiedIndex);
+			auto& unified = unifiedOf[unifiedIndex];
+			for (auto* lit : unifiedLit) {
+				lit->SetAppCulled(takeover);
+				if (std::none_of(unified.hidden.begin(), unified.hidden.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_hidden) { return a_hidden.get() == lit; }))
+					unified.hidden.emplace_back(lit);
+			}
+			grounded.insert(sheet);
+			litMeshes.insert(sheet);
+			litMeshList.push_back({ RE::NiPointer<RE::BSGeometry>(sheet) });
+			if (!vertexClipBase.contains(sheet) && std::none_of(clipQueue.begin(), clipQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == sheet; }))
+				clipQueue.emplace_back(sheet);
+			// Baked offline: taken as a finished bake (linked, plunged and shaded as any)
+			if (!bakeFields.contains(sheet)) {
+				bakeFields[sheet] = unifiedCaches[unifiedIndex].bake;
+				linkDue = true;
 			}
 		}
-		// Unified falls: sheets whose site went away (cell unloaded) detached, their members shown again
+		// Sheets whose site went away (cell unloaded) detached, their members shown again
 		for (auto it = unifiedOf.begin(); it != unifiedOf.end();) {
 			if (unifiedSeen.contains(it->first)) {
 				++it;
@@ -958,106 +861,28 @@ namespace FluidFieldSim
 			unifiedShapes.erase(it->second.shape.get());
 			it = unifiedOf.erase(it);
 		}
-		// D73: drop copies whose original went away; new lit meshes get theirs, and grounding then uses the copies
-		for (auto it = denseOf.begin(); it != denseOf.end();) {
-			if (denseSeen.contains(it->first)) {
-				++it;
-				continue;
-			}
-			if (it->second.parent && it->second.shape)
-				it->second.parent->DetachChild(it->second.shape.get());
-			denseShapes.erase(it->second.shape.get());
-			untrimmedIndices.erase(it->second.shape.get());  // D172
-			it = denseOf.erase(it);
-		}
-		if (!toDensify.empty() && !refreshing && !denseWork.valid()) {
-			// D172: copied here, made on a worker, attached by FinishDenseWork
-			for (const auto& geometry : toDensify) {
-				auto job = std::make_unique<DenseJob>();
-				if (ReadDense(geometry.get(), *job))
-					denseJobs.push_back(std::move(job));
-				else
-					denseFailed.insert(geometry.get());
-			}
-			if (!denseJobs.empty()) {
-				std::vector<DenseJob*> running;
-				for (auto& job : denseJobs)
-					running.push_back(job.get());
-				// D173: gather what can hide the copies' sheets (statics, copies made, landscape); the worker finds the outer shell per
-				// batch
-				float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
-				for (const auto* job : running) {
-					for (int k = 0; k < 2; k++) {
-						lo[k] = std::min(lo[k], job->lo[k]);
-						hi[k] = std::max(hi[k], job->hi[k]);
-					}
-				}
-				auto shell = std::make_shared<ShellInput>();
-				const auto gatherStart = std::chrono::steady_clock::now();
-				GatherOccluders(lo[0] - OCCLUDER_REACH, lo[1] - OCCLUDER_REACH, hi[0] + OCCLUDER_REACH, hi[1] + OCCLUDER_REACH, shell->occluders);
-				shell->gatherMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - gatherStart).count();
-				auto* tes = RE::TES::GetSingleton();
-				shell->interior = !tes || tes->interiorCell != nullptr || !landscape;
-				if (!shell->interior)
-					shell->land = landscape->Subset(lo[0] - FallVisibility::REACH, lo[1] - FallVisibility::REACH, hi[0] + FallVisibility::REACH, hi[1] + FallVisibility::REACH);
-				denseStarted = std::chrono::steady_clock::now();
-				denseWork = std::async(std::launch::async, [this, running, shell]() {
-					const auto start = std::chrono::steady_clock::now();
-					for (auto* job : running)
-						ComputeDense(*job, shell.get());
-					TrimHidden(running, *shell);
-					loadTiming.AddWorker(LoadWork::Dense, start);
-				});
-			}
-		}
 		// Drop meshes no longer grounded (cell unloaded) so a reused address is not mistaken for them
 		std::erase_if(vertexClipBase, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
 		std::erase_if(gapShifts, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
 		std::erase_if(vertexPushes, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
 		std::erase_if(outwardNormals, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
-		std::erase_if(depthRaysShown, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); });
 		if (std::erase_if(flowBakes, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); }))
 			flowBakeVersion++;
-		// D78: plunges and spray go with their meshes
+		// D78: plunges go with their meshes
 		if (std::erase_if(bakeFields, [&](const auto& a_entry) { return !litMeshes.contains(a_entry.first); }))
 			plungesDue = true;  // D172: ComputePlunges on a worker (Update)
 		groundVersion++;
 		ApplyLitHidden();
-	}
-
-	void FallSites::SetLitHidden(bool a_hidden)
-	{
-		if (a_hidden == litHiddenWanted)
-			return;
-		litHiddenWanted = a_hidden;
-		ApplyLitHidden();
+		RefreshHiddenEffects();
 	}
 
 	void FallSites::ApplyLitHidden()
 	{
-		// Show what is no longer wanted hidden (or no longer lit); an original drawn by its dense copy (D73) stays hidden
+		// The sheets are drawn only by the falls pass: the engine never draws them
 		std::unordered_set<const RE::BSGeometry*> current;
-		if (litHiddenWanted) {
-			for (const auto& lit : litMeshList)
-				current.insert(lit.geometry.get());
-		}
-		std::unordered_set<const RE::BSGeometry*> replaced;  // unified falls: the members' meshes a site sheet draws for
-		for (const auto& [index, unified] : unifiedOf) {
-			for (const auto& original : unified.hidden)
-				replaced.insert(original.get());
-		}
-		std::erase_if(litHidden, [&](const RE::NiPointer<RE::BSGeometry>& a_geometry) {
-			if (!a_geometry)
-				return true;
-			if (current.contains(a_geometry.get()))
-				return false;
-			// Not an original drawn by its copy or a site's sheet, nor a layer the debug hides (RefreshHiddenEffects)
-			if (!denseOf.contains(a_geometry.get()) && !replaced.contains(a_geometry.get()) && !hiddenEffects.contains(a_geometry.get()))
-				a_geometry->SetAppCulled(false);
-			return true;
-		});
-		if (!litHiddenWanted)
-			return;
+		for (const auto& lit : litMeshList)
+			current.insert(lit.geometry.get());
+		std::erase_if(litHidden, [&](const RE::NiPointer<RE::BSGeometry>& a_geometry) { return !a_geometry || !current.contains(a_geometry.get()); });
 		for (const auto& lit : litMeshList) {
 			auto* geometry = lit.geometry.get();
 			if (!geometry || std::any_of(litHidden.begin(), litHidden.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_hidden) { return a_hidden.get() == geometry; }))
@@ -1067,276 +892,54 @@ namespace FluidFieldSim
 		}
 	}
 
-	float FallSites::RockAlong(RE::hkpWorld* a_world, const RE::NiPoint3& a_from, const RE::NiPoint3& a_direction, float a_reach, int* a_crossings, float* a_last) const
-	{
-		// Passes through anything not rock (the falls' own collision is water), counting rock crossings
-		const float scale = RE::bhkWorld::GetWorldScale();
-		float first = -1.0f;
-		float from = 0.0f;
-		for (int step = 0; step < 8 && from < a_reach; step++) {
-			const RE::NiPoint3 start = a_from + a_direction * from;
-			const RE::NiPoint3 end = a_from + a_direction * a_reach;
-			RE::hkpWorldRayCastInput input;
-			input.from = RE::hkVector4(start.x * scale, start.y * scale, start.z * scale, 0.0f);
-			input.to = RE::hkVector4(end.x * scale, end.y * scale, end.z * scale, 0.0f);
-			RE::hkpWorldRayCastOutput output;
-			a_world->CastRay(input, output);
-			if (!output.HasHit())
-				break;
-			const float hit = from + (a_reach - from) * output.hitFraction;
-			const auto layer = output.rootCollidable->GetCollisionLayer();
-			const bool solid = layer == RE::COL_LAYER::kStatic || layer == RE::COL_LAYER::kAnimStatic || layer == RE::COL_LAYER::kTerrain || layer == RE::COL_LAYER::kGround;
-			const auto* ref = RE::TESHavokUtilities::FindCollidableRef(*output.rootCollidable);
-			const char* model = ref ? ModelOf(ref->GetBaseObject()) : nullptr;
-			const std::string name = model ? Lowercase(model) : std::string();
-			if (solid && name.find("fxwaterfall") == std::string::npos && name.find("fxrapids") == std::string::npos) {
-				if (first < 0.0f)
-					first = hit;
-				if (a_crossings)
-					(*a_crossings)++;
-				if (a_last)
-					*a_last = hit;
-				if (!a_crossings)
-					break;
-			}
-			from = hit + 0.5f;
-		}
-		return first;
-	}
-
 	void FallSites::DepthStep()
 	{
-		auto* tes = RE::TES::GetSingleton();
-		if (!tes)
-			return;
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double, std::milli>(CLIP_BUDGET_MS);
-		while (std::chrono::steady_clock::now() < deadline) {
-			if (!depthJob) {
-				if (depthQueue.empty()) {
-					// TEMPORARY D110 audit: depth behind each mesh's shown vertices, once all are done
-					if (!depthAudited) {
-						depthAudited = true;
-						for (const auto& [geometry, base] : vertexClipBase) {
-							auto* triShape = geometry ? const_cast<RE::BSGeometry*>(geometry)->AsTriShape() : nullptr;
-							if (!triShape)
-								continue;
-							const uint32_t count = triShape->GetTrishapeRuntimeData().vertexCount;
-							if (base + count > vertexClips.size())
-								continue;
-							std::vector<float> shown;
-							for (uint32_t v = 0; v < count; v++) {
-								if (VertexShown(base + v) && vertexClips[base + v][3] < 3.5f)
-									shown.push_back(vertexClips[base + v][13]);
-							}
-							if (shown.empty())
-								continue;
-							std::sort(shown.begin(), shown.end());
-							const auto at = [&](float a_q) { return shown[std::min(shown.size() - 1, static_cast<std::size_t>(a_q * static_cast<float>(shown.size())))]; };
-							const auto atReach = std::count_if(shown.begin(), shown.end(), [](float a_d) { return a_d >= CLEAR_REACH - 1.0f; });
-							logger::info("[Fluid Field]   depth audit '{}': {} of {} shown; depth 10% {:.0f}, 50% {:.0f}, 90% {:.0f}; {} at the reach", geometry->name.c_str(), shown.size(), count,
-								at(0.1f), at(0.5f), at(0.9f), atReach);
-						}
-					}
-					return;
-				}
-				// D109: a mesh waits for its consistent outward normals (CullStep)
-				RE::NiPointer<RE::BSGeometry> geometry = depthQueue.back();
-				// D110: and every cut (the lead-in's comes with the swell, ComputePushes); D112: the rock test (BuryStep); D113: the
-				// culling (CullStep)
-				if (geometry && vertexClipBase.contains(geometry.get()) &&
-					(!outwardNormals.contains(geometry.get()) || !vertexPushes.contains(geometry.get()) || !buryDone || CullBusy()))
-					return;
-				depthQueue.pop_back();
-				const auto base = geometry ? vertexClipBase.find(geometry.get()) : vertexClipBase.end();
-				auto* triShape = geometry ? geometry->AsTriShape() : nullptr;
-				auto* renderer = geometry ? geometry->GetGeometryRuntimeData().rendererData : nullptr;
-				if (base == vertexClipBase.end() || !triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
-					continue;
-				const auto& counts = triShape->GetTrishapeRuntimeData();
-				if (base->second + counts.vertexCount > vertexClips.size())
-					continue;
-				auto& desc = renderer->vertexDesc;  // CommonLib's getters are not const
-				const uint32_t stride = desc.GetSize();
-				const uint32_t positionOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-				auto job = std::make_unique<DepthJob>();
-				job->geometry = geometry;
-				job->base = base->second;
-				job->positions.resize(counts.vertexCount);
-				job->normals.assign(counts.vertexCount, RE::NiPoint3(0.0f, 0.0f, 0.0f));
-				job->ring.resize(counts.vertexCount);
-				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					float local[3];
-					std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
-					job->positions[v] = geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
-				}
-				// D106: authored normals (the game lights by them, out of the visible face); the winding is inconsistent, so used only
-				// without them
-				const bool authored = desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_NORMAL);
-				const uint32_t normalOffset = authored ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_NORMAL) : 0;
-				for (uint32_t i = 0; i < counts.triangleCount; i++) {
-					const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
-					if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
-						continue;
-					const RE::NiPoint3 face = (job->positions[index[1]] - job->positions[index[0]]).Cross(job->positions[index[2]] - job->positions[index[0]]);
-					for (int k = 0; k < 3; k++) {
-						if (!authored)
-							job->normals[index[k]] += face;
-						job->ring[index[k]].push_back(index[(k + 1) % 3]);
-						job->ring[index[k]].push_back(index[(k + 2) % 3]);
-					}
-				}
-				if (authored) {
-					for (uint32_t v = 0; v < counts.vertexCount; v++) {
-						const uint8_t* n = renderer->rawVertexData + static_cast<std::size_t>(v) * stride + normalOffset;
-						job->normals[v] = geometry->world.rotate * RE::NiPoint3(n[0] / 255.0f * 2.0f - 1.0f, n[1] / 255.0f * 2.0f - 1.0f, n[2] / 255.0f * 2.0f - 1.0f);
-					}
-				}
-				for (auto& n : job->normals) {
-					const float length = n.Length();
-					n = length > 1e-6f ? n / length : RE::NiPoint3(0.0f, 0.0f, 1.0f);
-				}
-				// D109: the sheet's consistent outer side (ComputeSides); rays go against it, into what lies behind the sheet
-				if (const auto outward = outwardNormals.find(geometry.get()); outward != outwardNormals.end() && outward->second.size() == job->normals.size()) {
-					for (std::size_t v = 0; v < job->normals.size(); v++) {
-						if (outward->second[v].Length() > 0.5f)
-							job->normals[v] = outward->second[v];
-					}
-				}
-				// D110: start where the vertex is drawn (moved by the seam gap and swell, ComposeShifts; not the wobble).
-				// D112: those moves are in mesh space (b.xyz), so rotate and scale them into the world.
-				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					const auto& clip = vertexClips[job->base + v];
-					job->positions[v] += geometry->world.rotate * (RE::NiPoint3(clip[4], clip[5], clip[6]) * geometry->world.scale);
-				}
-				// One shown vertex per DEPTH_CELL cell (D110: only the outer surface matters). D112: shown as the GPU draws it
-				// (VertexShown: pool cut and rock too) and seen from outside (a.w's +4 marks a vertex inside another sheet's curl).
-				std::unordered_set<int64_t> cells;
-				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					if (!VertexShown(job->base + v) || vertexClips[job->base + v][3] >= 3.5f)
-						continue;
-					// D111: nor the underside (the curl back under the crest, facing down): its ray went into the hollow behind the
-					// curtain. Filled from the samples round it.
-					if (job->normals[v].z < DEPTH_UNDERSIDE_Z)
-						continue;
-					const RE::NiPoint3& p = job->positions[v];
-					const int64_t key = (static_cast<int64_t>(std::floor(p.x / DEPTH_CELL)) & 0x1FFFFF) << 42 | (static_cast<int64_t>(std::floor(p.y / DEPTH_CELL)) & 0x1FFFFF) << 21 |
-					                    (static_cast<int64_t>(std::floor(p.z / DEPTH_CELL)) & 0x1FFFFF);
-					if (cells.insert(key).second)
-						job->samples.push_back(v);
-				}
-				job->plus.assign(counts.vertexCount, CLEAR_REACH);
-				job->minus.assign(counts.vertexCount, CLEAR_REACH);
-				job->known.assign(counts.vertexCount, 0);
-				depthJob = std::move(job);
-				continue;
-			}
-			auto* cell = tes->interiorCell ? tes->interiorCell : tes->GetCell(depthJob->geometry->world.translate);
-			auto* bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
-			auto* world = bhkWorld ? bhkWorld->GetWorld1() : nullptr;
-			if (!world)
+		// D106: each sheet's depth behind (vertexClips d.y): its offline bake's open space behind every texel (along the normal,
+		// to the world's rock and land), at each vertex's uv
+		while (!depthQueue.empty()) {
+			RE::NiPointer<RE::BSGeometry> geometry = depthQueue.back();
+			// D109, D110, D112, D113: after its outward normals, every cut (the lead-in's comes with the swell), the rock test and the culling
+			if (geometry && vertexClipBase.contains(geometry.get()) &&
+				(!outwardNormals.contains(geometry.get()) || !vertexPushes.contains(geometry.get()) || !buryDone || CullBusy()))
 				return;
-			{
-				const RE::BSReadLockGuard lock(bhkWorld->worldLock);
-				for (int rays = 0; depthJob->next < depthJob->samples.size() && rays < 32; depthJob->next++, rays++) {
-					const uint32_t v = depthJob->samples[depthJob->next];
-					const RE::NiPoint3& p = depthJob->positions[v];
-					const RE::NiPoint3& n = depthJob->normals[v];
-					// From DEPTH_START off the visible face, back through the vertex, to the first rock or ground. D106: against the
-					// authored normal (up on 75% of vertices; level on the curtains, where a miss rightly means open air or water behind).
-					const RE::NiPoint3 from = p + n * DEPTH_START;
-					const float hit = RockAlong(world, from, -n, CLEAR_REACH + DEPTH_START);
-					depthJob->minus[v] = hit >= 0.0f ? std::clamp(hit - DEPTH_START, 0.0f, CLEAR_REACH) : CLEAR_REACH;
-					depthRays++;
-					depthHits += hit >= 0.0f ? 1 : 0;
-					// D108: kept for the overlay (Falls Mesh Debug: Depth Rays). D111: from the vertex to the hit or the reach
-					depthJob->rays.push_back({ p, p - n * (hit >= 0.0f ? std::max(hit - DEPTH_START, 0.0f) : CLEAR_REACH), RE::NiPoint3(hit >= 0.0f ? 1.0f : 0.0f, 0.0f, 0.0f) });
-					// TEMPORARY D106 diagnostics: ray tilt (-n.z: 1 straight down); for a miss, a ray straight down
-					depthJob->tiltSum += -n.z;                  // The ray's z: negative is down
-					depthJob->downward += -n.z < 0.0f ? 1 : 0;  // Rays pointing down
-					if (hit >= 0.0f) {
-						depthJob->hits++;
-						depthJob->hitDistances.push_back(hit - DEPTH_START);
-					} else {
-						depthJob->misses++;
-						const float down = RockAlong(world, p + RE::NiPoint3(0.0f, 0.0f, DEPTH_START), RE::NiPoint3(0.0f, 0.0f, -1.0f), CLEAR_REACH + DEPTH_START);
-						if (down >= 0.0f) {
-							depthJob->missDownHits++;
-							depthJob->missDown.push_back(down - DEPTH_START);
-						}
-					}
-					depthJob->known[v] = 1;
-				}
-			}
-			if (depthJob->next < depthJob->samples.size())
+			depthQueue.pop_back();
+			const auto base = geometry ? vertexClipBase.find(geometry.get()) : vertexClipBase.end();
+			auto* triShape = geometry ? geometry->AsTriShape() : nullptr;
+			auto* renderer = geometry ? geometry->GetGeometryRuntimeData().rendererData : nullptr;
+			if (base == vertexClipBase.end() || !triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData)
 				continue;
-			// Spread to the vertices between (each the mean of its neighbours, the samples held), then a light softening
-			DepthJob& job = *depthJob;
-			const std::size_t count = job.positions.size();
-			for (auto* field : { &job.plus, &job.minus }) {
-				std::vector<float> next = *field;
-				for (int pass = 0; pass < DEPTH_FILL_PASSES; pass++) {
+			const std::size_t count = triShape->GetTrishapeRuntimeData().vertexCount;
+			if (base->second + count > vertexClips.size())
+				continue;
+			std::vector<float> behind(count, CLEAR_REACH);
+			const auto baked = bakeFields.find(geometry.get());
+			const UnifiedCache* cache = nullptr;
+			for (const auto& [index, unified] : unifiedOf) {
+				if (unified.shape.get() == geometry.get() && index < unifiedCaches.size())
+					cache = &unifiedCaches[index];
+			}
+			if (baked != bakeFields.end() && baked->second && cache && cache->uvs.size() == count) {
+				const BakeField& bake = *baked->second;
+				const auto bw = static_cast<int32_t>(bake.width), bh = static_cast<int32_t>(bake.height);
+				if (bake.clearBack.size() == static_cast<std::size_t>(bw) * bh) {
 					for (std::size_t v = 0; v < count; v++) {
-						if (job.known[v] || job.ring[v].empty())
-							continue;
-						float sum = 0.0f;
-						for (const uint32_t n : job.ring[v])
-							sum += (*field)[n];
-						next[v] = sum / static_cast<float>(job.ring[v].size());
-					}
-					field->swap(next);
-					next = *field;
-				}
-			}
-			// a unified sheet: its depth behind from its offline bake (the open space behind every texel, along the normal against the
-			// world's rock and land), at each vertex's uv: full resolution where the rays sampled one vertex in several
-			if (unifiedShapes.contains(job.geometry.get())) {
-				const auto baked = bakeFields.find(job.geometry.get());
-				const UnifiedCache* cache = nullptr;
-				for (const auto& [index, unified] : unifiedOf) {
-					if (unified.shape.get() == job.geometry.get() && index < unifiedCaches.size())
-						cache = &unifiedCaches[index];
-				}
-				if (baked != bakeFields.end() && baked->second && cache && cache->uvs.size() == count) {
-					const BakeField& bake = *baked->second;
-					const auto bw = static_cast<int32_t>(bake.width), bh = static_cast<int32_t>(bake.height);
-					if (bake.clearBack.size() == static_cast<std::size_t>(bw) * bh) {
-						for (std::size_t v = 0; v < count; v++) {
-							const float gx = std::clamp((cache->uvs[v].x - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(bw) - 0.5f, 0.0f, static_cast<float>(bw - 1));
-							const float gy = std::clamp((cache->uvs[v].y - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(bh) - 0.5f, 0.0f, static_cast<float>(bh - 1));
-							const int32_t x0 = std::min(static_cast<int32_t>(gx), bw - 1), y0 = std::min(static_cast<int32_t>(gy), bh - 1);
-							const int32_t x1 = std::min(x0 + 1, bw - 1), y1 = std::min(y0 + 1, bh - 1);
-							const float fx = gx - static_cast<float>(x0), fy = gy - static_cast<float>(y0);
-							const auto at = [&](int32_t a_x, int32_t a_y) { return bake.clearBack[static_cast<std::size_t>(a_y) * bw + a_x]; };
-							job.minus[v] = (at(x0, y0) * (1.0f - fx) + at(x1, y0) * fx) * (1.0f - fy) + (at(x0, y1) * (1.0f - fx) + at(x1, y1) * fx) * fy;
-						}
+						const float gx = std::clamp((cache->uvs[v].x - bake.uvMin[0]) / std::max(bake.uvSize[0], 1e-6f) * static_cast<float>(bw) - 0.5f, 0.0f, static_cast<float>(bw - 1));
+						const float gy = std::clamp((cache->uvs[v].y - bake.uvMin[1]) / std::max(bake.uvSize[1], 1e-6f) * static_cast<float>(bh) - 0.5f, 0.0f, static_cast<float>(bh - 1));
+						const int32_t x0 = std::min(static_cast<int32_t>(gx), bw - 1), y0 = std::min(static_cast<int32_t>(gy), bh - 1);
+						const int32_t x1 = std::min(x0 + 1, bw - 1), y1 = std::min(y0 + 1, bh - 1);
+						const float fx = gx - static_cast<float>(x0), fy = gy - static_cast<float>(y0);
+						const auto at = [&](int32_t a_x, int32_t a_y) { return bake.clearBack[static_cast<std::size_t>(a_y) * bw + a_x]; };
+						behind[v] = (at(x0, y0) * (1.0f - fx) + at(x1, y0) * fx) * (1.0f - fy) + (at(x0, y1) * (1.0f - fx) + at(x1, y1) * fx) * fy;
 					}
 				}
 			}
-			const auto base = vertexClipBase.find(job.geometry.get());
-			if (base != vertexClipBase.end() && base->second == job.base && job.base + count <= vertexClips.size()) {
-				uint32_t shallow = 0;
-				for (std::size_t v = 0; v < count; v++) {
-					vertexClips[job.base + v][13] = job.minus[v];  // (d.x is the wobble's scale, D188: ComputePushes)
-					shallow += job.minus[v] < CLEAR_REACH * 0.5f ? 1 : 0;
-				}
-				vertexClipVersion++;
-				depthRaysShown[job.geometry.get()] = std::move(job.rays);
-				depthAudited = false;
-				logger::info("[Fluid Field]   depth behind '{}': {} vertices sampled of {}, {} of {} rays hit rock or ground so far; {} vertices within {:.0f} units of it",
-					job.geometry->name.c_str(), job.samples.size(), count, depthHits, depthRays, shallow, CLEAR_REACH * 0.5f);
-				// TEMPORARY D106 diagnostics
-				const auto median = [](std::vector<float> a_values) {
-					if (a_values.empty())
-						return -1.0f;
-					std::nth_element(a_values.begin(), a_values.begin() + static_cast<std::ptrdiff_t>(a_values.size() / 2), a_values.end());
-					return a_values[a_values.size() / 2];
-				};
-				const auto samples = std::max<std::size_t>(job.samples.size(), 1);
-				logger::info("[Fluid Field]   depth rays '{}' at ({:.0f}, {:.0f}, {:.0f}): {} hit (median {:.0f} units), {} missed; rays point down on {} of {} (mean ray z {:.2f}, negative is down); of the misses, {} find ground straight down (median {:.0f} units)",
-					job.geometry->name.c_str(), job.geometry->world.translate.x, job.geometry->world.translate.y, job.geometry->world.translate.z, job.hits, median(job.hitDistances), job.misses,
-					job.downward, samples, job.tiltSum / static_cast<double>(samples), job.missDownHits, median(job.missDown));
+			uint32_t shallow = 0;
+			for (std::size_t v = 0; v < count; v++) {
+				vertexClips[base->second + v][13] = behind[v];  // (d.x is the wobble's scale, D188: ComputePushes)
+				shallow += behind[v] < CLEAR_REACH * 0.5f ? 1 : 0;
 			}
-			depthJob.reset();
+			vertexClipVersion++;
+			logger::info("[Fluid Field]   depth behind '{}': {} of {} vertices within {:.0f} units of rock or ground", geometry->name.c_str(), shallow, count, CLEAR_REACH * 0.5f);
 		}
 	}
 
@@ -1483,726 +1086,6 @@ namespace FluidFieldSim
 		}
 	}
 
-	bool FallSites::ReadDense(RE::BSGeometry* a_geometry, DenseJob& o_job) const
-	{
-		auto* triShape = a_geometry ? a_geometry->AsTriShape() : nullptr;
-		auto* renderer = a_geometry ? a_geometry->GetGeometryRuntimeData().rendererData : nullptr;
-		auto* parent = a_geometry ? a_geometry->parent : nullptr;
-		auto* source = a_geometry ? a_geometry->GetGeometryRuntimeData().shaderProperty.get() : nullptr;
-		if (!REL::Module::IsAE() || !triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || !parent || !source ||
-			renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_SKINNED))
-			return false;
-		const auto& counts = triShape->GetTrishapeRuntimeData();
-		auto& desc = renderer->vertexDesc;
-		const uint32_t stride = desc.GetSize();
-		const uint32_t positionOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-		const uint32_t uvOffset = desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
-		const bool haveNormals = desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_NORMAL);
-		const uint32_t normalOffset = haveNormals ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_NORMAL) : 0;
-		const bool haveColors = desc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_COLORS);
-		const uint32_t colorOffset = haveColors ? desc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_COLOR) : 0;
-		if (uvOffset < positionOffset + 12 || counts.vertexCount == 0 || counts.triangleCount == 0)
-			return false;
-		// The original's vertices in its own space
-		std::vector<RE::NiPoint3> positions(counts.vertexCount), normals(counts.vertexCount);
-		std::vector<RE::NiPoint2> uvs(counts.vertexCount);
-		std::vector<RE::NiColorA> colors(counts.vertexCount, RE::NiColorA(1.0f, 1.0f, 1.0f, 1.0f));
-		for (uint32_t v = 0; v < counts.vertexCount; v++) {
-			const uint8_t* data = renderer->rawVertexData + static_cast<std::size_t>(v) * stride;
-			float local[3];
-			std::memcpy(local, data + positionOffset, sizeof(local));
-			positions[v] = RE::NiPoint3(local[0], local[1], local[2]);
-			const auto* uv = reinterpret_cast<const uint16_t*>(data + uvOffset);
-			uvs[v] = RE::NiPoint2(DirectX::PackedVector::XMConvertHalfToFloat(uv[0]), DirectX::PackedVector::XMConvertHalfToFloat(uv[1]));
-			if (haveNormals) {
-				const uint8_t* n = data + normalOffset;
-				normals[v] = RE::NiPoint3(n[0] / 255.0f * 2.0f - 1.0f, n[1] / 255.0f * 2.0f - 1.0f, n[2] / 255.0f * 2.0f - 1.0f);
-			}
-			if (haveColors) {
-				const uint8_t* c = data + colorOffset;
-				colors[v] = RE::NiColorA(c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, c[3] / 255.0f);
-			}
-		}
-		std::vector<std::array<uint32_t, 3>> triangles;
-		for (uint32_t i = 0; i < counts.triangleCount; i++) {
-			const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
-			if (index[0] < counts.vertexCount && index[1] < counts.vertexCount && index[2] < counts.vertexCount)
-				triangles.push_back({ index[0], index[1], index[2] });
-		}
-		const auto normalize = [](const RE::NiPoint3& a_v) {
-			const float length = a_v.Length();
-			return length > 1e-6f ? a_v / length : RE::NiPoint3(0.0f, 0.0f, 1.0f);
-		};
-		if (!haveNormals) {
-			for (const auto& tri : triangles) {
-				const RE::NiPoint3 face = (positions[tri[1]] - positions[tri[0]]).Cross(positions[tri[2]] - positions[tri[0]]);
-				for (const uint32_t k : tri)
-					normals[k] += face;
-			}
-		}
-		for (auto& n : normals)
-			n = normalize(n);
-		// D172: what the worker needs, copied (the landscape's cells round the mesh too: the cache changes every frame)
-		float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
-		for (const auto& position : positions) {
-			const RE::NiPoint3 p = a_geometry->world * position;
-			lo[0] = std::min(lo[0], p.x);
-			lo[1] = std::min(lo[1], p.y);
-			hi[0] = std::max(hi[0], p.x);
-			hi[1] = std::max(hi[1], p.y);
-		}
-		for (int k = 0; k < 2; k++) {
-			o_job.lo[k] = lo[k];
-			o_job.hi[k] = hi[k];
-		}
-		auto* tes = RE::TES::GetSingleton();
-		o_job.interior = !tes || tes->interiorCell != nullptr || !landscape;
-		if (!o_job.interior)
-			o_job.land = landscape->Subset(lo[0] - 512.0f, lo[1] - 512.0f, hi[0] + 512.0f, hi[1] + 512.0f);
-		o_job.geometry.reset(a_geometry);
-		o_job.world = a_geometry->world;
-		o_job.vertexCount = counts.vertexCount;
-		o_job.triangleCount = counts.triangleCount;
-		o_job.haveColors = haveColors;
-		o_job.positions = std::move(positions);
-		o_job.normals = std::move(normals);
-		o_job.uvs = std::move(uvs);
-		o_job.colors = std::move(colors);
-		o_job.triangles = std::move(triangles);
-		return true;
-	}
-
-	void FallSites::ComputeDense(DenseJob& a_job, const ShellInput* a_solids)
-	{
-		// D172: on a worker (subdivision and landscape cut: 365 ms in one frame for a cascade)
-		auto& positions = a_job.positions;
-		auto& normals = a_job.normals;
-		auto& uvs = a_job.uvs;
-		auto& colors = a_job.colors;
-		auto& triangles = a_job.triangles;
-		const auto normalize = [](const RE::NiPoint3& a_v) {
-			const float length = a_v.Length();
-			return length > 1e-6f ? a_v / length : RE::NiPoint3(0.0f, 0.0f, 1.0f);
-		};
-		// The world scale, for the edge length
-		const float scale = std::max(a_job.world.scale, 1e-3f);
-		// D186: the solids round the sheet (statics' triangles binned in its own space; the landscape); edges split finer near them
-		const RE::NiTransform toModel = a_job.world.Invert();
-		std::vector<std::array<RE::NiPoint3, 3>> solids;
-		std::unordered_map<int64_t, std::vector<uint32_t>> solidBins;
-		const float bin = DENSE_NEAR_REACH * 2.0f / scale;
-		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
-		const auto cellOf = [&](float a_v) { return static_cast<int64_t>(std::floor(a_v / bin)); };
-		if (a_solids) {
-			float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
-			for (const auto& p : positions) {
-				const float c[3] = { p.x, p.y, p.z };
-				for (int k = 0; k < 3; k++) {
-					lo[k] = std::min(lo[k], c[k]);
-					hi[k] = std::max(hi[k], c[k]);
-				}
-			}
-			const float margin = DENSE_NEAR_REACH / scale;
-			for (const auto& triangle : a_solids->occluders) {
-				std::array<RE::NiPoint3, 3> local;
-				float tlo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, thi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
-				for (int k = 0; k < 3; k++) {
-					local[k] = toModel * triangle[k];
-					const float c[3] = { local[k].x, local[k].y, local[k].z };
-					for (int a = 0; a < 3; a++) {
-						tlo[a] = std::min(tlo[a], c[a]);
-						thi[a] = std::max(thi[a], c[a]);
-					}
-				}
-				if (thi[0] < lo[0] - margin || tlo[0] > hi[0] + margin || thi[1] < lo[1] - margin || tlo[1] > hi[1] + margin || thi[2] < lo[2] - margin || tlo[2] > hi[2] + margin)
-					continue;
-				const auto index = static_cast<uint32_t>(solids.size());
-				solids.push_back(local);
-				for (int64_t x = cellOf(tlo[0]); x <= cellOf(thi[0]); x++) {
-					for (int64_t y = cellOf(tlo[1]); y <= cellOf(thi[1]); y++) {
-						for (int64_t z = cellOf(tlo[2]); z <= cellOf(thi[2]); z++)
-							solidBins[binKey(x, y, z)].push_back(index);
-					}
-				}
-			}
-		}
-		const auto nearSolid = [&](const RE::NiPoint3& a_p) {
-			// Not under or near the landscape (the sheets run along the ground most of their length): only statics count
-			const RE::NiPoint3 world = a_job.world * a_p;
-			float ground = 0.0f;
-			if (!a_job.interior && a_job.land.SampleHeight(world.x, world.y, ground) && world.z < ground + DENSE_NEAR_REACH)
-				return false;
-			const float reach = DENSE_NEAR_REACH / scale;
-			const int64_t cx = cellOf(a_p.x), cy = cellOf(a_p.y), cz = cellOf(a_p.z);
-			for (int64_t x = cx - 1; x <= cx + 1; x++) {
-				for (int64_t y = cy - 1; y <= cy + 1; y++) {
-					for (int64_t z = cz - 1; z <= cz + 1; z++) {
-						const auto it = solidBins.find(binKey(x, y, z));
-						if (it == solidBins.end())
-							continue;
-						for (const uint32_t t : it->second) {
-							if (TriangleDistanceSquared(a_p, solids[t][0], solids[t][1], solids[t][2]) <= reach * reach)
-								return true;
-						}
-					}
-				}
-			}
-			return false;
-		};
-		// Split until edges are short (or the budget is spent): midpoints on the PN triangle's curved edge, attributes averaged; split
-		// vertices (texture seams) share the position's mean normal so curved edges meet. D91: only edges longer than DENSE_EDGE, each
-		// pass (red-green: one, two or three split edges make two, three or four triangles), so triangles come out evenly sized.
-		// D186: then smoothed, as PN's bulge is too slight on large, gently curved triangles and the lighting stepped in bands: Taubin's
-		// two steps (in, then out, so it does not shrink) along each vertex's normal (texture coordinates stay true), open edges held, none
-		// moved past DENSE_SHAPE_MOST from rest; then normals from the new faces. Run after every round of splitting (one pass at the end
-		// left the larger triangles banded).
-		std::vector<RE::NiPoint3> rest = positions;
-		const auto smoothShape = [&](int a_passes) {
-			std::map<std::tuple<int64_t, int64_t, int64_t>, uint32_t> groupAt;
-			std::vector<uint32_t> groupOf(positions.size());
-			for (std::size_t v = 0; v < positions.size(); v++) {
-				const auto key = std::make_tuple(std::llround(positions[v].x * 20.0), std::llround(positions[v].y * 20.0), std::llround(positions[v].z * 20.0));
-				groupOf[v] = groupAt.try_emplace(key, static_cast<uint32_t>(groupAt.size())).first->second;
-			}
-			const std::size_t groups = groupAt.size();
-			std::vector<RE::NiPoint3> place(groups), along(groups, RE::NiPoint3(0.0f, 0.0f, 0.0f));
-			for (std::size_t v = 0; v < positions.size(); v++) {
-				place[groupOf[v]] = positions[v];
-				along[groupOf[v]] += along[groupOf[v]].Dot(normals[v]) < 0.0f ? -normals[v] : normals[v];
-			}
-			for (auto& n : along)
-				n = normalize(n);
-			std::vector<std::vector<uint32_t>> neighbours(groups);
-			std::map<std::pair<uint32_t, uint32_t>, int> edgeUses;
-			for (const auto& tri : triangles) {
-				for (int k = 0; k < 3; k++) {
-					const uint32_t a = groupOf[tri[k]], b = groupOf[tri[(k + 1) % 3]];
-					if (a == b)
-						continue;
-					neighbours[a].push_back(b);
-					neighbours[b].push_back(a);
-					edgeUses[std::make_pair(std::min(a, b), std::max(a, b))]++;
-				}
-			}
-			std::vector<uint8_t> held(groups, 0);
-			for (const auto& [edge, uses] : edgeUses) {
-				if (uses == 1)
-					held[edge.first] = held[edge.second] = 1;  // an open edge (texture seams are welded: no edge there)
-			}
-			std::vector<RE::NiPoint3> start(groups);
-			for (std::size_t v = 0; v < positions.size(); v++)
-				start[groupOf[v]] = rest[v];
-			const float most = DENSE_SHAPE_MOST / scale;
-			// D190: move the bend, don't remove it (Taubin averaging flattened every bump the size of the crease bands). The original's
-			// faces are flat and its bend all in its creases: each vertex's bend (its neighbours' mean along its normal, over their spacing
-			// squared) is spread DENSE_CURVE_SPREAD passes per pass onto the faces beside, then the shape solved to it (DENSE_CURVE_SOLVE
-			// passes, open edges held).
-			std::vector<float> bend(groups, 0.0f), spacing(groups, 1.0f), spread(groups, 0.0f);
-			for (std::size_t g = 0; g < groups; g++) {
-				if (neighbours[g].empty())
-					continue;
-				RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
-				float squared = 0.0f;
-				for (const uint32_t o : neighbours[g]) {
-					sum += place[o];
-					squared += (place[o] - place[g]).SqrLength();
-				}
-				const auto n = static_cast<float>(neighbours[g].size());
-				spacing[g] = std::max(squared / n, 1e-6f);
-				bend[g] = (sum / n - place[g]).Dot(along[g]) / spacing[g];
-			}
-			for (int pass = 0; pass < a_passes * DENSE_CURVE_SPREAD; pass++) {
-				for (std::size_t g = 0; g < groups; g++) {
-					spread[g] = bend[g];
-					if (held[g] || neighbours[g].empty())
-						continue;
-					// Open edges' bend left out (neighbours on one side only); a neighbour's turned to this one's normal
-					float total = bend[g], weight = 1.0f;
-					for (const uint32_t o : neighbours[g]) {
-						if (held[o])
-							continue;
-						total += along[o].Dot(along[g]) >= 0.0f ? bend[o] : -bend[o];
-						weight += 1.0f;
-					}
-					spread[g] = total / weight;
-				}
-				bend.swap(spread);
-			}
-			std::vector<RE::NiPoint3> next(groups);
-			for (int pass = 0; a_passes > 0 && pass < DENSE_CURVE_SOLVE; pass++) {
-				for (std::size_t g = 0; g < groups; g++) {
-					next[g] = place[g];
-					if (held[g] || neighbours[g].empty())
-						continue;
-					RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
-					for (const uint32_t o : neighbours[g])
-						sum += place[o];
-					// Toward the place whose neighbours' mean reaches its bend along its normal
-					const float off = (sum / static_cast<float>(neighbours[g].size()) - place[g]).Dot(along[g]) - bend[g] * spacing[g];
-					const float moved = (place[g] - start[g]).Dot(along[g]) + off * DENSE_CURVE_STEP;
-					// D188: eased into its limit, not clamped (clamping lined the vertices up into a plateau with a fold)
-					next[g] = start[g] + along[g] * (most * std::tanh(moved / most));
-				}
-				place.swap(next);
-			}
-			// D190: remove the solve's per-vertex dimples with DENSE_CURVE_TIDY Taubin pairs, too few to reach past a vertex's neighbours
-			for (int pass = 0; a_passes > 0 && pass < DENSE_CURVE_TIDY * 2; pass++) {
-				const float factor = pass % 2 == 0 ? 0.5f : -0.53f;
-				for (std::size_t g = 0; g < groups; g++) {
-					next[g] = place[g];
-					if (held[g] || neighbours[g].empty())
-						continue;
-					RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
-					for (const uint32_t o : neighbours[g])
-						sum += place[o];
-					next[g] = place[g] + along[g] * (factor * (sum / static_cast<float>(neighbours[g].size()) - place[g]).Dot(along[g]));
-				}
-				place.swap(next);
-			}
-			for (std::size_t v = 0; v < positions.size(); v++)
-				positions[v] = place[groupOf[v]];
-			// D188: relax the texture coordinates too (the original's mapping turns at its triangle edges, stepping the bake's grid); held
-			// at open edges and texture seams (a position with several coordinates), never so far that a triangle flips
-			{
-				std::vector<RE::NiPoint2> mapped(groups);
-				std::vector<uint8_t> seam(groups, 0), seen(groups, 0);
-				for (std::size_t v = 0; v < uvs.size() && v < positions.size(); v++) {
-					const uint32_t g = groupOf[v];
-					if (seen[g] && (std::abs(mapped[g].x - uvs[v].x) > 1e-5f || std::abs(mapped[g].y - uvs[v].y) > 1e-5f))
-						seam[g] = 1;
-					mapped[g] = uvs[v];
-					seen[g] = 1;
-				}
-				const auto signedArea = [&](const std::vector<RE::NiPoint2>& a_uv, const std::array<uint32_t, 3>& a_tri) {
-					const RE::NiPoint2 &a = a_uv[groupOf[a_tri[0]]], &b = a_uv[groupOf[a_tri[1]]], &c = a_uv[groupOf[a_tri[2]]];
-					return (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
-				};
-				std::vector<RE::NiPoint2> moved(groups);
-				for (int pass = 0; pass < DENSE_UV_PASSES; pass++) {
-					for (std::size_t g = 0; g < groups; g++) {
-						moved[g] = mapped[g];
-						if (held[g] || seam[g] || neighbours[g].empty())
-							continue;
-						float sx = 0.0f, sy = 0.0f;
-						for (const uint32_t o : neighbours[g]) {
-							sx += mapped[o].x;
-							sy += mapped[o].y;
-						}
-						const float n = static_cast<float>(neighbours[g].size());
-						moved[g] = RE::NiPoint2(mapped[g].x + DENSE_UV_STEP * (sx / n - mapped[g].x), mapped[g].y + DENSE_UV_STEP * (sy / n - mapped[g].y));
-					}
-					// (a triangle whose winding in the texture would flip keeps its corners where they were)
-					for (const auto& tri : triangles) {
-						const float before = signedArea(mapped, tri), after = signedArea(moved, tri);
-						if (before * after <= 0.0f || std::abs(after) < std::abs(before) * 0.25f) {
-							for (const uint32_t k : tri)
-								moved[groupOf[k]] = mapped[groupOf[k]];
-						}
-					}
-					mapped.swap(moved);
-				}
-				for (std::size_t v = 0; v < uvs.size() && v < positions.size(); v++) {
-					if (!seam[groupOf[v]])
-						uvs[v] = mapped[groupOf[v]];
-				}
-			}
-			// Its normals from the new shape's faces (by area), each vertex keeping its own side
-			std::vector<RE::NiPoint3> faces(groups, RE::NiPoint3(0.0f, 0.0f, 0.0f));
-			for (const auto& tri : triangles) {
-				RE::NiPoint3 face = (positions[tri[1]] - positions[tri[0]]).Cross(positions[tri[2]] - positions[tri[0]]);
-				for (const uint32_t k : tri) {
-					const uint32_t g = groupOf[k];
-					faces[g] += face.Dot(along[g]) < 0.0f ? -face : face;
-				}
-			}
-			for (std::size_t v = 0; v < positions.size(); v++) {
-				const RE::NiPoint3& face = faces[groupOf[v]];
-				if (face.Length() > 1e-8f)
-					normals[v] = face.Dot(normals[v]) >= 0.0f ? normalize(face) : -normalize(face);
-			}
-		};
-		const auto edgeKey = [](uint32_t a_a, uint32_t a_b) { return std::make_pair(std::min(a_a, a_b), std::max(a_a, a_b)); };
-		for (int level = 0; level < DENSE_LEVELS; level++) {
-			std::set<std::pair<uint32_t, uint32_t>> marked;
-			for (const auto& tri : triangles) {
-				for (int k = 0; k < 3; k++) {
-					const float length = (positions[tri[k]] - positions[tri[(k + 1) % 3]]).Length() * scale;
-					if (length > DENSE_EDGE || (length > DENSE_EDGE_NEAR && positions.size() < DENSE_NEAR_BUDGET && nearSolid((positions[tri[k]] + positions[tri[(k + 1) % 3]]) * 0.5f)))
-						marked.insert(edgeKey(tri[k], tri[(k + 1) % 3]));
-				}
-			}
-			if (marked.empty() || positions.size() + marked.size() > 60000)
-				break;
-			std::map<std::tuple<int64_t, int64_t, int64_t>, RE::NiPoint3> welded;
-			const auto weldKey = [](const RE::NiPoint3& a_p) { return std::make_tuple(std::llround(a_p.x * 20.0), std::llround(a_p.y * 20.0), std::llround(a_p.z * 20.0)); };
-			for (std::size_t v = 0; v < positions.size(); v++)
-				welded[weldKey(positions[v])] += normals[v];
-			const auto smooth = [&](uint32_t a_v) { return normalize(welded[weldKey(positions[a_v])]); };
-			std::map<std::pair<uint32_t, uint32_t>, uint32_t> middles;
-			const auto middle = [&](uint32_t a_a, uint32_t a_b) {
-				const auto key = std::make_pair(std::min(a_a, a_b), std::max(a_a, a_b));
-				if (const auto it = middles.find(key); it != middles.end())
-					return it->second;
-				const RE::NiPoint3 p0 = positions[a_a], p1 = positions[a_b], n0 = smooth(a_a), n1 = smooth(a_b);
-				const RE::NiPoint3 b1 = (p0 * 2.0f + p1 - n0 * (p1 - p0).Dot(n0)) / 3.0f;
-				const RE::NiPoint3 b2 = (p1 * 2.0f + p0 - n1 * (p0 - p1).Dot(n1)) / 3.0f;
-				positions.push_back((p0 + b1 * 3.0f + b2 * 3.0f + p1) / 8.0f);
-				rest.push_back(positions.back());
-				normals.push_back(normalize(normals[a_a] + normals[a_b]));
-				uvs.push_back(RE::NiPoint2((uvs[a_a].x + uvs[a_b].x) * 0.5f, (uvs[a_a].y + uvs[a_b].y) * 0.5f));
-				const RE::NiColorA& c0 = colors[a_a];
-				const RE::NiColorA& c1 = colors[a_b];
-				colors.push_back(RE::NiColorA((c0.red + c1.red) * 0.5f, (c0.green + c1.green) * 0.5f, (c0.blue + c1.blue) * 0.5f, (c0.alpha + c1.alpha) * 0.5f));
-				const auto index = static_cast<uint32_t>(positions.size() - 1);
-				middles[key] = index;
-				return index;
-			};
-			std::vector<std::array<uint32_t, 3>> finer;
-			finer.reserve(triangles.size() * 2);
-			for (const auto& tri : triangles) {
-				bool split[3];
-				int splits = 0;
-				for (int k = 0; k < 3; k++) {
-					split[k] = marked.contains(edgeKey(tri[k], tri[(k + 1) % 3]));
-					splits += split[k] ? 1 : 0;
-				}
-				if (splits == 0) {
-					finer.push_back(tri);
-				} else if (splits == 3) {
-					const uint32_t ab = middle(tri[0], tri[1]), bc = middle(tri[1], tri[2]), ca = middle(tri[2], tri[0]);
-					finer.push_back({ tri[0], ab, ca });
-					finer.push_back({ ab, tri[1], bc });
-					finer.push_back({ ca, bc, tri[2] });
-					finer.push_back({ ab, bc, ca });
-				} else if (splits == 1) {
-					// Turned so the split edge is (a, b): two triangles, winding kept
-					const int k = split[0] ? 0 : (split[1] ? 1 : 2);
-					const uint32_t a = tri[k], b = tri[(k + 1) % 3], cc = tri[(k + 2) % 3];
-					const uint32_t m = middle(a, b);
-					finer.push_back({ a, m, cc });
-					finer.push_back({ m, b, cc });
-				} else {
-					// Turned so the edge left whole is (c, a): the corner at b, and the quad split by its shorter diagonal
-					const int k = !split[2] ? 0 : (!split[0] ? 1 : 2);
-					const uint32_t a = tri[k], b = tri[(k + 1) % 3], cc = tri[(k + 2) % 3];
-					const uint32_t mab = middle(a, b), mbc = middle(b, cc);
-					finer.push_back({ mab, b, mbc });
-					if ((positions[a] - positions[mbc]).Length() <= (positions[mab] - positions[cc]).Length()) {
-						finer.push_back({ a, mab, mbc });
-						finer.push_back({ a, mbc, cc });
-					} else {
-						finer.push_back({ a, mab, cc });
-						finer.push_back({ mab, mbc, cc });
-					}
-				}
-			}
-			triangles.swap(finer);
-			smoothShape(DENSE_SHAPE_LEVEL_PASSES);
-		}
-		if (positions.size() > 65535)
-			return;
-		smoothShape(DENSE_SHAPE_PASSES);
-		// D186: smooth the normals over the copy (else hard lines in the light along the original's long edges and texture seams):
-		// each position's vertices share one, softened DENSE_NORMAL_PASSES times (about 4 edges' reach each way)
-		{
-			std::map<std::tuple<int64_t, int64_t, int64_t>, uint32_t> groupAt;
-			std::vector<uint32_t> groupOf(positions.size());
-			for (std::size_t v = 0; v < positions.size(); v++) {
-				const auto key = std::make_tuple(std::llround(positions[v].x * 20.0), std::llround(positions[v].y * 20.0), std::llround(positions[v].z * 20.0));
-				groupOf[v] = groupAt.try_emplace(key, static_cast<uint32_t>(groupAt.size())).first->second;
-			}
-			std::vector<RE::NiPoint3> current(groupAt.size(), RE::NiPoint3(0.0f, 0.0f, 0.0f));
-			for (std::size_t v = 0; v < positions.size(); v++)
-				current[groupOf[v]] += normals[v];
-			std::vector<std::vector<uint32_t>> neighbours(groupAt.size());
-			for (const auto& tri : triangles) {
-				for (int k = 0; k < 3; k++) {
-					const uint32_t a = groupOf[tri[k]], b = groupOf[tri[(k + 1) % 3]];
-					if (a != b) {
-						neighbours[a].push_back(b);
-						neighbours[b].push_back(a);
-					}
-				}
-			}
-			for (auto& n : current)
-				n = normalize(n);
-			std::vector<RE::NiPoint3> next(current.size());
-			for (int pass = 0; pass < DENSE_NORMAL_PASSES; pass++) {
-				for (std::size_t g = 0; g < current.size(); g++) {
-					RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
-					for (const uint32_t o : neighbours[g])
-						sum += current[o];
-					next[g] = neighbours[g].empty() ? current[g] : normalize(current[g] + sum / static_cast<float>(neighbours[g].size()));
-				}
-				current.swap(next);
-			}
-			for (std::size_t v = 0; v < positions.size(); v++) {
-				const RE::NiPoint3& n = current[groupOf[v]];
-				// (each vertex keeps its own side: a sheet's two faces may share a position with opposite normals)
-				normals[v] = normals[v].Dot(n) >= 0.0f ? n : -n;
-			}
-		}
-		// D172: cut triangles away under the landscape (from DENSE_TRIM_UNDER below it, so the cut stays hidden), splitting those crossing
-		// it. All vertices are kept, new ones appended, so the bake reads the untrimmed triangles over the same vertices (BakeIndices,
-		// D136: it needs the whole sheet). The landscape comes from Fluid Field's cache; nothing is cast for it (BuryStep).
-		a_job.untrimmed = triangles;
-		uint32_t& trimmedAway = a_job.trimmedAway;
-		uint32_t& trimmedSplit = a_job.trimmedSplit;
-		if (!a_job.interior) {
-			const RE::NiTransform& world = a_job.world;
-			// Over the landscape (world units, from DENSE_TRIM_UNDER below it); FLT_MAX where its height is not known
-			const auto over = [&](const RE::NiPoint3& a_local) {
-				const RE::NiPoint3 p = world * a_local;
-				float ground = 0.0f;
-				return a_job.land.SampleHeight(p.x, p.y, ground) ? p.z - (ground - DENSE_TRIM_UNDER) : FLT_MAX;
-			};
-			std::vector<float> height(positions.size());
-			for (std::size_t v = 0; v < positions.size(); v++)
-				height[v] = over(positions[v]);
-			std::map<std::pair<uint32_t, uint32_t>, uint32_t> crossings;
-			// Where an edge crosses the cut: bisected against the landscape itself (the ground bends within an edge), attributes
-			// interpolated
-			const auto crossing = [&](uint32_t a_over, uint32_t a_under) {
-				const auto key = std::make_pair(a_over, a_under);
-				if (const auto it = crossings.find(key); it != crossings.end())
-					return it->second;
-				float lo = 0.0f, hi = 1.0f;
-				for (int step = 0; step < 12; step++) {
-					const float mid = 0.5f * (lo + hi);
-					if (over(positions[a_over] + (positions[a_under] - positions[a_over]) * mid) >= 0.0f)
-						lo = mid;
-					else
-						hi = mid;
-				}
-				const float f = lo;
-				positions.push_back(positions[a_over] + (positions[a_under] - positions[a_over]) * f);
-				normals.push_back(normalize(normals[a_over] * (1.0f - f) + normals[a_under] * f));
-				uvs.push_back(RE::NiPoint2(uvs[a_over].x + (uvs[a_under].x - uvs[a_over].x) * f, uvs[a_over].y + (uvs[a_under].y - uvs[a_over].y) * f));
-				const RE::NiColorA& c0 = colors[a_over];
-				const RE::NiColorA& c1 = colors[a_under];
-				colors.push_back(RE::NiColorA(c0.red + (c1.red - c0.red) * f, c0.green + (c1.green - c0.green) * f, c0.blue + (c1.blue - c0.blue) * f, c0.alpha + (c1.alpha - c0.alpha) * f));
-				height.push_back(0.0f);
-				const auto index = static_cast<uint32_t>(positions.size() - 1);
-				crossings[key] = index;
-				return index;
-			};
-			std::vector<std::array<uint32_t, 3>> kept;
-			kept.reserve(triangles.size());
-			for (const auto& tri : triangles) {
-				const bool up[3] = { height[tri[0]] >= 0.0f, height[tri[1]] >= 0.0f, height[tri[2]] >= 0.0f };
-				const int ups = (up[0] ? 1 : 0) + (up[1] ? 1 : 0) + (up[2] ? 1 : 0);
-				if (ups == 3) {
-					kept.push_back(tri);
-				} else if (ups == 0) {
-					trimmedAway++;
-				} else if (ups == 1) {
-					// Turned so the one over it is a: what is left of the triangle is a triangle, winding kept
-					const int k = up[0] ? 0 : (up[1] ? 1 : 2);
-					const uint32_t a = tri[k], b = tri[(k + 1) % 3], c = tri[(k + 2) % 3];
-					kept.push_back({ a, crossing(a, b), crossing(a, c) });
-					trimmedSplit++;
-				} else {
-					// Turned so the one under it is c: what is left is a quad, two triangles
-					const int k = !up[0] ? 2 : (!up[1] ? 0 : 1);
-					const uint32_t a = tri[k], b = tri[(k + 1) % 3], c = tri[(k + 2) % 3];
-					const uint32_t bc = crossing(b, c), ac = crossing(a, c);
-					kept.push_back({ a, b, bc });
-					kept.push_back({ a, bc, ac });
-					trimmedSplit++;
-				}
-			}
-			if (positions.size() > 65535)
-				return;
-			triangles.swap(kept);
-		}
-		// Tangents from the texture coordinates
-		std::vector<RE::NiPoint3> tangents(positions.size(), RE::NiPoint3(0.0f, 0.0f, 0.0f)), bitangents(positions.size(), RE::NiPoint3(0.0f, 0.0f, 0.0f));
-		for (const auto& tri : triangles) {
-			const RE::NiPoint3 e1 = positions[tri[1]] - positions[tri[0]], e2 = positions[tri[2]] - positions[tri[0]];
-			const float du1 = uvs[tri[1]].x - uvs[tri[0]].x, dv1 = uvs[tri[1]].y - uvs[tri[0]].y;
-			const float du2 = uvs[tri[2]].x - uvs[tri[0]].x, dv2 = uvs[tri[2]].y - uvs[tri[0]].y;
-			const float det = du1 * dv2 - du2 * dv1;
-			if (std::abs(det) < 1e-10f)
-				continue;
-			const RE::NiPoint3 tu = (e1 * dv2 - e2 * dv1) / det, tv = (e2 * du1 - e1 * du2) / det;
-			for (const uint32_t k : tri) {
-				tangents[k] += tu;
-				bitangents[k] += tv;
-			}
-		}
-		for (std::size_t v = 0; v < positions.size(); v++) {
-			const RE::NiPoint3& n = normals[v];
-			RE::NiPoint3 tangent = tangents[v] - n * n.Dot(tangents[v]);
-			tangent = tangent.Length() > 1e-6f ? normalize(tangent) : normalize(n.Cross(RE::NiPoint3(0.0f, 0.0f, 1.0f)).Length() > 1e-3f ? n.Cross(RE::NiPoint3(0.0f, 0.0f, 1.0f)) : RE::NiPoint3(1.0f, 0.0f, 0.0f));
-			RE::NiPoint3 bitangent = n.Cross(tangent);
-			if (bitangent.Dot(bitangents[v]) < 0.0f)
-				bitangent = -bitangent;
-			tangents[v] = tangent;
-			bitangents[v] = bitangent;
-		}
-		// D186: smooth the tangents like the normals (taken from the original's texture coordinates, they turned per triangle and the
-		// normal maps creased at every edge): shared per position, softened DENSE_NORMAL_PASSES times, kept across the normal
-		{
-			std::map<std::tuple<int64_t, int64_t, int64_t>, uint32_t> groupAt;
-			std::vector<uint32_t> groupOf(positions.size());
-			for (std::size_t v = 0; v < positions.size(); v++) {
-				const auto key = std::make_tuple(std::llround(positions[v].x * 20.0), std::llround(positions[v].y * 20.0), std::llround(positions[v].z * 20.0));
-				groupOf[v] = groupAt.try_emplace(key, static_cast<uint32_t>(groupAt.size())).first->second;
-			}
-			std::vector<RE::NiPoint3> current(groupAt.size(), RE::NiPoint3(0.0f, 0.0f, 0.0f)), across(groupAt.size(), RE::NiPoint3(0.0f, 0.0f, 0.0f));
-			for (std::size_t v = 0; v < positions.size(); v++) {
-				current[groupOf[v]] += tangents[v];
-				across[groupOf[v]] += normals[v];
-			}
-			std::vector<std::vector<uint32_t>> neighbours(groupAt.size());
-			for (const auto& tri : a_job.untrimmed.empty() ? triangles : a_job.untrimmed) {
-				for (int k = 0; k < 3; k++) {
-					const uint32_t a = groupOf[tri[k]], b = groupOf[tri[(k + 1) % 3]];
-					if (a != b) {
-						neighbours[a].push_back(b);
-						neighbours[b].push_back(a);
-					}
-				}
-			}
-			const auto flatten = [&](std::size_t a_g, const RE::NiPoint3& a_t) {
-				const RE::NiPoint3 n = normalize(across[a_g]);
-				const RE::NiPoint3 t = a_t - n * n.Dot(a_t);
-				return t.Length() > 1e-6f ? normalize(t) : current[a_g];
-			};
-			for (std::size_t g = 0; g < current.size(); g++)
-				current[g] = flatten(g, current[g]);
-			std::vector<RE::NiPoint3> next(current.size());
-			for (int pass = 0; pass < DENSE_NORMAL_PASSES; pass++) {
-				for (std::size_t g = 0; g < current.size(); g++) {
-					RE::NiPoint3 sum(0.0f, 0.0f, 0.0f);
-					for (const uint32_t o : neighbours[g])
-						sum += current[o];
-					next[g] = neighbours[g].empty() ? current[g] : flatten(g, current[g] + sum / static_cast<float>(neighbours[g].size()));
-				}
-				current.swap(next);
-			}
-			for (std::size_t v = 0; v < positions.size(); v++) {
-				const RE::NiPoint3& n = normals[v];
-				RE::NiPoint3 t = current[groupOf[v]] - n * n.Dot(current[groupOf[v]]);
-				if (t.Length() < 1e-6f)
-					continue;
-				t = normalize(t);
-				RE::NiPoint3 b = n.Cross(t);
-				if (b.Dot(bitangents[v]) < 0.0f)
-					b = -b;
-				tangents[v] = t;
-				bitangents[v] = b;
-			}
-		}
-		std::vector<uint16_t> indices;
-		indices.reserve(triangles.size() * 3);
-		for (const auto& tri : triangles) {
-			for (const uint32_t k : tri)
-				indices.push_back(static_cast<uint16_t>(k));
-		}
-		a_job.tangents = std::move(tangents);
-		a_job.bitangents = std::move(bitangents);
-		a_job.indices = std::move(indices);
-		a_job.ok = true;
-	}
-
-	bool FallSites::AttachDense(DenseJob& a_job)
-	{
-		// D172: the engine's shape, on the render thread, from the worker's geometry (if the original is still where it was)
-		RE::BSGeometry* a_geometry = a_job.geometry.get();
-		auto* parent = a_geometry ? a_geometry->parent : nullptr;
-		auto* source = a_geometry ? a_geometry->GetGeometryRuntimeData().shaderProperty.get() : nullptr;
-		if (!a_job.ok || !a_geometry || !parent || !source || denseOf.contains(a_geometry))
-			return false;
-		auto& positions = a_job.positions;
-		auto& normals = a_job.normals;
-		auto& uvs = a_job.uvs;
-		auto& colors = a_job.colors;
-		auto& tangents = a_job.tangents;
-		auto& bitangents = a_job.bitangents;
-		auto& triangles = a_job.triangles;
-		auto& indices = a_job.indices;
-		auto& untrimmed = a_job.untrimmed;
-		const bool haveColors = a_job.haveColors;
-		const uint32_t trimmedAway = a_job.trimmedAway, trimmedSplit = a_job.trimmedSplit;
-		const struct
-		{
-			uint32_t vertexCount, triangleCount;
-		} counts{ a_job.vertexCount, a_job.triangleCount };
-		RE::BSTriShape* shape = BuildDenseShape(static_cast<uint32_t>(triangles.size()), indices.data(), static_cast<uint32_t>(positions.size()), positions.data(), uvs.data(), normals.data(),
-			tangents.data(), bitangents.data(), haveColors ? colors.data() : nullptr);
-		if (!shape)
-			return false;
-		RE::NiPointer<RE::BSTriShape> held(shape);
-		shape->name = a_geometry->name;
-		shape->local = a_geometry->local;
-		RE::NiCloningProcess cloning;
-		auto* copy = static_cast<RE::BSShaderProperty*>(source->CreateClone(cloning));
-		if (!copy)
-			return false;
-		shape->GetGeometryRuntimeData().shaderProperty.reset(copy);
-		shape->GetGeometryRuntimeData().alphaProperty = a_geometry->GetGeometryRuntimeData().alphaProperty;
-		// D91 experiment: blended alpha before setup, so the copy goes to the blended pass from the start (D53-D56 switched live
-		// geometry, which stayed registered as opaque and drew nothing)
-		if (blendedCopies) {
-			if (auto* blended = MakeBlendedAlpha(a_geometry)) {
-				shape->GetGeometryRuntimeData().alphaProperty.reset(blended);
-				logger::info("[Fluid Field]   dense copy of '{}' blended (alpha flags {:04X})", a_geometry->name.c_str(), blended->alphaFlags);
-			} else {
-				logger::info("[Fluid Field]   dense copy of '{}': no alpha property to borrow, stays opaque", a_geometry->name.c_str());
-			}
-		}
-		copy->SetupGeometry(shape);
-		copy->FinishSetupGeometry(shape);
-		parent->AttachChild(shape, true);
-		RE::NiUpdateData update;
-		shape->Update(update);
-		a_geometry->SetAppCulled(true);
-		denseOf[a_geometry] = { held, RE::NiPointer<RE::BSGeometry>(a_geometry), RE::NiPointer<RE::NiNode>(parent) };
-		denseShapes.insert(shape);
-		// D172: the bake's whole sheet
-		auto& whole = untrimmedIndices[shape];
-		whole.clear();
-		whole.reserve(untrimmed.size() * 3);
-		for (const auto& tri : untrimmed) {
-			for (const uint32_t k : tri)
-				whole.push_back(static_cast<uint16_t>(k));
-		}
-		logger::info("[Fluid Field]   dense copy of '{}': {} to {} vertices, {} to {} triangles ({} under the landscape cut away, {} cut along it, {} seen from nowhere)",
-			a_geometry->name.c_str(), counts.vertexCount, positions.size(), counts.triangleCount, triangles.size(), trimmedAway, trimmedSplit, a_job.hiddenAway);
-		return true;
-	}
-
-	RE::NiAlphaProperty* FallSites::MakeBlendedAlpha(RE::BSGeometry* a_geometry) const
-	{
-		// The lit surface has no alpha property (D53); its model's effect layers carry 0x10ED. Search from its parent up to the model's
-		// root
-		RE::NiAlphaProperty* source = nullptr;
-		RE::NiNode* node = a_geometry->parent;
-		for (int up = 0; up < 3 && node && !source; up++, node = node->parent) {
-			RE::BSVisit::TraverseScenegraphGeometries(node, [&](RE::BSGeometry* a_other) {
-				auto* alpha = a_other != a_geometry ? a_other->GetGeometryRuntimeData().alphaProperty.get() : nullptr;
-				if (alpha && alpha->GetAlphaBlending()) {
-					source = alpha;
-					return RE::BSVisit::BSVisitControl::kStop;
-				}
-				return RE::BSVisit::BSVisitControl::kContinue;
-			});
-		}
-		if (!source)
-			source = a_geometry->GetGeometryRuntimeData().alphaProperty.get();
-		if (!source)
-			return nullptr;
-		// A clone, so the effect layers' own property is never changed
-		RE::NiCloningProcess cloning;
-		auto* clone = static_cast<RE::NiAlphaProperty*>(source->CreateClone(cloning));
-		if (!clone)
-			return nullptr;
-		clone->alphaFlags = BLENDED_ALPHA_FLAGS;
-		clone->alphaThreshold = 0;
-		return clone;
-	}
-
 	void FallSites::LoadUnifiedCaches()
 	{
 		// Layout (little-endian), "UNFS" v2 (tools/unify/site_cache.py): member, vertex and triangle counts; per member its plugin
@@ -2271,7 +1154,7 @@ namespace FluidFieldSim
 			if (cache.bake)
 				cache.bakeTime = std::filesystem::last_write_time(bakePath, error);
 			logger::info("[Fluid Field] Unified falls: site cache '{}': {} members, {} vertices, {} triangles; flow bake {}", cache.path, cache.members.size(), vertices, triangles,
-				cache.bake ? std::format("{}x{} texels, baked offline", cache.bake->width, cache.bake->height) : std::string("baked here"));
+				cache.bake ? std::format("{}x{} texels", cache.bake->width, cache.bake->height) : std::string("missing: the site stays vanilla"));
 			unifiedCaches.push_back(std::move(cache));
 		}
 	}
@@ -2308,10 +1191,10 @@ namespace FluidFieldSim
 
 	RE::BSTriShape* FallSites::AttachUnified(std::size_t a_cache, RE::NiNode* a_root, RE::BSGeometry* a_material)
 	{
-		// As AttachDense (the engine's builder, a cloned lit material), the sheet's world positions taken into a_root's space
+		// The engine's builder and a cloned lit material, the sheet's world positions taken into a_root's space
 		const UnifiedCache& cache = unifiedCaches[a_cache];
 		auto* source = a_material ? a_material->GetGeometryRuntimeData().shaderProperty.get() : nullptr;
-		if (!a_root || !source)
+		if (!REL::Module::IsAE() || !a_root || !source)
 			return nullptr;
 		const RE::NiTransform toLocal = a_root->world.Invert();
 		const std::size_t count = cache.positions.size();
@@ -2385,29 +1268,6 @@ namespace FluidFieldSim
 		}
 		unifiedOf.clear();
 		unifiedShapes.clear();
-	}
-
-	void FallSites::SetUnifiedFalls(bool a_on)
-	{
-		if (a_on == unifiedFalls)
-			return;
-		unifiedFalls = a_on;
-		RemoveUnified();
-		unifiedLoaded = false;  // turned on again: the site caches read anew (they may have been rebuilt)
-		RefreshGrounded();
-	}
-
-	void FallSites::RemoveDense()
-	{
-		for (auto& [original, copy] : denseOf) {
-			if (copy.parent && copy.shape)
-				copy.parent->DetachChild(copy.shape.get());
-			if (copy.original)
-				copy.original->SetAppCulled(false);
-		}
-		denseOf.clear();
-		denseShapes.clear();
-		untrimmedIndices.clear();  // D172
 	}
 
 	void FallSites::ComputeFades()
@@ -2805,7 +1665,7 @@ namespace FluidFieldSim
 			a_uvSize[0] <= 0.0f || a_uvSize[1] <= 0.0f || !renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV))
 			return {};
 		const auto& counts = triShape->GetTrishapeRuntimeData();
-		const IndexSpan bakeIndices = BakeIndices(a_geometry);  // D172: the dense copy's untrimmed triangles
+		const IndexSpan bakeIndices = BakeIndices(a_geometry);
 		if (base->second + counts.vertexCount > vertexCuts.size())
 			return {};
 		const uint32_t stride = renderer->vertexDesc.GetSize();
@@ -2855,8 +1715,6 @@ namespace FluidFieldSim
 
 	FallSites::IndexSpan FallSites::BakeIndices(RE::BSGeometry* a_geometry) const
 	{
-		if (const auto it = untrimmedIndices.find(a_geometry); it != untrimmedIndices.end())
-			return { it->second.data(), static_cast<uint32_t>(it->second.size() / 3) };
 		auto* triShape = a_geometry ? a_geometry->AsTriShape() : nullptr;
 		auto* renderer = a_geometry ? a_geometry->GetGeometryRuntimeData().rendererData : nullptr;
 		if (!triShape || !renderer || !renderer->rawIndexData)
@@ -3164,9 +2022,9 @@ namespace FluidFieldSim
 
 	void FallSites::CullStep()
 	{
-		// D185: wait (at most CULL_DEFER_MOST) for captures, dense copies and rock tests still coming: each would ask again (11 passes)
+		// D185: wait (at most CULL_DEFER_MOST) for captures and rock tests still coming: each would ask again (11 passes)
 		if (cullRequested && !cullJob) {
-			bool coming = denseWork.valid() || !clipQueue.empty() || !buryQueue.empty();
+			bool coming = !clipQueue.empty() || !buryQueue.empty();
 			for (const auto& [key, capture] : captures)
 				coming = coming || (!capture.IsComplete() && capture.Castable()) || (capture.IsComplete() && !capture.reported);
 			const auto now = std::chrono::steady_clock::now();
@@ -3688,429 +2546,6 @@ namespace FluidFieldSim
 		flags = std::fmod(flags, 2.0f) + (turned ? 2.0f : 0.0f) + (hidden ? 4.0f : 0.0f);
 	}
 
-	std::unique_ptr<FallSites::BakeJob> FallSites::StartBake(RE::BSGeometry* a_geometry) const
-	{
-		auto* triShape = a_geometry ? a_geometry->AsTriShape() : nullptr;
-		auto* renderer = a_geometry ? a_geometry->GetGeometryRuntimeData().rendererData : nullptr;
-		if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || !renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV))
-			return nullptr;
-		const auto& counts = triShape->GetTrishapeRuntimeData();
-		const IndexSpan bakeIndices = BakeIndices(a_geometry);  // D172: the dense copy's untrimmed triangles
-		const uint32_t stride = renderer->vertexDesc.GetSize();
-		const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-		const uint32_t uvOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
-		if (stride < positionOffset + 12 || counts.vertexCount == 0)
-			return nullptr;
-		std::vector<RE::NiPoint3> positions(counts.vertexCount);
-		std::vector<std::array<float, 2>> uvs(counts.vertexCount);
-		for (uint32_t v = 0; v < counts.vertexCount; v++) {
-			const uint8_t* data = renderer->rawVertexData + static_cast<std::size_t>(v) * stride;
-			float local[3];
-			std::memcpy(local, data + positionOffset, sizeof(local));
-			positions[v] = a_geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
-			const auto* uv = reinterpret_cast<const uint16_t*>(data + uvOffset);
-			uvs[v] = { DirectX::PackedVector::XMConvertHalfToFloat(uv[0]), DirectX::PackedVector::XMConvertHalfToFloat(uv[1]) };
-		}
-		// The texture grid's extent, and its world units per texture coordinate along u and v, area weighted
-		float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
-		for (const auto& uv : uvs) {
-			for (int k = 0; k < 2; k++) {
-				lo[k] = std::min(lo[k], uv[k]);
-				hi[k] = std::max(hi[k], uv[k]);
-			}
-		}
-		double sum[2]{}, area = 0.0;
-		std::vector<std::array<uint32_t, 3>> triangles;
-		for (uint32_t i = 0; i < bakeIndices.count; i++) {
-			const uint16_t* index = bakeIndices.data + static_cast<std::size_t>(i) * 3;
-			if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
-				continue;
-			triangles.push_back({ index[0], index[1], index[2] });
-			const RE::NiPoint3 e1 = positions[index[1]] - positions[index[0]];
-			const RE::NiPoint3 e2 = positions[index[2]] - positions[index[0]];
-			const float du1 = uvs[index[1]][0] - uvs[index[0]][0], dv1 = uvs[index[1]][1] - uvs[index[0]][1];
-			const float du2 = uvs[index[2]][0] - uvs[index[0]][0], dv2 = uvs[index[2]][1] - uvs[index[0]][1];
-			const float det = du1 * dv2 - du2 * dv1;
-			const float faceArea = 0.5f * e1.Cross(e2).Length();
-			if (std::abs(det) < 1e-8f || faceArea < 1e-3f)
-				continue;
-			sum[0] += static_cast<double>(((e1 * dv2 - e2 * dv1) / det).Length()) * faceArea;
-			sum[1] += static_cast<double>(((e2 * du1 - e1 * du2) / det).Length()) * faceArea;
-			area += faceArea;
-		}
-		if (area <= 0.0 || hi[0] <= lo[0] || hi[1] <= lo[1])
-			return nullptr;
-		auto job = std::make_unique<BakeJob>();
-		job->geometry.reset(a_geometry);
-		const float perU = static_cast<float>(sum[0] / area), perV = static_cast<float>(sum[1] / area);
-		job->width = std::clamp(static_cast<uint32_t>(std::ceil((hi[0] - lo[0]) * perU / BAKE_TEXEL)), 4u, BAKE_MOST_SIDE);
-		job->height = std::clamp(static_cast<uint32_t>(std::ceil((hi[1] - lo[1]) * perV / BAKE_TEXEL)), 4u, BAKE_MOST_SIDE);
-		job->uvMin[0] = lo[0];
-		job->uvMin[1] = lo[1];
-		job->uvSize[0] = hi[0] - lo[0];
-		job->uvSize[1] = hi[1] - lo[1];
-		const std::size_t count = static_cast<std::size_t>(job->width) * job->height;
-		job->position.assign(count, RE::NiPoint3(0.0f, 0.0f, 0.0f));
-		job->normal.assign(count, RE::NiPoint3(0.0f, 0.0f, 1.0f));
-		job->covered.assign(count, 0);
-		job->rock.assign(count, 0);
-		// Each triangle laid into the grid by its texture coordinates: the world position and facing at each texel centre
-		for (const auto& tri : triangles) {
-			const auto& a = uvs[tri[0]];
-			const auto& b = uvs[tri[1]];
-			const auto& c = uvs[tri[2]];
-			const auto gx = [&](float a_u) { return (a_u - lo[0]) / job->uvSize[0] * static_cast<float>(job->width) - 0.5f; };
-			const auto gy = [&](float a_v) { return (a_v - lo[1]) / job->uvSize[1] * static_cast<float>(job->height) - 0.5f; };
-			const float ax = gx(a[0]), ay = gy(a[1]), bx = gx(b[0]), by = gy(b[1]), cx = gx(c[0]), cy = gy(c[1]);
-			const float det = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
-			if (std::abs(det) < 1e-6f)
-				continue;
-			RE::NiPoint3 face = (positions[tri[1]] - positions[tri[0]]).Cross(positions[tri[2]] - positions[tri[0]]);
-			const float faceLength = face.Length();
-			face = faceLength > 1e-6f ? face / faceLength : RE::NiPoint3(0.0f, 0.0f, 1.0f);
-			const int32_t x0 = std::max(0, static_cast<int32_t>(std::floor(std::min({ ax, bx, cx }))));
-			const int32_t x1 = std::min(static_cast<int32_t>(job->width) - 1, static_cast<int32_t>(std::ceil(std::max({ ax, bx, cx }))));
-			const int32_t y0 = std::max(0, static_cast<int32_t>(std::floor(std::min({ ay, by, cy }))));
-			const int32_t y1 = std::min(static_cast<int32_t>(job->height) - 1, static_cast<int32_t>(std::ceil(std::max({ ay, by, cy }))));
-			for (int32_t y = y0; y <= y1; y++) {
-				for (int32_t x = x0; x <= x1; x++) {
-					const float px = static_cast<float>(x), py = static_cast<float>(y);
-					const float w1 = ((px - ax) * (cy - ay) - (cx - ax) * (py - ay)) / det;
-					const float w2 = ((bx - ax) * (py - ay) - (px - ax) * (by - ay)) / det;
-					const float w0 = 1.0f - w1 - w2;
-					if (w0 < -0.02f || w1 < -0.02f || w2 < -0.02f)
-						continue;
-					const std::size_t i = static_cast<std::size_t>(y) * job->width + x;
-					job->covered[i] = 1;
-					job->position[i] = positions[tri[0]] * w0 + positions[tri[1]] * w1 + positions[tri[2]] * w2;
-					job->normal[i] = face;
-				}
-			}
-		}
-		return job;
-	}
-
-	void FallSites::GatherSolids(BakeJob& a_job) const
-	{
-		auto* tes = RE::TES::GetSingleton();
-		if (!tes || a_job.position.empty())
-			return;
-		float lo[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, hi[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
-		for (std::size_t i = 0; i < a_job.position.size(); i++) {
-			if (!a_job.covered[i])
-				continue;
-			const float c[3] = { a_job.position[i].x, a_job.position[i].y, a_job.position[i].z };
-			for (int k = 0; k < 3; k++) {
-				lo[k] = std::min(lo[k], c[k] - SOLID_REACH);
-				hi[k] = std::max(hi[k], c[k] + SOLID_REACH);
-			}
-		}
-		if (lo[0] > hi[0])
-			return;
-		uint32_t statics = 0;
-		const auto visitCell = [&](RE::TESObjectCELL* a_cell, bool a_requireAttached) {
-			if (!a_cell || (a_requireAttached && !a_cell->IsAttached()))
-				return;
-			a_cell->ForEachReference([&](RE::TESObjectREFR* a_ref) {
-				auto* base = a_ref ? a_ref->GetBaseObject() : nullptr;
-				if (!base || a_ref->IsDisabled() || a_ref->IsDeleted() || (base->GetFormType() != RE::FormType::Static && base->GetFormType() != RE::FormType::MovableStatic))
-					return RE::BSContainer::ForEachResult::kContinue;
-				auto* root = a_ref->Get3D();
-				if (!root)
-					return RE::BSContainer::ForEachResult::kContinue;
-				const auto& bound = root->worldBound;
-				if (bound.center.x + bound.radius < lo[0] || bound.center.x - bound.radius > hi[0] || bound.center.y + bound.radius < lo[1] || bound.center.y - bound.radius > hi[1] ||
-					bound.center.z + bound.radius < lo[2] || bound.center.z - bound.radius > hi[2])
-					return RE::BSContainer::ForEachResult::kContinue;
-				// Not the falls themselves (their models carry rocks of their own, which do count)
-				const std::string model = Lowercase(ModelOf(base));
-				if (model.find("fxwaterfall") != std::string::npos)
-					return RE::BSContainer::ForEachResult::kContinue;
-				const auto ref = statics++;
-				RE::BSVisit::TraverseScenegraphGeometries(root, [&](RE::BSGeometry* a_geometry) {
-					auto* triShape = a_geometry->AsTriShape();
-					const auto& runtime = a_geometry->GetGeometryRuntimeData();
-					auto* renderer = runtime.rendererData;
-					if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || !netimmerse_cast<RE::BSLightingShaderProperty*>(runtime.shaderProperty.get()) ||
-						renderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_SKINNED))
-						return RE::BSVisit::BSVisitControl::kContinue;
-					const auto& counts = triShape->GetTrishapeRuntimeData();
-					const uint32_t stride = renderer->vertexDesc.GetSize();
-					const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-					if (stride < positionOffset + 12)
-						return RE::BSVisit::BSVisitControl::kContinue;
-					std::vector<RE::NiPoint3> world(counts.vertexCount);
-					for (uint32_t v = 0; v < counts.vertexCount; v++) {
-						float local[3];
-						std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
-						world[v] = a_geometry->world * RE::NiPoint3(local[0], local[1], local[2]);
-					}
-					for (uint32_t i = 0; i < counts.triangleCount; i++) {
-						const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
-						if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
-							continue;
-						const std::array<RE::NiPoint3, 3> tri = { world[index[0]], world[index[1]], world[index[2]] };
-						if (std::max({ tri[0].x, tri[1].x, tri[2].x }) < lo[0] || std::min({ tri[0].x, tri[1].x, tri[2].x }) > hi[0] || std::max({ tri[0].y, tri[1].y, tri[2].y }) < lo[1] ||
-							std::min({ tri[0].y, tri[1].y, tri[2].y }) > hi[1])
-							continue;
-						a_job.solids.push_back(tri);
-						a_job.solidRef.push_back(ref);
-					}
-					return RE::BSVisit::BSVisitControl::kContinue;
-				});
-				return RE::BSContainer::ForEachResult::kContinue;
-			});
-		};
-		if (tes->interiorCell) {
-			visitCell(tes->interiorCell, true);
-		} else if (auto* grid = tes->gridCells) {
-			for (uint32_t gx = 0; gx < grid->length; gx++) {
-				for (uint32_t gy = 0; gy < grid->length; gy++)
-					visitCell(GetGridCell(grid, gx, gy), true);
-			}
-			auto* player = RE::PlayerCharacter::GetSingleton();
-			if (auto* worldspace = player ? player->GetWorldspace() : nullptr)
-				visitCell(worldspace->persistentCell, false);
-		}
-		// Binned from above: each triangle in every bin its extent touches
-		a_job.solidOrigin[0] = lo[0];
-		a_job.solidOrigin[1] = lo[1];
-		a_job.solidBins[0] = std::max(1, static_cast<int32_t>(std::ceil((hi[0] - lo[0]) / SOLID_BIN)));
-		a_job.solidBins[1] = std::max(1, static_cast<int32_t>(std::ceil((hi[1] - lo[1]) / SOLID_BIN)));
-		a_job.bins.assign(static_cast<std::size_t>(a_job.solidBins[0]) * a_job.solidBins[1], {});
-		for (uint32_t t = 0; t < a_job.solids.size(); t++) {
-			const auto& tri = a_job.solids[t];
-			const int32_t x0 = std::clamp(static_cast<int32_t>((std::min({ tri[0].x, tri[1].x, tri[2].x }) - lo[0]) / SOLID_BIN), 0, a_job.solidBins[0] - 1);
-			const int32_t x1 = std::clamp(static_cast<int32_t>((std::max({ tri[0].x, tri[1].x, tri[2].x }) - lo[0]) / SOLID_BIN), 0, a_job.solidBins[0] - 1);
-			const int32_t y0 = std::clamp(static_cast<int32_t>((std::min({ tri[0].y, tri[1].y, tri[2].y }) - lo[1]) / SOLID_BIN), 0, a_job.solidBins[1] - 1);
-			const int32_t y1 = std::clamp(static_cast<int32_t>((std::max({ tri[0].y, tri[1].y, tri[2].y }) - lo[1]) / SOLID_BIN), 0, a_job.solidBins[1] - 1);
-			for (int32_t y = y0; y <= y1; y++) {
-				for (int32_t x = x0; x <= x1; x++)
-					a_job.bins[static_cast<std::size_t>(y) * a_job.solidBins[0] + x].push_back(t);
-			}
-		}
-		logger::info("[Fluid Field]   bake: {} triangles of {} statics round the sheet", a_job.solids.size(), statics);
-	}
-
-	bool FallSites::InsideSolid(const BakeJob& a_job, const RE::NiPoint3& a_point, bool a_lying)
-	{
-		if (a_job.bins.empty())
-			return false;
-		const auto bx = static_cast<int32_t>(std::floor((a_point.x - a_job.solidOrigin[0]) / SOLID_BIN));
-		const auto by = static_cast<int32_t>(std::floor((a_point.y - a_job.solidOrigin[1]) / SOLID_BIN));
-		if (bx < 0 || by < 0 || bx >= a_job.solidBins[0] || by >= a_job.solidBins[1])
-			return false;
-		// Upward, per mesh: an odd count of its faces above means inside (an open buried underside is fine; an overhang counts twice)
-		std::vector<std::pair<uint32_t, uint32_t>> crossings;
-		float nearestAbove = FLT_MAX;
-		for (const uint32_t t : a_job.bins[static_cast<std::size_t>(by) * a_job.solidBins[0] + bx]) {
-			const auto& tri = a_job.solids[t];
-			const float d = (tri[1].x - tri[0].x) * (tri[2].y - tri[0].y) - (tri[2].x - tri[0].x) * (tri[1].y - tri[0].y);
-			if (std::abs(d) < 1e-6f)
-				continue;
-			const float w1 = ((a_point.x - tri[0].x) * (tri[2].y - tri[0].y) - (tri[2].x - tri[0].x) * (a_point.y - tri[0].y)) / d;
-			const float w2 = ((tri[1].x - tri[0].x) * (a_point.y - tri[0].y) - (a_point.x - tri[0].x) * (tri[1].y - tri[0].y)) / d;
-			if (w1 < 0.0f || w2 < 0.0f || w1 + w2 > 1.0f)
-				continue;
-			const float z = tri[0].z + (tri[1].z - tri[0].z) * w1 + (tri[2].z - tri[0].z) * w2;
-			if (z <= a_point.z)
-				continue;
-			nearestAbove = std::min(nearestAbove, z - a_point.z);
-			const uint32_t ref = a_job.solidRef[t];
-			auto it = std::find_if(crossings.begin(), crossings.end(), [&](const auto& a_entry) { return a_entry.first == ref; });
-			if (it == crossings.end())
-				crossings.emplace_back(ref, 1u);
-			else
-				it->second++;
-		}
-		// D76: a lying (run, not curtain) texel with a rock's underside just above is under that rock (vanilla's sheet runs on beneath
-		// boulders, an even crossing count); else the water drained through it instead of turning
-		if (a_lying && nearestAbove < SOLID_COVER)
-			return true;
-		for (const auto& [ref, count] : crossings) {
-			if (count % 2 == 0)
-				continue;
-			// Deeper inside it than a sheet lying on it dips (nearest face further than SOLID_MARGIN)
-			bool deep = true;
-			for (int32_t y = std::max(by - 1, 0); y <= std::min(by + 1, a_job.solidBins[1] - 1) && deep; y++) {
-				for (int32_t x = std::max(bx - 1, 0); x <= std::min(bx + 1, a_job.solidBins[0] - 1) && deep; x++) {
-					for (const uint32_t t : a_job.bins[static_cast<std::size_t>(y) * a_job.solidBins[0] + x]) {
-						if (a_job.solidRef[t] != ref)
-							continue;
-						const auto& tri = a_job.solids[t];
-						if (TriangleDistanceSquared(a_point, tri[0], tri[1], tri[2]) < SOLID_MARGIN * SOLID_MARGIN) {
-							deep = false;
-							break;
-						}
-					}
-				}
-			}
-			if (deep)
-				return true;
-		}
-		return false;
-	}
-
-	std::shared_ptr<FallSites::BakeField> FallSites::SolveBake(const BakeJob& a_job)
-	{
-		const uint32_t w = a_job.width, h = a_job.height;
-		const auto iw = static_cast<int32_t>(w), ih = static_cast<int32_t>(h);
-		const std::size_t count = static_cast<std::size_t>(w) * h;
-		const auto index = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(a_y) * w + a_x; };
-		const auto inside = [&](int32_t a_x, int32_t a_y) { return a_x >= 0 && a_y >= 0 && a_x < iw && a_y < ih; };
-
-		// D60: rock without specks: islands of BAKE_LEAST_ROCK texels or fewer are slivers of grazed collision, not boulders
-		std::vector<uint8_t> rock = a_job.rock;
-		// D68: plus rock from the statics' render meshes: a boulder on the ground failed the collision test (it wants rock on both sides,
-		// and the ray from under it started in the ground). D82: both kept apart for the dump (render meshes alone moved the streaks too
-		// much).
-		std::vector<uint8_t> inMesh(count, 0);
-		uint32_t meshRock = 0;
-		for (std::size_t i = 0; i < count; i++) {
-			if (!a_job.covered[i])
-				continue;
-			inMesh[i] = InsideSolid(a_job, a_job.position[i], std::abs(a_job.normal[i].z) > 0.5f) ? 1 : 0;
-			if (!rock[i] && inMesh[i]) {
-				rock[i] = 1;
-				meshRock++;
-			}
-		}
-		{
-			std::vector<uint8_t> seen(count, 0);
-			std::vector<std::size_t> island, open;
-			for (std::size_t start = 0; start < count; start++) {
-				if (!rock[start] || seen[start])
-					continue;
-				island.clear();
-				open.assign(1, start);
-				seen[start] = 1;
-				while (!open.empty()) {
-					const std::size_t i = open.back();
-					open.pop_back();
-					island.push_back(i);
-					const auto x = static_cast<int32_t>(i % w), y = static_cast<int32_t>(i / w);
-					static constexpr int32_t DX[4] = { 1, -1, 0, 0 }, DY[4] = { 0, 0, 1, -1 };
-					for (int k = 0; k < 4; k++) {
-						const int32_t nx = x + DX[k], ny = y + DY[k];
-						if (!inside(nx, ny) || seen[index(nx, ny)] || !rock[index(nx, ny)])
-							continue;
-						seen[index(nx, ny)] = 1;
-						open.push_back(index(nx, ny));
-					}
-				}
-				if (island.size() <= BAKE_LEAST_ROCK) {
-					for (const std::size_t i : island)
-						rock[i] = 0;
-				}
-			}
-		}
-		// D74 diagnostics: the sim's inputs beside the log, for the offline harness (scratchpad simbake.py)
-		if (const auto directory = logger::log_directory()) {
-			static std::atomic<int> dumps{ 0 };
-			std::ofstream file(*directory / std::format("FluidField_bake{}.bin", dumps++), std::ios::binary);
-			const uint32_t header[2] = { w, h };
-			const float uv[4] = { a_job.uvMin[0], a_job.uvMin[1], a_job.uvSize[0], a_job.uvSize[1] };
-			file.write(reinterpret_cast<const char*>(header), sizeof(header));
-			file.write(reinterpret_cast<const char*>(uv), sizeof(uv));
-			file.write(reinterpret_cast<const char*>(a_job.covered.data()), static_cast<std::streamsize>(count));
-			file.write(reinterpret_cast<const char*>(rock.data()), static_cast<std::streamsize>(count));
-			file.write(reinterpret_cast<const char*>(a_job.position.data()), static_cast<std::streamsize>(count * sizeof(RE::NiPoint3)));
-			// D82: the rock tests apart: the collision's, the render meshes'
-			file.write(reinterpret_cast<const char*>(a_job.rock.data()), static_cast<std::streamsize>(count));
-			file.write(reinterpret_cast<const char*>(inMesh.data()), static_cast<std::streamsize>(count));
-		}
-		// D80: the water as a sheet of strands (FallStrands) from each column's crest (D79), parting round rock, never crossing;
-		// the texture keeps vanilla's speed down the mesh, the strands only bend it
-		FallStrands::Input input;
-		input.width = w;
-		input.height = h;
-		input.texelV = a_job.uvSize[1] / static_cast<float>(h);
-		input.position = reinterpret_cast<const float*>(a_job.position.data());
-		input.covered = a_job.covered.data();
-		input.rock = rock.data();
-		auto strands = FallStrands::March(input);
-		logger::info("[Fluid Field]   strands: {}x{} texels, {} strands from {} crest columns, {} reached the foot, {} wake texels, {} in hidden lead-ins, longest run {:.1f} s", w, h,
-			strands.strands, strands.inflows, strands.reachedFoot, strands.openTexels, strands.leadTexels, strands.longestRun);
-		const auto blur = [&](std::vector<float>& a_field, int a_passes) {
-			std::vector<float> scratch(count);
-			for (int pass = 0; pass < a_passes; pass++) {
-				for (int32_t y = 0; y < ih; y++) {
-					for (int32_t x = 0; x < iw; x++) {
-						float total = 0.0f, weight = 0.0f;
-						for (int32_t dy = -1; dy <= 1; dy++) {
-							for (int32_t dx = -1; dx <= 1; dx++) {
-								if (!inside(x + dx, y + dy))
-									continue;
-								const float k = (dx == 0 ? 2.0f : 1.0f) * (dy == 0 ? 2.0f : 1.0f);
-								total += a_field[index(x + dx, y + dy)] * k;
-								weight += k;
-							}
-						}
-						scratch[index(x, y)] = total / weight;
-					}
-				}
-				a_field.swap(scratch);
-			}
-		};
-		// Foam on the rock's rim too (D60), where real water turns white anyway
-		std::vector<float> foam = std::move(strands.foam);
-		for (int32_t y = 0; y < ih; y++) {
-			for (int32_t x = 0; x < iw; x++) {
-				const std::size_t i = index(x, y);
-				float rim = 0.0f;
-				for (int32_t dy = -2; dy <= 2 && rim < 1.0f; dy++) {
-					for (int32_t dx = -2; dx <= 2; dx++) {
-						if (inside(x + dx, y + dy) && rock[index(x + dx, y + dy)] && a_job.covered[index(x + dx, y + dy)])
-							rim = std::max(rim, 1.0f - 0.3f * static_cast<float>(std::max(std::abs(dx), std::abs(dy))));
-					}
-				}
-				foam[i] = std::max(foam[i], rim);
-			}
-		}
-		blur(foam, 2);  // D181: one pass showed low-res steps
-		std::vector<float> aeration = std::move(strands.aeration);
-		blur(aeration, 10);  // D179, D181, D186: fewer passes showed its patches' edges
-		std::vector<float> turn = std::move(strands.turn);
-		blur(turn, 1);
-		std::vector<float> fallen = std::move(strands.fallen);
-		blur(fallen, 4);  // D189: the shading's drop (a smooth ramp down the sheet)
-		std::vector<float> calm = std::move(strands.calm);
-		blur(calm, 4);
-
-		auto field = std::make_shared<BakeField>();
-		field->width = w;
-		field->height = h;
-		field->uvMin[0] = a_job.uvMin[0];
-		field->uvMin[1] = a_job.uvMin[1];
-		field->uvSize[0] = a_job.uvSize[0];
-		field->uvSize[1] = a_job.uvSize[1];
-		field->position = a_job.position;
-		field->covered = a_job.covered;
-		field->turn = std::move(turn);
-		field->speed = std::move(strands.speed);
-		field->wake = std::move(aeration);
-		field->foam = std::move(foam);
-		field->seed = std::move(strands.seed);
-		field->along = std::move(strands.along);
-		field->normal = a_job.normal;
-		field->rock = rock;
-		// D104: the clearances (untested texels, the hidden lead-in, count as open)
-		field->clearFront = a_job.clearFront.size() == count ? a_job.clearFront : std::vector<float>(count, CLEAR_REACH);
-		field->clearBack = a_job.clearBack.size() == count ? a_job.clearBack : std::vector<float>(count, CLEAR_REACH);
-		// D82: the swell, softened to broad shapes (the vertices are 20 to 50 units apart)
-		field->swell = std::move(strands.swell);
-		blur(field->swell, PUSH_BLUR);
-		// D85: the disturbance, softened alike
-		field->disturbance = std::move(strands.disturbance);
-		blur(field->disturbance, PUSH_BLUR);
-		field->fallen = std::move(fallen);
-		field->calm = std::move(calm);
-		logger::info("[Fluid Field]   bake: {}x{} texels, {} more inside the statics' meshes", w, h, meshRock);
-		if (!a_job.cache.empty() && !SaveBake(a_job.cache, *field))
-			logger::warn("[Fluid Field]   bake cache: could not write {}", a_job.cache.string());
-		return field;
-	}
-
 	std::string FallSites::CaptureCachePath(const FallCapture& a_capture, uint64_t a_key) const
 	{
 		const auto directory = logger::log_directory();
@@ -4118,7 +2553,7 @@ namespace FluidFieldSim
 			return {};
 		const float lo[2] = { a_capture.GetOriginX(), a_capture.GetOriginY() };
 		const float hi[2] = { lo[0] + a_capture.GetWidth() * FallCapture::CELL, lo[1] + a_capture.GetHeight() * FallCapture::CELL };
-		std::vector<FallVisibility::Triangle> statics;
+		std::vector<Triangle> statics;
 		GatherOccluders(lo[0], lo[1], hi[0], hi[1], statics);
 		uint64_t hash = 14695981039346656037ull;
 		const auto mix = [&](int64_t a_value) {
@@ -4149,112 +2584,9 @@ namespace FluidFieldSim
 		return (*directory / "FluidFieldBakes" / std::format("ground_{:016X}.bin", hash)).string();
 	}
 
-	std::filesystem::path FallSites::BakeCachePath(const BakeJob& a_job)
-	{
-		const auto directory = logger::log_directory();
-		auto* geometry = a_job.geometry.get();
-		if (!directory || !geometry)
-			return {};
-		RE::TESObjectREFR* ref = nullptr;
-		for (RE::NiAVObject* object = geometry; object && !ref; object = object->parent)
-			ref = object->GetUserData();
-		if (!ref)
-			return {};
-		// FNV-1a over everything the bake depends on; static triangles summed in any order (cells are visited from the player's side)
-		const auto fnv = [](uint64_t a_hash, const void* a_data, std::size_t a_size) {
-			const auto* bytes = static_cast<const uint8_t*>(a_data);
-			for (std::size_t i = 0; i < a_size; i++) {
-				a_hash ^= bytes[i];
-				a_hash *= 1099511628211ull;
-			}
-			return a_hash;
-		};
-		uint64_t hash = 14695981039346656037ull;
-		const auto mix = [&](int64_t a_value) { hash = fnv(hash, &a_value, sizeof(a_value)); };
-		const auto quantise = [](float a_value, float a_step) { return std::isfinite(a_value) ? static_cast<int64_t>(std::llround(a_value / a_step)) : INT64_MIN; };
-		// The strand code's version too, so each build of it bakes afresh; other bake changes bump BAKE_CACHE_VERSION
-		const std::string build = FallStrands::Version();
-		hash = fnv(hash, build.data(), build.size());
-		mix(BAKE_CACHE_VERSION);
-		mix(ref->GetFormID());
-		const std::string name = geometry->name.c_str();
-		hash = fnv(hash, name.data(), name.size());
-		for (int r = 0; r < 3; r++) {
-			for (int c = 0; c < 3; c++)
-				mix(quantise(geometry->world.rotate.entry[r][c], 0.001f));
-		}
-		mix(quantise(geometry->world.translate.x, 0.1f));
-		mix(quantise(geometry->world.translate.y, 0.1f));
-		mix(quantise(geometry->world.translate.z, 0.1f));
-		mix(quantise(geometry->world.scale, 0.001f));
-		mix(a_job.width);
-		mix(a_job.height);
-		for (int k = 0; k < 2; k++) {
-			mix(quantise(a_job.uvMin[k], 1e-4f));
-			mix(quantise(a_job.uvSize[k], 1e-4f));
-		}
-		hash = fnv(hash, a_job.covered.data(), a_job.covered.size());
-		uint64_t solidSum = 0, solidXor = 0;
-		for (const auto& triangle : a_job.solids) {
-			uint64_t one = 14695981039346656037ull;
-			for (const auto& corner : triangle) {
-				const int64_t q[3] = { quantise(corner.x, 0.5f), quantise(corner.y, 0.5f), quantise(corner.z, 0.5f) };
-				one = fnv(one, q, sizeof(q));
-			}
-			solidSum += one;
-			solidXor ^= one * 0x9E3779B97F4A7C15ull;
-		}
-		mix(static_cast<int64_t>(solidSum));
-		mix(static_cast<int64_t>(solidXor));
-		mix(static_cast<int64_t>(a_job.solids.size()));
-		return *directory / "FluidFieldBakes" / std::format("{:08X}_{:016X}.bin", ref->GetFormID(), hash);
-	}
-
 	namespace
 	{
 		constexpr uint32_t BAKE_CACHE_MAGIC = 0x4B424646;  // "FFBK"
-	}
-
-	bool FallSites::SaveBake(const std::filesystem::path& a_path, const BakeField& a_field)
-	{
-		std::error_code error;
-		std::filesystem::create_directories(a_path.parent_path(), error);
-		auto partial = a_path;
-		partial += ".part";
-		{
-			std::ofstream file(partial, std::ios::binary);
-			if (!file)
-				return false;
-			const uint32_t header[4] = { BAKE_CACHE_MAGIC, BAKE_CACHE_VERSION, a_field.width, a_field.height };
-			file.write(reinterpret_cast<const char*>(header), sizeof(header));
-			file.write(reinterpret_cast<const char*>(a_field.uvMin), sizeof(a_field.uvMin));
-			file.write(reinterpret_cast<const char*>(a_field.uvSize), sizeof(a_field.uvSize));
-			const auto put = [&](const auto& a_vector) {
-				const uint64_t size = a_vector.size();
-				file.write(reinterpret_cast<const char*>(&size), sizeof(size));
-				file.write(reinterpret_cast<const char*>(a_vector.data()), static_cast<std::streamsize>(size * sizeof(a_vector[0])));
-			};
-			put(a_field.position);
-			put(a_field.covered);
-			put(a_field.turn);
-			put(a_field.speed);
-			put(a_field.wake);
-			put(a_field.foam);
-			put(a_field.seed);
-			put(a_field.along);
-			put(a_field.normal);
-			put(a_field.rock);
-			put(a_field.swell);
-			put(a_field.disturbance);
-			put(a_field.clearFront);
-			put(a_field.clearBack);
-			put(a_field.fallen);  // D189
-			put(a_field.calm);    // D190
-			if (!file)
-				return false;
-		}
-		std::filesystem::rename(partial, a_path, error);
-		return !error;
 	}
 
 	std::shared_ptr<FallSites::BakeField> FallSites::LoadBake(const std::filesystem::path& a_path)
@@ -4920,46 +3252,6 @@ namespace FluidFieldSim
 		logger::info("[Fluid Field] Waterfall swell: {} vertices of {} lit meshes pushed out, at most {:.1f} units; {} wobble, at most {:.1f} units; {} normals turned outward; {} hidden lead-in vertices cut",
 			pushed, meshes, most, wobbled, mostWobble, flippedTotal, leadCut);
 		logger::info("[Fluid Field]   unified lobes flattened: {} vertices, at most {:.1f} units in", flattened, mostFlattened);
-	}
-
-	void FallSites::ProbeScrolls()
-	{
-		const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-		const auto materialOf = [](RE::BSGeometry* a_geometry) -> RE::BSShaderMaterial* {
-			auto* property = a_geometry ? netimmerse_cast<RE::BSLightingShaderProperty*>(a_geometry->GetGeometryRuntimeData().shaderProperty.get()) : nullptr;
-			return property ? property->material : nullptr;
-		};
-		for (const auto& [key, copy] : denseOf) {
-			auto& probe = scrollProbes[key];
-			auto* original = materialOf(copy.original.get());
-			auto* dense = materialOf(copy.shape.get());
-			if (probe.logged || !original)
-				continue;
-			const float offset = original->texCoordOffset[0].y, denseOffset = dense ? dense->texCoordOffset[0].y : 0.0f;
-			if (probe.start < 0.0) {
-				probe.offset = offset;
-				probe.copyOffset = denseOffset;
-				probe.scale = original->texCoordScale[0].y;
-				probe.start = probe.last = now;
-				continue;
-			}
-			if (now - probe.last < 0.2)
-				continue;
-			float delta = offset - probe.offset, denseDelta = denseOffset - probe.copyOffset;
-			delta -= std::round(delta);
-			denseDelta -= std::round(denseDelta);
-			probe.travelled += delta;
-			probe.copyTravelled += denseDelta;
-			probe.offset = offset;
-			probe.copyOffset = denseOffset;
-			probe.last = now;
-			if (now - probe.start >= 6.0) {
-				const auto seconds = static_cast<float>(now - probe.start);
-				logger::info("[Fluid Field]   scroll probe: '{}' (its copy shares the material: {}): the hidden original scrolls {:.4f} a second (scale {:.3f}), the copy {:.4f}",
-					copy.original ? copy.original->name.c_str() : "?", original == dense, -probe.travelled / seconds, probe.scale, -probe.copyTravelled / seconds);
-				probe.logged = true;
-			}
-		}
 	}
 
 	void FallSites::LinkBakes()
@@ -5632,23 +3924,19 @@ namespace FluidFieldSim
 
 	void FallSites::BakeStep()
 	{
-		BakeWork();
-		// D67: link once all are solved, so each mesh carries on from the one above. D83: checked every step, not only when a bake
-		// lands: a cached bake lands a frame after its job, before the queue's stale entries are skipped, and nothing lands after them
-		if (linkDue && bakesPending.empty() && bakeQueue.empty() && !bakeJob) {
-			linkDue = false;
-			logger::info("[Fluid Field] Waterfall flow bakes: {} meshes ({} read from the cache, {} solved), {} texels tested, {} inside rock", bakeFields.size(), bakesCached,
-				bakesSolved, bakedTexels, bakedRockTexels);
-			logger::info("[Fluid Field]   {} more texels took their tested neighbours' answer (D185)", bakedFilled);
-			// D172: on a worker (1.2 s on one frame); its plunges after it, on the render thread
-			linkUnified = unifiedShapes;  // read by the worker, so a copy
-			heavyWork = std::async(std::launch::async, [this]() {
-				const auto start = std::chrono::steady_clock::now();
-				LinkBakes();
-				logger::info("[Fluid Field]   linking the bakes took {:.1f} ms (worker)", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
-				loadTiming.AddWorker(LoadWork::Link, start);
-			});
-		}
+		// D67: link once the bakes are in, so each mesh carries on from the one above
+		if (!linkDue)
+			return;
+		linkDue = false;
+		logger::info("[Fluid Field] Waterfall flow bakes: {} meshes", bakeFields.size());
+		// D172: on a worker (1.2 s on one frame); its plunges after it, on the render thread
+		linkUnified = unifiedShapes;  // read by the worker, so a copy
+		heavyWork = std::async(std::launch::async, [this]() {
+			const auto start = std::chrono::steady_clock::now();
+			LinkBakes();
+			logger::info("[Fluid Field]   linking the bakes took {:.1f} ms (worker)", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+			loadTiming.AddWorker(LoadWork::Link, start);
+		});
 	}
 
 	void FallSites::DumpUnifyInputs() const
@@ -5712,56 +4000,12 @@ namespace FluidFieldSim
 				hi[1] = std::max(hi[1], at.y);
 			}
 			file.write(reinterpret_cast<const char*>(renderer->rawIndexData), static_cast<std::streamsize>(counts.triangleCount) * 3 * sizeof(uint16_t));
-			// v2: the bake's untrimmed triangles (D172: the copy before the landscape cut)
-			const auto untrimmed = untrimmedIndices.find(geometry);
-			const uint32_t untrimmedCount = untrimmed != untrimmedIndices.end() ? static_cast<uint32_t>(untrimmed->second.size() / 3) : 0;
-			file.write(reinterpret_cast<const char*>(&untrimmedCount), sizeof(untrimmedCount));
-			if (untrimmedCount)
-				file.write(reinterpret_cast<const char*>(untrimmed->second.data()), static_cast<std::streamsize>(untrimmed->second.size()) * sizeof(uint16_t));
-			// v2: the vanilla mesh the copy was made from (counts, world transform, model position and uv per vertex, triangles)
-			RE::BSGeometry* source = nullptr;
-			for (const auto& [original, copy] : denseOf) {
-				if (copy.shape.get() == triShape) {
-					source = copy.original.get();
-					break;
-				}
-			}
-			auto* sourceShape = source ? source->AsTriShape() : nullptr;
-			auto* sourceRenderer = source ? source->GetGeometryRuntimeData().rendererData : nullptr;
-			const bool haveSource = sourceShape && sourceRenderer && sourceRenderer->rawVertexData && sourceRenderer->rawIndexData &&
-			                        sourceRenderer->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV);
-			const auto& sourceCounts = haveSource ? sourceShape->GetTrishapeRuntimeData() : counts;
-			const uint32_t sourceHeader[2] = { haveSource ? sourceCounts.vertexCount : 0u, haveSource ? static_cast<uint32_t>(sourceCounts.triangleCount) : 0u };
-			file.write(reinterpret_cast<const char*>(sourceHeader), sizeof(sourceHeader));
-			if (haveSource) {
-				const auto& sourceWorld = source->world;
-				float sourceTransform[13];
-				for (int r = 0; r < 3; r++) {
-					for (int c = 0; c < 3; c++)
-						sourceTransform[r * 3 + c] = sourceWorld.rotate.entry[r][c];
-				}
-				sourceTransform[9] = sourceWorld.translate.x;
-				sourceTransform[10] = sourceWorld.translate.y;
-				sourceTransform[11] = sourceWorld.translate.z;
-				sourceTransform[12] = sourceWorld.scale;
-				file.write(reinterpret_cast<const char*>(sourceTransform), sizeof(sourceTransform));
-				const uint32_t sourceStride = sourceRenderer->vertexDesc.GetSize();
-				const uint32_t sourcePosition = sourceRenderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-				const uint32_t sourceUv = sourceRenderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0);
-				for (uint32_t v = 0; v < sourceCounts.vertexCount; v++) {
-					const uint8_t* data = sourceRenderer->rawVertexData + static_cast<std::size_t>(v) * sourceStride;
-					float vertex[5];
-					std::memcpy(vertex, data + sourcePosition, sizeof(float) * 3);
-					const auto* uv = reinterpret_cast<const uint16_t*>(data + sourceUv);
-					vertex[3] = DirectX::PackedVector::XMConvertHalfToFloat(uv[0]);
-					vertex[4] = DirectX::PackedVector::XMConvertHalfToFloat(uv[1]);
-					file.write(reinterpret_cast<const char*>(vertex), sizeof(vertex));
-				}
-				file.write(reinterpret_cast<const char*>(sourceRenderer->rawIndexData), static_cast<std::streamsize>(sourceCounts.triangleCount) * 3 * sizeof(uint16_t));
-			}
+			// v2: no untrimmed triangles and no vanilla source (both counts 0)
+			const uint32_t none[3] = {};
+			file.write(reinterpret_cast<const char*>(none), sizeof(none));
 			// v2: the reference's form ID and model path (u32 length, then the characters)
 			RE::TESObjectREFR* ref = nullptr;
-			for (RE::NiAVObject* object = source ? static_cast<RE::NiAVObject*>(source) : geometry; object && !ref; object = object->parent)
+			for (RE::NiAVObject* object = geometry; object && !ref; object = object->parent)
 				ref = object->GetUserData();
 			const uint32_t formID = ref ? ref->GetFormID() : 0;
 			const std::string model = ref ? (ModelOf(ref->GetBaseObject()) ? ModelOf(ref->GetBaseObject()) : "") : "";
@@ -5775,7 +4019,7 @@ namespace FluidFieldSim
 			return;
 		constexpr float MARGIN = 256.0f;  // world units round the meshes
 		constexpr float LAND_STEP = 32.0f;
-		std::vector<FallVisibility::Triangle> statics;
+		std::vector<Triangle> statics;
 		std::string report = "form\ttype\tmodel\tposition\tbound\ttaken\tskipped\n";
 		GatherOccluders(lo[0] - MARGIN, lo[1] - MARGIN, hi[0] + MARGIN, hi[1] + MARGIN, statics, &report);
 		if (std::ofstream refsFile(*directory / "FluidField_unify_refs.tsv"); refsFile)
@@ -5805,10 +4049,9 @@ namespace FluidFieldSim
 		logger::info("[Fluid Field] Unified falls inputs: {} meshes, {} static triangles, {}x{} landscape heights, next to the log", written, statics.size(), nx, ny);
 	}
 
-	void FallSites::GatherOccluders(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<FallVisibility::Triangle>& o_triangles, std::string* o_report) const
+	void FallSites::GatherOccluders(float a_minX, float a_minY, float a_maxX, float a_maxY, std::vector<Triangle>& o_triangles, std::string* o_report) const
 	{
-		// D173: like GatherSolids: the statics' render triangles over the area, not the falls' own models (their copies are added
-		// below, this batch's by TrimHidden)
+		// D173: the statics' render triangles over the area, not the falls' own models
 		auto* tes = RE::TES::GetSingleton();
 		if (!tes)
 			return;
@@ -5845,7 +4088,7 @@ namespace FluidFieldSim
 				const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
 				if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
 					continue;
-				const FallVisibility::Triangle tri = { world[index[0]], world[index[1]], world[index[2]] };
+				const Triangle tri = { world[index[0]], world[index[1]], world[index[2]] };
 				// the report's: a triangle spanning the area with no corner in it counts too (a large boulder face)
 				const bool spans = o_report && std::max({ tri[0].x, tri[1].x, tri[2].x }) >= a_minX && std::min({ tri[0].x, tri[1].x, tri[2].x }) <= a_maxX &&
 				                   std::max({ tri[0].y, tri[1].y, tri[2].y }) >= a_minY && std::min({ tri[0].y, tri[1].y, tri[2].y }) <= a_maxY;
@@ -5899,164 +4142,6 @@ namespace FluidFieldSim
 					visitCell(GetGridCell(grid, gx, gy), true);
 			}
 		}
-		// The dense copies made before (another batch's sheets hide this one's too)
-		for (const auto& [original, copy] : denseOf)
-			addGeometry(copy.shape.get());
-	}
-
-	void FallSites::TrimHidden(const std::vector<DenseJob*>& a_jobs, const ShellInput& a_shell)
-	{
-		// D173: the outer shell of the batch's sheets, the statics and the landscape: drop the triangles none of whose vertices can
-		// be seen from outside (FallVisibility), keeping a SHELL_MARGIN round what is seen
-		const auto start = std::chrono::steady_clock::now();
-		std::vector<std::vector<RE::NiPoint3>> world(a_jobs.size());
-		std::vector<FallVisibility::Sheet> sheets;
-		for (std::size_t j = 0; j < a_jobs.size(); j++) {
-			if (!a_jobs[j]->ok)
-				continue;
-			world[j].resize(a_jobs[j]->positions.size());
-			for (std::size_t v = 0; v < world[j].size(); v++)
-				world[j][v] = a_jobs[j]->world * a_jobs[j]->positions[v];
-		}
-		std::vector<std::size_t> sheetJob;
-		for (std::size_t j = 0; j < a_jobs.size(); j++) {
-			if (!a_jobs[j]->ok)
-				continue;
-			sheets.push_back({ &world[j], &a_jobs[j]->triangles });
-			sheetJob.push_back(j);
-		}
-		uint64_t tested = 0, rays = 0;
-		const auto visible = FallVisibility::Visible(sheets, a_shell.occluders, a_shell.interior ? nullptr : &a_shell.land, &tested, &rays);
-		uint64_t dropped = 0, kept = 0;
-		for (std::size_t s = 0; s < sheets.size(); s++) {
-			DenseJob& job = *a_jobs[sheetJob[s]];
-			// The margin: a vertex within SHELL_MARGIN of a seen one, along its sheet, is kept too (else two sheets' meeting edges
-			// stopped short of each other and the ground showed between)
-			const std::size_t count = world[sheetJob[s]].size();
-			std::vector<std::vector<std::pair<uint32_t, float>>> links(count);
-			for (const auto& tri : job.triangles) {
-				for (int k = 0; k < 3; k++) {
-					const uint32_t a = tri[k], b = tri[(k + 1) % 3];
-					const float length = (world[sheetJob[s]][a] - world[sheetJob[s]][b]).Length();
-					links[a].emplace_back(b, length);
-					links[b].emplace_back(a, length);
-				}
-			}
-			std::vector<float> reach(count, FLT_MAX);
-			using Entry = std::pair<float, uint32_t>;
-			std::priority_queue<Entry, std::vector<Entry>, std::greater<>> open;
-			for (uint32_t v = 0; v < count; v++) {
-				if (visible[s][v] && !links[v].empty()) {
-					reach[v] = 0.0f;
-					open.emplace(0.0f, v);
-				}
-			}
-			while (!open.empty()) {
-				const auto [distance, v] = open.top();
-				open.pop();
-				if (distance > reach[v])
-					continue;
-				for (const auto& [w, length] : links[v]) {
-					const float through = distance + length;
-					if (through < reach[w] && through <= SHELL_MARGIN) {
-						reach[w] = through;
-						open.emplace(through, w);
-					}
-				}
-			}
-			// Cut along the margin's edge, not at whole triangles (their staircase drew the meeting foam as white wedges): kept where
-			// SHELL_MARGIN - reach is not negative, a crossing triangle split (as Densify's landscape cut), new vertices at the end
-			std::vector<float> keep(count);
-			for (std::size_t v = 0; v < count; v++)
-				keep[v] = std::clamp(SHELL_MARGIN - reach[v], -SHELL_MARGIN, SHELL_MARGIN);
-			std::map<std::pair<uint32_t, uint32_t>, uint32_t> crossings;
-			const auto crossing = [&](uint32_t a_in, uint32_t a_out) {
-				const auto key = std::make_pair(a_in, a_out);
-				if (const auto it = crossings.find(key); it != crossings.end())
-					return it->second;
-				const float f = std::clamp(keep[a_in] / std::max(keep[a_in] - keep[a_out], 1e-4f), 0.0f, 1.0f);
-				const auto lerp3 = [f](const RE::NiPoint3& a_a, const RE::NiPoint3& a_b) { return a_a + (a_b - a_a) * f; };
-				const auto unit = [](const RE::NiPoint3& a_v) { const float l = a_v.Length(); return l > 1e-6f ? a_v / l : RE::NiPoint3(0.0f, 0.0f, 1.0f); };
-				job.positions.push_back(lerp3(job.positions[a_in], job.positions[a_out]));
-				job.normals.push_back(unit(lerp3(job.normals[a_in], job.normals[a_out])));
-				job.tangents.push_back(unit(lerp3(job.tangents[a_in], job.tangents[a_out])));
-				job.bitangents.push_back(unit(lerp3(job.bitangents[a_in], job.bitangents[a_out])));
-				job.uvs.push_back(RE::NiPoint2(job.uvs[a_in].x + (job.uvs[a_out].x - job.uvs[a_in].x) * f, job.uvs[a_in].y + (job.uvs[a_out].y - job.uvs[a_in].y) * f));
-				const RE::NiColorA& c0 = job.colors[a_in];
-				const RE::NiColorA& c1 = job.colors[a_out];
-				job.colors.push_back(RE::NiColorA(c0.red + (c1.red - c0.red) * f, c0.green + (c1.green - c0.green) * f, c0.blue + (c1.blue - c0.blue) * f, c0.alpha + (c1.alpha - c0.alpha) * f));
-				const auto index = static_cast<uint32_t>(job.positions.size() - 1);
-				crossings[key] = index;
-				return index;
-			};
-			std::vector<std::array<uint32_t, 3>> shell;
-			shell.reserve(job.triangles.size());
-			for (const auto& tri : job.triangles) {
-				const bool in[3] = { keep[tri[0]] >= 0.0f, keep[tri[1]] >= 0.0f, keep[tri[2]] >= 0.0f };
-				const int ins = (in[0] ? 1 : 0) + (in[1] ? 1 : 0) + (in[2] ? 1 : 0);
-				if (ins == 3) {
-					shell.push_back(tri);
-				} else if (ins == 1) {
-					const int k = in[0] ? 0 : (in[1] ? 1 : 2);
-					const uint32_t a = tri[k], b = tri[(k + 1) % 3], c = tri[(k + 2) % 3];
-					shell.push_back({ a, crossing(a, b), crossing(a, c) });
-				} else if (ins == 2) {
-					const int k = !in[0] ? 2 : (!in[1] ? 0 : 1);
-					const uint32_t a = tri[k], b = tri[(k + 1) % 3], c = tri[(k + 2) % 3];
-					const uint32_t bc = crossing(b, c), ac = crossing(a, c);
-					shell.push_back({ a, b, bc });
-					shell.push_back({ a, bc, ac });
-				}
-			}
-			if (job.positions.size() > 65535) {
-				// Too many for 16-bit indices: the whole-triangle cut instead (a staircase, but drawn)
-				job.positions.resize(count);
-				job.normals.resize(count);
-				job.tangents.resize(count);
-				job.bitangents.resize(count);
-				job.uvs.resize(count);
-				job.colors.resize(count);
-				shell.clear();
-				for (const auto& tri : job.triangles) {
-					if (keep[tri[0]] >= 0.0f || keep[tri[1]] >= 0.0f || keep[tri[2]] >= 0.0f)
-						shell.push_back(tri);
-				}
-			}
-			job.hiddenAway = job.triangles.size() > shell.size() ? static_cast<uint32_t>(job.triangles.size() - shell.size()) : 0;
-			dropped += job.hiddenAway;
-			kept += shell.size();
-			job.triangles.swap(shell);
-			job.indices.clear();
-			job.indices.reserve(job.triangles.size() * 3);
-			for (const auto& tri : job.triangles) {
-				for (const uint32_t k : tri)
-					job.indices.push_back(static_cast<uint16_t>(k));
-			}
-		}
-		logger::info("[Fluid Field] Waterfall outer shell: {} of {} triangles seen from nowhere cut away ({} vertices tested, {} rays, {} occluding triangles gathered in {:.0f} ms; {:.0f} ms)",
-			dropped, dropped + kept, tested, rays, a_shell.occluders.size(), a_shell.gatherMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
-	}
-
-	void FallSites::FinishDenseWork()
-	{
-		if (!denseWork.valid() || denseWork.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-			return;
-		denseWork.get();
-		denseWork = {};
-		const auto start = std::chrono::steady_clock::now();
-		uint32_t built = 0;
-		for (auto& job : denseJobs) {
-			if (AttachDense(*job))
-				built++;
-			else if (job->geometry && !denseOf.contains(job->geometry.get()))
-				denseFailed.insert(job->geometry.get());
-		}
-		logger::info("[Fluid Field] Waterfall dense copies: {} of {} lit meshes ({:.0f} ms on a worker, {:.0f} ms attaching)", built, denseJobs.size(),
-			std::chrono::duration<double, std::milli>(start - denseStarted).count(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
-		denseJobs.clear();
-		// Ground again, with the copies (or the originals that could not have one) in their place
-		RefreshGrounded();
-		RefreshHiddenEffects();
 	}
 
 	void FallSites::FinishHeavyWork()
@@ -6087,207 +4172,6 @@ namespace FluidFieldSim
 			// D112: the pools cut the meshes' feet, which the culling reads (once the rock test has run; its end reads them anyway)
 			if (buryDone && !vertexClipBase.empty())
 				RequestCulling();
-		}
-	}
-
-	void FallSites::BakeWork()
-	{
-		LandBakes();
-		BakeRays();
-	}
-
-	void FallSites::LandBakes()
-	{
-		// Finished solves
-		for (auto it = bakesPending.begin(); it != bakesPending.end();) {
-			if (it->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
-				++it;
-				continue;
-			}
-			auto field = it->second.get();
-			const bool kept = it->first && grounded.contains(it->first.get()) && field;
-			if (kept) {
-				bakeFields[it->first.get()] = std::move(field);
-				linkDue = true;
-			}
-			it = bakesPending.erase(it);
-		}
-	}
-
-	void FallSites::BakeRays()
-	{
-		// D185: the bakes' start (cache read or statics gathered) and rock tests touch nothing the workers have, so they run while a
-		// worker does (waiting out every culling pass cost 37 s of a cold load)
-		auto* tes = RE::TES::GetSingleton();
-		if (!tes)
-			return;
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double, std::milli>(BAKE_BUDGET_MS);
-		while (std::chrono::steady_clock::now() < deadline) {
-			if (!bakeJob) {
-				if (bakeQueue.empty())
-					return;
-				// D83: the falls nearest the camera first
-				if (auto* camera = PlayerCamera(); camera && bakeQueue.size() > 1) {
-					const RE::NiPoint3 eye = camera->world.translate;
-					std::sort(bakeQueue.begin(), bakeQueue.end(), [&](const auto& a_a, const auto& a_b) {
-						const float da = a_a ? (a_a->worldBound.center - eye).Length() : FLT_MAX, db = a_b ? (a_b->worldBound.center - eye).Length() : FLT_MAX;
-						return da > db;
-					});
-				}
-				RE::NiPointer<RE::BSGeometry> geometry = bakeQueue.back();
-				bakeQueue.pop_back();
-				if (!geometry || !grounded.contains(geometry.get()))
-					continue;
-				bakeJob = StartBake(geometry.get());
-				if (!bakeJob)
-					continue;
-				// D132: bake the whole mesh (D126 left culled texels out: every cull edge became a rim, and foam and wake filled sheets in
-				// bands); the cut hides the culled parts, and ComputePlunges' shell mask their spray, plunges and lips
-				GatherSolids(*bakeJob);
-				// D82: baked before (same reference, placement, rock and ground): read back, no rock test or solve
-				bakeJob->cache = BakeCachePath(*bakeJob);
-				std::error_code error;
-				const bool cached = !bakeJob->cache.empty() && std::filesystem::exists(bakeJob->cache, error);
-				logger::info("[Fluid Field]   bake job '{}' ({}x{}): cache {} '{}'", geometry->name.c_str(), bakeJob->width, bakeJob->height, cached ? "hit" : "miss",
-					bakeJob->cache.filename().string());
-				if (cached) {
-					auto field = LoadBake(bakeJob->cache);
-					if (!field)
-						logger::warn("[Fluid Field]   bake cache: could not read '{}'", bakeJob->cache.string());
-					if (field) {
-						std::promise<std::shared_ptr<BakeField>> ready;
-						ready.set_value(std::move(field));
-						bakesPending.emplace_back(bakeJob->geometry, ready.get_future());
-						bakesCached++;
-						bakeJob.reset();
-						continue;
-					}
-				}
-				// D83: the hidden lead-in no strand comes near is not tested (a third of the rays)
-				{
-					FallStrands::Input input;
-					input.width = bakeJob->width;
-					input.height = bakeJob->height;
-					input.position = reinterpret_cast<const float*>(bakeJob->position.data());
-					input.covered = bakeJob->covered.data();
-					bakeJob->untested = FallStrands::HiddenLeadIn(input, LEAD_TEST_REACH);
-				}
-				bakesSolved++;
-				continue;
-			}
-			auto* cell = tes->interiorCell ? tes->interiorCell : tes->GetCell(bakeJob->geometry->world.translate);
-			auto* bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
-			auto* world = bhkWorld ? bhkWorld->GetWorld1() : nullptr;
-			if (!world) {
-				if (!bakeJob->worldMissing)
-					logger::warn("[Fluid Field]   bake job '{}': no collision world at its cell; waiting", bakeJob->geometry->name.c_str());
-				bakeJob->worldMissing = true;
-				return;
-			}
-			{
-				// Each texel inside rock? A ray from outside, in along the sheet's facing, crosses rock an odd number of times to reach a
-				// point inside (D57), deeper than a sheet lying on its rock
-				const RE::BSReadLockGuard lock(bhkWorld->worldLock);
-				if (bakeJob->clearFront.size() != bakeJob->covered.size()) {
-					bakeJob->clearFront.assign(bakeJob->covered.size(), CLEAR_REACH);
-					bakeJob->clearBack.assign(bakeJob->covered.size(), CLEAR_REACH);
-				}
-				// D185: every other texel each way first (pass 0); the rest (pass 1) take their tested neighbours' answer where those agree
-				// (all rock, or all open with clearances within CLEAR_AGREE), tested only where they differ: the rock's edges (testing all
-				// cost 16 s)
-				const auto w = static_cast<int32_t>(bakeJob->width);
-				const auto testable = [&](std::size_t a_i) { return bakeJob->covered[a_i] && !(a_i < bakeJob->untested.size() && bakeJob->untested[a_i]); };
-				int rays = 0;
-				for (; rays < 64; bakeJob->next++) {
-					if (bakeJob->next >= bakeJob->covered.size()) {
-						if (bakeJob->pass == 0) {
-							bakeJob->pass = 1;
-							bakeJob->next = 0;
-						}
-						if (bakeJob->next >= bakeJob->covered.size())
-							break;
-					}
-					const std::size_t i = bakeJob->next;
-					if (!testable(i))
-						continue;
-					const auto x = static_cast<int32_t>(i % w), y = static_cast<int32_t>(i / w);
-					const bool coarse = x % 2 == 0 && y % 2 == 0;
-					if (coarse != (bakeJob->pass == 0))
-						continue;
-					if (!coarse) {
-						// Its tested neighbours: the coarse texels round it (two along an even row or column, else four)
-						int count = 0, rockCount = 0;
-						float front[2] = { FLT_MAX, -FLT_MAX }, back[2] = { FLT_MAX, -FLT_MAX }, frontSum = 0.0f, backSum = 0.0f;
-						for (const int32_t cy : { y - y % 2, y - y % 2 + 2 }) {
-							for (const int32_t cx : { x - x % 2, x - x % 2 + 2 }) {
-								if ((cx == x - x % 2 + 2 && x % 2 == 0) || (cy == y - y % 2 + 2 && y % 2 == 0))
-									continue;  // (on an even row or column the texel lies between two, not four)
-								if (cx < 0 || cy < 0 || cx >= w || cy >= static_cast<int32_t>(bakeJob->height))
-									continue;
-								const std::size_t c = static_cast<std::size_t>(cy) * w + cx;
-								if (!testable(c))
-									continue;
-								count++;
-								rockCount += bakeJob->rock[c];
-								front[0] = std::min(front[0], bakeJob->clearFront[c]);
-								front[1] = std::max(front[1], bakeJob->clearFront[c]);
-								back[0] = std::min(back[0], bakeJob->clearBack[c]);
-								back[1] = std::max(back[1], bakeJob->clearBack[c]);
-								frontSum += bakeJob->clearFront[c];
-								backSum += bakeJob->clearBack[c];
-							}
-						}
-						const bool allRock = count >= 2 && rockCount == count;
-						const bool allOpen = count >= 2 && rockCount == 0 && front[1] - front[0] <= CLEAR_AGREE && back[1] - back[0] <= CLEAR_AGREE;
-						if (allRock || allOpen) {
-							bakeJob->rock[i] = allRock ? 1 : 0;
-							bakeJob->clearFront[i] = allRock ? 0.0f : frontSum / static_cast<float>(count);
-							bakeJob->clearBack[i] = allRock ? 0.0f : backSum / static_cast<float>(count);
-							bakedFilled++;
-							bakedRockTexels += bakeJob->rock[i];
-							continue;
-						}
-					}
-					rays++;
-					// From both sides: a curtain before a cliff has it on one side only (that ray starts inside and crosses its face once);
-					// a boulder through the sheet is on both
-					bool inside = true;
-					for (const float side : { 1.0f, -1.0f }) {
-						const RE::NiPoint3 out = bakeJob->normal[i] * side;
-						int crossings = 0;
-						float last = 0.0f;
-						RockAlong(world, bakeJob->position[i] + out * CLIP_REACH, -out, CLIP_REACH - 0.5f, &crossings, &last);
-						inside = inside && crossings % 2 == 1 && CLIP_REACH - 0.5f - last > BAKE_ROCK_MARGIN;
-						if (!inside)
-							break;
-					}
-					bakeJob->rock[i] = inside ? 1 : 0;
-					// D104: how far rock lies off each side of the sheet (the water's depth behind it)
-					if (!inside) {
-						for (const float side : { 1.0f, -1.0f }) {
-							// D105: from CLEAR_START out on the far side (in its water or air), through the sheet, to the first rock: rays
-							// starting inside the rock the sheet lies on saw no face (Havok sees none from inside)
-							const RE::NiPoint3 out = bakeJob->normal[i] * side;
-							const float hit = RockAlong(world, bakeJob->position[i] - out * CLEAR_START, out, CLEAR_REACH + CLEAR_START);
-							(side > 0.0f ? bakeJob->clearFront : bakeJob->clearBack)[i] = hit >= 0.0f ? std::clamp(hit - CLEAR_START, 0.0f, CLEAR_REACH) : CLEAR_REACH;
-						}
-					} else {
-						bakeJob->clearFront[i] = bakeJob->clearBack[i] = 0.0f;
-					}
-					bakedTexels++;
-					bakedRockTexels += bakeJob->rock[i];
-				}
-			}
-			if (bakeJob->pass == 1 && bakeJob->next >= bakeJob->covered.size()) {
-				auto job = std::shared_ptr<BakeJob>(std::move(bakeJob));
-				logger::info("[Fluid Field]   bake job '{}': rock tested, solving", job->geometry->name.c_str());
-				bakesPending.emplace_back(job->geometry, std::async(std::launch::async, [this, job]() {
-					const auto start = std::chrono::steady_clock::now();
-					auto field = SolveBake(*job);
-					loadTiming.AddWorker(LoadWork::Solve, start);
-					return field;
-				}));
-			}
 		}
 	}
 
@@ -6356,8 +4240,7 @@ namespace FluidFieldSim
 		bool capturing = false;
 		for (const auto& [key, capture] : captures)
 			capturing = capturing || (!capture.IsComplete() && capture.Castable()) || (capture.IsComplete() && !capture.reported);
-		return !capturing && !Busy() && !CullBusy() && !denseWork.valid() && bakeQueue.empty() && !bakeJob && bakesPending.empty() && clipQueue.empty() && buryQueue.empty() &&
-		       buryDone && !plungesDue && !linkDue;
+		return !capturing && !Busy() && !CullBusy() && clipQueue.empty() && buryQueue.empty() && buryDone && !plungesDue && !linkDue;
 	}
 
 	void FallSites::TrackLoad()
@@ -6379,7 +4262,7 @@ namespace FluidFieldSim
 		const auto endedAt = std::chrono::system_clock::now() - std::chrono::duration_cast<std::chrono::system_clock::duration>(now - loadTiming.lastActive);
 		const auto startedAt = endedAt - std::chrono::duration_cast<std::chrono::system_clock::duration>(loadTiming.lastActive - loadTiming.firstActive);
 		static constexpr const char* STAGES[] = { "scan", "capture", "clip", "bury", "cull", "depth", "bake", "pools", "finish" };
-		static constexpr const char* WORKS[] = { "pools", "dense", "seams", "cull", "link", "plunges", "solve" };
+		static constexpr const char* WORKS[] = { "pools", "seams", "cull", "link", "plunges" };
 		std::string stages, works;
 		double mainTotal = 0.0;
 		for (std::size_t k = 0; k < static_cast<std::size_t>(LoadStage::Count); k++) {
@@ -6393,9 +4276,8 @@ namespace FluidFieldSim
 		const auto clock = [](std::chrono::system_clock::time_point a_time) {
 			return std::format("{:%H:%M:%S}", std::chrono::floor<std::chrono::milliseconds>(std::chrono::current_zone()->to_local(a_time)));
 		};
-		logger::info("[Fluid Field] Falls settled (D185) #{}: work {} to {} ({:.1f} s); {} sites, {} captures, {} baked meshes ({} from the cache, {} solved)", loadTiming.reports,
-			clock(startedAt), clock(endedAt), std::chrono::duration<double>(loadTiming.lastActive - loadTiming.firstActive).count(), sites.size(), total, bakeFields.size(),
-			bakesCached, bakesSolved);
+		logger::info("[Fluid Field] Falls settled (D185) #{}: work {} to {} ({:.1f} s); {} sites, {} captures, {} baked meshes", loadTiming.reports, clock(startedAt), clock(endedAt),
+			std::chrono::duration<double>(loadTiming.lastActive - loadTiming.firstActive).count(), sites.size(), total, bakeFields.size());
 		logger::info("[Fluid Field]   render thread {:.0f} ms: {}", mainTotal, stages);
 		logger::info("[Fluid Field]   workers: {}", works);
 	}
@@ -6418,8 +4300,6 @@ namespace FluidFieldSim
 		waterSurfaces = &waterCopy;
 		timed(LoadStage::Finish, [&]() {
 			FinishHeavyWork();
-			if (!Busy())
-				FinishDenseWork();
 			if (!Busy() && wobbleImpactsDue)
 				ApplyWobbleImpacts();
 			if (!Busy() && unifiedLoaded)
@@ -6440,10 +4320,8 @@ namespace FluidFieldSim
 			// worker; it restarts once nothing else runs)
 			if (CullWorking())
 				timed(LoadStage::Cull, [&]() { CullStep(); });
-			// D185: the captures' and the bakes' rays go on meanwhile (they touch nothing the workers have)
+			// D185: the captures' rays go on meanwhile (they touch nothing the workers have)
 			timed(LoadStage::Capture, [&]() { CaptureStep(false); });
-			timed(LoadStage::Bake, [&]() { BakeRays(); });
-			ProbeScrolls();
 			return;
 		}
 		// D172: captures (their end regrounds the meshes: RefreshGrounded) only while no worker reads them. A step that starts a
@@ -6465,7 +4343,6 @@ namespace FluidFieldSim
 		timed(LoadStage::Pools, [&]() { PollPools(); });
 		if (Busy())
 			return;
-		ProbeScrolls();
 		if (updatesUntilScan > 0) {
 			updatesUntilScan--;
 			return;
@@ -7360,146 +5237,6 @@ namespace FluidFieldSim
 			if (consoleSummary) {
 				if (auto* console = RE::ConsoleLog::GetSingleton())
 					console->Print("%s", line.c_str());
-			}
-		}
-	}
-
-	void FallSites::DrawMeshDebug(ImDrawList* a_drawList, float a_range, int a_mode) const
-	{
-		auto* camera = PlayerCamera();
-		if (!camera || !a_drawList || a_mode <= 0)
-			return;
-		const ImVec2 display = ImGui::GetIO().DisplaySize;
-		const RE::NiPoint3 eye = camera->world.translate;
-		const auto project = [&](const RE::NiPoint3& a_p, ImVec2& a_screen) {
-			float sx, sy, sz;
-			if (!camera->WorldPtToScreenPt3(a_p, sx, sy, sz, 1e-5f) || sz <= 0.0f)
-				return false;
-			a_screen = ImVec2(sx * display.x, (1.0f - sy) * display.y);
-			return true;
-		};
-		const auto nearCamera = [&](const RE::NiBound& a_bound) { return (a_bound.center - eye).Length() < a_range + a_bound.radius; };
-		// D108: the depth rays as cast: green from the face through the vertex to what they hit, red to their reach for a miss
-		if (a_mode & 4) {
-			for (const auto& lit : litMeshList) {
-				auto* geometry = lit.geometry.get();
-				const auto it = geometry ? depthRaysShown.find(geometry) : depthRaysShown.end();
-				if (it == depthRaysShown.end() || !nearCamera(geometry->worldBound))
-					continue;
-				for (const auto& ray : it->second) {
-					ImVec2 a, b;
-					if (!project(ray[0], a) || !project(ray[1], b))
-						continue;
-					const bool hit = ray[2].x > 0.5f;
-					a_drawList->AddLine(a, b, hit ? IM_COL32(60, 230, 90, 170) : IM_COL32(240, 60, 60, 140), 1.0f);
-					if (hit)
-						a_drawList->AddCircleFilled(b, 2.0f, IM_COL32(60, 255, 90, 230));
-				}
-			}
-		}
-		// Wireframe: every grounded lit mesh's triangles, from its CPU copy
-		if (a_mode & 1) {
-			for (const auto& lit : litMeshList) {
-				auto* geometry = lit.geometry.get();
-				auto* triShape = geometry ? geometry->AsTriShape() : nullptr;
-				auto* renderer = geometry ? geometry->GetGeometryRuntimeData().rendererData : nullptr;
-				if (!triShape || !renderer || !renderer->rawVertexData || !renderer->rawIndexData || !nearCamera(geometry->worldBound))
-					continue;
-				const auto& counts = triShape->GetTrishapeRuntimeData();
-				const uint32_t stride = renderer->vertexDesc.GetSize();
-				const uint32_t positionOffset = renderer->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-				std::vector<ImVec2> screen(counts.vertexCount);
-				std::vector<uint8_t> shown(counts.vertexCount, 0);
-				for (uint32_t v = 0; v < counts.vertexCount; v++) {
-					float local[3];
-					std::memcpy(local, renderer->rawVertexData + static_cast<std::size_t>(v) * stride + positionOffset, sizeof(local));
-					shown[v] = project(geometry->world * RE::NiPoint3(local[0], local[1], local[2]), screen[v]) ? 1 : 0;
-				}
-				const ImU32 color = denseShapes.contains(geometry) ? IM_COL32(255, 220, 60, 150) : IM_COL32(255, 120, 40, 170);
-				for (uint32_t i = 0; i < counts.triangleCount; i++) {
-					const uint16_t* index = renderer->rawIndexData + static_cast<std::size_t>(i) * 3;
-					if (index[0] >= counts.vertexCount || index[1] >= counts.vertexCount || index[2] >= counts.vertexCount)
-						continue;
-					for (int k = 0; k < 3; k++) {
-						const uint16_t a = index[k], b = index[(k + 1) % 3];
-						if (a < b && shown[a] && shown[b])
-							a_drawList->AddLine(screen[a], screen[b], color, 1.0f);
-					}
-				}
-			}
-		}
-		// Flow: the sim's way and speed, an arrow every few texels; not in rock, under the water below, on a sheet's far side, or
-		// behind rock from the camera (a few hundred rays a frame, cached until the camera moves)
-		if (a_mode & 2) {
-			static constexpr int32_t STRIDE = 5;
-			if ((eye - arrowEye).Length() > 48.0f) {
-				arrowSeen.clear();
-				arrowEye = eye;
-			}
-			auto* tes = RE::TES::GetSingleton();
-			auto* cell = tes ? (tes->interiorCell ? tes->interiorCell : tes->GetCell(eye)) : nullptr;
-			auto* bhkWorld = cell ? cell->GetbhkWorld() : nullptr;
-			auto* world = bhkWorld ? bhkWorld->GetWorld1() : nullptr;
-			int rays = 0;
-			for (const auto& [geometry, field] : bakeFields) {
-				if (!field || !geometry || !nearCamera(geometry->worldBound))
-					continue;
-				const auto w = static_cast<int32_t>(field->width), h = static_cast<int32_t>(field->height);
-				const auto at = [&](int32_t a_x, int32_t a_y) { return static_cast<std::size_t>(std::clamp(a_y, 0, h - 1)) * w + std::clamp(a_x, 0, w - 1); };
-				for (int32_t y = STRIDE / 2; y < h; y += STRIDE) {
-					for (int32_t x = STRIDE / 2; x < w; x += STRIDE) {
-						const std::size_t i = at(x, y);
-						if (!field->covered[i] || (!field->rock.empty() && field->rock[i]))
-							continue;
-						const RE::NiPoint3& here = field->position[i];
-						float pool;
-						if (PoolLevelAt(here.x, here.y, pool) && here.z < pool - 4.0f)
-							continue;
-						const uint64_t key = (reinterpret_cast<uint64_t>(geometry) << 20) ^ static_cast<uint64_t>(i);
-						auto seen = arrowSeen.find(key);
-						if (seen == arrowSeen.end()) {
-							if (!world || rays >= ARROW_RAYS)
-								continue;
-							rays++;
-							const RE::NiPoint3 toward = here - eye;
-							const float distance = toward.Length();
-							bool visible = true;
-							if (distance > 16.0f) {
-								const RE::BSReadLockGuard lock(bhkWorld->worldLock);
-								const float hit = RockAlong(world, eye, toward / distance, distance - 12.0f);
-								visible = hit < 0.0f;
-							}
-							seen = arrowSeen.emplace(key, visible ? 1 : 0).first;
-						}
-						if (!seen->second)
-							continue;
-						const RE::NiPoint3 tu = field->position[at(x + 1, y)] - field->position[at(x - 1, y)];
-						const RE::NiPoint3 tv = field->position[at(x, y + 1)] - field->position[at(x, y - 1)];
-						RE::NiPoint3 direction = tv + tu * field->turn[i];
-						const float length = direction.Length();
-						if (length < 1e-3f)
-							continue;
-						direction = direction / length;
-						const float speed = std::clamp(field->speed[i], 0.0f, 4.0f);
-						const float fast = std::clamp((speed - 0.5f) / 2.5f, 0.0f, 1.0f);
-						const ImU32 color = field->foam[i] > 0.4f ? IM_COL32(255, 255, 255, 230) :
-						                                            IM_COL32(static_cast<int>(40 + 215 * fast), static_cast<int>(120 * (1.0f - std::abs(fast - 0.5f) * 2.0f) + 60), static_cast<int>(255 * (1.0f - fast)), 230);
-						const RE::NiPoint3 from = field->position[i] + field->normal[i] * 4.0f;
-						const RE::NiPoint3 to = from + direction * (12.0f + 14.0f * speed);
-						ImVec2 a, b;
-						if (!project(from, a) || !project(to, b))
-							continue;
-						a_drawList->AddLine(a, b, color, 1.6f);
-						const ImVec2 d(b.x - a.x, b.y - a.y);
-						const float l = std::sqrt(d.x * d.x + d.y * d.y);
-						if (l > 4.0f) {
-							const ImVec2 u(d.x / l, d.y / l);
-							const float head = std::min(5.0f, l * 0.4f);
-							a_drawList->AddTriangleFilled(b, ImVec2(b.x - u.x * head - u.y * head * 0.5f, b.y - u.y * head + u.x * head * 0.5f),
-								ImVec2(b.x - u.x * head + u.y * head * 0.5f, b.y - u.y * head - u.x * head * 0.5f), color);
-						}
-					}
-				}
 			}
 		}
 	}

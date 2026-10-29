@@ -15,7 +15,6 @@
 #include "FluidField/WakeSources.h"
 #include "FluidField/WaterMapBuilder.h"
 #include "FluidField/WaterSurfaces.h"
-#include "FluidField/WaterfallSources.h"
 #include "FluidField/WindSolver.h"
 #include "OverlayFeature.h"
 
@@ -90,17 +89,9 @@ struct FluidField : OverlayFeature
 		bool ReplaceVanillaFoam = true;      ///< Hide vanilla's placed foam, splash and spray effects where the water is simulated
 		bool Waterfalls = true;              ///< Waterfalls landing on the simulated water drive it (D22)
 		int WaterfallDebug = 0;              ///< Debug: 1 the mesh's bake (spread, run time, foam, wake); 2 the texture's direction of motion; 3 grounding without the flow
-		uint32_t FallLayerMask = 0x1;        ///< Which parts of vanilla's falling-water models show while waterfall effects are hidden (bits: inner surface, white-water sheet, streaks, particles)
-		bool GroundWaterfalls = true;        ///< Bend vanilla's waterfall meshes onto the rock and flow them around it (D26)
 		bool HideUnderwaterFalls = true;     ///< Hide the parts of vanilla's falling-water meshes under the water above or below them (D36)
 		bool FallWhitening = false;          ///< The falls whiten with their foam and speed (D34); D86: off until the foam layer replaces it
 		float FallSpeed = 1.75f;             ///< D90: the falls' flow (texture and wobble) as a multiple of vanilla's speed
-		bool RefractiveFalls = false;        ///< D91: experimental refractive falls, drawn by their own pass after the world
-		float FallDepth = 1.0f;              ///< D102: the falls' sheet opacity and colour depth
-		float FallRefraction = 0.5f;         ///< D91: how strongly the falls bend what is seen through them (D102: faint by default)
-		bool FallsRiverShader = true;        ///< D159: shade the see-through falls with Water.hlsl until FallSurface.hlsl's port is ready
-		bool UnifiedFalls = true;            ///< Unified falls: a site's precomputed sheet where cached (off: per-mesh dense copies)
-		bool BakeOtherFalls = false;         ///< Unified falls testing: off, falls without a site sheet get no in-game bake
 		float FallFoamStart = 32.0f;         ///< World units the water falls (the bake's height fallen) before it takes air or foam
 		float FallAerationFoam = 1.0f;       ///< How much of the bake's aeration turns to white foam (0: none)
 		float FallAerationFrom = 0.3f;       ///< The bake's aeration where that foam begins (whole at 1)
@@ -301,7 +292,6 @@ private:
 public:
 private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
-	FluidFieldSim::WaterfallSources waterfalls;
 	FluidFieldSim::FallSites fallSites;
 	float fallSurfaceTime = 0.0f;          ///< Seconds, for the surfaces' flow
 	float fallPhase = 0.0f;                ///< D67: the falls' shared scroll (wrapped), so a cascade's meshes match
@@ -340,17 +330,21 @@ private:
 	 * its bake or null. Shared by the lit and refractive (D91) passes so both read the same flow.
 	 */
 	void PrepareFallGroundData(const RE::BSGeometry* a_geometry, RE::BSShaderProperty* a_property, ID3D11ShaderResourceView*& o_bake);
-	/** @brief D91: the falls as refractive, see-through water, drawn after the world (before the spray). */
-	void DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Texture2D* a_targetTexture, ID3D11DepthStencilView* a_depth, ID3D11ShaderResourceView* a_sceneDepth);
-	/** @brief D91: whether the refractive pass draws the falls this frame (the lit pieces are then hidden). */
+	/** @brief D91: the cached sites' falls as see-through water, shaded by their river's own shader, drawn after the world. True if drawn. */
+	bool DrawRefractiveFalls(ID3D11RenderTargetView* a_target, ID3D11Texture2D* a_targetTexture, ID3D11DepthStencilView* a_depth, ID3D11ShaderResourceView* a_sceneDepth);
+	/** @brief D91: whether the falls pass runs this frame. */
 	bool RefractiveFallsActive() const;
+	/** @brief Our pass has drawn the falls lately, so vanilla's pieces at the cached sites are hidden. */
+	bool fallsShown = false;
+	/** @brief Frames since our pass last drew the falls. */
+	uint32_t fallsMissed = 0;
+	/** @brief Frames without our pass drawing (no river captured, its shader still compiling) before vanilla's falls show again. */
+	static constexpr uint32_t FALLS_FALLBACK_FRAMES = 60;
 	FluidFieldSim::GpuSpans gpuSpans;                                                        ///< D192: GPU timings of water, falls, spray and simulation; logged when slow
 	FluidFieldSim::FallRefraction fallRefraction;                                            ///< D91
 	std::unordered_map<const RE::TESWaterForm*, FluidFieldSim::RiverCapture> riverCaptures;  ///< D159, D171: each water type's draw state, for the falls drawn by its shader
 	const RE::BSGeometry* waterGeometry = nullptr;                                           ///< D171: the water geometry last set up (SetupWaterGeometry)
 	std::unordered_map<const RE::TESWaterForm*, const RE::BSGeometry*> riverPieces;          ///< D171: each water type's river piece, kept while it is drawn
-	/** @brief D159: whether the river's water shader shades the see-through falls this frame (the capture runs). */
-	bool RiverShaderFallsWanted() const;
 	/** @brief D98: the water type each refractive falls piece pours from (null: none); refreshed every FALL_WATER_REFRESH frames. */
 	std::unordered_map<const RE::BSGeometry*, const RE::TESWaterForm*> fallWaterTypes;
 	uint32_t fallWaterTypesAge = 0;
@@ -396,9 +390,7 @@ private:
 	float plungeFoamBehind = 0.0f;                           ///< D176: tuning, plunge foam offset upstream of the falls' line, world units; not saved
 	float plungeFoamRadius = 1.0f;                           ///< D176: tuning, the plunge foam's radius scale; not saved
 	float plungeFoamBuilt[2] = { 0.0f, 1.0f };               ///< D176: the values the plunge map was last built with
-	int fallMeshDebug = 0;                                   ///< D75: the falls' meshes debug overlay (FallSites::DrawMeshDebug: 1 wireframe, 2 flow, 3 both); not saved
 	int waterDebugView = 0;                                  ///< Showcase view drawn on the water (WaterShaderData::DebugView); not saved
-	bool hideFallEffects = true;                             ///< Debug: hides vanilla's mist, skirt, splash and rapids meshes; not saved
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 
 	/** @brief Creates the water layer's GPU resources and shaders as needed. Returns false if it cannot run. */
