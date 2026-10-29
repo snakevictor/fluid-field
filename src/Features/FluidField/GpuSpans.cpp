@@ -6,7 +6,7 @@ namespace FluidFieldSim
 {
 	namespace
 	{
-		constexpr const char* SPAN_NAMES[GpuSpans::Count] = { "engine water and falls", "refractive falls", "falls spray", "simulation" };
+		constexpr const char* SPAN_NAMES[GpuSpans::Count] = { "engine water and falls", "refractive falls", "simulation" };
 	}
 
 	void GpuSpans::Initialize(ID3D11Device* a_device)
@@ -129,8 +129,8 @@ namespace FluidFieldSim
 			return;
 		lastLog = now;
 		if (*std::max_element(worst.begin(), worst.end()) > NOTE_MS) {
-			logger::info("[Fluid Field] GPU, worst over {:.0f} s: {} {:.1f} ms, {} {:.1f} ms, {} {:.1f} ms, {} {:.1f} ms", LOG_SECONDS, SPAN_NAMES[0], worst[0], SPAN_NAMES[1], worst[1],
-				SPAN_NAMES[2], worst[2], SPAN_NAMES[3], worst[3]);
+			logger::info("[Fluid Field] GPU, worst over {:.0f} s: {} {:.1f} ms, {} {:.1f} ms, {} {:.1f} ms", LOG_SECONDS, SPAN_NAMES[0], worst[0], SPAN_NAMES[1], worst[1],
+				SPAN_NAMES[2], worst[2]);
 		}
 		worst.fill(0.0f);
 	}

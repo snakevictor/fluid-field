@@ -20,7 +20,6 @@ namespace FluidFieldSim
 		{
 			EngineWater,      ///< Deferred end to world end: the engine's water, including falls drawn by Water.hlsl
 			RefractiveFalls,  ///< DrawRefractiveFalls: falls drawn by our own pass
-			FallEffects,      ///< The falls' spray and mist
 			Simulation,       ///< Prepass: wind and water solvers, bake GPU work
 			Count
 		};

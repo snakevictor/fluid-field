@@ -3,7 +3,6 @@
 #include "FallStrands.h"
 
 #include "EngineGrid.h"
-#include "FallSurfaceRenderer.h"
 
 #include "WaterSurfaces.h"
 #include <DirectXPackedVector.h>
@@ -497,10 +496,7 @@ namespace FluidFieldSim
 			flowBakeVersion++;
 		flowBakes.clear();
 		bakeFields.clear();
-		if (!plungePoints.empty() || !sprayEmitters.empty())
-			emitterVersion++;
 		plungePoints.clear();
-		sprayEmitters.clear();
 		vertexClipBase.clear();
 		groundVersion++;
 		refs.clear();
@@ -6433,24 +6429,6 @@ namespace FluidFieldSim
 			// D172: the plunges on a worker (up to 150 ms on the render thread, three to five times a load)
 			plungesDue = false;
 			plungeResult = std::make_unique<PlungeResult>();
-			// D182: the landscape round every baked sheet, copied for the worker (no spray from texels under it)
-			if (landscape && !RE::TES::GetSingleton()->interiorCell) {
-				float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
-				for (const auto& [geometry, field] : bakeFields) {
-					if (!field)
-						continue;
-					for (const auto& p : field->position) {
-						lo[0] = std::min(lo[0], p.x);
-						lo[1] = std::min(lo[1], p.y);
-						hi[0] = std::max(hi[0], p.x);
-						hi[1] = std::max(hi[1], p.y);
-					}
-				}
-				if (lo[0] <= hi[0]) {
-					plungeResult->land = landscape->Subset(lo[0] - 64.0f, lo[1] - 64.0f, hi[0] + 64.0f, hi[1] + 64.0f);
-					plungeResult->haveLand = true;
-				}
-			}
 			heavyWork = std::async(std::launch::async, [this, result = plungeResult.get()]() {
 				const auto start = std::chrono::steady_clock::now();
 				ComputePlunges(*result);
@@ -6916,12 +6894,9 @@ namespace FluidFieldSim
 			wobbleImpactsDue = true;  // D191: the wobble takes them in once no worker holds vertexClips
 		}
 		plungePoints.swap(a_result.plungePoints);
-		sprayEmitters.swap(a_result.sprayEmitters);
-		emitterVersion++;
 		groundVersion++;  // The plunge map
-		logger::info("[Fluid Field] Waterfall plunges: {} texels meet the water below, {} plunge points ({} where a mesh crosses a water surface); spray emitters: {} at plunges, {} droplets-only on steep seams, {} striking rock, {} past the crests ({} under the landscape left out); crest columns {}, on meshes from a water {}, turning down {} ({} deep under a sheet), sheets meeting {} texels",
-			a_result.meets, plungePoints.size(), a_result.lips, a_result.kinds[1], a_result.kinds[3], a_result.kinds[2], a_result.kinds[0], a_result.buried, a_result.crestColumns,
-			a_result.lipColumns, a_result.dropColumns, a_result.submergedDrops, a_result.footColumns);
+		logger::info("[Fluid Field] Waterfall plunges: {} texels meet the water below, {} plunge points ({} where a mesh crosses a water surface)", a_result.meets,
+			plungePoints.size(), a_result.lips);
 	}
 
 	void FallSites::ApplyWobbleImpacts()
@@ -6974,131 +6949,18 @@ namespace FluidFieldSim
 		// D78: from each lit mesh's own sim (its BakeField): where it enters the water below (foot texels at or under it, coming from
 		// above) and where its water strikes rock (the bake's foam). The water's way is the sim's; its speed from the height fallen.
 		std::unordered_map<int64_t, FallPlunge> points;
-		std::unordered_map<int64_t, FallEmitter> chosen;
-		const auto offer = [&](const RE::NiPoint3& a_at, const RE::NiPoint3& a_up, const RE::NiPoint3& a_direction, float a_speed, float a_strength, FallEmitterKind a_kind, float a_spacing) {
-			// D182: never from the ground: a texel under the landscape throws nothing (the bake reads the whole mesh, D136).
-			// Texels under a water surface arrive already lifted onto it.
-			const RE::NiPoint3& a_p = a_at;
-			const RE::NiPoint3& a_n = a_up;
-			float ground = 0.0f;
-			if (o_result.haveLand && o_result.land.SampleHeight(a_p.x, a_p.y, ground) && a_p.z < ground - SPRAY_BURIED) {
-				o_result.buried++;
-				return;
-			}
-			const auto key = (static_cast<int64_t>(std::floor(a_p.x / a_spacing)) << 40) ^ (static_cast<int64_t>(std::floor(a_p.y / a_spacing)) << 18) ^
-			                 static_cast<int64_t>(std::floor(a_p.z / a_spacing)) ^ (static_cast<int64_t>(a_kind) << 60);
-			auto [it, added] = chosen.try_emplace(key);
-			if (!added && it->second.strength >= a_strength)
-				return;
-			FallEmitter& emitter = it->second;
-			emitter.position[0] = a_p.x;
-			emitter.position[1] = a_p.y;
-			emitter.position[2] = a_p.z;
-			emitter.normal[0] = a_n.x;
-			emitter.normal[1] = a_n.y;
-			emitter.normal[2] = a_n.z;
-			emitter.direction[0] = a_direction.x;
-			emitter.direction[1] = a_direction.y;
-			emitter.direction[2] = a_direction.z;
-			emitter.speed = a_speed;
-			emitter.strength = std::clamp(a_strength, 0.0f, 1.0f);
-			emitter.kind = static_cast<float>(a_kind);
-		};
-		// D184: each mesh's shell (ShellTexels) and its shown water (shell texels not in rock) in MEET_CELL cells, so a texel can tell
-		// whether another mesh's shown water lies within MEET_EMIT: where two sheets run into each other (the culling's meet line, D126)
+		// D126: each mesh's shell (ShellTexels): only its texels plunge
 		std::unordered_map<const RE::BSGeometry*, std::vector<uint8_t>> shells;
-		struct ShownTexel
-		{
-			const RE::BSGeometry* geometry;
-			RE::NiPoint3 p;
-			RE::NiPoint3 normal;  // D189: its surface's (which way it faces), for how another sheet's water meets it
-		};
-		std::unordered_map<int64_t, std::vector<ShownTexel>> shownCells;
-		// D184: and each mesh's highest shown texel per SURFACE_CELL column: no emitter deep under another sheet's water
-		std::unordered_map<const RE::BSGeometry*, std::unordered_map<int64_t, float>> shownSurfaces;
-		const auto surfaceKey = [](float a_x, float a_y) { return (static_cast<int64_t>(std::floor(a_x / SURFACE_CELL)) << 32) ^ static_cast<uint32_t>(static_cast<int32_t>(std::floor(a_y / SURFACE_CELL))); };
-		const auto meetCell = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
-		const auto meetOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / MEET_CELL)); };
 		for (const auto& [geometry, field] : bakeFields) {
 			if (!field || !grounded.contains(geometry))
 				continue;
 			std::vector<uint8_t> shell = field->covered;
-			{
-				const float uvMin[2] = { field->uvMin[0], field->uvMin[1] }, uvSize[2] = { field->uvSize[0], field->uvSize[1] };
-				const auto inShell = ShellTexels(const_cast<RE::BSGeometry*>(geometry), field->width, field->height, uvMin, uvSize, nullptr);
-				for (std::size_t i = 0; i < inShell.size() && i < shell.size(); i++)
-					shell[i] = shell[i] && inShell[i] ? 1 : 0;
-			}
-			auto& surface = shownSurfaces[geometry];
-			for (std::size_t i = 0; i < shell.size() && i < field->position.size(); i++) {
-				if (shell[i] && (field->rock.empty() || !field->rock[i])) {
-					const RE::NiPoint3& p = field->position[i];
-					shownCells[meetCell(meetOf(p.x), meetOf(p.y), meetOf(p.z))].push_back({ geometry, p, i < field->normal.size() ? field->normal[i] : RE::NiPoint3(0.0f, 0.0f, 1.0f) });
-					auto [it, added] = surface.try_emplace(surfaceKey(p.x, p.y), p.z);
-					if (!added)
-						it->second = std::max(it->second, p.z);
-				}
-			}
+			const float uvMin[2] = { field->uvMin[0], field->uvMin[1] }, uvSize[2] = { field->uvSize[0], field->uvSize[1] };
+			const auto inShell = ShellTexels(const_cast<RE::BSGeometry*>(geometry), field->width, field->height, uvMin, uvSize, nullptr);
+			for (std::size_t i = 0; i < inShell.size() && i < shell.size(); i++)
+				shell[i] = shell[i] && inShell[i] ? 1 : 0;
 			shells[geometry] = std::move(shell);
 		}
-		const auto meetsOther = [&](const RE::BSGeometry* a_self, const RE::NiPoint3& a_p) {
-			const int64_t cx = meetOf(a_p.x), cy = meetOf(a_p.y), cz = meetOf(a_p.z);
-			for (int64_t x = cx - 1; x <= cx + 1; x++) {
-				for (int64_t y = cy - 1; y <= cy + 1; y++) {
-					for (int64_t z = cz - 1; z <= cz + 1; z++) {
-						const auto it = shownCells.find(meetCell(x, y, z));
-						if (it == shownCells.end())
-							continue;
-						for (const ShownTexel& other : it->second) {
-							if (other.geometry != a_self && (other.p - a_p).SqrLength() <= MEET_EMIT * MEET_EMIT)
-								return true;
-						}
-					}
-				}
-			}
-			return false;
-		};
-		// D189: the nearest other sheet's surface normal round a_p (zero: none within MEET_EMIT)
-		const auto otherNormal = [&](const RE::BSGeometry* a_self, const RE::NiPoint3& a_p) {
-			const int64_t cx = meetOf(a_p.x), cy = meetOf(a_p.y), cz = meetOf(a_p.z);
-			float nearest = MEET_EMIT * MEET_EMIT;
-			RE::NiPoint3 normal(0.0f, 0.0f, 0.0f);
-			for (int64_t x = cx - 1; x <= cx + 1; x++) {
-				for (int64_t y = cy - 1; y <= cy + 1; y++) {
-					for (int64_t z = cz - 1; z <= cz + 1; z++) {
-						const auto it = shownCells.find(meetCell(x, y, z));
-						if (it == shownCells.end())
-							continue;
-						for (const ShownTexel& other : it->second) {
-							const float d = (other.p - a_p).SqrLength();
-							if (other.geometry != a_self && d <= nearest) {
-								nearest = d;
-								normal = other.normal;
-							}
-						}
-					}
-				}
-			}
-			return normal;
-		};
-		const auto deepUnderSheet = [&](const RE::BSGeometry* a_self, const RE::NiPoint3& a_p) {
-			for (const auto& [geometry, surface] : shownSurfaces) {
-				if (geometry == a_self)
-					continue;
-				const auto it = surface.find(surfaceKey(a_p.x, a_p.y));
-				if (it != surface.end() && it->second > a_p.z + EMIT_DEEP && it->second < a_p.z + OTHER_REACH)
-					return true;
-			}
-			return false;
-		};
-		struct MeetPoint
-		{
-			RE::NiPoint3 at, way;
-			float speed;
-			float level;  // D189: how level its water's surface is there (its normal's up, either side)
-			bool ends;    // D189: its sheet ends just downstream (its water lands here), not running on beside the other
-		};
-		std::vector<MeetPoint> meetPoints;  // D186: where sheets meet, over every mesh
 		std::vector<std::array<float, 5>> planes;
 		uint32_t meets = 0;
 		for (const auto& [geometry, field] : bakeFields) {
@@ -7135,7 +6997,6 @@ namespace FluidFieldSim
 			// The water this mesh falls into: the pools' surface (ComputePools), else the engine's highest plane under its top (as
 			// ClipStep's cut); planes only at its foot, where a plane's bound reaching over the fall cannot pass for its water (D70)
 			CollectWaterPlanes(lo[0], lo[1], hi[0], hi[1], planes);
-			const std::vector<std::array<float, 5>> allPlanes = planes;  // D182: every surface over the mesh, for lifting spray
 			std::erase_if(planes, [&](const auto& a_plane) { return a_plane[4] >= top - 32.0f; });
 			const auto waterAt = [&](const RE::NiPoint3& a_p, float& a_level) {
 				if (PoolLevelAt(a_p.x, a_p.y, a_level) && a_level < top - 32.0f)
@@ -7170,181 +7031,9 @@ namespace FluidFieldSim
 				const RE::NiPoint3& n = field->normal[a_i];
 				return n.z < 0.0f ? -n : n;
 			};
-			// D92: the sheet's outer face: the side its water travels toward (top rows to foot, out from the cliff), tipped up; the
-			// winding (D91) pointed into the cliff on some meshes. And nothing from the hidden lead-in under the upper water.
-			RE::NiPoint3 travel(0.0f, 0.0f, 0.0f);
-			{
-				RE::NiPoint3 head(0.0f, 0.0f, 0.0f), foot(0.0f, 0.0f, 0.0f);
-				float heads = 0.0f, feet = 0.0f;
-				const int32_t band = std::max(1, h / 10);
-				for (int32_t y = 0; y < h; y++) {
-					for (int32_t x = 0; x < w; x++) {
-						if (!field->covered[index(x, y)])
-							continue;
-						if (y < band) {
-							head += field->position[index(x, y)];
-							heads += 1.0f;
-						} else if (y >= h - band) {
-							foot += field->position[index(x, y)];
-							feet += 1.0f;
-						}
-					}
-				}
-				if (heads > 0.0f && feet > 0.0f) {
-					travel = foot / feet - head / heads;
-					travel.z = 0.0f;
-					const float length = travel.Length();
-					travel = length > 1e-3f ? travel / length : RE::NiPoint3(0.0f, 0.0f, 0.0f);
-				}
-				travel.z = 0.3f;
-			}
-			const auto outward = [&](std::size_t a_i) {
-				const RE::NiPoint3& n = field->normal[a_i];
-				// D181: toward the open side by the bake's clearances (D104) where they differ: the travel's side pointed into the cliff
-				// on overhangs, sending spray into rock or water
-				if (field->clearFront.size() == count && field->clearBack.size() == count) {
-					const float front = field->clearFront[a_i], back = field->clearBack[a_i];
-					if (std::abs(front - back) > 16.0f)
-						return front >= back ? n : -n;
-				}
-				return n.Dot(travel) < 0.0f ? -n : n;
-			};
-			// D183: the water as drawn: pushed out by its swell (ComputePushes), a little proud, so spray and mist start on the visible
-			// surface
-			const auto drawnAt = [&](std::size_t a_i) {
-				float push = 0.0f;
-				if (field->swell.size() == count) {
-					const float t = std::clamp((field->swell[a_i] - PUSH_FROM) / (PUSH_FULL - PUSH_FROM), 0.0f, 1.0f);
-					push = PUSH_MOST * t * t * (3.0f - 2.0f * t);
-				}
-				return field->position[a_i] + outward(a_i) * (push + EMIT_PROUD);
-			};
-			// D184: under a river plane or a pool over it (not another sheet: a meet lies on the other's surface)
-			const auto underWater = [&](const RE::NiPoint3& a_p) {
-				for (const auto& plane : allPlanes) {
-					if (a_p.x >= plane[0] && a_p.x <= plane[2] && a_p.y >= plane[1] && a_p.y <= plane[3] && plane[4] > a_p.z + EMIT_SUBMERGED)
-						return true;
-				}
-				float pool;
-				return PoolLevelAt(a_p.x, a_p.y, pool) && pool > a_p.z + EMIT_SUBMERGED;
-			};
-			// D183, D184: rock ahead along the sim's way (down the texture, turned across) within HEAD_ON_REACH: the water runs into it
-			// head-on (splashes only there, not where it slides along a bank)
-			const auto headOn = [&](int32_t a_x, int32_t a_y) {
-				if (field->rock.empty())
-					return false;
-				const float across = turn[index(a_x, a_y)];
-				const float length = std::sqrt(1.0f + across * across);
-				for (int32_t k = 1; k <= HEAD_ON_REACH; k++) {
-					const int32_t x = a_x + static_cast<int32_t>(std::lround(across / length * k)), y = a_y + static_cast<int32_t>(std::lround(k / length));
-					if (x < 0 || y < 0 || x >= w || y >= h || (x == a_x && y == a_y))
-						continue;
-					if (field->rock[index(x, y)]) {
-						// (and none beside it: a face it runs into, not a bank it runs along)
-						for (const int32_t dx : { -2, -1, 1, 2 }) {
-							if (a_x + dx >= 0 && a_x + dx < w && field->rock[index(a_x + dx, a_y)])
-								return false;
-						}
-						return true;
-					}
-				}
-				return false;
-			};
-			std::vector<int32_t> crestRows;
-			std::vector<uint8_t> hiddenLead;
-			{
-				FallStrands::Input input;
-				input.width = field->width;
-				input.height = field->height;
-				input.position = reinterpret_cast<const float*>(field->position.data());
-				input.covered = field->covered.data();
-				FallStrands::FindCrests(input, crestRows, hiddenLead);
-			}
-			// D184: crest spray only on meshes that pour out of a body of water (enough crests at a plane's or pool's level, as
-			// BuildLipMap's lips, D170), not mid-fall meshes. Along the whole crest, each column from where its shown surface turns from
-			// facing the sky to falling (less than LIP_TANGENT up), thrown out the way it falls. A column that runs into rock first throws
-			// none.
-			const auto fromWater = [&](const RE::NiPoint3& a_p) {
-				float level;
-				if (PoolLevelAt(a_p.x, a_p.y, level) && std::abs(a_p.z - level) <= LIP_BAND)
-					return true;
-				for (const auto& plane : allPlanes) {
-					if (a_p.x >= plane[0] && a_p.x <= plane[2] && a_p.y >= plane[1] && a_p.y <= plane[3] && std::abs(a_p.z - plane[4]) <= LIP_BAND)
-						return true;
-				}
-				return false;
-			};
-			uint32_t crests = 0, fromWaterCrests = 0;
-			for (int32_t x = 0; x < w && x < static_cast<int32_t>(crestRows.size()); x++) {
-				if (crestRows[x] < 0)
-					continue;
-				crests++;
-				fromWaterCrests += fromWater(field->position[index(x, crestRows[x])]) ? 1 : 0;
-			}
-			o_result.crestColumns += crests;
-			const bool source = fromWaterCrests > 0 && fromWaterCrests >= std::max<uint32_t>(SOURCE_LEAST_CRESTS, static_cast<uint32_t>(crests * SOURCE_SHARE));
-			for (int32_t x = 0; source && x < w && x < static_cast<int32_t>(crestRows.size()); x++) {
-				const int32_t crest = crestRows[x];
-				if (crest < 0)
-					continue;
-				o_result.lipColumns++;
-				bool started = false;  // (rock before shown water is lead-in tucked into the bed)
-				for (int32_t y = crest; y < std::min(h, crest + 1 + DROP_SEARCH); y++) {
-					const std::size_t i = index(x, y);
-					const bool rock = !field->rock.empty() && field->rock[i];
-					if (!covered(x, y) || (rock && started))
-						break;
-					if (rock || !shellCovered[i])
-						continue;
-					started = true;
-					// (past the parts the culling hides by the crest blend: the first shown texel turned down)
-					if (upward(i).z >= LIP_TANGENT)
-						continue;
-					const RE::NiPoint3 at = drawnAt(i);
-					o_result.dropColumns++;
-					if (deepUnderSheet(geometry, at)) {
-						o_result.submergedDrops++;
-						break;
-					}
-					offer(at, outward(i), flowAt(x, y), std::max(speedAt(field->position[i].z), CREST_THROW), DROP_STRENGTH, FallEmitterKind::Lip, DROP_SPACING);
-					// D184: and weaker ones over the crest's band upstream, switching on and off with the flow. D186: upstream until the
-					// water lies almost flat (CREST_FLAT), shown lead-in included, throwing less further from the drop
-					for (int32_t k = CREST_BAND_STEP; k <= CREST_BAND_ROWS; k += CREST_BAND_STEP) {
-						const int32_t yb = y - k;
-						if (yb < 0 || !covered(x, yb))
-							break;
-						const std::size_t ib = index(x, yb);
-						if (upward(ib).z >= CREST_FLAT)
-							break;
-						if ((!field->rock.empty() && field->rock[ib]) || !shellCovered[ib])
-							continue;
-						const RE::NiPoint3 band = drawnAt(ib);
-						const float strength = CREST_BAND_STRENGTH * (1.0f - 0.4f * static_cast<float>(k) / static_cast<float>(CREST_BAND_ROWS));
-						if (!deepUnderSheet(geometry, band))
-							offer(band, outward(ib), flowAt(x, yb), std::max(speedAt(field->position[ib].z), CREST_THROW), strength, FallEmitterKind::Lip, DROP_SPACING);
-					}
-					break;
-				}
-			}
 			for (int32_t y = 0; y < h; y++) {
 				for (int32_t x = 0; x < w; x++) {
 					const std::size_t i = index(x, y);
-					// D184: where this sheet's shown water runs into another's: heavy mist
-					if (shellCovered[i] && (field->rock.empty() || !field->rock[i]) && !hiddenLead[i] && meetsOther(geometry, field->position[i])) {
-						o_result.footColumns++;
-						const RE::NiPoint3 at = drawnAt(i);
-						if (!underWater(at) && !deepUnderSheet(geometry, at)) {
-							// D186: kept until every mesh is done: mist only where each seam's water lands (its line's lowest), droplets
-							// along the rest. D189: it lands where its water pours onto the other's surface, not where both run on side by
-							// side. Its way: a few texels down.
-							const int32_t below = std::min(y + MEET_WAY_ROWS, h - 1), aboveRow = std::max(y - MEET_WAY_ROWS, 0);
-							RE::NiPoint3 way = field->position[index(x, below)] - field->position[index(x, aboveRow)];
-							const float wayLength = way.Length();
-							const RE::NiPoint3 facing = otherNormal(geometry, field->position[i]);
-							const bool ends = wayLength > 1e-3f && facing.SqrLength() > 0.25f && std::abs(way.Dot(facing)) / wayLength / facing.Length() >= MEET_POUR;
-							meetPoints.push_back({ at, flowAt(x, y), speedAt(field->position[i].z), field->normal.size() > i ? std::abs(field->normal[i].z) : 1.0f, ends });
-						}
-					}
 					if (!shellCovered[i] || (!field->rock.empty() && field->rock[i]))
 						continue;
 					const RE::NiPoint3& here = field->position[i];
@@ -7353,12 +7042,6 @@ namespace FluidFieldSim
 					// D90: or one of our pools anywhere down the mesh (a cascade's middle pool); the engine's planes stay foot-only (D70)
 					float ownPool = -FLT_MAX;
 					const bool water = (foot && waterAt(here, level)) || (PoolLevelAt(here.x, here.y, ownPool) && ownPool < top - 32.0f && (level = ownPool, true));
-					// D183: where the water strikes rock head-on (the bake's foam), on the drawn surface: splashes and mist (kind Strike)
-					if (field->foam[i] >= STRIKE_FOAM && !hiddenLead[i] && headOn(x, y)) {
-						const RE::NiPoint3 at = drawnAt(i);
-						if (!underWater(at) && !deepUnderSheet(geometry, at))
-							offer(at, RE::NiPoint3(0.0f, 0.0f, 1.0f), flowAt(x, y), speedAt(here.z), 0.4f + 0.6f * field->foam[i], FallEmitterKind::Strike, STRIKE_SPACING);
-					}
 					// Where it goes into the water below: at or under it, coming from above it (texture v runs downstream)
 					if (!water || here.z > level + PLUNGE_BAND || !covered(x, y - 1))
 						continue;
@@ -7452,70 +7135,6 @@ namespace FluidFieldSim
 					values->swap(scratch);
 				}
 			}
-		}
-		// D186: seams as lines (points joined across MEET_LINE_CELL cells); each line's lowest MEET_FOOT_BAND, where its water lands,
-		// gets mist and droplets, higher up droplets only (judged point by point, mist hung in columns between the domes)
-		{
-			const auto lineCell = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / MEET_LINE_CELL)); };
-			const auto lineKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
-			std::unordered_map<int64_t, std::vector<uint32_t>> cells;
-			for (uint32_t k = 0; k < meetPoints.size(); k++) {
-				const RE::NiPoint3& p = meetPoints[k].at;
-				cells[lineKey(lineCell(p.x), lineCell(p.y), lineCell(p.z))].push_back(k);
-			}
-			std::vector<uint32_t> parent(meetPoints.size());
-			for (uint32_t k = 0; k < parent.size(); k++)
-				parent[k] = k;
-			const auto root = [&](uint32_t a_k) {
-				while (parent[a_k] != a_k)
-					a_k = parent[a_k] = parent[parent[a_k]];
-				return a_k;
-			};
-			for (const auto& [key, members] : cells) {
-				const RE::NiPoint3& p = meetPoints[members.front()].at;
-				const int64_t cx = lineCell(p.x), cy = lineCell(p.y), cz = lineCell(p.z);
-				for (int64_t dx = -1; dx <= 1; dx++) {
-					for (int64_t dy = -1; dy <= 1; dy++) {
-						for (int64_t dz = -1; dz <= 1; dz++) {
-							const auto it = cells.find(lineKey(cx + dx, cy + dy, cz + dz));
-							if (it == cells.end())
-								continue;
-							for (const uint32_t o : it->second)
-								parent[root(o)] = root(members.front());
-						}
-					}
-				}
-				for (const uint32_t m : members)
-					parent[root(m)] = root(members.front());
-			}
-			// D188: judged round each point (its seam's points within MEET_LOCAL). D189: by its water's own surface there, not the seam's
-			// direction (overlapping curtains meet in a patch, not a line). Mist where the water is level enough to land on, or at the foot
-			// of a steeper stretch (no meeting point lower nearby); droplets only down steep faces.
-			for (uint32_t k = 0; k < meetPoints.size(); k++) {
-				const MeetPoint& m = meetPoints[k];
-				const int64_t cx = lineCell(m.at.x), cy = lineCell(m.at.y), cz = lineCell(m.at.z);
-				bool lower = false;
-				for (int64_t dx = -2; dx <= 2 && !lower; dx++) {
-					for (int64_t dy = -2; dy <= 2 && !lower; dy++) {
-						for (int64_t dz = -2; dz <= 2 && !lower; dz++) {
-							const auto it = cells.find(lineKey(cx + dx, cy + dy, cz + dz));
-							if (it == cells.end())
-								continue;
-							for (const uint32_t o2 : it->second) {
-								const RE::NiPoint3 d = meetPoints[o2].at - m.at;
-								if (d.SqrLength() <= MEET_LOCAL * MEET_LOCAL && d.z < -MEET_FOOT_DROP) {
-									lower = true;
-									break;
-								}
-							}
-						}
-					}
-				}
-				// D189: and only where its water lands (its sheet ends there): two sheets running on down side by side are no landing
-				const bool landing = m.ends && (m.level >= MEET_LEVEL || (!lower && m.level >= MEET_FOOT_LEVEL));
-				offer(m.at, RE::NiPoint3(0.0f, 0.0f, 1.0f), m.way, m.speed, MEET_STRENGTH, landing ? FallEmitterKind::Plunge : FallEmitterKind::MeetDrops, MEET_SPACING);
-			}
-			o_result.footColumns = static_cast<uint32_t>(meetPoints.size());
 		}
 		// D94: and wherever a mesh crosses a water surface (the river it leaves, a pool partway, the pool below): the water foams
 		// and is stirred along the crossing line. Any engine plane over the texels, or our pools.
@@ -7676,12 +7295,6 @@ namespace FluidFieldSim
 		o_result.plungePoints.reserve(points.size());
 		for (const auto& [key, plunge] : points)
 			o_result.plungePoints.push_back(plunge);
-		o_result.sprayEmitters.clear();
-		o_result.sprayEmitters.reserve(chosen.size());
-		for (const auto& [key, emitter] : chosen) {
-			o_result.sprayEmitters.push_back(emitter);
-			o_result.kinds[std::clamp(static_cast<int>(emitter.kind), 0, 3)]++;
-		}
 		o_result.meets = meets;
 		o_result.lips = lips;
 	}
@@ -7891,141 +7504,4 @@ namespace FluidFieldSim
 		}
 	}
 
-	void FallSites::DrawDebug(ImDrawList* a_drawList, float a_range, bool a_sites, int a_view) const
-	{
-		auto* camera = PlayerCamera();
-		if (!camera || !a_drawList)
-			return;
-		const ImVec2 display = ImGui::GetIO().DisplaySize;
-		const RE::NiPoint3 eye = camera->world.translate;
-
-		const auto project = [&](float a_x, float a_y, float a_z, ImVec2& a_screen) {
-			float sx, sy, sz;
-			if (!camera->WorldPtToScreenPt3(RE::NiPoint3(a_x, a_y, a_z), sx, sy, sz, 1e-5f) || sz <= 0.0f)
-				return false;
-			a_screen = ImVec2(sx * display.x, (1.0f - sy) * display.y);
-			return true;
-		};
-		// Lines are split into pieces so the parts in front of the camera still draw
-		const auto line = [&](const float a[3], const float b[3], ImU32 a_color, float a_thickness) {
-			constexpr int PIECES = 8;
-			for (int i = 0; i < PIECES; i++) {
-				const float t0 = static_cast<float>(i) / PIECES;
-				const float t1 = static_cast<float>(i + 1) / PIECES;
-				ImVec2 pa, pb;
-				if (project(a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0, a[2] + (b[2] - a[2]) * t0, pa) &&
-					project(a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1, a[2] + (b[2] - a[2]) * t1, pb))
-					a_drawList->AddLine(pa, pb, a_color, a_thickness);
-			}
-		};
-		const auto box = [&](const float a_min[3], const float a_max[3], ImU32 a_color, float a_thickness) {
-			float c[8][3];
-			for (int i = 0; i < 8; i++) {
-				c[i][0] = (i & 1) ? a_max[0] : a_min[0];
-				c[i][1] = (i & 2) ? a_max[1] : a_min[1];
-				c[i][2] = (i & 4) ? a_max[2] : a_min[2];
-			}
-			static constexpr int EDGES[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
-			for (const auto& e : EDGES)
-				line(c[e[0]], c[e[1]], a_color, a_thickness);
-		};
-		const auto rectangle = [&](float a_minX, float a_minY, float a_maxX, float a_maxY, float a_z, ImU32 a_outline) {
-			const float p[4][3] = { { a_minX, a_minY, a_z }, { a_maxX, a_minY, a_z }, { a_maxX, a_maxY, a_z }, { a_minX, a_maxY, a_z } };
-			for (int i = 0; i < 4; i++)
-				line(p[i], p[(i + 1) % 4], a_outline, 3.0f);
-		};
-
-		static constexpr std::array<ImU32, static_cast<int>(FxClass::Count)> CLASS_COLORS = {
-			IM_COL32(80, 220, 255, 255),   // Body: cyan
-			IM_COL32(60, 120, 255, 255),   // Skirt: blue
-			IM_COL32(230, 230, 230, 255),  // Mist: white
-			IM_COL32(255, 230, 60, 255),   // Splash: yellow
-			IM_COL32(255, 150, 40, 255)    // Rapids: orange
-		};
-		const auto kindColor = [](Kind a_kind) -> ImU32 {
-			switch (a_kind) {
-			case Kind::Fall:
-				return IM_COL32(80, 255, 120, 255);
-			case Kind::Cascade:
-				return IM_COL32(80, 255, 220, 255);
-			case Kind::Rapids:
-				return IM_COL32(255, 160, 60, 255);
-			case Kind::NoBottom:
-				return IM_COL32(255, 80, 255, 255);
-			default:
-				return IM_COL32(255, 60, 60, 255);
-			}
-		};
-
-		// D36, D78: the spray emitters by kind, and the plunges' pushes on the water below (a line the way they pull it)
-		if (a_view > 0) {
-			const auto inView = [&](const float p[3]) {
-				const float dx = p[0] - eye.x, dy = p[1] - eye.y, dz = p[2] - eye.z;
-				return dx * dx + dy * dy + dz * dz < FALL_VIEW_RANGE * FALL_VIEW_RANGE;
-			};
-			static constexpr ImU32 KIND_COLORS[3] = { IM_COL32(60, 230, 255, 255), IM_COL32(60, 110, 255, 255), IM_COL32(255, 150, 40, 255) };
-			for (const auto& emitter : sprayEmitters) {
-				ImVec2 s;
-				if (inView(emitter.position) && project(emitter.position[0], emitter.position[1], emitter.position[2], s))
-					a_drawList->AddCircleFilled(s, 2.5f, KIND_COLORS[std::clamp(static_cast<int>(emitter.kind), 0, 2)]);
-			}
-			for (const auto& plunge : plungePoints) {
-				if (!inView(plunge.position))
-					continue;
-				const float to[3] = { plunge.position[0] + plunge.direction[0] * PLUNGE_PUSH_OFFSET, plunge.position[1] + plunge.direction[1] * PLUNGE_PUSH_OFFSET, plunge.position[2] };
-				ImVec2 a, b;
-				if (project(plunge.position[0], plunge.position[1], plunge.position[2], a) && project(to[0], to[1], to[2], b))
-					a_drawList->AddLine(a, b, IM_COL32(60, 255, 90, 255), 1.5f + 1.5f * plunge.strength);
-			}
-		}
-		if (!a_sites)
-			return;
-
-		for (const auto& site : sites) {
-			const float dx = site.centroid[0] - eye.x;
-			const float dy = site.centroid[1] - eye.y;
-			if (dx * dx + dy * dy > a_range * a_range)
-				continue;
-			for (const uint32_t member : site.members) {
-				const auto& ref = refs[member];
-				// Falling water strong; skirts, mist, splashes and rapids faint
-				const bool strong = ref.cls == FxClass::Body;
-				const ImU32 color = (CLASS_COLORS[static_cast<int>(ref.cls)] & 0x00FFFFFFu) | (strong ? 0xFF000000u : 0x60000000u);
-				box(ref.min, ref.max, color, strong ? 2.0f : 1.0f);
-			}
-			// Levels: top green, bottom blue, tiers teal; each outlined where its water is (the planes at that height, trimmed to the
-			// fall's area)
-			for (std::size_t i = 0; i < site.levels.size(); i++) {
-				const bool isTop = i == 0;
-				const bool isBottom = i + 1 == site.levels.size();
-				const ImU32 outline = isTop ? IM_COL32(80, 255, 120, 230) : isBottom ? IM_COL32(80, 140, 255, 230) :
-				                                                                       IM_COL32(80, 230, 210, 230);
-				bool drawn = false;
-				for (const auto& plane : site.planes) {
-					if (std::abs(plane.height - site.levels[i]) > LEVEL_TOLERANCE)
-						continue;
-					rectangle(plane.min[0], plane.min[1], plane.max[0], plane.max[1], plane.height, outline);
-					drawn = true;
-				}
-				// A level from the meshes (no plane): a small mark at the falling water's top
-				if (!drawn) {
-					rectangle(site.centroid[0] - 64.0f, site.centroid[1] - 64.0f, site.centroid[0] + 64.0f, site.centroid[1] + 64.0f, site.levels[i], outline);
-				}
-			}
-			const FallCapture* capture = GetCapture(site);
-			ImVec2 label;
-			if (project(site.centroid[0], site.centroid[1], site.top + 48.0f, label)) {
-				label.x = std::clamp(label.x, 8.0f, display.x - 420.0f);
-				label.y = std::clamp(label.y, 8.0f, display.y - 24.0f);
-				std::string text = std::format("#{} {}  drop {:.0f}  levels {}{}  refs {}", site.id, KindName(site.kind), site.top - site.bottom,
-					site.levels.size(), site.topFromMesh ? " (top from mesh)" : "", site.members.size());
-				if (site.kind == Kind::Failed && site.failure)
-					text += std::format("  [{}]", site.failure);
-				if (capture)
-					text += capture->IsComplete() ? std::string("  grounded") : std::format("  capturing {:.0f}%", capture->GetProgress() * 100.0f);
-				a_drawList->AddText(ImVec2(label.x + 1, label.y + 1), IM_COL32(0, 0, 0, 220), text.c_str());
-				a_drawList->AddText(label, kindColor(site.kind), text.c_str());
-			}
-		}
-	}
 }

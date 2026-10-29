@@ -78,11 +78,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	FallAerationFrom,
 	FallAerationMilk,
 	FallLayerMask,
-	SprayAmount,
-	SpraySize,
-	SprayOpacity,
-	MistAmount,
-	MistOpacity,
 	WaterfallDebug)
 
 void FluidField::DrawSettings()
@@ -179,19 +174,6 @@ void FluidField::DrawSettings()
 		tooltip(T(TKEY("hide_underwater_falls_tooltip"), "Hides the parts of vanilla's waterfall meshes under the water above or below them, or deep in the rock."));
 		ImGui::SliderFloat(T(TKEY("waterfall_strength"), "Plunge Strength"), &settings.WaterfallStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		tooltip(T(TKEY("waterfall_strength_tooltip"), "How hard the falls churn, push and foam the water they land in."));
-
-		ImGui::SeparatorText(T(TKEY("waterfall_spray"), "Spray"));
-		ImGui::SliderInt(T(TKEY("spray_amount"), "Amount"), &settings.SprayAmount, 0, 320, "%d", ImGuiSliderFlags_AlwaysClamp);
-		tooltip(T(TKEY("spray_amount_tooltip"), "Droplets alive per emitter at once. Faster water throws more of them."));
-		ImGui::SliderFloat(T(TKEY("spray_size"), "Size"), &settings.SpraySize, 0.5f, 12.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat(T(TKEY("spray_opacity"), "Opacity"), &settings.SprayOpacity, 0.02f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-
-		if (ImGui::TreeNode(T(TKEY("waterfall_advanced"), "Advanced"))) {
-			ImGui::SliderInt(T(TKEY("mist_amount"), "Mist Cards"), &settings.MistAmount, 0, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
-			tooltip(T(TKEY("mist_amount_tooltip"), "Soft camera-facing mist puffs per emitter (0: none)."));
-			ImGui::SliderFloat(T(TKEY("mist_opacity"), "Mist Card Opacity"), &settings.MistOpacity, 0.0f, 0.4f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::TreePop();
-		}
 		ImGui::PopID();
 	}
 
@@ -349,8 +331,6 @@ void FluidField::DrawSettings()
 
 void FluidField::DrawOverlay()
 {
-	if ((showFallSites || fallDebugView > 0) && loaded && settings.Enabled)
-		fallSites.DrawDebug(ImGui::GetBackgroundDrawList(), FALL_SITES_DEBUG_RANGE, showFallSites, fallDebugView);
 	// D75: the falls' meshes and their sim
 	if (fallMeshDebug != 0 && loaded && settings.Enabled)
 		fallSites.DrawMeshDebug(ImGui::GetBackgroundDrawList(), FALL_SITES_DEBUG_RANGE, fallMeshDebug);
@@ -472,7 +452,7 @@ void FluidField::DrawOverlay()
 
 bool FluidField::IsOverlayVisible() const
 {
-	return (showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews) || ((showFallSites || fallDebugView > 0 || fallMeshDebug > 0) && settings.Enabled);
+	return (showDebugOverlay && settings.Enabled && solver.HasResources() && hasDebugViews) || (fallMeshDebug > 0 && settings.Enabled);
 }
 
 #undef I18N_KEY_PREFIX
@@ -552,7 +532,6 @@ void FluidField::ClearShaderCache()
 	groundFogFailed = false;
 	nearWater.solver.ReleaseShaders();
 	waterShaderFailed = false;
-	fallSurface.ReleaseShaders();
 	fallRefraction.ReleaseShaders();
 }
 
@@ -976,7 +955,6 @@ void FluidField::ReleaseWater()
 	waterfalls.Clear();
 	fallSites.Clear();
 	ReleaseFallGround();
-	fallSurface.Release();
 	fallRefraction.Release();
 	gpuSpans.Release();
 	riverCaptures.clear();
@@ -1143,57 +1121,6 @@ void FluidField::DrawGroundFogAfterWorld()
 			gpuSpans.Begin(globals::d3d::context, FluidFieldSim::GpuSpans::RefractiveFalls);
 			DrawRefractiveFalls(target.RTV, target.texture, depth.views[0] ? depth.views[0] : depth.readOnlyViews[0], behind ? behind : depth.depthSRV);
 			gpuSpans.End(globals::d3d::context, FluidFieldSim::GpuSpans::RefractiveFalls);
-		}
-	}
-
-	// The falls' spray (D31), before the ground fog lies over their base
-	if (settings.WaterEnabled && settings.Waterfalls && settings.GroundWaterfalls && cameraSnapshot) {
-		fallSurface.Upload(globals::d3d::device, globals::d3d::context, fallSites.GetSurfaceEmitters(), fallSites.GetSurfaceVersion());
-		const auto& shadow = globals::game::shadowState->GetRuntimeData();
-		const auto colorIndex = static_cast<uint32_t>(shadow.renderTargets[0]);
-		const auto depthIndex = shadow.depthStencil;
-		if (colorIndex < RE::RENDER_TARGET::kTOTAL && depthIndex < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
-			auto& depth = renderer->GetDepthStencilData().depthStencils[depthIndex];
-			FluidFieldSim::FallSurfaceRenderer::DrawParams params;
-			params.target = renderer->GetRuntimeData().renderTargets[colorIndex].RTV;
-			params.targetTexture = renderer->GetRuntimeData().renderTargets[colorIndex].texture;  // D186: the droplets refract it
-			params.depth = depth.readOnlyViews[0];
-			params.sceneDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
-			params.camera = cameraSnapshot.get();
-			params.shared = globals::state->sharedDataCB->CB();
-			params.features = globals::state->featureDataCB->CB();
-			params.time = fallSurfaceTime;
-			params.sprayPerEmitter = static_cast<uint32_t>(std::clamp(settings.SprayAmount, 0, 320));
-			params.mistPerEmitter = static_cast<uint32_t>(std::clamp(settings.MistAmount, 0, 8));
-			params.spraySize = settings.SpraySize;
-			params.sprayOpacity = settings.SprayOpacity;
-			params.mistOpacity = settings.MistOpacity;
-			if (auto* eye = RE::Main::WorldRootCamera()) {  // D182: emitters near the main camera; the cached frame's eye alternates with other passes'
-				params.cameraPosition[0] = eye->world.translate.x;
-				params.cameraPosition[1] = eye->world.translate.y;
-				params.cameraPosition[2] = eye->world.translate.z;
-			}
-			params.shadowMap = fallRefraction.GetShadowMap();  // D186: as the falls' surface found them bound this frame
-			params.shadowCascades = fallRefraction.GetShadowCascades();
-			// D186: droplets reflect the cubemap the falls' surface uses (D98)
-			if (auto& cubemaps = globals::features::dynamicCubemaps; cubemaps.loaded) {
-				if (cubemaps.activeReflections && cubemaps.cubemapValid[1] && cubemaps.envReflectionsTexture)
-					params.environment = cubemaps.envReflectionsTexture->srv.get();
-				else if (cubemaps.cubemapValid[0] && cubemaps.envTexture)
-					params.environment = cubemaps.envTexture->srv.get();
-			}
-			if (waterShaderData.Enabled && nearWater.solver.GetMapSRV()) {  // D183: seeded on the water's foam
-				params.waterSurface = nearWater.solver.GetSurfaceSRV();
-				params.waterFlow = nearWater.solver.GetFlowSRV();
-				params.waterMap = nearWater.solver.GetMapSRV();
-				params.mapSpacing = nearWater.solver.GetMapSpacing();
-				params.mapResolution = nearWater.solver.GetMapResolution();
-			}
-			globals::profiler->BeginPass("FluidField::FallEffects");
-			gpuSpans.Begin(globals::d3d::context, FluidFieldSim::GpuSpans::FallEffects);
-			fallSurface.Draw(globals::d3d::device, globals::d3d::context, params);
-			gpuSpans.End(globals::d3d::context, FluidFieldSim::GpuSpans::FallEffects);
-			globals::profiler->EndPass();
 		}
 	}
 

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "FallCapture.h"
-#include "FallSurfaceRenderer.h"
 #include "FallVisibility.h"
 #include "LandscapeCache.h"
 #include "ShallowWaterSolver.h"
@@ -24,6 +23,15 @@ struct ImDrawList;
 
 namespace FluidFieldSim
 {
+	/** @brief Where falling water meets the water below (D35), for its pushes on the simulated water. */
+	struct FallPlunge
+	{
+		float position[3];   ///< On the water below, world units
+		float direction[2];  ///< Horizontal way the falling water runs, unit (or zero)
+		float speed;         ///< World units per second it arrives at
+		float strength;      ///< 0 to 1
+		float reach = 1.0f;  ///< D98: foam reach relative to a plunge's (1.5 where a mesh crosses a water surface)
+	};
 
 	/**
 	 * @brief D25: waterfall sites rebuilt from vanilla's layout (stages S1 to S3 of `plans/waterfall-replacement.md`).
@@ -188,17 +196,12 @@ namespace FluidFieldSim
 		 */
 		void BuildGroundMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const;
 
-		/** @brief D30: the falls' spray emitters (D78: ComputePlunges); they change with GetSurfaceVersion. */
-		const std::vector<FallEmitter>& GetSurfaceEmitters() const { return sprayEmitters; }
-
 		/**
 		 * @brief D35: the plunges' pushes on the simulated water, in a level's logical texels: splashes, the pull along the
 		 * falls' run, and foam. Nearest the grid's centre first, at most a_maxEmitters.
 		 */
 		void AppendWaterEmitters(std::vector<WaterEmitter>& a_emitters, const int32_t a_gridMin[2], float a_cellSize, uint32_t a_gridRes, float a_strength,
 			uint32_t a_maxEmitters, bool a_foam) const;
-
-		uint64_t GetSurfaceVersion() const { return emitterVersion; }
 
 		/**
 		 * @brief Debug: hides vanilla's mist, skirt, splash and rapids meshes and the falls models' spray, to judge the
@@ -220,11 +223,6 @@ namespace FluidFieldSim
 		/** @brief Counts for the menu: sites by kind. */
 		uint32_t CountKind(Kind a_kind) const;
 
-		/**
-		 * @brief Draws debug views within a_range of the camera. a_sites: references as boxes by class, site footprints at
-		 * their levels, labels. a_view 1: spray emitters by kind and the plunges' pushes on the water (D36, D78).
-		 */
-		void DrawDebug(ImDrawList* a_drawList, float a_range, bool a_sites, int a_view) const;
 		/**
 		 * @brief D75 debug: the lit meshes as drawn, on top, within a_range: 1 wireframe, 2 flow arrows (by speed: blue slow,
 		 * red fast; white on rock), 3 both.
@@ -467,13 +465,8 @@ namespace FluidFieldSim
 		struct PlungeResult
 		{
 			std::vector<FallPlunge> plungePoints;
-			std::vector<FallEmitter> sprayEmitters;
 			std::unordered_map<const RE::BSGeometry*, std::vector<float>> impacts, landings;  ///< D188: per bake texel: where the water lands in a pool, and its foam carried on
-			uint32_t meets = 0, lips = 0, kinds[4]{};
-			LandscapeCache land;  ///< D182: the landscape round the falls (a copy, read on the worker): no spray from under it
-			bool haveLand = false;
-			uint32_t buried = 0;
-			uint32_t crestColumns = 0, lipColumns = 0, dropColumns = 0, submergedDrops = 0, footColumns = 0;  ///< D184: the emitters' stages, for the log
+			uint32_t meets = 0, lips = 0;
 		};
 		std::unique_ptr<PlungeResult> plungeResult;  ///< D172: the plunges' worker's
 		/**
@@ -977,9 +970,7 @@ namespace FluidFieldSim
 		static constexpr float LIP_UPSTREAM = 40.0f;        ///< D92: world units upstream of the crest its foam is made
 		static constexpr float CROSSING_STRENGTH = 0.8f;    ///< D94: how hard the water foams where a mesh crosses a water surface (D100)...
 		static constexpr float CROSSING_BACK = 32.0f;       ///< D100: ...set back this far onto the water's side of the seam
-		std::vector<FallEmitter> sprayEmitters;
 		std::vector<FallPlunge> plungePoints;
-		uint64_t emitterVersion = 0;
 		const WaterSurfaces* waterSurfaces = nullptr;  ///< Set each update: the engine's water, for the pools' extent (D45). D172: waterCopy
 		WaterSurfaces waterCopy;                       ///< D172: the engine's water as Update last saw it with no worker running
 		uint64_t waterCopySignature = UINT64_MAX;

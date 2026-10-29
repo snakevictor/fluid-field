@@ -107,11 +107,6 @@ struct FluidField : OverlayFeature
 		float FallAerationFrom = 0.3f;       ///< The bake's aeration where that foam begins (whole at 1)
 		float FallAerationMilk = 1.0f;       ///< Scales how milky aeration makes the clear water
 		float WaterfallStrength = 1.0f;      ///< How hard waterfalls churn, push and foam the water
-		int SprayAmount = 200;               ///< Spray droplets alive per emitter at once (D31)
-		float SpraySize = 1.4f;              ///< Spray droplet width, world units
-		float SprayOpacity = 0.2f;           ///< How opaque each droplet is
-		int MistAmount = 0;                  ///< Mist puffs alive per emitter at once
-		float MistOpacity = 0.06f;           ///< How dense each mist puff is
 		float WaterTint = 0.5f;              ///< How much the water type's colour tints what is seen through all water (0: vanilla)
 		bool InteractiveFog = true;          ///< Ground fog that actors and the weather's wind move (D21)
 		float FogDensity = 0.08f;            ///< Ground fog extinction per world unit inside the layer, in its banks
@@ -301,13 +296,12 @@ private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
 	FluidFieldSim::WaterfallSources waterfalls;
 	FluidFieldSim::FallSites fallSites;
-	FluidFieldSim::FallSurfaceRenderer fallSurface;  ///< D30: the falls' own water surfaces
-	float fallSurfaceTime = 0.0f;                    ///< Seconds, for the surfaces' flow
-	float fallPhase = 0.0f;                          ///< D67: the falls' shared scroll (wrapped), so a cascade's meshes match
-	uint32_t fallPhaseFrame = UINT32_MAX;            ///< D85: the rendered frame fallDrawPhase was latched for
-	float fallDrawPhase = 0.0f;                      ///< D85: this frame's phase for every falls draw (identical in both depth passes)
-	float fallDrawPhasePrevious = 0.0f;              ///< D85: previous frame's, for the wobble's motion vectors
-	float fallRate = 0.0f;                           ///< D67: its rate, texture coords/s (vanilla's, averaged over materials)
+	float fallSurfaceTime = 0.0f;          ///< Seconds, for the surfaces' flow
+	float fallPhase = 0.0f;                ///< D67: the falls' shared scroll (wrapped), so a cascade's meshes match
+	uint32_t fallPhaseFrame = UINT32_MAX;  ///< D85: the rendered frame fallDrawPhase was latched for
+	float fallDrawPhase = 0.0f;            ///< D85: this frame's phase for every falls draw (identical in both depth passes)
+	float fallDrawPhasePrevious = 0.0f;    ///< D85: previous frame's, for the wobble's motion vectors
+	float fallRate = 0.0f;                 ///< D67: its rate, texture coords/s (vanilla's, averaged over materials)
 
 	/** @brief D28, D36: pool surface for cutting vanilla's falls, and each lit falls mesh's flow (D59). Matches FallGroundCB. */
 	struct FallGroundData
@@ -395,7 +389,6 @@ private:
 	/** @brief Rebuilds the ground, pool and plunge maps when the sites change or the player moves far; uploads the constants. */
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
 	void ReleaseFallGround();
-	int fallDebugView = 0;                                   ///< Debug: 1 the spray emitters and plunges (D36, D78); not saved
 	bool showFallSites = false;                              ///< Debug: draws the waterfall sites (D25) in the world; not saved
 	float plungeFoamBehind = 0.0f;                           ///< D176: tuning, plunge foam offset upstream of the falls' line, world units; not saved
 	float plungeFoamRadius = 1.0f;                           ///< D176: tuning, the plunge foam's radius scale; not saved

@@ -120,13 +120,6 @@ namespace FluidFieldSim
 		/** @brief D102: the pixel shader reading Volumetric Shadows' map, compiled on first use; null when it failed. */
 		ID3D11PixelShader* EnsureShadowedShader();
 
-	public:
-		/** @brief D186: Volumetric Shadows' map (t18) and cascades (t98) as the last draw found them (null: none), for the spray after it. */
-		ID3D11ShaderResourceView* GetShadowMap() const { return lastShadowMap.get(); }
-		ID3D11ShaderResourceView* GetShadowCascades() const { return lastShadowCascades.get(); }
-
-	private:
-		winrt::com_ptr<ID3D11ShaderResourceView> lastShadowMap, lastShadowCascades;
 		bool EnsureStates(ID3D11Device* a_device);
 		bool EnsureSceneCopy(ID3D11Device* a_device, ID3D11Texture2D* a_source, ID3D11RenderTargetView* a_target);
 		/** @brief D125: the front surface's depth pass shader (FallSurface.hlsl's PSDepth); null if it fails to compile. */

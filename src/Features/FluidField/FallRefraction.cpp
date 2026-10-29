@@ -625,8 +625,6 @@ namespace FluidFieldSim
 		// D102: the sun's shadow from Volumetric Shadows' map and cascades, as the river's, while the engine's passes still
 		// have them bound (an unbound map would read as wholly shadowed); else the plain variant (terrain and clouds only)
 		ID3D11PixelShader* shader = pixelShader.get();
-		lastShadowMap = nullptr;
-		lastShadowCascades = nullptr;
 		if (a_params.volumetricShadows) {
 			winrt::com_ptr<ID3D11ShaderResourceView> shadowMap, cascades;
 			a_context->PSGetShaderResources(SHADOW_MAP_SLOT, 1, shadowMap.put());
@@ -634,8 +632,6 @@ namespace FluidFieldSim
 			if (shadowMap && cascades) {
 				if (auto* shadowed = EnsureShadowedShader())
 					shader = shadowed;
-				lastShadowMap = shadowMap;  // D186: the spray reads them too
-				lastShadowCascades = cascades;
 			}
 		}
 		a_context->PSSetShader(shader, nullptr, 0);
