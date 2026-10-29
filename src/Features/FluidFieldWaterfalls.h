@@ -208,6 +208,8 @@ private:
 	winrt::com_ptr<ID3D11Texture2D> fallLipTexture;  ///< D170: FallSites::BuildLipMap, the river drawn on toward the falls' lips
 	winrt::com_ptr<ID3D11ShaderResourceView> fallLipSRV;
 	std::vector<float> fallLipScratch;
+	std::vector<float> fallGroundUpload;   ///< The ground and pool maps interleaved for upload
+	std::vector<uint16_t> fallHalfUpload;  ///< The plunge or lip map as halves for upload
 	/** @brief Rebuilds the ground, pool and plunge maps when the sites change or the player moves far; uploads the constants. */
 	void UpdateFallGround(const RE::NiPoint3& a_playerPos);
 	void ReleaseFallGround();

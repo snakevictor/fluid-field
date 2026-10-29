@@ -256,6 +256,13 @@ void FluidFieldWaterfalls::ReleaseFallGround()
 	fallLipTexture = nullptr;
 	fallLipSRV = nullptr;
 	fallGroundVersion = UINT64_MAX;
+	// The maps' CPU copies go too (released: disabled costs nothing)
+	fallGroundScratch = {};
+	fallPoolScratch = {};
+	fallPlungeScratch = {};
+	fallLipScratch = {};
+	fallGroundUpload = {};
+	fallHalfUpload = {};
 }
 
 void FluidFieldWaterfalls::UpdateFallGround(const RE::NiPoint3& a_playerPos)
@@ -363,25 +370,25 @@ void FluidFieldWaterfalls::UpdateFallGround(const RE::NiPoint3& a_playerPos)
 		fallGroundOrigin[1] = std::floor((a_playerPos.y - half) / FALL_GROUND_CELL) * FALL_GROUND_CELL;
 		fallSites.BuildGroundMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallGroundScratch);
 		fallSites.BuildPoolMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallPoolScratch);
-		std::vector<float> interleaved(fallGroundScratch.size() * 2);
+		fallGroundUpload.resize(fallGroundScratch.size() * 2);
 		for (std::size_t i = 0; i < fallGroundScratch.size(); i++) {
-			interleaved[i * 2] = fallGroundScratch[i];
-			interleaved[i * 2 + 1] = fallPoolScratch[i];
+			fallGroundUpload[i * 2] = fallGroundScratch[i];
+			fallGroundUpload[i * 2 + 1] = fallPoolScratch[i];
 		}
-		context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, interleaved.data(), FALL_GROUND_SIZE * 2 * sizeof(float), 0);
+		context->UpdateSubresource(fallGroundTexture.get(), 0, nullptr, fallGroundUpload.data(), FALL_GROUND_SIZE * 2 * sizeof(float), 0);
 		if (fallPlungeTexture) {
 			fallSites.BuildPlungeMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallPlungeScratch);
-			std::vector<uint16_t> halves(fallPlungeScratch.size());
-			for (std::size_t i = 0; i < halves.size(); i++)
-				halves[i] = DirectX::PackedVector::XMConvertFloatToHalf(fallPlungeScratch[i]);
-			context->UpdateSubresource(fallPlungeTexture.get(), 0, nullptr, halves.data(), FALL_GROUND_SIZE * sizeof(uint16_t), 0);
+			fallHalfUpload.resize(fallPlungeScratch.size());
+			for (std::size_t i = 0; i < fallHalfUpload.size(); i++)
+				fallHalfUpload[i] = DirectX::PackedVector::XMConvertFloatToHalf(fallPlungeScratch[i]);
+			context->UpdateSubresource(fallPlungeTexture.get(), 0, nullptr, fallHalfUpload.data(), FALL_GROUND_SIZE * sizeof(uint16_t), 0);
 		}
 		if (fallLipTexture) {
 			fallSites.BuildLipMap(fallGroundOrigin[0], fallGroundOrigin[1], FALL_GROUND_CELL, FALL_GROUND_SIZE, fallLipScratch);
-			std::vector<uint16_t> halves(fallLipScratch.size());
-			for (std::size_t i = 0; i < halves.size(); i++)
-				halves[i] = DirectX::PackedVector::XMConvertFloatToHalf(fallLipScratch[i]);
-			context->UpdateSubresource(fallLipTexture.get(), 0, nullptr, halves.data(), FALL_GROUND_SIZE * 4 * sizeof(uint16_t), 0);
+			fallHalfUpload.resize(fallLipScratch.size());
+			for (std::size_t i = 0; i < fallHalfUpload.size(); i++)
+				fallHalfUpload[i] = DirectX::PackedVector::XMConvertFloatToHalf(fallLipScratch[i]);
+			context->UpdateSubresource(fallLipTexture.get(), 0, nullptr, fallHalfUpload.data(), FALL_GROUND_SIZE * 4 * sizeof(uint16_t), 0);
 		}
 	}
 	fallGroundData = { { fallGroundOrigin[0], fallGroundOrigin[1] }, 1.0f / FALL_GROUND_CELL, static_cast<float>(FALL_GROUND_SIZE), 1u,
