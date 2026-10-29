@@ -22,7 +22,7 @@ struct FluidFieldShallowWater : Feature
 	virtual inline std::string GetShortName() override { return "FluidFieldShallowWater"; }
 	virtual std::string_view GetCategory() const override { return FeatureCategories::kFluidField; }
 
-	/** @brief Returns a localized description and list of key features for the UI summary panel. */
+	/** @brief The UI summary panel's description and key features. */
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
 	{
 		return { T("feature.fluid_field_shallow_water.description", "Simulates the water of rivers and streams around the player."),
@@ -39,7 +39,7 @@ struct FluidFieldShallowWater : Feature
 	struct Settings
 	{
 		bool Enabled = true;
-		float RiverSpeed = 150.0f;           ///< River current at full flowmap strength, world units per second (0: test current only)
+		float RiverSpeed = 150.0f;           ///< River current at full flowmap strength, world units per second (0: still water)
 		float CurrentPull = 0.25f;           ///< Per-second pull of the water toward the river current; lower lets obstacles shape the flow
 		float Turbulence = 0.4f;             ///< Vorticity confinement: keeps eddies behind obstacles alive (0: off)
 		float WaveDamping = 0.3f;            ///< Fraction of the water's speed lost per second, as an exponential rate
@@ -75,7 +75,7 @@ struct FluidFieldShallowWater : Feature
 	/** @brief Registers the shared loading-screen listener. */
 	virtual void PostPostLoad() override;
 
-	/** @brief Steps the water once per frame. */
+	/** @brief Steps the water. */
 	virtual void Prepass() override;
 
 	/** @brief Drops the water's compute shaders so they recompile. */
@@ -161,14 +161,11 @@ private:
 	FluidFieldSim::VanillaFoam vanillaFoam;
 	std::vector<FluidFieldSim::WaterEmitter> levelEmitters;  ///< This level's emitters: wakes and waterfalls
 
-	/** @brief Creates the water layer's GPU resources and shaders as needed. Returns false if it cannot run. */
+	/** @brief Creates a level's GPU resources and shaders as needed; false if it cannot run. */
 	bool EnsureWater(WaterLevel& a_level, uint32_t a_resolution, float a_size, bool a_obstacles);
-	/** @brief Updates one level's water map, then steps it centred on the player; the near level also takes obstacles and wakes. */
+	/** @brief Updates one level's water map, then steps it centred on the player. */
 	void StepWater(ID3D11DeviceContext* a_context, WaterLevel& a_level, bool a_near, uint32_t a_resolution, float a_size, const RE::NiPoint3& a_playerPos, float a_deltaTime);
-	/**
-	 * @brief Uploads changed obstacle blocks (ray detail with mesh-cut solids on top). Mesh-cut blocks stay resident only
-	 * inside the obstacle texture's window, since further blocks would alias in the wrapped texture.
-	 */
+	/** @brief Uploads changed obstacle blocks; mesh-cut blocks only inside the wrapped texture's window, so none alias. */
 	void UploadObstacles(ID3D11DeviceContext* a_context, const RE::NiPoint3& a_playerPos);
 	/** @brief One obstacle block at fine coordinates: ray detail where refined, mesh-cut solids over it. */
 	std::array<float, FluidFieldSim::MeshCut::BLOCK * FluidFieldSim::MeshCut::BLOCK * 4> ComposeObstacleBlock(int32_t a_originX, int32_t a_originY) const;

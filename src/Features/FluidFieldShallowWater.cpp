@@ -82,7 +82,6 @@ void FluidFieldShallowWater::DrawSettings()
 	ImGui::SliderFloat(T(TKEY("splash_strength"), "Splash Strength"), &settings.SplashStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	tooltip(T(TKEY("splash_strength_tooltip"), "How hard jumping or falling into the water, or climbing out of it, pushes the water."));
 
-	// Quality: grid sizes, bed and obstacle detection
 	if (ImGui::CollapsingHeader(T(TKEY("quality"), "Quality"))) {
 		ImGui::PushID("QualitySection");
 		ImGui::SeparatorText(T(TKEY("water_quality"), "Water"));
@@ -201,7 +200,7 @@ void FluidFieldShallowWater::Prepass()
 {
 	auto& field = FluidFieldSim::Field::Get();
 	if (!settings.Enabled) {
-		// Disabled costs nothing: released once, then no textures, no shaders, no dispatches
+		// Released once, so disabled costs nothing
 		if (!released) {
 			Release();
 			released = true;
@@ -525,9 +524,8 @@ void FluidFieldShallowWater::StepWater(ID3D11DeviceContext* a_context, WaterLeve
 			{ .wakeStrength = settings.WakeStrength, .splashStrength = settings.SplashStrength });
 		levelEmitters.assign(wakes.begin(), wakes.end());
 	}
-	// Waterfalls drive both levels (D22); wakes come first
+	// D35: the falls' plunges push both levels, after the wakes
 	const auto& waterfalls = globals::features::fluidFieldWaterfalls;
-	// D35: the falls' own plunges first, along their whole width; D22's single pushes after
 	waterfalls.AppendWaterEmitters(levelEmitters, a_gridMin, a_cellSize, a_resolution, FluidFieldSim::ShallowWaterSolver::MAX_EMITTERS, a_near);
 	const std::span<const FluidFieldSim::WaterEmitter> emitters = levelEmitters;
 
@@ -542,8 +540,7 @@ void FluidFieldShallowWater::StepWater(ID3D11DeviceContext* a_context, WaterLeve
 		params.foamStrength *= FAR_FOAM_SCALE;
 		params.foamMax = FAR_FOAM_MAX;
 	}
-	// The near level inherits far foam for cells entering it, so foam doesn't reset as the player approaches
-	// The falls' plunges foam the water along their whole width (D44)
+	// D44: the plunges foam the water along the falls' whole width
 	if (FluidFieldWaterfalls::PlungeMaps plunges; waterfalls.GetPlungeMaps(plunges)) {
 		params.plungeMap = plunges.plunge;
 		params.plungeOrigin[0] = plunges.origin[0];
@@ -552,6 +549,7 @@ void FluidFieldShallowWater::StepWater(ID3D11DeviceContext* a_context, WaterLeve
 		params.plungeSize = plunges.size;
 		params.lipMap = plunges.lip;  // D170: on the plunge map's lattice
 	}
+	// Cells entering the near level take the far level's foam, so it doesn't reset as the player approaches
 	if (a_near && settings.FarWater && farWater.solver.HasMap() && waterShaderData.FarEnabled) {
 		params.seedFoam = farWater.solver.GetFlowSRV();
 		params.seedGridMin[0] = farWater.gridMin[0];
@@ -559,7 +557,7 @@ void FluidFieldShallowWater::StepWater(ID3D11DeviceContext* a_context, WaterLeve
 		params.seedRes = settings.WaterResolution;
 		params.seedCellSize = settings.WaterSize * settings.FarWaterScale / static_cast<float>(settings.WaterResolution);
 	}
-	// River currents from Unified Water's flowmap; the test current when there is none
+	// River currents from Unified Water's flowmap; still water when there is none
 	RE::NiPointer<RE::NiSourceTexture> flowmapTexture;
 	const auto& unifiedWater = globals::features::unifiedWater;
 	if (settings.RiverSpeed > 0.0f && unifiedWater.loaded) {
