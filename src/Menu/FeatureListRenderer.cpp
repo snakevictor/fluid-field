@@ -143,6 +143,8 @@ namespace
 			return T("feature.category.characters", "Characters");
 		if (category == FeatureCategories::kDisplay)
 			return T("feature.category.display", "Display");
+		if (category == FeatureCategories::kFluidField)
+			return T("feature.category.fluid_field", "Fluid Field");
 		if (category == FeatureCategories::kGrass)
 			return T("feature.category.grass", "Grass");
 		if (category == FeatureCategories::kLandscapeAndTextures)
@@ -388,7 +390,7 @@ std::vector<FeatureListRenderer::MenuFuncInfo> FeatureListRenderer::BuildMenuLis
 	}
 
 	// Define category order
-	std::vector<std::string> categoryOrder = { "Display", "Utility", "Characters", "Grass", "Lighting", "Materials", "Post-Processing", "Sky", "Landscape & Textures", "Water", "Other" };
+	std::vector<std::string> categoryOrder = { "Display", "Utility", "Characters", "Grass", "Lighting", "Materials", "Post-Processing", "Sky", "Landscape & Textures", "Water", "Fluid Field", "Other" };
 	// Add categorized features to menu with collapsible headers
 	for (const std::string& category : categoryOrder) {
 		if (categorizedFeatures.find(category) != categorizedFeatures.end() && !categorizedFeatures[category].empty()) {

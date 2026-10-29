@@ -347,6 +347,8 @@ std::string Feature::GetDisplayCategory() const
 		return T("feature.category.characters", "Characters");
 	if (category == FeatureCategories::kDisplay)
 		return T("feature.category.display", "Display");
+	if (category == FeatureCategories::kFluidField)
+		return T("feature.category.fluid_field", "Fluid Field");
 	if (category == FeatureCategories::kGrass)
 		return T("feature.category.grass", "Grass");
 	if (category == FeatureCategories::kLandscapeAndTextures)
