@@ -29,7 +29,7 @@ namespace FluidFieldSim
 {
 	namespace
 	{
-		// D185: inline vector maths; CommonLib's NiPoint3 operators are library calls the optimiser cannot inline (~17 s of a cold load).
+		// D185: CommonLib's NiPoint3 operators are library calls the optimiser cannot inline.
 		struct V3
 		{
 			float x, y, z;
@@ -73,10 +73,7 @@ namespace FluidFieldSim
 			return squared(ap - ab * (vb * denominator) - ac * (vc * denominator));
 		}
 
-		/**
-		 * @brief D103: the water's travel from its highest tenth to its lowest, level and unit, then tipped up (z 0.3).
-		 * OrientSheet picks a sheet's outer side by it. a_positions in world space.
-		 */
+		/** @brief D103: the water's level travel, highest tenth to lowest (unit, then z 0.3); OrientSheet's outer-side cue. World space. */
 		RE::NiPoint3 SheetTravel(const std::vector<RE::NiPoint3>& a_positions)
 		{
 			RE::NiPoint3 travel(0.0f, 0.0f, 0.0f);
@@ -109,7 +106,7 @@ namespace FluidFieldSim
 			return travel;
 		}
 
-		/** @brief D109: a geometry's authored per-vertex normals in world space (kept by the dense copies); empty if none. */
+		/** @brief D109: a geometry's authored per-vertex normals in world space; empty if none. */
 		std::vector<RE::NiPoint3> AuthoredNormals(RE::BSGeometry* a_geometry)
 		{
 			auto* triShape = a_geometry ? a_geometry->AsTriShape() : nullptr;
@@ -128,9 +125,8 @@ namespace FluidFieldSim
 		}
 
 		/**
-		 * @brief D103: each triangle's outer side, +1 (its winding) or -1, consistent over each connected sheet.
-		 * Carried across shared edges (vertices welded by position, so texture seams join); D92's per-vertex test turned the
-		 * up-facing lead-in of C-shaped sheets inward. Each sheet takes the side its lowest third faces a_travel with.
+		 * @brief D103: each triangle's outer side, +1 (its winding) or -1, consistent over each sheet welded by position.
+		 * Each sheet takes the side its lowest third faces a_travel with.
 		 */
 		std::vector<int8_t> OrientSheet(const std::vector<RE::NiPoint3>& a_positions, const std::vector<std::array<uint16_t, 3>>& a_triangles, const RE::NiPoint3& a_travel,
 			const std::vector<RE::NiPoint3>* a_authored = nullptr)
@@ -433,23 +429,23 @@ namespace FluidFieldSim
 
 	void FallSites::Clear()
 	{
-		outwardNormals.clear();  // D109
+		outwardNormals.clear();
 		depthQueue.clear();
-		buryQueue.clear();  // D112
+		buryQueue.clear();
 		buryDone = true;
-		if (heavyWork.valid())  // D172: wait for the seams' or bakes' linking worker (it cannot be stopped)
+		if (heavyWork.valid())  // D172: the seams' or linking worker cannot be stopped
 			heavyWork.wait();
 		heavyWork = {};
 		linkedDue = false;
 		plungeResult.reset();
 		poolResult.reset();
 		plungesDue = false;
-		if (cullJob)  // D172: cancel the worker and wait for it
+		if (cullJob)
 			cullJob->cancel = true;
 		if (cullWork.valid())
 			cullWork.wait();
 		cullWork = {};
-		cullJob.reset();  // D113
+		cullJob.reset();
 		cullRequested = false;
 		takeover = false;
 		RefreshHiddenEffects();
@@ -581,7 +577,7 @@ namespace FluidFieldSim
 
 	FallSites::PoolField FallSites::ComputePools(const Site& a_site, const FallCapture& a_capture) const
 	{
-		// D78: pool water over a complete capture (was D36's flow-solve cover); the pool cut, debug arrows and plunges read it
+		// D78: pool water over a complete capture; the pool cut and plunges read it
 		PoolField pools;
 		pools.originX = a_capture.GetOriginX();
 		pools.originY = a_capture.GetOriginY();
@@ -598,7 +594,7 @@ namespace FluidFieldSim
 			for (uint32_t x = 0; x < pools.width; x++)
 				bed[static_cast<std::size_t>(y) * pools.width + x] = a_capture.At(x, y);
 		}
-		// D40, D45: the site's planes miss pools (a tier between two falls) and are whole cells, so sample the engine's water per cell.
+		// D40: the site's planes miss pools (a tier between two falls) and are whole cells, so sample the engine's water per cell.
 		// Pool water: rock under its level, and either the falls' surface at that level or a shallow bed (not a fall's face).
 		pools.cover.assign(cells, NO_SURFACE);
 		std::vector<float> levels(cells, NO_SURFACE);
@@ -688,7 +684,7 @@ namespace FluidFieldSim
 
 	void FallSites::PollPools()
 	{
-		// D172: pools of complete captures, on a worker (up to 90 ms on the render thread); FinishHeavyWork takes them in
+		// D172: on a worker (up to 90 ms on the render thread); FinishHeavyWork takes them in
 		std::vector<std::pair<const Site*, const FallCapture*>> todo;
 		for (const auto& site : sites) {
 			if (!site.captureKey || sitePools.contains(site.captureKey))
@@ -752,8 +748,7 @@ namespace FluidFieldSim
 
 	void FallSites::RefreshGrounded()
 	{
-		// D26: a site whose cache's members are all here, with its offline flow bake, draws as one sheet in place of its members'
-		// lit meshes (unified falls); every other falls site stays vanilla
+		// D26: a site whose cached members are all loaded draws its baked sheet in their place; other sites stay vanilla
 		grounded.clear();
 		std::unordered_set<const RE::BSGeometry*> litMeshes;
 		litMeshList.clear();
@@ -797,7 +792,7 @@ namespace FluidFieldSim
 					return RE::BSVisit::BSVisitControl::kContinue;
 				});
 			}
-			// The site's sheet (attached once), clipped and linked as one mesh; its members' lit meshes hidden while our pass draws it
+			// The site's sheet, attached once; its members' lit meshes hide on takeover
 			if (!unifiedRoot || unifiedLit.empty())
 				continue;
 			const auto found = unifiedOf.find(unifiedIndex);
@@ -816,7 +811,7 @@ namespace FluidFieldSim
 			litMeshList.push_back({ RE::NiPointer<RE::BSGeometry>(sheet) });
 			if (!vertexClipBase.contains(sheet) && std::none_of(clipQueue.begin(), clipQueue.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_queued) { return a_queued.get() == sheet; }))
 				clipQueue.emplace_back(sheet);
-			// Baked offline: taken as a finished bake (linked, plunged and shaded as any)
+			// Baked offline: linked and plunged like any bake
 			if (!bakeFields.contains(sheet)) {
 				bakeFields[sheet] = unifiedCaches[unifiedIndex].bake;
 				linkDue = true;
@@ -874,7 +869,7 @@ namespace FluidFieldSim
 		// to the world's rock and land), at each vertex's uv
 		while (!depthQueue.empty()) {
 			RE::NiPointer<RE::BSGeometry> geometry = depthQueue.back();
-			// D109, D110, D112, D113: after its outward normals, every cut (the lead-in's comes with the swell), the rock test and the culling
+			// Only after its outward normals, every cut (the lead-in's comes with the swell), the rock test and the culling
 			if (geometry && vertexClipBase.contains(geometry.get()) &&
 				(!outwardNormals.contains(geometry.get()) || !vertexPushes.contains(geometry.get()) || !buryDone || CullBusy()))
 				return;
@@ -911,7 +906,7 @@ namespace FluidFieldSim
 			}
 			uint32_t shallow = 0;
 			for (std::size_t v = 0; v < count; v++) {
-				vertexClips[base->second + v][13] = behind[v];  // (d.x is the wobble's scale, D188: ComputePushes)
+				vertexClips[base->second + v][13] = behind[v];  // d.y (d.x is the wobble's scale, ComputePushes)
 				shallow += behind[v] < CLEAR_REACH * 0.5f ? 1 : 0;
 			}
 			vertexClipVersion++;
@@ -963,34 +958,31 @@ namespace FluidFieldSim
 			}
 			std::vector<std::array<float, 5>> planes;
 			CollectWaterPlanes(lo[0], lo[1], hi[0], hi[1], planes);
-			// D124: the water it pours out of, for its foam. D138: any plane near the mesh, each vertex taking the nearest above it
-			// (SOURCE_DEPTH_MOST); chosen per mesh, the foam stopped dead along mesh seams.
+			// D138: the water it pours out of, for its foam: any plane near the mesh, per vertex (per mesh, foam stopped at seams)
 			std::vector<std::array<float, 5>> sources;
 			CollectWaterPlanes(lo[0] - SOURCE_REACH, lo[1] - SOURCE_REACH, hi[0] + SOURCE_REACH, hi[1] + SOURCE_REACH, sources);
 			std::erase_if(planes, [&](const auto& a_plane) { return a_plane[4] >= top - 32.0f; });
 			const auto base = static_cast<uint32_t>(vertexClips.size());
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
-				// D70: no per-vertex rock cut (it holed sheets where its parity misfired); rock hides water inside it anyway
+				// D70: no rock cut here; rock hides the water inside it anyway
 				float clip = CLIP_MARGIN + CLIP_RANGE;
 				float water = -FLT_MAX;
 				for (const auto& plane : planes) {
 					if (positions[v].x >= plane[0] && positions[v].x <= plane[2] && positions[v].y >= plane[1] && positions[v].y <= plane[3])
 						water = std::max(water, plane[4]);
 				}
-				// D124: depth under the water it pours out of (none where it starts under another sheet, mid-fall). D174: on the upper
-				// half, up to CREST_RISE under it: else a crest bulging over its river took the river for its pool (foam on the lip).
+				// D174: depth under the water it pours out of; on the upper half up to CREST_RISE under it, so a crest bulging over
+				// its river does not take the river for its pool
 				const bool upper = positions[v].z > (top + bottom) * 0.5f;
 				const float rise = upper ? CREST_RISE : 8.0f;
 				float source = FLT_MAX;
 				for (const auto& plane : sources) {
 					if (positions[v].x >= plane[0] - SOURCE_REACH && positions[v].x <= plane[2] + SOURCE_REACH && positions[v].y >= plane[1] - SOURCE_REACH &&
 						positions[v].y <= plane[3] + SOURCE_REACH && plane[4] >= positions[v].z - rise && plane[4] <= positions[v].z + SOURCE_DEPTH_MOST &&
-						plane[4] >= (top + bottom) * 0.5f)  // D176: source over its middle (a short drop's foot took its pool)
+						plane[4] >= (top + bottom) * 0.5f)  // D176: over its middle, so a short drop's foot does not take its pool
 						source = std::min(source, plane[4]);
 				}
-				// D174, D176: not the source. D139: height above the water it falls into, per vertex: the highest plane under it of all
-				// planes near the mesh (chosen per mesh, the foam band stopped on a straight line). The cut below keeps the mesh's own
-				// planes (D70).
+				// D139: height above the water it falls into: per vertex, the highest plane under it near the mesh, not the source
 				float under = -FLT_MAX;
 				float over = FLT_MAX;
 				for (const auto& plane : sources) {
@@ -1001,8 +993,7 @@ namespace FluidFieldSim
 							over = std::min(over, plane[4]);
 					}
 				}
-				// D174: under every plane (below the pool's surface): the nearest above, negative; held at none, the waterline drew a foam
-				// lattice
+				// D174: under every plane, the nearest above (negative); none drew a foam lattice at the waterline
 				if (under == -FLT_MAX && over < FLT_MAX)
 					under = over;
 				const float above = under > -FLT_MAX ? positions[v].z - under : NO_WATER;
@@ -1015,8 +1006,8 @@ namespace FluidFieldSim
 				vertexCuts.push_back({ .water = clip });                                                                                                                                                   // D112: a.x's parts, kept apart
 				clipTested++;
 			}
-			// D191: every vertex up to CREST_RISE above the mesh's highest source gets its depth under it, not only those within
-			// SOURCE_DEPTH_MOST: otherwise the lip gate and source-pool test saw-toothed along the crest.
+			// D191: every vertex up to CREST_RISE above the mesh's highest source gets its depth under it, else the lip gate
+			// saw-toothed along the crest
 			{
 				float meshSource = -FLT_MAX;
 				for (uint32_t v = 0; v < counts.vertexCount; v++) {
@@ -1032,8 +1023,8 @@ namespace FluidFieldSim
 				}
 			}
 			vertexClipBase[geometry.get()] = base;
-			depthQueue.emplace_back(geometry);  // D106
-			buryQueue.emplace_back(geometry);   // D112
+			depthQueue.emplace_back(geometry);
+			buryQueue.emplace_back(geometry);
 			buryDone = false;
 			vertexClipVersion++;
 		}
@@ -1347,8 +1338,8 @@ namespace FluidFieldSim
 		};
 		uint32_t faded = 0, edges = 0, gaps = 0, smoothed = 0;
 		for (const auto& mesh : meshes) {
-			// Which vertices lie on a leading mesh. D91: binned, as asking every dense vertex against every near triangle took seconds.
-			// D95: every vertex is asked: one wholly on a leading mesh is cut away, so a see-through sheet shows no second sheet inside it.
+			// Which vertices lie on a leading mesh (binned, D91). Every vertex is asked: one wholly on a leading mesh is cut away,
+			// so a see-through sheet shows no second sheet inside it.
 			std::vector<uint8_t> onLead(mesh.positions.size(), 0), asked(mesh.positions.size(), 1);
 			for (std::size_t v = 0; v < mesh.positions.size(); v++) {
 				if (!asked[v])
@@ -1403,7 +1394,7 @@ namespace FluidFieldSim
 					if (&other == &mesh || p.x < other.lo[0] - GAP_REACH || p.x > other.hi[0] + GAP_REACH || p.y < other.lo[1] - GAP_REACH || p.y > other.hi[1] + GAP_REACH ||
 						p.z < other.lo[2] - GAP_REACH || p.z > other.hi[2] + GAP_REACH)
 						continue;
-					// Not where this vertex already lies on the other mesh (an overlap, D67's)
+					// Not where this vertex already lies on the other mesh (an overlap)
 					bool over = false;
 					nearby(other, p, 2.0f, [&](const auto& tri) {
 						over = TriangleDistanceSquared(p, other.positions[tri[0]], other.positions[tri[1]], other.positions[tri[2]]) < 4.0f;
@@ -1434,8 +1425,8 @@ namespace FluidFieldSim
 				shifts[v] = inverse * moved - inverse * p;
 				gaps++;
 			}
-			// D86: smooth the open edge's ragged outline (vanilla's teeth) as a curve: each vertex drawn toward its two edge neighbours'
-			// middle, at most EDGE_SMOOTH_MOST, unless closing a gap (D69). D87: edges over a leading mesh too (their teeth showed).
+			// D86: smooth the open edge's ragged outline (vanilla's teeth): each vertex drawn toward its two edge neighbours' middle,
+			// at most EDGE_SMOOTH_MOST, unless already closing a gap
 			std::vector<std::array<int32_t, 2>> along(mesh.positions.size(), { -1, -1 });
 			std::vector<uint8_t> ends(mesh.positions.size(), 0);
 			for (const auto& edge : mesh.openEdges) {
@@ -1473,8 +1464,8 @@ namespace FluidFieldSim
 				shifts[v] = inverse * curve[v] - inverse * mesh.positions[v];
 				smoothed++;
 			}
-			// D94: fade the edge's moves into the surface over EDGE_BLEND_REACH so the rows inside follow (moved alone, the edge row folded
-			// the dense copy's triangles over each other). Harmonic: each inner vertex the mean of its neighbours, the edge held.
+			// D94: fade the edge's moves into the surface over EDGE_BLEND_REACH so the rows inside follow (else the edge row folds
+			// the triangles over each other). Harmonic: each inner vertex the mean of its neighbours, the edge held.
 			{
 				std::vector<std::vector<uint32_t>> ring(mesh.positions.size());
 				for (const auto& tri : mesh.triangles) {
@@ -1527,7 +1518,7 @@ namespace FluidFieldSim
 		ComposeShifts();
 		logger::info("[Fluid Field] Waterfall seams: {} of {} open-edge vertices of {} lit meshes lie on a mesh leading them, and fade; {} move across a gap to the mesh beside them; {} edge vertices smoothed", faded,
 			edges, meshes.size(), gaps, smoothed);
-		// D112: the inside cut and the sides (D103) now the fades are known; again once the rock and lead-in cuts are in
+		// D112: the inside cut and the sides now the fades are known; again once the rock and lead-in cuts are in
 		RequestCulling();
 	}
 
@@ -1573,7 +1564,7 @@ namespace FluidFieldSim
 		}
 		if (a_hash)
 			*a_hash = hash;
-		// The kept flags interpolated as StartBake lays each triangle into the grid (same texel centres and weights)
+		// The kept flags interpolated onto the bake's texel grid (texel centres, barycentric weights)
 		std::vector<uint8_t> mask(static_cast<std::size_t>(a_width) * a_height, 1);
 		const auto gx = [&](float a_u) { return (a_u - a_uvMin[0]) / a_uvSize[0] * static_cast<float>(a_width) - 0.5f; };
 		const auto gy = [&](float a_v) { return (a_v - a_uvMin[1]) / a_uvSize[1] * static_cast<float>(a_height) - 0.5f; };
@@ -1656,9 +1647,8 @@ namespace FluidFieldSim
 		auto* tes = RE::TES::GetSingleton();
 		if (!tes)
 			return;
-		// D172: the landscape height under each vertex from Fluid Field's landscape cache, no rays. Densify already trimmed the dense
-		// copies (DENSE_TRIM_UNDER), so this marks the vertices left under it (the shell mask reads them, D126) and gives the culling the
-		// ground (SUBMERGED_BED). The six-axis Havok rays inside statics (D135, D138) cut nothing yet cost 3.7 ms a frame for minutes.
+		// D172: the landscape height under each vertex, from the landscape cache (no rays): marks the vertices under it (the shell
+		// mask reads them) and gives the culling the ground (SUBMERGED_BED)
 		const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double, std::milli>(BURY_BUDGET_MS);
 		while (std::chrono::steady_clock::now() < deadline) {
 			// D112: all tested: redo everything that reads the rock
@@ -1757,7 +1747,7 @@ namespace FluidFieldSim
 			if (count == 1)
 				sheet.open[edge.first] = sheet.open[edge.second] = 1;
 		}
-		// D98, D103: its outer side, carried over the sheet (OrientSheet), as the lead-in's outer side faces against the travel
+		// D103: its outer side, carried over the sheet (OrientSheet)
 		sheet.side = OrientSheet(sheet.positions, sheet.triangles, SheetTravel(sheet.positions), haveNormals ? &sheet.shown : nullptr);
 		for (uint32_t t = 0; t < sheet.triangles.size(); t++) {
 			const auto& tri = sheet.triangles[t];
@@ -1820,8 +1810,7 @@ namespace FluidFieldSim
 				continue;
 			}
 			if (job.stage == 2 || job.stage == 4 || job.stage == 5) {
-				// D185: these read only earlier stages and write only their own vertex, so all vertices run on several threads (37 s on
-				// one)
+				// D185: these read only earlier stages and write only their own vertex, so they run on several threads
 				std::vector<std::pair<uint32_t, uint32_t>> work;
 				for (uint32_t s = 0; s < job.sheets.size(); s++) {
 					for (uint32_t v = 0; v < job.sheets[s].positions.size(); v++)
@@ -1867,27 +1856,24 @@ namespace FluidFieldSim
 				const auto v = static_cast<uint32_t>(job.vertex);
 				if (job.stage == 1) {
 					PoolCut(sheet, v);
-					// D126: in the river over it: under our pools' water (D40, D78) and near the landscape below (the bed, not the air
-					// under a lip); the lead-in arch into the riverbed showed under the river where the bake missed it (D97)
+					// D126: in the river over it: under our pools' water and near the landscape below (the bed, not the air under a lip)
 					VertexCut& parts = vertexCuts[sheet.base + v];
 					parts.submerged = NO_CUT;
 					const RE::NiPoint3& at = sheet.positions[v];
 					if (parts.ground > -FLT_MAX && at.z - parts.ground <= SUBMERGED_BED) {
 						// D131: or the engine's water planes, each only where it stands at most SUBMERGED_COLUMN over the landscape: a
-						// river over its bed, not a lake's or cell's plane high up the cliff (D103)
+						// river over its bed, not a lake's or cell's plane high up the cliff
 						float level = -FLT_MAX, pool = 0.0f;
 						if (PoolLevelAt(at.x, at.y, pool))
 							level = pool;
 						for (const auto& plane : sheet.planes) {
-							// D143: and at most SUBMERGED_OVER_TOP over this sheet's top: its own river, not the drop above's (it ate a
-							// cascade's lower sheets)
+							// D143: and at most SUBMERGED_OVER_TOP over this sheet's top: its own river, not the drop above's
 							if (at.x >= plane[0] && at.x <= plane[2] && at.y >= plane[1] && at.y <= plane[3] && plane[4] - parts.ground <= SUBMERGED_COLUMN &&
 								plane[4] <= sheet.top + SUBMERGED_OVER_TOP)
 								level = std::max(level, plane[4]);
 						}
 						if (level > -FLT_MAX) {
-							// D157: only SUBMERGED_DEPTH under it (at LEAD_CUT_DEPTH, 16, it ate 70k vertices of the sheets in a cascade's
-							// pools)
+							// D157: only from SUBMERGED_DEPTH under it; shallower ate a cascade's sheets in its pools
 							parts.submerged = std::clamp(at.z - (level - SUBMERGED_DEPTH), -CLIP_RANGE, NO_CUT);
 							job.submerged += parts.submerged < 0.0f ? 1 : 0;
 						}
@@ -1987,7 +1973,7 @@ namespace FluidFieldSim
 		cullJob.reset();
 		if (exportSiteInputs)
 			DumpUnifyInputs();
-		// D126: the spray, plunges and lips come only from the shell (ComputePlunges reads VertexInShell)
+		// D126: plunges and lips come only from the shell (ComputePlunges reads VertexInShell)
 		if (!bakeFields.empty())
 			plungesDue = true;  // D172: ComputePlunges on a worker (Update)
 	}
@@ -2191,7 +2177,6 @@ namespace FluidFieldSim
 			}
 			a_job.islandVertices++;
 		}
-		// D138: log what cut this sheet's vertices
 		uint32_t byLand = 0, byInside = 0, byLead = 0, byRiver = 0, byWater = 0, byPool = 0, byIsland = 0;
 		for (std::size_t v = 0; v < count; v++) {
 			const VertexCut& parts = vertexCuts[a_sheet.base + v];
@@ -2361,8 +2346,8 @@ namespace FluidFieldSim
 		const auto binKey = [](int64_t a_x, int64_t a_y, int64_t a_z) { return (a_x & 0x1FFFFF) << 42 | (a_y & 0x1FFFFF) << 21 | (a_z & 0x1FFFFF); };
 		const auto cellOf = [](float a_v) { return static_cast<int64_t>(std::floor(a_v / SEAM_BIN)); };
 		const CullSheet& sheet = a_sheets[a_sheet];
-		// D103: a vertex's inner side is hidden (D100's discard) only where another shown sheet lies behind it, outer side away from
-		// the vertex. A sheet with air or rock behind still shows from inside (D100 hid it everywhere and the cliff showed through).
+		// D103: a vertex's inner side is hidden only where another shown sheet lies behind it, outer side away from the vertex;
+		// a sheet with air or rock behind still shows from inside
 		const RE::NiPoint3& p = sheet.positions[a_vertex];
 		const RE::NiPoint3 back = -sheet.outward[a_vertex];
 		bool hidden = false;
@@ -2396,8 +2381,7 @@ namespace FluidFieldSim
 						if (along < 0.0f)
 							continue;
 						nearest = along;
-						// The first sheet behind decides: shown (D112: VertexShown, not only a.x; D113: not inside a third sheet), outer
-						// side away
+						// The first sheet behind decides: shown (VertexShown) with its outer side away
 						const RE::NiPoint3 face = (other.positions[tri[1]] - other.positions[tri[0]]).Cross(other.positions[tri[2]] - other.positions[tri[0]]) * static_cast<float>(other.side[t]);
 						bool shown = face.Dot(back) > 0.0f;
 						for (const uint16_t k : tri)
@@ -2411,7 +2395,7 @@ namespace FluidFieldSim
 		const bool turned = sheet.shown[a_vertex].Dot(sheet.outward[a_vertex]) < 0.0f;
 		a_job.inward += turned ? 1 : 0;
 		a_job.covered += hidden ? 1 : 0;
-		// a.w: 1 its foot (D71), +2 its normal faces in (D100), +4 its inner side is covered (D103)
+		// a.w: 1 its foot, +2 its normal faces in, +4 its inner side is covered
 		float& flags = vertexClips[sheet.base + a_vertex][3];
 		flags = std::fmod(flags, 2.0f) + (turned ? 2.0f : 0.0f) + (hidden ? 4.0f : 0.0f);
 	}
@@ -2500,9 +2484,9 @@ namespace FluidFieldSim
 		get(field->disturbance);
 		get(field->clearFront);
 		get(field->clearBack);
-		get(field->fallen);  // D189
-		get(field->calm);    // D190
-		// an offline site bake may add its flow direction (tools/unify/bake_site.py); the game's own bakes end here
+		get(field->fallen);
+		get(field->calm);
+		// then, if present, its flow direction (tools/unify/bake_site.py)
 		if (ok && file.peek() != std::char_traits<char>::eof()) {
 			get(field->flow);
 			if (!ok) {
@@ -2570,8 +2554,8 @@ namespace FluidFieldSim
 				value[6] = shift.z;
 			}
 		}
-		// D186: normals of the pushed surface (seam moves and swell) for the see-through falls' light, which otherwise ignored the
-		// swell: faces from the shifted vertices, by area, softened SHIFTED_NORMAL_PASSES times, each vertex keeping its own side
+		// D186: normals of the pushed surface (seam moves and swell) for the see-through falls' light: faces from the shifted
+		// vertices, by area, softened SHIFTED_NORMAL_PASSES times, each vertex keeping its own side
 		for (const auto& [geometry, base] : vertexClipBase) {
 			auto* triShape = geometry ? const_cast<RE::BSGeometry*>(geometry)->AsTriShape() : nullptr;
 			auto* renderer = geometry ? const_cast<RE::BSGeometry*>(geometry)->GetGeometryRuntimeData().rendererData : nullptr;
@@ -2686,8 +2670,8 @@ namespace FluidFieldSim
 					uses[{ std::min(index[k], index[(k + 1) % 3]), std::max(index[k], index[(k + 1) % 3]) }]++;
 				}
 			}
-			// D92: the outer face is the side the water travels toward. D103: carried over the sheet (OrientSheet), not per vertex: D92
-			// turned a C-shaped sheet's lead-in into the curl. The shaders' outer-side flags are ComputeSides'.
+			// D103: the outer face is the side the water travels toward, carried over the sheet (OrientSheet). The shaders'
+			// outer-side flags are SideFlags'.
 			{
 				std::vector<RE::NiPoint3> world(counts.vertexCount);
 				for (uint32_t v = 0; v < counts.vertexCount; v++)
@@ -2710,8 +2694,7 @@ namespace FluidFieldSim
 				if (count == 1)
 					open[edge.first] = open[edge.second] = 1;
 			}
-			// D89: no swell or wobble inside rock or ground (the bake's mask; they lifted the sheet out through boulders). D99: the mask
-			// bilinear, inside from half: the nearest texel made a staircase of the boulder's outline.
+			// D89: no swell or wobble inside rock or ground (the bake's mask, bilinear, inside from half)
 			std::vector<uint8_t> inRock(counts.vertexCount, 0);
 			if (bake.rock.size() == static_cast<std::size_t>(bake.width) * bake.height) {
 				const auto rw = static_cast<int32_t>(bake.width), rh = static_cast<int32_t>(bake.height);
@@ -2725,7 +2708,7 @@ namespace FluidFieldSim
 					inRock[v] = (at(x0, y0) * (1.0f - fx) + at(x1, y0) * fx) * (1.0f - fy) + (at(x0, y1) * (1.0f - fx) + at(x1, y1) * fx) * fy >= 0.5f;
 				}
 			}
-			// The mesh's edges with their world lengths (D88's distances, D99's slope limit)
+			// The mesh's edges with their world lengths
 			std::vector<std::vector<std::pair<uint16_t, float>>> next(counts.vertexCount);
 			for (const auto& triangle : triangles) {
 				for (int k = 0; k < 3; k++) {
@@ -2735,10 +2718,9 @@ namespace FluidFieldSim
 					next[b].emplace_back(a, length);
 				}
 			}
-			// D99: the largest function under a_value rising at most a_slope world units per unit along the mesh, so no push stands up as a
-			// spike over one triangle; zeros (open edges, rock) stay zero and the push ramps up from them. D186: a_fineSlope on edges under
-			// DENSE_FINE_EDGE (near rock): small triangles carry a steeper rise, so the water piles up against rock, keeping the bake's
-			// detail.
+			// D99: the largest function under a_value rising at most a_slope world units per unit along the mesh, so no push spikes
+			// over one triangle; zeros (open edges, rock) stay zero. a_fineSlope on edges under DENSE_FINE_EDGE lets water pile up
+			// against rock.
 			const auto limitSlope = [&](std::vector<float>& a_value, float a_slope, float a_fineSlope) {
 				using Entry = std::pair<float, uint16_t>;
 				std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> frontier;
@@ -2758,8 +2740,7 @@ namespace FluidFieldSim
 					}
 				}
 			};
-			// D88: distance from the open edges along the mesh: the wobble fades toward them so the water stays pinned at its banks.
-			// D89: and from rock, likewise
+			// D88: distance from the open edges and rock along the mesh: the wobble fades toward them so the water stays pinned there
 			std::vector<float> fromEdge(counts.vertexCount, FLT_MAX);
 			{
 				using Entry = std::pair<float, uint16_t>;
@@ -2862,7 +2843,7 @@ namespace FluidFieldSim
 				return bake.disturbance[static_cast<std::size_t>(std::lround(gy)) * w + std::lround(gx)];
 			};
 			const uint32_t base = vertexClipBase[geometry];
-			// D95: cut the hidden lead-in (vanilla's sheet climbing under the upper water to its crest, D79), so a see-through sheet shows
+			// D95: cut the hidden lead-in (vanilla's sheet climbing under the upper water to its crest), so a see-through sheet shows
 			// no arch inside the river above it
 			{
 				FallStrands::Input input;
@@ -2873,8 +2854,7 @@ namespace FluidFieldSim
 				std::vector<int32_t> crest;
 				std::vector<uint8_t> leadIn;
 				FallStrands::FindCrests(input, crest, leadIn);
-				// D97: only under water (engine planes or our pools): a lead-in in the open is the sheet itself, and cutting it holed the
-				// falls
+				// D97: only under water (engine planes or our pools): a lead-in in the open is the sheet itself
 				float lo[2] = { FLT_MAX, FLT_MAX }, hi[2] = { -FLT_MAX, -FLT_MAX };
 				for (uint32_t v = 0; v < counts.vertexCount; v++) {
 					const RE::NiPoint3 world = geometry->world * positions[v];
@@ -2885,12 +2865,12 @@ namespace FluidFieldSim
 				}
 				std::vector<std::array<float, 5>> leadPlanes;
 				CollectWaterPlanes(lo[0], lo[1], hi[0], hi[1], leadPlanes);
-				// D99: the highest water over a point (our pools, engine planes), or none. D103: no plane above a_ceiling: a plane covers
-				// its whole bound, so a river's or lake's plane higher up the cliff cut the visible top of a sheet standing in the open
+				// D103: the highest water over a point (our pools, engine planes), or none; no plane above a_ceiling, as a plane covers
+				// its whole bound and one higher up the cliff would cut the visible top of a sheet
 				const auto waterOver = [&](const RE::NiPoint3& a_p, float a_ceiling) {
 					float level = 0.0f, highest = -FLT_MAX;
-					// D113: our pools have no ceiling: they are water confirmed over the rock (D40, D78), not a plane's bound, and the
-					// river over a deeply submerged crest stands more than LEAD_WATER_OVER_CREST over it
+					// D113: our pools have no ceiling: they are water confirmed over the rock, not a plane's bound, and the river over
+					// a deeply submerged crest stands more than LEAD_WATER_OVER_CREST over it
 					if (PoolLevelAt(a_p.x, a_p.y, level))
 						highest = level;
 					for (const auto& plane : leadPlanes) {
@@ -2909,8 +2889,7 @@ namespace FluidFieldSim
 					ComposeCut(base + v);
 					if (!leadIn[static_cast<std::size_t>(gy) * bake.width + gx])
 						continue;
-					// D99: cut by signed height over the cut level, not a whole vertex at -CLIP_RANGE: the shaders interpolate linearly, so
-					// a step between neighbours sawtoothed along the triangle edges; a height puts the cut on the waterline itself
+					// D99: cut by signed height over the cut level, so the linearly interpolated cut lies on the waterline itself
 					const RE::NiPoint3 world = geometry->world * positions[v];
 					// D103: the water a lead-in hides under is the river feeding its crest, at about the crest's height
 					const int32_t crestRow = crest[gx];
@@ -2927,7 +2906,7 @@ namespace FluidFieldSim
 				}
 			}
 			// The wobble's size and the swell's push per vertex (world units along the normal): none on open edges, in rock or without
-			// a normal. D99: each then held to a slope (limitSlope): spikes beside rock (D89, D84's pillow) and open edges made saw teeth.
+			// a normal; then held to a slope (limitSlope)
 			std::vector<float> wobbleSize(counts.vertexCount, 0.0f), swellPush(counts.vertexCount, 0.0f), wobbleWeight(counts.vertexCount, 0.0f);
 			std::vector<float> bounce(counts.vertexCount, 0.0f);  // a unified sheet's vertical bob where aerated water faces up (crashing lips)
 			const bool unified = unifiedShapes.contains(geometry);
@@ -2944,8 +2923,7 @@ namespace FluidFieldSim
 				if (linked != flowBakes.end()) {
 					const float stirred = std::clamp(stirredAt(uvs[v][0], uvs[v][1]) / WOBBLE_STIRRED, 0.0f, 1.0f);
 					const float inland = std::clamp(fromEdge[v] / WOBBLE_EDGE_REACH, 0.0f, 1.0f);
-					// (D186: no churn toward rock: the flow coordinates jump where strands part round a boulder and spiked the fine mesh;
-					// it fades toward rock instead, D89)
+					// D186: no churn toward rock (the flow coordinates jump where strands part round a boulder); it fades there instead
 					wobbleSize[v] = (WOBBLE_CALM + (WOBBLE_MOST - WOBBLE_CALM) * stirred * stirred * (3.0f - 2.0f * stirred) + WOBBLE_CRASH * crashAt(uvs[v][0], uvs[v][1])) *
 					                inland * inland * (3.0f - 2.0f * inland);
 					wobbleWeight[v] = inland * inland * (3.0f - 2.0f * inland);
@@ -2971,8 +2949,8 @@ namespace FluidFieldSim
 					wobbleSize[v] *= UNIFIED_WOBBLE;
 				}
 			}
-			// D186: none in a band along the rock, then rising off it by distance along the mesh (smooth, unlike the per-vertex rock mask,
-			// which sawtoothed every contact on the fine mesh); then softened ROCK_FIELD_PASSES times, then held to their slopes
+			// D186: none in a band along the rock, then rising off it by distance along the mesh; then softened ROCK_FIELD_PASSES
+			// times, then held to their slopes
 			for (uint32_t v = 0; v < counts.vertexCount; v++) {
 				const float t = std::clamp((fromRock[v] - ROCK_CONTACT) / ROCK_RAMP, 0.0f, 1.0f);
 				const float ramp = t * t * (3.0f - 2.0f * t);
@@ -3252,8 +3230,8 @@ namespace FluidFieldSim
 			if (n >= 1.0) {
 				const double denominator = n * sxx - sx * sx;
 				slope = n >= 2.0 && std::abs(denominator) > 1e-9 ? (n * sxy - sx * sy) / denominator : 1.0;
-				// D80: keep the mesh's own texture scale and direction (a slope fitted to the feeder's foot mirrored, stretched or turned
-				// it); the feeder gives only the shift
+				// D80: keep the mesh's own texture scale and direction (a fitted slope mirrored or stretched it); the feeder gives
+				// only the shift
 				const double fitted = slope;
 				slope = 1.0;
 				intercept = (sy - slope * sx) / n;
@@ -3334,7 +3312,7 @@ namespace FluidFieldSim
 			bake.uvSize[0] = field.uvSize[0];
 			bake.uvSize[1] = field.uvSize[1];
 			// D181: the flow coordinates' stretch per texel (world length per unit along over per unit across), from the texels' positions,
-			// centred, softened; the foam is drawn round on it (screen derivatives were constant per triangle and jumped at every edge)
+			// centred, softened; the foam is drawn round on it (screen derivatives jump at every triangle edge)
 			std::vector<float> stretch(count, 1.0f);
 			if (field.position.size() == count) {
 				const auto rate = [&](std::size_t a_i, std::size_t a_j, const std::vector<float>& a_coord) {
@@ -3372,9 +3350,8 @@ namespace FluidFieldSim
 					stretch.swap(scratch);
 				}
 			}
-			// D186: the flow's frame per texel: the world direction along runs with across held (the normal maps' frame, as they run on the
-			// flow coordinates), from changes over FRAME_REACH texels each way (wide enough to hide the original's coarse edges), softened;
-			// zero where unknown (the shader keeps the mesh's own tangent). Per triangle, it creased the water.
+			// D186: the flow's frame per texel: the world direction along runs with across held (the normal maps' frame), from changes
+			// over FRAME_REACH texels each way, softened; zero where unknown (the shader keeps the mesh's own tangent)
 			std::vector<RE::NiPoint3> frame(count, RE::NiPoint3(0.0f, 0.0f, 0.0f));
 			if (field.position.size() == count && field.covered.size() == count) {
 				const int32_t hh = static_cast<int32_t>(h);
@@ -3437,11 +3414,10 @@ namespace FluidFieldSim
 					frame.swap(scratch);
 				}
 			}
-			// D179: four sections. 1: the flow. 2: for the shading (FallGround's BakeFieldsAt): speed over vanilla's, swell, stirring,
-			// aeration. 3 (D181): x the coordinates' stretch; D186: yzw the flow's frame. 4 (D188): x where the water lands in a pool (how
-			// hard), y the foam it leaves on its way, both filled by ComputePlunges (ApplyPlunges: where it meets water below, not another
-			// sheet); D189: z the height fallen down steep faces from the top of the falls, for the shading's drop; D190: w its own drop's
-			// progress.
+			// D179: five sections. 1: the flow. 2: for the shading (FallGround's BakeFieldsAt): speed over vanilla's, swell,
+			// stirring, aeration. 3: x the coordinates' stretch, yzw the flow's frame. 4: x where the water lands in a pool (how hard),
+			// y the foam it leaves on its way (both ApplyPlunges'), z the height fallen down steep faces, w its own drop's progress.
+			// 5: the contact (below).
 			bake.texels.resize(count * BAKE_TEXELS_PER);
 			const auto fieldAt = [&](const std::vector<float>& a_values, std::size_t a_i, float a_none) { return a_values.size() == count ? a_values[a_i] : a_none; };
 			for (std::size_t i = 0; i < count; i++) {
@@ -3523,12 +3499,11 @@ namespace FluidFieldSim
 					const std::size_t i = static_cast<std::size_t>(y) * w + x;
 					if (field.covered[i]) {
 						const float p = (node.tangent - field.position[i].z) / span;
-						// (clearing over this mesh's calm runs, like the height fallen: a shelf carrying a fall on does not run white)
-						// D191: calm counted from the tangent: the calm river over the crest faded a whole fall's progress to near 0
+						// D191: clears over this mesh's calm runs, counted from the tangent, so a shelf carrying a fall on does not run white
 						const float calm = field.calm.size() == count ? field.calm[i] : 0.0f;
 						if (p <= 0.0f || std::isnan(calmAbove))
 							calmAbove = calm;
-						// (above the tangent held over -1, which the shading reads as a mesh that never turns steep: D191)
+						// Above the tangent, held over -1 (which the shading reads as never turning steep)
 						progress[i] = p > 0.0f ? std::min(p, 1.0f) * tall * std::exp(-std::max(calm - calmAbove, 0.0f) / FallStrands::CALM_RUN) : std::max(p, -PROGRESS_ABOVE_MOST);
 						if (lastKnown < 0) {
 							for (int32_t k = 0; k < y; k++)
@@ -3540,8 +3515,7 @@ namespace FluidFieldSim
 					}
 				}
 			}
-			// D191: soften among the texels that have a progress (per column it stepped between columns and at fills, so the white came in
-			// blocks); a column with none keeps -1
+			// D191: soften among the texels that have a progress (per column, the white came in blocks); a column with none keeps -1
 			{
 				std::vector<uint8_t> known(count, 0);
 				for (std::size_t i = 0; i < count; i++)
@@ -4156,7 +4130,7 @@ namespace FluidFieldSim
 		if (Busy())
 			return;
 		timed(LoadStage::Bury, [&]() { BuryStep(); });
-		timed(LoadStage::Cull, [&]() { CullStep(); });  // D113
+		timed(LoadStage::Cull, [&]() { CullStep(); });
 		if (Busy())
 			return;
 		timed(LoadStage::Depth, [&]() { DepthStep(); });
@@ -4445,8 +4419,7 @@ namespace FluidFieldSim
 			}
 			auto& capture = kept[key];
 			capture.Begin(site.fallMin, site.fallMax, site.top, site.bottom);
-			// D185: cached on disk, keyed by its layout and the statics round it (what its rays see besides the landscape); read back, no
-			// rays
+			// D185: cached on disk, keyed by its layout and the statics round it (what its rays see besides the landscape)
 			capture.cachePath = CaptureCachePath(capture, key);
 			if (!capture.cachePath.empty() && capture.Load(capture.cachePath))
 				logger::info("[Fluid Field] Waterfall site #{} ground read from the cache", site.id);
@@ -4516,7 +4489,7 @@ namespace FluidFieldSim
 
 	void FallSites::BuildPoolMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_heights) const
 	{
-		// D40: where each site's pools really have water (D78: ComputePools), on the same lattice as its capture
+		// D40: where each site's pools really have water (ComputePools), on the same lattice as its capture
 		a_heights.assign(static_cast<std::size_t>(a_size) * a_size, FallCapture::NONE);
 		const auto n = static_cast<int32_t>(a_size);
 		for (const auto& [key, pools] : sitePools) {
@@ -4540,12 +4513,12 @@ namespace FluidFieldSim
 
 	void FallSites::BuildPlungeMap(float a_originX, float a_originY, float a_cell, uint32_t a_size, std::vector<float>& a_field, float a_behind, float a_radiusScale) const
 	{
-		// D44, D47: where the falls meet the water below: every plunge point (D78: from the meshes' sims, ComputePlunges) foams the
-		// water round it, harder plunges more; the simulated flow carries the foam downstream
+		// D44: where the falls meet the water below: every plunge point (ComputePlunges) foams the water round it, harder plunges
+		// more; the simulated flow carries the foam downstream
 		a_field.assign(static_cast<std::size_t>(a_size) * a_size, 0.0f);
 		const auto n = static_cast<int32_t>(a_size);
 		for (const auto& plunge : plungePoints) {
-			// D98: a crossing reaches further (its foam made 50% stronger)
+			// D98: a crossing reaches further
 			const float radius = PLUNGE_FOAM_RADIUS * std::max(plunge.reach, 1.0f) * std::max(a_radiusScale, 0.05f);
 			const auto reach = static_cast<int32_t>(std::ceil(radius / a_cell));
 			// D176: moved a_behind world units against the falling water's way (behind the curtain's line)
@@ -4671,8 +4644,8 @@ namespace FluidFieldSim
 			const std::size_t count = static_cast<std::size_t>(w) * h;
 			if (field->position.size() != count || field->turn.size() != count || field->normal.size() != count)
 				continue;
-			// D126: only the shell's texels (VertexInShell, as culled now) give spray, plunges or lips. D132: only as a gate on a texel's
-			// own output; the mesh's shape (neighbours, crests, top, foot) is read whole, so a cull's edge is no rim or foot
+			// D132: only the shell's texels (VertexInShell) give plunges or lips, as a gate on each texel's own output; the mesh's
+			// shape (neighbours, crests, top, foot) is read whole, so a cull's edge is no rim or foot
 			const std::vector<uint8_t>& shellCovered = shells[geometry];
 			if (shellCovered.size() != count)
 				continue;
@@ -4709,7 +4682,7 @@ namespace FluidFieldSim
 				}
 				return a_level > -FLT_MAX;
 			};
-			// The water's way in the world: down the mesh (texture v) turned across it by the sim (D75's arrows)
+			// The water's way in the world: down the mesh (texture v) turned across it by the sim
 			const std::vector<float>& turn = field->turn;
 			const auto flowAt = [&](int32_t a_x, int32_t a_y) {
 				const auto side = [&](int32_t a_dx, int32_t a_dy) {
@@ -4740,7 +4713,7 @@ namespace FluidFieldSim
 					const RE::NiPoint3& here = field->position[i];
 					float level = -FLT_MAX;
 					const bool foot = here.z < bottom + WATER_CUT_BAND;
-					// D90: or one of our pools anywhere down the mesh (a cascade's middle pool); the engine's planes stay foot-only (D70)
+					// D90: or one of our pools anywhere down the mesh (a cascade's middle pool); the engine's planes stay foot-only
 					float ownPool = -FLT_MAX;
 					const bool water = (foot && waterAt(here, level)) || (PoolLevelAt(here.x, here.y, ownPool) && ownPool < top - 32.0f && (level = ownPool, true));
 					// Where it goes into the water below: at or under it, coming from above it (texture v runs downstream)
@@ -4780,8 +4753,8 @@ namespace FluidFieldSim
 				}
 			}
 		}
-		// D188: each mesh's pool landings, softened. D189: widened first (a neighbour max: blurred alone, the one-texel waterline
-		// faded to a tenth), then carried UP the sheet (carried down the flow, the white ran off past the foot where there is no sheet)
+		// D189: each mesh's pool landings, widened first (a neighbour max keeps the one-texel waterline), carried up the sheet
+		// (down the flow, the white ran past the foot), then softened
 		std::vector<float> scratch;
 		for (auto& [geometry, impact] : o_result.impacts) {
 			const auto field = bakeFields.find(geometry);
@@ -4847,7 +4820,7 @@ namespace FluidFieldSim
 			const std::size_t count = static_cast<std::size_t>(w) * h;
 			if (field->position.size() != count)
 				continue;
-			// D126: the shell's texels only, as above (D132: as the gate on a crossing's own texel)
+			// The shell's texels only, as above
 			std::vector<uint8_t> shellCovered = field->covered;
 			{
 				const float uvMin[2] = { field->uvMin[0], field->uvMin[1] }, uvSize[2] = { field->uvSize[0], field->uvSize[1] };
