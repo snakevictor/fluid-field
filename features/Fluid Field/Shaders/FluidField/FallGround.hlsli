@@ -51,12 +51,9 @@ namespace FallGround
 	static const uint NO_VERTEX_CLIP = 0xFFFFFFFF;
 	/** D58: clamp on a vertex's distance above or below the cut, world units. */
 	static const float CLIP_MOST = 48.0;
-	/** D59: seconds of running to be mostly aerated, and how white aerated water gets. */
+	/** D59: seconds of running to be mostly aerated. */
 	static const float AERATION_SECONDS = 1.2;
-	static const float AERATION_WHITE = 0.3;
 	static const float NONE = -1.0e6;  // Below this, no ground is captured
-	/** D78: world units per second shown at full brightness in DebugMode 2. */
-	static const float DEBUG_FLOW_SPEED = 420.0;
 
 	/** D36: the pools' surface height at a world position; false where there is none. */
 	bool Pool(float2 a_position, out float a_height)
@@ -224,14 +221,6 @@ namespace FallGround
 	 * D188: a falls vertex's wobble for lighting: x streak, y run less phase, z size (model units), w world units per
 	 * unit of run (0: none)
 	 */
-	/** A falls vertex's steady move (its seam gap and swell, not its wobble), mesh space. */
-	float3 SteadyShift(uint a_vertex)
-	{
-		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
-			return 0.0;
-		return VertexClip[VertexBase + a_vertex].b.xyz;
-	}
-
 	float4 WobbleAt(uint a_vertex, float a_phase)
 	{
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
@@ -266,7 +255,7 @@ namespace FallGround
 			return 0.0;
 		const FallVertex fallVertex = VertexClip[VertexBase + a_vertex];
 		const float across = fallVertex.b.w, run = fallVertex.c.w - a_phase;
-		if (!BakeVelocity || dot(a_up, a_up) < 1e-8)
+		if (dot(a_up, a_up) < 1e-8)
 			return fallVertex.b.xyz + fallVertex.c.xyz * Wobble(across, run);
 		float3 vertical;
 		float clampScale;
@@ -283,27 +272,13 @@ namespace FallGround
 		if (!Enabled || VertexBase == NO_VERTEX_CLIP)
 			return 0.0;
 		const FallVertex fallVertex = VertexClip[VertexBase + a_vertex];
-		if (!BakeVelocity || dot(a_up, a_up) < 1e-8)
+		if (dot(a_up, a_up) < 1e-8)
 			return float2(length(fallVertex.c.xyz), 0.0);
 		float3 vertical;
 		float clampScale;
 		SplitWobble(fallVertex, fallVertex.c.w - a_phase, a_up, vertical, clampScale);
 		const float facing = abs(dot(normalize(a_up), a_normal / max(length(a_normal), 1e-6)));
 		return float2(length(fallVertex.c.xyz - vertical), length(vertical) * clampScale * facing);
-	}
-
-	/**
-	 * D67: whether a falls pixel is dithered out at its fade. Lit falls are opaque, so two blend this way, resolved by TAA.
-	 * The pattern depends only on pixel and frame, so the depth pre-pass and lit pass agree.
-	 */
-	bool Dithered(float2 a_pixel, float a_fade)
-	{
-		if (a_fade >= 0.999)
-			return false;
-		const float frame = float(uint(Time * 60.0) & 63u);
-		const float2 p = a_pixel + 5.588238 * frame;
-		const float noise = frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715))));
-		return noise >= smoothstep(0.0, 1.0, a_fade);
 	}
 
 	/** A falls pixel's flow (Flow). */
@@ -329,8 +304,6 @@ namespace FallGround
 	 */
 	float4 BakeRowsAt(float2 a_uv, uint a_half)
 	{
-		if (!BakeOn)
-			return 0.0;
 		uint width, height;
 		FlowBake.GetDimensions(width, height);
 		height /= 5;  // D179, D181, D188: flow, fields, stretch and frame, plunges, contact: a fifth of the rows each
@@ -354,10 +327,7 @@ namespace FallGround
 	float4 BakeAt(float2 a_uv) { return BakeRowsAt(a_uv, 0); }
 
 	/** D179: the water's fields: x speed over vanilla's, y swell, z disturbance, w aeration. */
-	float4 BakeFieldsAt(float2 a_uv) { return BakeOn ? BakeRowsAt(a_uv, 1) : float4(1.0, 0.0, 0.0, 0.0); }
-
-	/** D181: world units one unit of along spans over one of across (1 without a bake). */
-	float BakeStretchAt(float2 a_uv) { return BakeOn ? max(BakeRowsAt(a_uv, 2).x, 0.25) : 1.0; }
+	float4 BakeFieldsAt(float2 a_uv) { return BakeRowsAt(a_uv, 1); }
 
 	/**
 	 * D67: a falls pixel's flow: the bake's coordinates (streak across, run time along) less the shared scroll. Streaks
@@ -381,93 +351,33 @@ namespace FallGround
 		const float2 uvStill = (a_uv - TexOffset) * InverseScale;
 		const float4 baked = BakeAt(uvStill);
 		result.foam = baked.w;
-		const bool unifiedSheet = BakeOn && BakeVelocity;
-		result.wake = unifiedSheet ? 0.0 : baked.z;  // a unified sheet keeps its streak columns there
-		result.runTime = BakeOn ? max(baked.y, 0.0) / max(Scroll.y, 1e-3) : 0.0;
+		result.wake = 0.0;  // the bake keeps its streak columns there
+		result.runTime = max(baked.y, 0.0) / max(Scroll.y, 1e-3);
 		result.fields = BakeFieldsAt(uvStill);
-		const float4 third = BakeOn ? BakeRowsAt(uvStill, 2) : float4(1.0, 0.0, 0.0, 0.0);
-		result.stretch = max(third.x, 0.25);
-		result.streak = unifiedSheet ? saturate(third.x) : 1.0;
-		result.contact = unifiedSheet ? BakeRowsAt(uvStill, 4).xyz : float3(1.0e4, 1.0e4, 0.0);  // (its own stretch is set below, so the bake keeps its streaks there)
+		const float4 third = BakeRowsAt(uvStill, 2);
+		result.streak = saturate(third.x);
+		result.contact = BakeRowsAt(uvStill, 4).xyz;
 		result.frame = third.yzw;
-		result.plunge = BakeOn ? BakeRowsAt(uvStill, 3) : 0.0;
-		float2 uvBase = (BakeOn ? baked.xy : uvStill) - float2(0.0, Scroll.x);
-		// a unified sheet: across is its flow's streamlines (the bake's columns, mapped to u), along its travel time, so every texture on
-		// these coordinates follows the flow; its stretch the travel time's (speed over the scroll) against the uv's own scale
-		if (unifiedSheet) {
-			uvBase.x = baked.z;
-			result.stretch = clamp(UnifiedSpeed(result.fields.x) / max(Scroll.y * 968.0, 1e-3), 0.25, 4.0);
-		}
+		result.plunge = BakeRowsAt(uvStill, 3);
+		// across is the flow's streamlines (the bake's columns, mapped to u), along its travel time, so every texture on these
+		// coordinates follows the flow; the stretch is the travel time's (speed over the scroll) against the uv's own scale
+		float2 uvBase = baked.xy - float2(0.0, Scroll.x);
+		uvBase.x = baked.z;
+		result.stretch = clamp(UnifiedSpeed(result.fields.x) / max(Scroll.y * 968.0, 1e-3), 0.25, 4.0);
 		result.uvA = uvBase;
-		result.column = unifiedSheet ? baked.z : uvBase.x;
+		result.column = baked.z;
 		result.velocity = 0.0;
 		const float3 dpx = ddx(a_position);
 		const float3 dpy = ddy(a_position);
-		const float2 dux = BakeVelocity && BakeOn ? ddx(baked.xy) : ddx(a_uv);
-		const float2 duy = BakeVelocity && BakeOn ? ddy(baked.xy) : ddy(a_uv);
+		const float2 dux = ddx(baked.xy);
+		const float2 duy = ddy(baked.xy);
 		const float det = dux.x * duy.y - dux.y * duy.x;
 		if (abs(det) > 1e-12)
 			result.velocity = (dpy * dux.x - dpx * duy.x) / det * Scroll.y;
-		// a unified sheet: its baked flow direction at the bake's speed (world units/s)
-		if (unifiedSheet && dot(result.frame, result.frame) > 0.25)
+		// the baked flow direction at the bake's speed (world units/s)
+		if (dot(result.frame, result.frame) > 0.25)
 			result.velocity = normalize(result.frame) * UnifiedSpeed(result.fields.x);
 		return result;
-	}
-
-	/** A unified sheet's flow-mapping: the advection's seconds per phase, and the most a phase carries (world units). */
-	static const float ADVECT_SECONDS = 0.35;
-	static const float ADVECT_MOST = 160.0;
-
-	/**
-	 * A unified sheet's texture carried along its baked flow (two phases half a cycle apart, crossfaded, each reset while unseen): the
-	 * two coordinates on the mesh's own even uv (a_uv, its 1 per FALLS_UV world units), and the first's weight. The velocity becomes
-	 * mesh uv per second through the screen derivatives of the position and the uv (both smooth on the sheet).
-	 */
-	float AdvectedUv(float2 a_uv, float3 a_velocity, float3 a_position, float a_time, out float2 o_uv0, out float2 o_uv1)
-	{
-		const float3 dpx = ddx(a_position), dpy = ddy(a_position);
-		const float2 dux = ddx(a_uv), duy = ddy(a_uv);
-		const float pxx = dot(dpx, dpx), pxy = dot(dpx, dpy), pyy = dot(dpy, dpy);
-		const float det = pxx * pyy - pxy * pxy;
-		const float2 ab = abs(det) > 1e-12 ? float2(pyy * dot(a_velocity, dpx) - pxy * dot(a_velocity, dpy), pxx * dot(a_velocity, dpy) - pxy * dot(a_velocity, dpx)) / det : 0.0;
-		float2 uvVelocity = dux * ab.x + duy * ab.y;
-		// the most a phase carries, in the uv's own scale (from the same derivatives)
-		const float uvPerUnit = length(dux) / max(length(dpx), 1e-4) * 0.5 + length(duy) / max(length(dpy), 1e-4) * 0.5;
-		const float most = ADVECT_MOST * uvPerUnit / ADVECT_SECONDS;
-		const float speed = length(uvVelocity);
-		uvVelocity *= speed > most ? most / speed : 1.0;
-		const float phase0 = frac(a_time / ADVECT_SECONDS), phase1 = frac(a_time / ADVECT_SECONDS + 0.5);
-		o_uv0 = a_uv - uvVelocity * phase0 * ADVECT_SECONDS + 0.37 * floor(a_time / ADVECT_SECONDS);
-		o_uv1 = a_uv - uvVelocity * phase1 * ADVECT_SECONDS + 0.53 * floor(a_time / ADVECT_SECONDS + 0.5);
-		return 1.0 - abs(2.0 * phase0 - 1.0);
-	}
-
-	float LaceHash(float2 a_p)
-	{
-		a_p = frac(a_p * float2(0.1031, 0.1030));
-		a_p += dot(a_p, a_p.yx + 33.33);
-		return frac((a_p.x + a_p.y) * a_p.x);
-	}
-
-	/** D134: value noise periodic in y every a_period cells (whole), so it wraps with the scroll's phase. */
-	float LaceNoise(float2 a_p, float a_period)
-	{
-		const float2 i = floor(a_p);
-		const float2 f = a_p - i;
-		const float2 u = f * f * (3.0 - 2.0 * f);
-		const float y0 = i.y - a_period * floor(i.y / a_period);
-		const float y1 = (i.y + 1.0) - a_period * floor((i.y + 1.0) / a_period);
-		return lerp(lerp(LaceHash(float2(i.x, y0)), LaceHash(float2(i.x + 1.0, y0)), u.x), lerp(LaceHash(float2(i.x, y1)), LaceHash(float2(i.x + 1.0, y1)), u.x), u.y);
-	}
-
-	/** D42: foam lace: thin filaments stretched along and carried by the flow. 0 to 1, high on the filaments. */
-	float Lace(FlowSample a_flow)
-	{
-		// D130: whole-number scales along v, so the pattern repeats with the scroll's wrap
-		const float2 stretch = float2(0.7, 3.0);
-		const float n = LaceNoise(a_flow.uvA * stretch, 3.0) * 0.6 + LaceNoise(a_flow.uvA * float2(1.89, 8.0) + float2(3.1, 0.0), 8.0) * 0.4;
-		// Thin ridges where the noise crosses its middle
-		return 1.0 - saturate(abs(n - 0.5) * 2.6);
 	}
 }
 

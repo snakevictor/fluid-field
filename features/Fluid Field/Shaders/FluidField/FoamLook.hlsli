@@ -4,8 +4,6 @@
 
 namespace FoamLook
 {
-	/** Off: the river's foam as it was (FluidField::ApplyFoamBlended), for comparing. */
-	static const bool RIVER_FOAM_LOOK = true;
 
 	/** World units one flow-uv unit spans on the unified sheet (its noises' cells are per such unit). */
 	static const float UV_WORLD = 968.0;

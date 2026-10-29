@@ -23,7 +23,7 @@ cbuffer GroundFogCB : register(b0)
 	uint GroundRes;        // Ground map texels per side, a power of two
 	float GroundCellSize;  // World units per ground map texel
 	float2 PatternOffset;  // How far the resting pattern has drifted with the weather's wind, world units
-	uint DebugMode;        // 0 normal, 1 no wind, 2 resting fog only, 3 fixed sample offsets, 4 = 1 + 2 + 3, 7 world height bands
+	uint DebugPad;
 	float FogPad;
 };
 
@@ -106,8 +106,6 @@ float SampleGround(float2 worldXY, out float areaFade)
 float SampleFog(float2 worldXY)
 {
 	const float resting = FogPattern::Resting(worldXY, PatternOffset);
-	if (DebugMode == 2 || DebugMode == 4)
-		return resting;
 	const float2 cellPosition = worldXY / CellSize - 0.5;
 	const float2 logical = cellPosition - float2(GridMin);
 	const float fromEdge = min(min(logical.x, logical.y), min(GridRes - 1 - logical.x, GridRes - 1 - logical.y));
@@ -165,7 +163,7 @@ float FogAt(float3 position, float maxTop, out float shading)
 	const float height = position.z - ground;
 	if (fog <= 0.0 || height > maxTop || height < 0.0)
 		return 0.0;
-	const float2 wind = (DebugMode == 1 || DebugMode == 4) ? 0.0 : SampleWind(position.xy);
+	const float2 wind = SampleWind(position.xy);
 	const float churn = saturate(length(wind) / LIFT_SPEED);
 	// Billows: the top rises and falls with the wind, so the layer is not a flat sheet
 	const float billow = Wisps(float3(position.xy * (WISP_SIZE / BILLOW_SIZE), 0.0), wind);
@@ -223,15 +221,6 @@ float4 MarchHalf(float3 camera, float3 direction, float from, float to, bool a_f
 	const float depth = DepthTexture[dispatchID.xy];
 	float4 positionCS = mul(FrameBuffer::CameraViewProjInverse, float4(2 * float2(uv.x, -uv.y + 1) - 1, depth, 1));
 	const float3 surface = positionCS.xyz / positionCS.w;
-	if (DebugMode == 7) {
-		// Debug: the reconstructed world height as coloured bands, 32 units each; sky left alone
-		if (depth < 1.0) {
-			const float z = surface.z + FrameBuffer::CameraPosAdjust.z;
-			const float3 band = frac(z / 32.0) < 0.5 ? float3(1.0, 0.2, 0.2) : float3(0.2, 0.2, 1.0);
-			MainRW[dispatchID.xy] = float4(lerp(MainRW[dispatchID.xy].rgb, band, 0.5), MainRW[dispatchID.xy].a);
-		}
-		return;
-	}
 	const float surfaceDistance = length(surface);
 	const float3 direction = surface / max(surfaceDistance, 1e-3);
 	const float rayLength = min(depth >= 1.0 ? MaxDistance : surfaceDistance, MaxDistance);
@@ -257,7 +246,7 @@ float4 MarchHalf(float3 camera, float3 direction, float from, float to, bool a_f
 		return;
 	const float span = rayEnd - rayStart;
 
-	const float jitter = (DebugMode == 3 || DebugMode == 4) ? 0.5 : Random::InterleavedGradientNoise(float2(dispatchID.xy), SharedData::FrameCount);
+	const float jitter = Random::InterleavedGradientNoise(float2(dispatchID.xy), SharedData::FrameCount);
 
 	// Light: the sun scattered toward the eye, and the ambient average
 	const float3 sun = SharedData::DirLightColor.xyz * HenyeyGreenstein(dot(direction, SharedData::DirLightDirection.xyz), PHASE_G) * 4.0 * Math::PI;

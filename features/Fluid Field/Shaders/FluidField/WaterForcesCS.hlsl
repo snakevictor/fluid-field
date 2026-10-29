@@ -54,14 +54,6 @@ float2 ConfinementForce(int2 logical)
 	return Vorticity * CellSize * float2(n.y * omega, -n.x * omega);
 }
 
-/** @brief Hash of a cell and a time step to [-1, 1]. */
-float CellNoise(int2 cell, float step)
-{
-	uint h = uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u ^ uint(step) * 83492791u;
-	h = (h ^ (h >> 13)) * 1274126177u;
-	return float(h & 0xFFFFu) / 32767.5 - 1.0;
-}
-
 /** @brief Hash of a lattice point to [-1, 1]. */
 float Hash3(int3 p)
 {
