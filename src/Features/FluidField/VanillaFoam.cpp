@@ -2,6 +2,7 @@
 
 #include "EngineGrid.h"
 #include "Globals.h"
+#include "HiddenObjects.h"
 #include "WaterSurfaces.h"
 
 #include <algorithm>
@@ -67,7 +68,7 @@ namespace FluidFieldSim
 	void VanillaFoam::Show(HiddenRef& a_hidden)
 	{
 		for (auto& part : a_hidden.parts)
-			part->SetAppCulled(false);
+			HiddenObjects::Show(part.get());
 		a_hidden.parts.clear();
 	}
 
@@ -118,9 +119,12 @@ namespace FluidFieldSim
 					Show(entry);
 					entry.root.reset(root);
 					CollectEffectParts(root, entry.parts);
+					for (auto& part : entry.parts)
+						HiddenObjects::Hide(part.get());
+				} else {
+					for (auto& part : entry.parts)
+						HiddenObjects::Reassert(part.get());
 				}
-				for (auto& part : entry.parts)
-					part->SetAppCulled(true);
 				return RE::BSContainer::ForEachResult::kContinue;
 			});
 		};

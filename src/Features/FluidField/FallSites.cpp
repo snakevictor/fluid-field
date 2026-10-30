@@ -1,6 +1,7 @@
 #include "FallSites.h"
 
 #include "FallStrands.h"
+#include "HiddenObjects.h"
 
 #include "EngineGrid.h"
 
@@ -406,10 +407,14 @@ namespace FluidFieldSim
 			// D91: a sheet the falls pass draws stays hidden
 			const bool lit = std::any_of(litHidden.begin(), litHidden.end(), [&](const RE::NiPointer<RE::BSGeometry>& a_hidden) { return a_hidden.get() == object; });
 			if (!wanted.contains(object) && pointer && !lit)
-				pointer->SetAppCulled(false);
+				HiddenObjects::Show(pointer.get());
 		}
-		for (auto& [object, pointer] : wanted)
-			pointer->SetAppCulled(true);
+		for (auto& [object, pointer] : wanted) {
+			if (hiddenEffects.contains(object))
+				HiddenObjects::Reassert(pointer.get());
+			else
+				HiddenObjects::Hide(pointer.get());
+		}
 		hiddenEffects.swap(wanted);
 	}
 
